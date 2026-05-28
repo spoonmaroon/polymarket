@@ -6,9 +6,6 @@ Project: multi-venue crypto binary pricing, paper-trading, and research system.
 
 Working repository: `git@github.com:AnimeWeeb9000/polymarket.git`
 
-This is the canonical plan for the project. The older files in `docs/` are
-source notes and research backup. If a source note conflicts with this file,
-this file wins unless Enoch changes it.
 
 ## 1. Project Thesis
 
