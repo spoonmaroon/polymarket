@@ -28,14 +28,3 @@ fees, spread, slippage, data latency, and path-reversal risk.
 - [PLAN.md](PLAN.md) - complete merged architecture, research, build, setup, UI,
   and risk plan.
 - [SETUP.md](SETUP.md) - short local setup commands.
-
-## Source Notes
-
-These are supporting notes preserved for traceability:
-
-- [architecture inquiry](docs/architecture-inquiry.md)
-- [architecture visualization](docs/architecture-visualization.md)
-- [research worthiness memo](docs/research-worthiness-2026-05-28.md)
-- [robust architecture plan](docs/robust-architecture-plan-2026-05-28.md)
-
-If a source note conflicts with [PLAN.md](PLAN.md), use `PLAN.md`.

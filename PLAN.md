@@ -1472,14 +1472,9 @@ The strategy is worth scaling only if:
 - support/resistance blocking improves risk-adjusted outcomes;
 - latency telemetry supports the chosen execution style.
 
-## 23. Source Docs
+## 23. Planning Source Of Truth
 
-Supporting source docs still live in `docs/`:
+`PLAN.md` is the complete project plan.
 
-- `docs/architecture-inquiry.md`;
-- `docs/architecture-visualization.md`;
-- `docs/research-worthiness-2026-05-28.md`;
-- `docs/robust-architecture-plan-2026-05-28.md`.
-
-Use this `PLAN.md` as the complete plan. Use the docs folder when you want the
-longer reasoning trail or source-specific notes.
+Earlier planning notes were merged into this file and removed to avoid drift.
+Future architecture changes should update this file directly.
