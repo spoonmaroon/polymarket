@@ -1,0 +1,16 @@
+[app]
+execution_mode = "paper"
+log_level = "INFO"
+
+[risk]
+max_order_usd = 10
+max_daily_loss_usd = 50
+allow_live_execution = false
+
+[venues.polymarket]
+enabled = false
+mode = "read_only"
+
+[venues.jupiter]
+enabled = false
+mode = "read_only"

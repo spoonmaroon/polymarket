@@ -12,6 +12,8 @@ market at specific moments.
 
 Project documents:
 
+- `SETUP.md` is the barebones local setup guide for GitHub, Python, C++, UI,
+  and secrets.
 - `docs/robust-architecture-plan-2026-05-28.md` is the detailed, editable
   architecture plan with component-by-component reasoning, data contracts,
   latency design, execution gates, build order, risk register, and success
