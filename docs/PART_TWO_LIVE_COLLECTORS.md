@@ -32,3 +32,17 @@ The first network runner records:
 ## Safety
 
 Part Two does not trade, does not build model probabilities, and does not place orders.
+
+## Restart Behavior
+
+The draft systemd unit is `ops/systemd/polymarket-live-collector.service`.
+It is read-only and exists to restart collection after process failure,
+Wi-Fi recovery, reboot, or power loss. It should not be installed until
+the 10-second live smoke command works locally.
+
+The service uses:
+
+- `After=network-online.target` and `Wants=network-online.target` so it waits for networking.
+- `RequiresMountsFor=/home/spoon/polymarket/data/raw` so it does not write to the wrong path.
+- `Restart=on-failure` and `RestartSec=15` so transient failures do not require manual restart.
+- `TimeoutStopSec=60` so shutdown has time to flush buffered Parquet files.
