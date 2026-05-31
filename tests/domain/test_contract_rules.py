@@ -1,0 +1,49 @@
+from datetime import datetime, timezone
+
+from polymarket_engine.domain.contract_rules import (
+    parse_polymarket_crypto_updown_rule,
+    rule_text_hash,
+)
+
+
+BTC_DESCRIPTION = """This market will resolve to "Up" if the Bitcoin price at the end of the time range specified in the title is greater than or equal to the price at the beginning of that range. Otherwise, it will resolve to "Down".
+The resolution source for this market is information from Chainlink, specifically the BTC/USD data stream available at https://data.chain.link/streams/btc-usd.
+Please note that this market is about the price according to Chainlink data stream BTC/USD, not according to other sources or spot exchanges."""
+
+
+def test_parse_btc_updown_start_price_rule() -> None:
+    market = {
+        "id": "2397858",
+        "conditionId": "0xabc",
+        "slug": "btc-updown-5m-1780264500",
+        "question": "Bitcoin Up or Down - May 31, 5:55PM-6:00PM ET",
+        "description": BTC_DESCRIPTION,
+        "eventStartTime": "2026-05-31T21:55:00Z",
+        "endDate": "2026-05-31T22:00:00Z",
+        "resolutionSource": "https://data.chain.link/streams/btc-usd",
+        "outcomes": '["Up", "Down"]',
+        "clobTokenIds": '["111", "222"]',
+    }
+
+    rule = parse_polymarket_crypto_updown_rule(market)
+
+    assert rule.accepted is True
+    assert rule.reject_reason is None
+    assert rule.market_id == "2397858"
+    assert rule.condition_id == "0xabc"
+    assert rule.slug == "btc-updown-5m-1780264500"
+    assert rule.asset == "BTC"
+    assert rule.contract_type == "crypto_up_down_start_price"
+    assert rule.start_ts == datetime(2026, 5, 31, 21, 55, tzinfo=timezone.utc)
+    assert rule.end_ts == datetime(2026, 5, 31, 22, 0, tzinfo=timezone.utc)
+    assert rule.expiry_ts == rule.end_ts
+    assert rule.threshold_type == "start_price"
+    assert rule.threshold_price is None
+    assert rule.comparison_operator_up == ">="
+    assert rule.comparison_operator_down == "<"
+    assert rule.settlement_source_name == "chainlink_data_streams"
+    assert rule.settlement_source_url == "https://data.chain.link/streams/btc-usd"
+    assert rule.settlement_symbol == "BTC/USD"
+    assert rule.outcome_token_ids == {"Up": "111", "Down": "222"}
+    assert rule.rule_hash == rule_text_hash(BTC_DESCRIPTION)
+    assert rule.parser_version == "polymarket_crypto_updown_v1"
