@@ -22,6 +22,6 @@ def compute_reconnect_delay(
 
     unclipped = base * (2**attempt)
     delay = min(cap, unclipped)
-    u = random.random() if random_value is None else random_value
+    u = float(random.random() if random_value is None else random_value)
     jitter = delay * jitter_pct * ((u * 2.0) - 1.0)
-    return max(0.0, delay + jitter)
+    return float(max(0.0, delay + jitter))
