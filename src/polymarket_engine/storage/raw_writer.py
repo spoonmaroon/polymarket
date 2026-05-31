@@ -9,7 +9,9 @@ from uuid import uuid4
 
 import polars as pl
 
+from polymarket_engine.storage.atomic import durable_link
 from polymarket_engine.storage.paths import RawPartition
+from polymarket_engine.storage.recovery import cleanup_orphaned_tmp, ensure_archive_sentinel
 
 
 @dataclass(frozen=True)
@@ -32,9 +34,17 @@ class RawWriteResult:
     last_event_ts: datetime
 
 
-def write_raw_events(raw_root: Path, events: list[RawEvent]) -> RawWriteResult:
+def write_raw_events(
+    raw_root: Path,
+    events: list[RawEvent],
+    *,
+    require_archive_sentinel: bool = False,
+) -> RawWriteResult:
     if not events:
         raise ValueError("events must not be empty")
+    if require_archive_sentinel:
+        ensure_archive_sentinel(raw_root)
+    cleanup_orphaned_tmp(raw_root)
 
     first = min(event.event_ts for event in events)
     last = max(event.event_ts for event in events)
@@ -50,6 +60,8 @@ def write_raw_events(raw_root: Path, events: list[RawEvent]) -> RawWriteResult:
 
     file_id = uuid4().hex
     output_path = partition.directory / f"{file_id}.parquet"
+    tmp_path = output_path.with_suffix(output_path.suffix + ".tmp")
+    tmp_path.unlink(missing_ok=True)
     rows = [
         {
             **asdict(event),
@@ -60,7 +72,11 @@ def write_raw_events(raw_root: Path, events: list[RawEvent]) -> RawWriteResult:
         for event in events
     ]
 
-    pl.DataFrame(rows).write_parquet(output_path, compression="zstd")
+    pl.DataFrame(rows).write_parquet(tmp_path, compression="zstd")
+    try:
+        durable_link(tmp_path, output_path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
     sha256 = hashlib.sha256(output_path.read_bytes()).hexdigest()
 
     return RawWriteResult(
