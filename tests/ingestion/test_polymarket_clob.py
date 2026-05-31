@@ -49,4 +49,5 @@ def test_build_market_ws_subscription_uses_asset_ids() -> None:
     assert build_market_ws_subscription(("111", "222")) == {
         "assets_ids": ["111", "222"],
         "type": "market",
+        "custom_feature_enabled": True,
     }

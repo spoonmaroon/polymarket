@@ -71,4 +71,8 @@ def clob_book_event(
 
 
 def build_market_ws_subscription(asset_ids: tuple[str, ...]) -> dict[str, object]:
-    return {"assets_ids": list(asset_ids), "type": "market"}
+    return {
+        "assets_ids": list(asset_ids),
+        "type": "market",
+        "custom_feature_enabled": True,
+    }
