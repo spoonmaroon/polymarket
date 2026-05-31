@@ -6,6 +6,7 @@ from typing import Any
 
 from polymarket_engine.ingestion.collector_events import CollectorEvent
 from polymarket_engine.ingestion.contract_discovery import MarketToken
+from polymarket_engine.venues.polymarket import normalize_orderbook_snapshot
 
 
 @dataclass(frozen=True)
@@ -46,7 +47,7 @@ def clob_book_event(
 ) -> CollectorEvent:
     timestamp_ms = int(str(book["timestamp"]))
     event_ts = datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc)
-    top = clob_book_top(book)
+    snapshot = normalize_orderbook_snapshot(book)
     return CollectorEvent(
         source_key="polymarket_clob",
         stream_key="orderbook_snapshot",
@@ -58,10 +59,13 @@ def clob_book_event(
             "contract_slug": token.slug,
             "outcome": token.outcome,
             "token_id": token.token_id,
-            "best_bid": top.best_bid,
-            "best_ask": top.best_ask,
-            "bid_size_top": top.bid_size_top,
-            "ask_size_top": top.ask_size_top,
+            "contract_id": snapshot.contract_id,
+            "best_bid": snapshot.best_bid,
+            "best_ask": snapshot.best_ask,
+            "bid_size_top": snapshot.bid_size_top,
+            "ask_size_top": snapshot.ask_size_top,
+            "spread": snapshot.spread,
+            "depth_json": snapshot.depth_json,
         },
     )
 

@@ -25,13 +25,23 @@ def parse_binance_trade(message: dict[str, object]) -> NormalizedPriceTick:
     )
 
 
-def parse_binance_book_ticker(message: dict[str, object]) -> NormalizedPriceTick:
+def parse_binance_book_ticker(
+    message: dict[str, object],
+    observed_ts: datetime | None = None,
+) -> NormalizedPriceTick:
     bid = float(str(message["b"]))
     ask = float(str(message["a"]))
+    event_time = message.get("E")
+    if event_time is None:
+        if observed_ts is None:
+            raise ValueError("observed_ts is required for Binance bookTicker messages without event time")
+        event_ts = observed_ts
+    else:
+        event_ts = datetime.fromtimestamp(int(str(event_time)) / 1000, tz=timezone.utc)
     return NormalizedPriceTick(
         source_key="binance_spot_ws",
         symbol=str(message["s"]),
-        event_ts=datetime.fromtimestamp(int(str(message["E"])) / 1000, tz=timezone.utc),
+        event_ts=event_ts,
         price=(bid + ask) / 2,
         bid=bid,
         ask=ask,

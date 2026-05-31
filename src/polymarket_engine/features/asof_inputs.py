@@ -28,6 +28,8 @@ def calculate_source_disagreement_bps(
     primary_price: float,
     proxy_prices: list[float],
 ) -> float | None:
+    if primary_price <= 0:
+        raise ValueError("primary_price must be positive")
     if not proxy_prices:
         return None
     return max(abs(proxy - primary_price) / primary_price * 10_000 for proxy in proxy_prices)

@@ -33,6 +33,30 @@ def test_buffered_writer_flushes_by_source_and_stream(tmp_path: Path) -> None:
     assert result.path.exists()
 
 
+def test_buffered_writer_separates_utc_hour_partitions(tmp_path: Path) -> None:
+    writer = BufferedRawEventWriter(raw_root=tmp_path, max_batch_size=2)
+    first_ts = datetime(2026, 5, 31, 20, 59, 59, tzinfo=timezone.utc)
+
+    assert writer.add(
+        CollectorEvent("coinbase_advanced_ws", "ticker", "BTC-USD", first_ts, first_ts, {"price": "1"})
+    ) is None
+    assert writer.add(
+        CollectorEvent(
+            "coinbase_advanced_ws",
+            "ticker",
+            "BTC-USD",
+            first_ts + timedelta(seconds=1),
+            first_ts + timedelta(seconds=1),
+            {"price": "2"},
+        )
+    ) is None
+
+    results = writer.flush_all()
+
+    assert [result.row_count for result in results] == [1, 1]
+    assert {result.path.parent.name for result in results} == {"hour=20", "hour=21"}
+
+
 def test_buffered_writer_flushes_by_time_when_stream_is_quiet(tmp_path: Path) -> None:
     clock = FakeClock(datetime(2026, 5, 31, 21, 0, 0, tzinfo=timezone.utc))
     writer = BufferedRawEventWriter(

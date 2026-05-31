@@ -26,6 +26,7 @@ def test_clob_book_event_preserves_contract_slug_and_outcome() -> None:
     observed = datetime(2026, 5, 31, 21, 0, 2, tzinfo=timezone.utc)
     book = {
         "asset_id": "111",
+        "market": "0xabc",
         "timestamp": "1780261201000",
         "bids": [{"price": "0.66", "size": "7"}],
         "asks": [{"price": "0.68", "size": "4"}],
@@ -37,8 +38,11 @@ def test_clob_book_event_preserves_contract_slug_and_outcome() -> None:
     assert event.source_key == "polymarket_clob"
     assert event.stream_key == "orderbook_snapshot"
     assert event.symbol == "btc-updown-5m-1780261200:Up"
+    assert event.payload["contract_id"] == "0xabc"
     assert event.payload["best_bid"] == 0.66
     assert event.payload["best_ask"] == 0.68
+    assert round(float(event.payload["spread"]), 2) == 0.02
+    assert '"asks"' in event.payload["depth_json"]
 
 
 def test_build_market_ws_subscription_uses_asset_ids() -> None:

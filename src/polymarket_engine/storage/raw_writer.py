@@ -46,12 +46,19 @@ def write_raw_events(
         ensure_archive_sentinel(raw_root)
     cleanup_orphaned_tmp(raw_root)
 
+    for event in events:
+        _require_aware(event.event_ts, "event_ts")
+        _require_aware(event.observed_ts, "observed_ts")
+
     first = min(event.event_ts for event in events)
     last = max(event.event_ts for event in events)
     source_keys = {event.source_key for event in events}
     stream_keys = {event.stream_key for event in events}
     if len(source_keys) != 1 or len(stream_keys) != 1:
         raise ValueError("one source_key and one stream_key required per raw file")
+    partition_keys = {_partition_key(event.event_ts) for event in events}
+    if len(partition_keys) != 1:
+        raise ValueError("one UTC date/hour partition required per raw file")
 
     source_key = next(iter(source_keys))
     stream_key = next(iter(stream_keys))
@@ -87,3 +94,13 @@ def write_raw_events(
         first_event_ts=first,
         last_event_ts=last,
     )
+
+
+def _require_aware(value: datetime, field_name: str) -> None:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(f"{field_name} must be timezone-aware")
+
+
+def _partition_key(value: datetime) -> tuple[str, str]:
+    ts = value.astimezone(timezone.utc)
+    return (ts.strftime("%Y-%m-%d"), ts.strftime("%H"))
