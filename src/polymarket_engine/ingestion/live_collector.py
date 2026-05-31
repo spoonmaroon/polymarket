@@ -5,11 +5,15 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 import httpx
 import websockets
 
+from polymarket_engine.domain.contract_rules import (
+    ContractRuleRejected,
+    parse_polymarket_crypto_updown_rule,
+)
 from polymarket_engine.ingestion.coinbase_ws import (
     build_coinbase_ticker_subscription,
     coinbase_ticker_events,
@@ -108,6 +112,22 @@ def _register_file(store: DuckDbIngestStore, raw_root: Path, result: RawWriteRes
     )
 
 
+def register_market_rules(
+    duckdb_path: Path,
+    markets: tuple[dict[str, Any], ...],
+) -> dict[str, str]:
+    store = DuckDbIngestStore(duckdb_path)
+    store.apply_schema()
+    source_errors: dict[str, str] = {}
+    for market in markets:
+        slug = str(market.get("slug", "unknown"))
+        try:
+            store.upsert_contract_rule(parse_polymarket_crypto_updown_rule(market))
+        except ContractRuleRejected as exc:
+            source_errors[f"contract_rule:{slug}"] = str(exc)
+    return source_errors
+
+
 async def run_live_collection(config: LiveCollectorConfig) -> LiveCollectorResult:
     store = DuckDbIngestStore(config.duckdb_path)
     store.apply_schema()
@@ -150,6 +170,7 @@ async def run_live_collection(config: LiveCollectorConfig) -> LiveCollectorResul
                 assets=config.assets,
                 windows_ahead=config.contract_windows_ahead,
             )
+            source_errors.update(register_market_rules(config.duckdb_path, markets))
             tokens = tuple(token for market in markets for token in extract_market_tokens(market))
             for market in markets:
                 observed = datetime.now(timezone.utc)
