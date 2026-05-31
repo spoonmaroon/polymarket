@@ -1,7 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
+from collections.abc import Awaitable, Callable
 from pathlib import Path
+
+from polymarket_engine.ingestion.live_collector import LiveCollectorConfig, LiveCollectorResult
+
+
+CollectorRunner = Callable[[LiveCollectorConfig], Awaitable[LiveCollectorResult]]
 
 
 def _asset_tuple(value: str) -> tuple[str, ...]:
@@ -22,17 +29,33 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def main(argv: list[str] | None = None) -> int:
+async def run_collect_command(
+    argv: list[str] | None = None,
+    runner: CollectorRunner | None = None,
+) -> int:
+    from polymarket_engine.ingestion.live_collector import run_live_collection
+
     args = parse_args(argv)
-    if args.command == "collect":
-        print(
-            "collector command parsed",
-            {
-                "assets": args.assets,
-                "duration": args.duration,
-                "raw_root": str(args.raw_root),
-                "duckdb_path": str(args.duckdb_path),
-            },
-        )
-        return 0
-    return 2
+    if args.command != "collect":
+        return 2
+    selected_runner = run_live_collection if runner is None else runner
+    config = LiveCollectorConfig(
+        assets=args.assets,
+        duration_seconds=args.duration,
+        raw_root=args.raw_root,
+        duckdb_path=args.duckdb_path,
+        max_batch_size=args.max_batch_size,
+    )
+    result = await selected_runner(config)
+    print(
+        {
+            "events_written": result.events_written,
+            "files_written": result.files_written,
+            "source_errors": result.source_errors,
+        }
+    )
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    return asyncio.run(run_collect_command(argv))

@@ -74,3 +74,7 @@ def _register_file(store: DuckDbIngestStore, raw_root: Path, result: RawWriteRes
         first_event_ts=result.first_event_ts,
         last_event_ts=result.last_event_ts,
     )
+
+
+async def run_live_collection(config: LiveCollectorConfig) -> LiveCollectorResult:
+    return await run_fake_collection(config, ())
