@@ -24,6 +24,7 @@ def test_schema_applies_to_empty_database(tmp_path: Path) -> None:
         "ops.ingest_files",
         "ops.ingest_checkpoints",
         "core.contracts",
+        "core.contract_rules",
         "core.price_ticks",
         "core.orderbook_snapshots",
         "features.asof_state_inputs",

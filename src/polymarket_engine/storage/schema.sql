@@ -42,6 +42,31 @@ CREATE TABLE IF NOT EXISTS core.contracts (
     last_seen_ts TIMESTAMPTZ NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS core.contract_rules (
+    market_id VARCHAR PRIMARY KEY,
+    condition_id VARCHAR NOT NULL,
+    slug VARCHAR NOT NULL,
+    asset VARCHAR NOT NULL,
+    contract_type VARCHAR NOT NULL,
+    start_ts TIMESTAMPTZ NOT NULL,
+    end_ts TIMESTAMPTZ NOT NULL,
+    expiry_ts TIMESTAMPTZ NOT NULL,
+    threshold_type VARCHAR NOT NULL,
+    threshold_price DOUBLE,
+    comparison_operator_up VARCHAR NOT NULL,
+    comparison_operator_down VARCHAR NOT NULL,
+    settlement_source_name VARCHAR NOT NULL,
+    settlement_source_url VARCHAR NOT NULL,
+    settlement_symbol VARCHAR NOT NULL,
+    outcome_token_ids_json VARCHAR NOT NULL,
+    rule_text VARCHAR NOT NULL,
+    rule_hash VARCHAR NOT NULL,
+    parser_version VARCHAR NOT NULL,
+    accepted BOOLEAN NOT NULL,
+    reject_reason VARCHAR,
+    updated_at TIMESTAMPTZ NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS core.price_ticks (
     source_key VARCHAR NOT NULL,
     symbol VARCHAR NOT NULL,
