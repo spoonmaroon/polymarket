@@ -1,6 +1,9 @@
 from datetime import datetime, timezone
 
+import pytest
+
 from polymarket_engine.domain.contract_rules import (
+    ContractRuleRejected,
     parse_polymarket_crypto_updown_rule,
     rule_text_hash,
 )
@@ -47,3 +50,61 @@ def test_parse_btc_updown_start_price_rule() -> None:
     assert rule.outcome_token_ids == {"Up": "111", "Down": "222"}
     assert rule.rule_hash == rule_text_hash(BTC_DESCRIPTION)
     assert rule.parser_version == "polymarket_crypto_updown_v1"
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    ["greater than or equal to", "at or above", "not below"],
+)
+def test_parse_accepts_supported_tie_phrases(phrase: str) -> None:
+    description = BTC_DESCRIPTION.replace("greater than or equal to", phrase)
+    market = {
+        "id": "2397858",
+        "conditionId": "0xabc",
+        "slug": "btc-updown-5m-1780264500",
+        "question": "Bitcoin Up or Down - May 31, 5:55PM-6:00PM ET",
+        "description": description,
+        "eventStartTime": "2026-05-31T21:55:00Z",
+        "endDate": "2026-05-31T22:00:00Z",
+        "resolutionSource": "https://data.chain.link/streams/btc-usd",
+        "outcomes": '["Up", "Down"]',
+        "clobTokenIds": '["111", "222"]',
+    }
+
+    assert parse_polymarket_crypto_updown_rule(market).comparison_operator_up == ">="
+
+
+def test_parse_rejects_ambiguous_tie_rule() -> None:
+    market = {
+        "id": "2397858",
+        "conditionId": "0xabc",
+        "slug": "btc-updown-5m-1780264500",
+        "question": "Bitcoin Up or Down - May 31, 5:55PM-6:00PM ET",
+        "description": BTC_DESCRIPTION.replace("greater than or equal to", "higher than"),
+        "eventStartTime": "2026-05-31T21:55:00Z",
+        "endDate": "2026-05-31T22:00:00Z",
+        "resolutionSource": "https://data.chain.link/streams/btc-usd",
+        "outcomes": '["Up", "Down"]',
+        "clobTokenIds": '["111", "222"]',
+    }
+
+    with pytest.raises(ContractRuleRejected, match="ambiguous tie rule"):
+        parse_polymarket_crypto_updown_rule(market)
+
+
+def test_parse_rejects_wrong_settlement_source() -> None:
+    market = {
+        "id": "2397858",
+        "conditionId": "0xabc",
+        "slug": "btc-updown-5m-1780264500",
+        "question": "Bitcoin Up or Down - May 31, 5:55PM-6:00PM ET",
+        "description": BTC_DESCRIPTION,
+        "eventStartTime": "2026-05-31T21:55:00Z",
+        "endDate": "2026-05-31T22:00:00Z",
+        "resolutionSource": "https://example.com/btc-usd",
+        "outcomes": '["Up", "Down"]',
+        "clobTokenIds": '["111", "222"]',
+    }
+
+    with pytest.raises(ContractRuleRejected, match="unsupported settlement source"):
+        parse_polymarket_crypto_updown_rule(market)
