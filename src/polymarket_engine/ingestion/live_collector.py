@@ -5,6 +5,7 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Protocol
 
 import httpx
 import websockets
@@ -19,12 +20,22 @@ from polymarket_engine.ingestion.contract_discovery import (
     fetch_crypto_5m_markets,
 )
 from polymarket_engine.ingestion.polymarket_clob import clob_book_event
-from polymarket_engine.ingestion.polymarket_rtds import build_rtds_subscriptions, rtds_price_events
+from polymarket_engine.ingestion.polymarket_rtds import (
+    build_rtds_subscriptions,
+    rtds_heartbeat_message,
+    rtds_price_events,
+)
 from polymarket_engine.ingestion.reconnect import compute_reconnect_delay
 from polymarket_engine.storage.buffered_writer import BufferedRawEventWriter
 from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
 from polymarket_engine.storage.raw_writer import RawWriteResult
 from polymarket_engine.storage.recovery import cleanup_orphaned_tmp, ensure_archive_sentinel
+
+RTDS_HEARTBEAT_SECONDS = 5.0
+
+
+class _WebSocketSender(Protocol):
+    async def send(self, message: str) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -204,17 +215,23 @@ async def run_live_collection(config: LiveCollectorConfig) -> LiveCollectorResul
                 open_timeout=10,
             ) as ws:
                 await ws.send(json.dumps(build_rtds_subscriptions(config.assets)))
+                heartbeat_task = asyncio.create_task(_send_rtds_heartbeats(ws))
                 rtds_attempt = 0
-                while datetime.now(timezone.utc).timestamp() < rtds_deadline:
-                    try:
-                        raw = await asyncio.wait_for(ws.recv(), timeout=5)
-                    except asyncio.TimeoutError:
-                        flush_due()
-                        continue
-                    observed = datetime.now(timezone.utc)
-                    for event in rtds_price_events(json.loads(raw), observed):
-                        record_event(event)
-                        rtds_events_written += 1
+                try:
+                    while datetime.now(timezone.utc).timestamp() < rtds_deadline:
+                        try:
+                            raw = await asyncio.wait_for(ws.recv(), timeout=5)
+                        except asyncio.TimeoutError:
+                            flush_due()
+                            continue
+                        if not raw:
+                            continue
+                        observed = datetime.now(timezone.utc)
+                        for event in rtds_price_events(json.loads(raw), observed):
+                            record_event(event)
+                            rtds_events_written += 1
+                finally:
+                    heartbeat_task.cancel()
                 break
         except Exception as exc:
             source_errors["polymarket_rtds"] = f"{type(exc).__name__}: {exc}"
@@ -236,3 +253,9 @@ async def run_live_collection(config: LiveCollectorConfig) -> LiveCollectorResul
         files_written=files_written,
         source_errors=source_errors,
     )
+
+
+async def _send_rtds_heartbeats(ws: _WebSocketSender) -> None:
+    while True:
+        await asyncio.sleep(RTDS_HEARTBEAT_SECONDS)
+        await ws.send(rtds_heartbeat_message())

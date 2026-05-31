@@ -11,18 +11,18 @@ def build_rtds_subscriptions(assets: tuple[str, ...]) -> dict[str, object]:
         {"topic": "crypto_prices_chainlink", "type": "*", "filters": f'{{"symbol":"{asset.lower()}/usd"}}'}
         for asset in assets
     ]
-    crypto_symbols = ",".join(f"{asset.lower()}usdt" for asset in assets)
     return {
         "action": "subscribe",
-        "subscriptions": [
-            *chainlink_filters,
-            {"topic": "crypto_prices", "type": "update", "filters": crypto_symbols},
-        ],
+        "subscriptions": chainlink_filters,
     }
 
 
-def _source_key(topic: str) -> str:
-    if topic == "crypto_prices_chainlink":
+def rtds_heartbeat_message() -> str:
+    return "PING"
+
+
+def _source_key(topic: str, raw_symbol: str) -> str:
+    if topic == "crypto_prices_chainlink" or "/" in raw_symbol:
         return "polymarket_rtds_chainlink"
     return "polymarket_rtds_crypto"
 
@@ -46,13 +46,40 @@ def rtds_price_events(
     payload = message.get("payload", {})
     if not isinstance(payload, dict) or "symbol" not in payload:
         return ()
+    raw_symbol = str(payload["symbol"])
+    source_key = _source_key(topic, raw_symbol)
+    symbol = _symbol(raw_symbol)
+
+    snapshot_points = payload.get("data")
+    if isinstance(snapshot_points, list):
+        events: list[CollectorEvent] = []
+        for point in snapshot_points:
+            if not isinstance(point, dict) or "timestamp" not in point:
+                continue
+            event_ts = datetime.fromtimestamp(int(str(point["timestamp"])) / 1000, tz=timezone.utc)
+            events.append(
+                CollectorEvent(
+                    source_key=source_key,
+                    stream_key="price_update",
+                    symbol=symbol,
+                    event_ts=event_ts,
+                    observed_ts=observed_ts,
+                    payload={
+                        **point,
+                        "symbol": raw_symbol,
+                        "message_type": str(message.get("type", "")),
+                    },
+                )
+            )
+        return tuple(events)
+
     source_timestamp = int(str(payload.get("timestamp", message.get("timestamp"))))
     event_ts = datetime.fromtimestamp(source_timestamp / 1000, tz=timezone.utc)
     return (
         CollectorEvent(
-            source_key=_source_key(topic),
+            source_key=source_key,
             stream_key="price_update",
-            symbol=_symbol(str(payload["symbol"])),
+            symbol=symbol,
             event_ts=event_ts,
             observed_ts=observed_ts,
             payload=dict(payload),
