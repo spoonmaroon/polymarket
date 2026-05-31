@@ -32,6 +32,8 @@ The locked Part One data-source and database plan lives in
 
 - [PLAN.md](docs/PLAN.md) - complete merged architecture, research, build,
   setup, UI, and risk plan.
+- [Part Two Live Collectors](docs/PART_TWO_LIVE_COLLECTORS.md) - read-only
+  collector command and live-source rules.
 - [SETUP.md](SETUP.md) - short local setup commands.
 - [External review proposition](docs/EXTERNAL_REVIEW_PROPOSITION.md) - concise
   explanation of the idea, data sources, computed values, decision tree, and

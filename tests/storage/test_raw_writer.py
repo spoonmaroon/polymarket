@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import polars as pl
@@ -60,3 +60,61 @@ def test_write_raw_events_rejects_mixed_sources(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="one source_key"):
         write_raw_events(tmp_path, events)
+
+
+def test_write_raw_events_rejects_mixed_hour_partitions(tmp_path: Path) -> None:
+    first_ts = datetime(2026, 5, 31, 20, 59, 59, tzinfo=timezone.utc)
+    events = [
+        RawEvent(
+            source_key="coinbase_advanced_ws",
+            stream_key="ticker",
+            symbol="BTC-USD",
+            event_ts=first_ts,
+            observed_ts=first_ts + timedelta(milliseconds=250),
+            payload={"price": "104000.1"},
+        ),
+        RawEvent(
+            source_key="coinbase_advanced_ws",
+            stream_key="ticker",
+            symbol="BTC-USD",
+            event_ts=first_ts + timedelta(seconds=1),
+            observed_ts=first_ts + timedelta(seconds=1, milliseconds=250),
+            payload={"price": "104001.0"},
+        ),
+    ]
+
+    with pytest.raises(ValueError, match="one UTC date/hour partition"):
+        write_raw_events(tmp_path, events)
+
+
+def test_write_raw_events_rejects_naive_timestamps(tmp_path: Path) -> None:
+    event = RawEvent(
+        source_key="coinbase_advanced_ws",
+        stream_key="ticker",
+        symbol="BTC-USD",
+        event_ts=datetime(2026, 5, 31, 20, 4, 1),
+        observed_ts=datetime(2026, 5, 31, 20, 4, 2, tzinfo=timezone.utc),
+        payload={"price": "104001.0"},
+    )
+
+    with pytest.raises(ValueError, match="event_ts must be timezone-aware"):
+        write_raw_events(tmp_path, [event])
+
+
+def test_write_raw_events_leaves_no_tmp_files(tmp_path: Path) -> None:
+    raw_root = tmp_path / "raw"
+    raw_root.mkdir(parents=True, exist_ok=True)
+    (raw_root / ".polymarket_archive_root").touch()
+    event = RawEvent(
+        source_key="coinbase_advanced_ws",
+        stream_key="ticker",
+        symbol="BTC-USD",
+        event_ts=datetime(2026, 5, 31, 21, 0, tzinfo=timezone.utc),
+        observed_ts=datetime(2026, 5, 31, 21, 0, 1, tzinfo=timezone.utc),
+        payload={"price": "104000"},
+    )
+
+    result = write_raw_events(raw_root, [event], require_archive_sentinel=True)
+
+    assert result.path.exists()
+    assert list(raw_root.rglob("*.parquet.tmp")) == []

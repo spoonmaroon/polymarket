@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Any
 
 from polymarket_engine.ingestion.collector_events import CollectorEvent
+from polymarket_engine.venues.coinbase import parse_coinbase_ticker
 
 
 def build_coinbase_ticker_subscription(product_ids: tuple[str, ...]) -> dict[str, object]:
@@ -25,12 +26,13 @@ def coinbase_ticker_events(
     for event in message.get("events", []):
         tickers = event.get("tickers", []) if isinstance(event, dict) else []
         for ticker in tickers:
+            tick = parse_coinbase_ticker(ticker, event_ts=event_ts)
             events.append(
                 CollectorEvent(
                     source_key="coinbase_advanced_ws",
                     stream_key="ticker",
-                    symbol=str(ticker["product_id"]),
-                    event_ts=event_ts,
+                    symbol=tick.symbol,
+                    event_ts=tick.event_ts,
                     observed_ts=observed_ts,
                     payload=dict(ticker),
                 )
