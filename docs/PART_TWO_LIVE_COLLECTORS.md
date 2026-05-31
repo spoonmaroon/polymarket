@@ -33,6 +33,22 @@ The first network runner records:
 
 Part Two does not trade, does not build model probabilities, and does not place orders.
 
+## Docker/VPS Migration Requirements
+
+If the collector moves to Docker on a VPS, the deployment must account for:
+
+- secrets: no API keys, wallet keys, tokens, or `.env` files baked into images;
+- persistent data: `data/raw`, `data/db`, logs, model artifacts, and config snapshots mounted outside the container;
+- clock sync: host NTP/chrony/systemd-timesyncd enabled, with source timestamp and observed timestamp stored;
+- network reconnects: source-specific reconnect backoff so one failing feed does not kill the whole collector;
+- process restarts: Docker/systemd restart policy plus startup cleanup of orphaned temporary files;
+- order kill switch: a persistent external kill state before any trading container exists;
+- disk durability: atomic Parquet writes, archive sentinel, disk-space checks, and backup/snapshot policy;
+- server monitoring: liveness, source freshness, disk usage, restart count, clock drift, and latest write time;
+- latency measurement: WebSocket message age, quote age, API round-trip time, and server-to-venue latency;
+- API auth: read-only credentials separated from future trading credentials;
+- private key handling: no private keys in images, logs, notebooks, or committed files; future live keys require hot-wallet limits and permission checks.
+
 ## Restart Behavior
 
 The draft systemd unit is `ops/systemd/polymarket-live-collector.service`.
