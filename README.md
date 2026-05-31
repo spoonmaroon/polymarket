@@ -2,7 +2,7 @@
 
 Multi-venue crypto binary pricing, paper-trading, and research system.
 
-The canonical project plan is [PLAN.md](PLAN.md).
+The canonical project plan is [PLAN.md](docs/PLAN.md).
 
 ## What This Is
 
@@ -23,8 +23,16 @@ fees, spread, slippage, data latency, and path-reversal risk.
 - UI scaffold: React/Vite
 - Execution mode: paper/read-only by design
 
+## Part One Data Contract
+
+The locked Part One data-source and database plan lives in
+[PART_ONE_DATA_CONTRACT.md](docs/PART_ONE_DATA_CONTRACT.md).
+
 ## Read First
 
-- [PLAN.md](PLAN.md) - complete merged architecture, research, build, setup, UI,
-  and risk plan.
+- [PLAN.md](docs/PLAN.md) - complete merged architecture, research, build,
+  setup, UI, and risk plan.
 - [SETUP.md](SETUP.md) - short local setup commands.
+- [External review proposition](docs/EXTERNAL_REVIEW_PROPOSITION.md) - concise
+  explanation of the idea, data sources, computed values, decision tree, and
+  flaws we want reviewed.

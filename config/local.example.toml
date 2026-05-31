@@ -7,6 +7,11 @@ max_order_usd = 10
 max_daily_loss_usd = 50
 allow_live_execution = false
 
+[storage]
+raw_root = "data/raw"
+duckdb_path = "data/db/polymarket.duckdb"
+parquet_compression = "zstd"
+
 [venues.polymarket]
 enabled = false
 mode = "read_only"
@@ -14,3 +19,34 @@ mode = "read_only"
 [venues.jupiter]
 enabled = false
 mode = "read_only"
+
+[data_sources.polymarket]
+enabled = true
+mode = "read_only"
+markets_base_url = "https://gamma-api.polymarket.com"
+clob_base_url = "https://clob.polymarket.com"
+market_ws_url = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+rtds_url = "wss://ws-live-data.polymarket.com"
+symbols = ["BTC", "ETH"]
+
+[data_sources.binance]
+enabled = true
+mode = "read_only"
+spot_ws_url = "wss://stream.binance.com:9443/ws"
+streams = ["btcusdt@trade", "ethusdt@trade", "btcusdt@bookTicker", "ethusdt@bookTicker"]
+
+[data_sources.coinbase]
+enabled = true
+mode = "read_only"
+advanced_trade_ws_url = "wss://advanced-trade-ws.coinbase.com"
+product_ids = ["BTC-USD", "ETH-USD"]
+
+[data_sources.etf_gex_context]
+enabled = false
+mode = "reserved"
+reason = "Excluded from Part One replay until historical as-of chain data is verified."
+
+[data_sources.jupiter]
+enabled = false
+mode = "reserved"
+reason = "Deferred until Polymarket BTC/ETH replay works."
