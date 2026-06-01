@@ -8,6 +8,10 @@ from typing import Any
 import httpx
 
 SUPPORTED_INTERVAL_MINUTES = {"5m": 5, "15m": 15}
+GAMMA_REQUEST_HEADERS = {
+    "Accept": "application/json",
+    "User-Agent": "polymarket-engine/0.1",
+}
 
 
 @dataclass(frozen=True)
@@ -116,7 +120,11 @@ async def fetch_crypto_updown_markets(
         intervals=intervals,
         windows_ahead=windows_ahead,
     ):
-        response = await client.get(f"{base_url.rstrip('/')}/markets", params={"slug": slug})
+        response = await client.get(
+            f"{base_url.rstrip('/')}/markets",
+            params={"slug": slug},
+            headers=GAMMA_REQUEST_HEADERS,
+        )
         response.raise_for_status()
         payload = response.json()
         items = payload if isinstance(payload, list) else payload.get("markets", [])
