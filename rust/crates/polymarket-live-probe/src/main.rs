@@ -9,6 +9,7 @@ use tracing::info;
 mod polymarket;
 mod prices;
 mod report;
+mod windows;
 
 #[derive(Debug, Parser)]
 struct Args {

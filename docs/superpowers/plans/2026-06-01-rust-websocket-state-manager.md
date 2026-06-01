@@ -264,7 +264,7 @@ git commit -m "Add runtime contract state types"
 - Create: `rust/crates/polymarket-live-probe/src/windows.rs`
 - Modify: `rust/crates/polymarket-live-probe/src/main.rs`
 
-- [ ] **Step 1: Write scheduler tests**
+- [x] **Step 1: Write scheduler tests**
 
 Create `windows.rs` with tests first:
 
@@ -287,7 +287,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run failing test**
+- [x] **Step 2: Run failing test**
 
 Run:
 
@@ -298,7 +298,7 @@ cargo test -p polymarket-live-probe windows::tests -q
 
 Expected: compile failure because `schedule_windows` does not exist.
 
-- [ ] **Step 3: Implement scheduler**
+- [x] **Step 3: Implement scheduler**
 
 Add:
 
@@ -332,7 +332,7 @@ pub fn schedule_windows(
 }
 ```
 
-- [ ] **Step 4: Wire module**
+- [x] **Step 4: Wire module**
 
 Add to `main.rs` module declarations:
 
@@ -340,7 +340,7 @@ Add to `main.rs` module declarations:
 mod windows;
 ```
 
-- [ ] **Step 5: Run tests**
+- [x] **Step 5: Run tests**
 
 ```bash
 cargo test -p polymarket-live-probe windows::tests -q
