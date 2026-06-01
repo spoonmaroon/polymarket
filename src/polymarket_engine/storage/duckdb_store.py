@@ -10,6 +10,7 @@ import duckdb
 from polymarket_engine.domain.contracts import ContractSpec
 from polymarket_engine.domain.contract_rules import NormalizedContractRule
 from polymarket_engine.domain.market_state import DecisionState, OrderBookObservation, PriceObservation
+from polymarket_engine.storage.retention import RAW_HOT_RETENTION_DAYS, retention_manifest_class
 
 
 def _json(value: Any) -> str:
@@ -71,7 +72,7 @@ class DuckDbIngestStore:
                 values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
-                    f"{file_id}:raw_hot_90d",
+                    f"{file_id}:{retention_manifest_class('raw')}",
                     file_id,
                     source_key,
                     stream_key,
@@ -82,8 +83,8 @@ class DuckDbIngestStore:
                     row_count,
                     first_event_ts,
                     last_event_ts,
-                    "raw_hot_90d",
-                    90,
+                    retention_manifest_class("raw"),
+                    RAW_HOT_RETENTION_DAYS,
                     None,
                     None,
                     None,

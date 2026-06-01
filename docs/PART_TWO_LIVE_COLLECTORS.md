@@ -68,6 +68,12 @@ The first network runner records:
 
 Part Two does not trade, does not build model probabilities, and does not place orders.
 
+## Retention Policy
+
+Raw event data is retained hot for 90 days. Hot raw data includes Polymarket market snapshots, CLOB market WebSocket events, REST order-book backup snapshots, RTDS price updates, Coinbase price ticks, source errors, and raw collector payloads.
+
+After 90 days, raw events should be compacted into replay-safe research tables before deletion is enabled. The compact layer should preserve 1-second price bars, 1-second top-of-book rows, source freshness, contract windows, rule hashes, decision states, and final labels. Automatic deletion remains disabled until replay tests prove compacted tables reproduce the same as-of state for sampled contracts.
+
 ## Docker/VPS Migration Requirements
 
 If the collector moves to Docker on a VPS, the deployment must account for:
