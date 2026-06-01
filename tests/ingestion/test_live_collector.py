@@ -11,6 +11,7 @@ from polymarket_engine.ingestion.live_collector import (
     _orderbook_observation_from_event,
     _price_freshness_rows,
     _prune_expired_contract_state,
+    _rtds_activity_timestamp,
     _should_record_sampled_symbol,
     _source_disagreement_rows,
     register_market_rules,
@@ -420,6 +421,19 @@ def test_rtds_idle_socket_reconnect_threshold() -> None:
         now_monotonic=24.9,
         idle_reconnect_seconds=15.0,
     )
+
+
+def test_rtds_activity_timestamp_only_resets_on_chainlink_price_events() -> None:
+    assert _rtds_activity_timestamp(
+        previous_monotonic=10.0,
+        chainlink_event_count=0,
+        now_monotonic=20.0,
+    ) == 10.0
+    assert _rtds_activity_timestamp(
+        previous_monotonic=10.0,
+        chainlink_event_count=2,
+        now_monotonic=20.0,
+    ) == 20.0
 
 
 def test_should_record_sampled_symbol_limits_proxy_write_rate() -> None:
