@@ -361,11 +361,11 @@ git commit -m "Add deterministic contract window scheduler"
 - Modify: `rust/crates/polymarket-live-probe/src/polymarket.rs`
 - Test: `rust/crates/polymarket-live-probe/src/polymarket.rs`
 
-- [ ] **Step 1: Add test for resolving scheduled windows**
+- [x] **Step 1: Add test for resolving scheduled windows**
 
 Add a unit test that converts two `MarketToken` values for a BTC window into one `WarmedContract` with UP/DOWN tokens.
 
-- [ ] **Step 2: Implement converter**
+- [x] **Step 2: Implement converter**
 
 Add a function:
 
@@ -377,7 +377,7 @@ pub fn warmed_contracts_from_tokens(tokens: &[MarketToken]) -> Result<Vec<Warmed
 
 Use `ContractWindow::new(asset, interval, start_ts, end_ts)` by parsing the slug epoch. Reject malformed slugs.
 
-- [ ] **Step 3: Add discovery for explicit windows**
+- [x] **Step 3: Add discovery for explicit windows**
 
 Add:
 
@@ -395,7 +395,7 @@ pub async fn discover_windows(windows: &[ContractWindow]) -> Result<Vec<WarmedCo
 }
 ```
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 ```bash
 cargo test -p polymarket-live-probe polymarket::tests -q

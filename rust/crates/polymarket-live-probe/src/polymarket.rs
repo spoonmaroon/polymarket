@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use futures::future::try_join_all;
 use polymarket_client_sdk_v2::clob::types::request::OrderBookSummaryRequest;
 use polymarket_client_sdk_v2::clob::types::response::OrderBookSummaryResponse;
@@ -8,7 +8,11 @@ use polymarket_client_sdk_v2::gamma::Client as GammaClient;
 use polymarket_client_sdk_v2::gamma::types::request::MarketsRequest;
 use polymarket_client_sdk_v2::gamma::types::response::Market;
 use polymarket_client_sdk_v2::types::U256;
-use polymarket_runtime_types::{BookLevel, NormalizedOrderBook, OrderBookMeta};
+use polymarket_runtime_types::{
+    BookLevel, ContractSide, ContractToken, ContractWindow, NormalizedOrderBook, OrderBookMeta,
+    WarmedContract,
+};
+use std::collections::BTreeMap;
 
 pub const CLOB_HOST: &str = "https://clob-v2.polymarket.com";
 pub const GAMMA_HOST: &str = "https://gamma-api.polymarket.com";
@@ -76,6 +80,69 @@ pub fn market_tokens_from_gamma_market(market: &Market) -> Result<Vec<MarketToke
         .collect())
 }
 
+pub fn warmed_contracts_from_tokens(tokens: &[MarketToken]) -> Result<Vec<WarmedContract>> {
+    let mut by_slug: BTreeMap<&str, Vec<&MarketToken>> = BTreeMap::new();
+    for token in tokens {
+        by_slug.entry(&token.slug).or_default().push(token);
+    }
+
+    by_slug
+        .into_iter()
+        .map(|(slug, slug_tokens)| warmed_contract_from_slug_tokens(slug, &slug_tokens))
+        .collect()
+}
+
+fn warmed_contract_from_slug_tokens(
+    slug: &str,
+    tokens: &[&MarketToken],
+) -> Result<WarmedContract> {
+    let window = window_from_slug(slug)?;
+    let mut up: Option<ContractToken> = None;
+    let mut down: Option<ContractToken> = None;
+
+    for token in tokens {
+        match token.side.as_str() {
+            "UP" => {
+                up = Some(ContractToken::new(
+                    &token.asset,
+                    ContractSide::Up,
+                    &token.token_id.to_string(),
+                ));
+            }
+            "DOWN" => {
+                down = Some(ContractToken::new(
+                    &token.asset,
+                    ContractSide::Down,
+                    &token.token_id.to_string(),
+                ));
+            }
+            other => bail!("unsupported token side for warmed contract {slug}: {other}"),
+        }
+    }
+
+    WarmedContract::new(
+        window,
+        up.with_context(|| format!("missing UP token for {slug}"))?,
+        down.with_context(|| format!("missing DOWN token for {slug}"))?,
+    )
+}
+
+fn window_from_slug(slug: &str) -> Result<ContractWindow> {
+    let parts = slug.split('-').collect::<Vec<_>>();
+    if parts.len() != 4 || parts[1] != "updown" {
+        bail!("unsupported Polymarket up/down slug: {slug}");
+    }
+    let asset = normalize_asset(parts[0])?;
+    let interval = parts[2];
+    let start_epoch = parts[3]
+        .parse::<i64>()
+        .with_context(|| format!("invalid Polymarket up/down slug epoch: {slug}"))?;
+    let start = DateTime::<Utc>::from_timestamp(start_epoch, 0)
+        .with_context(|| format!("invalid Polymarket up/down slug timestamp: {slug}"))?;
+    let end = start + Duration::seconds(interval_seconds(interval)?);
+    ContractWindow::new(&asset, interval, start, end)
+}
+
 #[cfg(test)]
 pub fn parse_orderbook_summary(json: &str) -> Result<OrderBookSummaryResponse> {
     serde_json::from_str(json).context("failed to parse CLOB orderbook summary")
@@ -138,6 +205,24 @@ pub async fn discover_current_markets(
     }
 
     Ok(tokens)
+}
+
+#[allow(dead_code)]
+pub async fn discover_windows(windows: &[ContractWindow]) -> Result<Vec<WarmedContract>> {
+    let gamma = GammaClient::new(GAMMA_HOST)?;
+    let slugs = windows
+        .iter()
+        .map(ContractWindow::slug)
+        .collect::<Vec<_>>();
+    let request = MarketsRequest::builder().slug(slugs).closed(false).build();
+    let markets = gamma.markets(&request).await?;
+    let mut tokens = Vec::new();
+
+    for market in markets {
+        tokens.extend(market_tokens_from_gamma_market(&market)?);
+    }
+
+    warmed_contracts_from_tokens(&tokens)
 }
 
 pub async fn fetch_orderbooks(tokens: &[MarketToken]) -> Result<Vec<NormalizedOrderBook>> {
@@ -265,6 +350,33 @@ mod tests {
                     token_id: U256::from(222_u64),
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn converts_up_down_tokens_into_warmed_contract() {
+        let tokens = vec![
+            MarketToken {
+                slug: "btc-updown-5m-1780262100".to_owned(),
+                asset: "BTC".to_owned(),
+                side: "UP".to_owned(),
+                token_id: U256::from(111_u64),
+            },
+            MarketToken {
+                slug: "btc-updown-5m-1780262100".to_owned(),
+                asset: "BTC".to_owned(),
+                side: "DOWN".to_owned(),
+                token_id: U256::from(222_u64),
+            },
+        ];
+
+        let warmed = warmed_contracts_from_tokens(&tokens).unwrap();
+
+        assert_eq!(warmed.len(), 1);
+        assert_eq!(warmed[0].window.slug(), "btc-updown-5m-1780262100");
+        assert_eq!(
+            warmed[0].token_ids(),
+            vec!["111".to_owned(), "222".to_owned()]
         );
     }
 
