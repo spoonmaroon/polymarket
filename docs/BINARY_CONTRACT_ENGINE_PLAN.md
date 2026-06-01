@@ -854,7 +854,7 @@ Build in this order:
 2. DuckDB schema and store.
    - Acceptance: tests insert and read contracts, prices, books, decisions, and labels.
 3. Price and order-book ingestion adapters.
-   - Acceptance: fake adapters can produce deterministic ticks and book snapshots.
+   - Acceptance: real adapters parse live-source payloads, and deterministic fixtures prove parser and storage behavior without exposing a synthetic collector mode.
 4. `DecisionState` builder.
    - Acceptance: tests prove no future data enters state.
 5. Volatility and `sigma_tau`.
@@ -868,7 +868,7 @@ Build in this order:
 9. Exit state machine and exit strategy logging.
    - Acceptance: tests prove hold/watch/exit transitions and hold-to-expiry counterfactual labels.
 10. Replay and validation.
-   - Acceptance: one historical or synthetic contract replays end-to-end without future leakage.
+    - Acceptance: one historical contract replays end-to-end without future leakage.
 11. API and dashboard.
     - Acceptance: UI can inspect latest read-only decisions.
 

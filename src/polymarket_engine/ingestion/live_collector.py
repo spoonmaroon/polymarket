@@ -66,37 +66,6 @@ class LiveCollectorResult:
     source_errors: dict[str, str] = field(default_factory=dict)
 
 
-async def run_fake_collection(
-    config: LiveCollectorConfig,
-    events: tuple[CollectorEvent, ...],
-) -> LiveCollectorResult:
-    store = DuckDbIngestStore(config.duckdb_path)
-    store.apply_schema()
-    writer = BufferedRawEventWriter(
-        raw_root=config.raw_root,
-        max_batch_size=config.max_batch_size,
-        flush_after_seconds=config.flush_after_seconds,
-        require_archive_sentinel=config.require_archive_sentinel,
-    )
-
-    results: list[RawWriteResult] = []
-    for event in events:
-        result = writer.add(event)
-        if result is not None:
-            results.append(result)
-    results.extend(writer.flush_all())
-
-    for result in results:
-        _register_file(store, config.raw_root, result)
-    for event in events:
-        _write_normalized_event(store, event)
-
-    return LiveCollectorResult(
-        events_written=sum(result.row_count for result in results),
-        files_written=len(results),
-    )
-
-
 def _register_file(store: DuckDbIngestStore, raw_root: Path, result: RawWriteResult) -> None:
     relative_parts = result.path.relative_to(raw_root).parts
     source_key = relative_parts[0]
