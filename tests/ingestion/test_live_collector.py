@@ -42,7 +42,7 @@ def test_live_collector_config_rejects_invalid_market_fetch_timeout(tmp_path: Pa
         raise AssertionError("invalid market_fetch_timeout_seconds was accepted")
 
 
-def test_live_collector_default_freshness_windows_match_deploy_smoke(tmp_path: Path) -> None:
+def test_live_collector_default_freshness_windows_tolerate_quiet_rtds_ticks(tmp_path: Path) -> None:
     config = LiveCollectorConfig(
         assets=("BTC", "ETH"),
         duration_seconds=1,
@@ -50,7 +50,7 @@ def test_live_collector_default_freshness_windows_match_deploy_smoke(tmp_path: P
         duckdb_path=tmp_path / "collector.duckdb",
     )
 
-    assert config.rtds_stale_after_ms == 30_000
+    assert config.rtds_stale_after_ms == 60_000
     assert config.coinbase_stale_after_ms == 30_000
     assert config.orderbook_stale_after_ms == 30_000
 
