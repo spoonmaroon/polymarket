@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from pathlib import Path
 
 import duckdb
@@ -5,6 +6,8 @@ import duckdb
 import polymarket_engine.ingestion.live_collector as live_collector
 from polymarket_engine.ingestion.live_collector import (
     LiveCollectorConfig,
+    _price_freshness_rows,
+    _source_disagreement_rows,
     register_market_rules,
 )
 
@@ -81,3 +84,85 @@ def test_register_market_rules_also_writes_side_level_contracts(tmp_path: Path) 
         ("2397858:DOWN", "BTC", "DOWN", "222"),
         ("2397858:UP", "BTC", "UP", "111"),
     ]
+
+
+def test_status_source_disagreement_blocks_stale_chainlink_reference() -> None:
+    generated_at = datetime(2026, 6, 1, 11, 20, tzinfo=timezone.utc)
+    latest_prices = {
+        "coinbase_advanced_ws:ETH-USD": {
+            "source_key": "coinbase_advanced_ws",
+            "symbol": "ETH-USD",
+            "observed_ts": "2026-06-01T11:19:59+00:00",
+            "price": 1983.02,
+        },
+        "polymarket_rtds_chainlink:ETH/USD": {
+            "source_key": "polymarket_rtds_chainlink",
+            "symbol": "ETH/USD",
+            "observed_ts": "2026-06-01T09:48:01+00:00",
+            "price": 1986.8168,
+        },
+    }
+    freshness = _price_freshness_rows(
+        latest_prices=latest_prices,
+        assets=("ETH",),
+        generated_at=generated_at,
+        coinbase_stale_after_ms=2_000,
+        rtds_stale_after_ms=5_000,
+    )
+
+    disagreements = _source_disagreement_rows(
+        latest_prices=latest_prices,
+        source_freshness=freshness,
+        assets=("ETH",),
+    )
+
+    assert disagreements == (
+        {
+            "asset": "ETH",
+            "primary_source_key": "polymarket_rtds_chainlink",
+            "primary_symbol": "ETH/USD",
+            "primary_price": 1986.8168,
+            "proxy_source_key": "coinbase_advanced_ws",
+            "proxy_symbol": "ETH-USD",
+            "proxy_price": 1983.02,
+            "diff": None,
+            "diff_bps": None,
+            "usable": False,
+            "block_reason": "stale_reference_source",
+        },
+    )
+
+
+def test_status_source_disagreement_reports_fresh_basis_in_bps() -> None:
+    generated_at = datetime(2026, 6, 1, 11, 20, tzinfo=timezone.utc)
+    latest_prices = {
+        "coinbase_advanced_ws:BTC-USD": {
+            "source_key": "coinbase_advanced_ws",
+            "symbol": "BTC-USD",
+            "observed_ts": "2026-06-01T11:19:59+00:00",
+            "price": 72_611.01,
+        },
+        "polymarket_rtds_chainlink:BTC/USD": {
+            "source_key": "polymarket_rtds_chainlink",
+            "symbol": "BTC/USD",
+            "observed_ts": "2026-06-01T11:19:58+00:00",
+            "price": 72_623.5125,
+        },
+    }
+    freshness = _price_freshness_rows(
+        latest_prices=latest_prices,
+        assets=("BTC",),
+        generated_at=generated_at,
+        coinbase_stale_after_ms=2_000,
+        rtds_stale_after_ms=5_000,
+    )
+
+    row = _source_disagreement_rows(
+        latest_prices=latest_prices,
+        source_freshness=freshness,
+        assets=("BTC",),
+    )[0]
+
+    assert row["usable"] is True
+    assert row["block_reason"] is None
+    assert row["diff_bps"] is not None

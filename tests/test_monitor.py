@@ -99,6 +99,21 @@ def test_monitor_snapshot_prefers_atomic_status_file(tmp_path: Path) -> None:
                         "missing": False,
                     }
                 ],
+                "source_disagreements": [
+                    {
+                        "asset": "ETH",
+                        "primary_source_key": "polymarket_rtds_chainlink",
+                        "primary_symbol": "ETH/USD",
+                        "primary_price": 1986.8168,
+                        "proxy_source_key": "coinbase_advanced_ws",
+                        "proxy_symbol": "ETH-USD",
+                        "proxy_price": 1983.02,
+                        "diff": None,
+                        "diff_bps": None,
+                        "usable": False,
+                        "block_reason": "stale_reference_source",
+                    }
+                ],
                 "orderbook_freshness": [],
             }
         ),
@@ -110,6 +125,7 @@ def test_monitor_snapshot_prefers_atomic_status_file(tmp_path: Path) -> None:
     assert snapshot.prices[("polymarket_rtds_chainlink", "BTC/USD")] == 73500.0
     assert snapshot.normalized_health[0]["table"] == "core.price_ticks"
     assert snapshot.source_freshness[0]["symbol"] == "ETH/USD"
+    assert snapshot.source_disagreements[0]["block_reason"] == "stale_reference_source"
 
 
 def test_render_monitor_outputs_normalized_health_and_stale_sources() -> None:
@@ -139,6 +155,21 @@ def test_render_monitor_outputs_normalized_health_and_stale_sources() -> None:
                 "missing": False,
             },
         ),
+        source_disagreements=(
+            {
+                "asset": "ETH",
+                "primary_source_key": "polymarket_rtds_chainlink",
+                "primary_symbol": "ETH/USD",
+                "primary_price": 1986.8168,
+                "proxy_source_key": "coinbase_advanced_ws",
+                "proxy_symbol": "ETH-USD",
+                "proxy_price": 1983.02,
+                "diff": None,
+                "diff_bps": None,
+                "usable": False,
+                "block_reason": "stale_reference_source",
+            },
+        ),
         orderbook_freshness=(),
     )
 
@@ -146,4 +177,6 @@ def test_render_monitor_outputs_normalized_health_and_stale_sources() -> None:
 
     assert "Normalized Health" in output
     assert "Source Freshness" in output
+    assert "Source Disagreement" in output
     assert "STALE" in output
+    assert "blocked=stale_reference_source" in output

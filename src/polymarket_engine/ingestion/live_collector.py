@@ -204,6 +204,76 @@ def _orderbook_freshness_rows(
     return tuple(rows)
 
 
+def _source_disagreement_rows(
+    *,
+    latest_prices: dict[str, dict[str, object]],
+    source_freshness: tuple[dict[str, object], ...],
+    assets: tuple[str, ...],
+) -> tuple[dict[str, object], ...]:
+    freshness = {
+        (str(row["source_key"]), str(row["symbol"])): row
+        for row in source_freshness
+    }
+    rows: list[dict[str, object]] = []
+    for asset in assets:
+        normalized_asset = asset.upper()
+        primary_key = ("polymarket_rtds_chainlink", f"{normalized_asset}/USD")
+        proxy_key = ("coinbase_advanced_ws", f"{normalized_asset}-USD")
+        primary = latest_prices.get(f"{primary_key[0]}:{primary_key[1]}")
+        proxy = latest_prices.get(f"{proxy_key[0]}:{proxy_key[1]}")
+        primary_price = None if primary is None else float(str(primary["price"]))
+        proxy_price = None if proxy is None else float(str(proxy["price"]))
+        block_reason = _source_disagreement_block_reason(
+            primary_key=primary_key,
+            proxy_key=proxy_key,
+            primary_price=primary_price,
+            freshness=freshness,
+        )
+        diff: float | None = None
+        diff_bps: float | None = None
+        if block_reason is None and primary_price is not None and proxy_price is not None:
+            diff = proxy_price - primary_price
+            diff_bps = abs(diff) / primary_price * 10_000
+        rows.append(
+            {
+                "asset": normalized_asset,
+                "primary_source_key": primary_key[0],
+                "primary_symbol": primary_key[1],
+                "primary_price": primary_price,
+                "proxy_source_key": proxy_key[0],
+                "proxy_symbol": proxy_key[1],
+                "proxy_price": proxy_price,
+                "diff": diff,
+                "diff_bps": diff_bps,
+                "usable": block_reason is None,
+                "block_reason": block_reason,
+            }
+        )
+    return tuple(rows)
+
+
+def _source_disagreement_block_reason(
+    *,
+    primary_key: tuple[str, str],
+    proxy_key: tuple[str, str],
+    primary_price: float | None,
+    freshness: dict[tuple[str, str], dict[str, object]],
+) -> str | None:
+    primary_freshness = freshness.get(primary_key)
+    proxy_freshness = freshness.get(proxy_key)
+    if primary_price is None or primary_freshness is None or primary_freshness.get("missing"):
+        return "missing_reference_source"
+    if primary_price <= 0:
+        return "invalid_reference_price"
+    if primary_freshness.get("stale"):
+        return "stale_reference_source"
+    if proxy_freshness is None or proxy_freshness.get("missing"):
+        return "missing_proxy_source"
+    if proxy_freshness.get("stale"):
+        return "stale_proxy_source"
+    return None
+
+
 def _register_file(store: DuckDbIngestStore, raw_root: Path, result: RawWriteResult) -> None:
     relative_parts = result.path.relative_to(raw_root).parts
     source_key = relative_parts[0]
@@ -341,9 +411,24 @@ async def run_live_collection(config: LiveCollectorConfig) -> LiveCollectorResul
         except Exception as exc:
             source_errors["normalized_health"] = f"{type(exc).__name__}: {exc}"
             normalized_health = ()
+        source_freshness = _price_freshness_rows(
+            latest_prices=latest_prices,
+            assets=config.assets,
+            generated_at=generated_now,
+            coinbase_stale_after_ms=config.coinbase_stale_after_ms,
+            rtds_stale_after_ms=config.rtds_stale_after_ms,
+        )
         status = {
             "generated_at": generated_at,
             "prices": sorted(latest_prices.values(), key=lambda row: str(row["source_key"])),
+            "source_freshness": list(source_freshness),
+            "source_disagreements": list(
+                _source_disagreement_rows(
+                    latest_prices=latest_prices,
+                    source_freshness=source_freshness,
+                    assets=config.assets,
+                )
+            ),
             "orderbooks": sorted(
                 latest_orderbooks.values(),
                 key=lambda row: str(row["observed_ts"]),
@@ -364,15 +449,6 @@ async def run_live_collection(config: LiveCollectorConfig) -> LiveCollectorResul
                 }
             ],
             "normalized_health": list(normalized_health),
-            "source_freshness": list(
-                _price_freshness_rows(
-                    latest_prices=latest_prices,
-                    assets=config.assets,
-                    generated_at=generated_now,
-                    coinbase_stale_after_ms=config.coinbase_stale_after_ms,
-                    rtds_stale_after_ms=config.rtds_stale_after_ms,
-                )
-            ),
             "orderbook_freshness": list(
                 _orderbook_freshness_rows(
                     latest_contracts=latest_contracts,
