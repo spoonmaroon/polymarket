@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -59,12 +60,49 @@ class LiveCollectorConfig:
     rtds_stale_after_ms: int = 5000
     coinbase_stale_after_ms: int = 2000
 
+    def __post_init__(self) -> None:
+        if self.duration_seconds is not None and self.duration_seconds <= 0:
+            raise ValueError("duration_seconds must be positive or None")
+        if self.windows_to_track <= 0:
+            raise ValueError("windows_to_track must be positive")
+        if self.clob_snapshot_interval_seconds <= 0:
+            raise ValueError("clob_snapshot_interval_seconds must be positive")
+        if self.market_refresh_interval_seconds <= 0:
+            raise ValueError("market_refresh_interval_seconds must be positive")
+        if self.max_batch_size <= 0:
+            raise ValueError("max_batch_size must be positive")
+
 
 @dataclass(frozen=True)
 class LiveCollectorResult:
     events_written: int
     files_written: int
     source_errors: dict[str, str] = field(default_factory=dict)
+
+
+def collection_deadline(config: LiveCollectorConfig) -> float | None:
+    if config.duration_seconds is None:
+        return None
+    return datetime.now(timezone.utc).timestamp() + config.duration_seconds
+
+
+def _remaining_seconds(deadline: float | None) -> float | None:
+    if deadline is None:
+        return None
+    return max(0.0, deadline - datetime.now(timezone.utc).timestamp())
+
+
+def _should_continue(deadline: float | None) -> bool:
+    remaining = _remaining_seconds(deadline)
+    return remaining is None or remaining > 0
+
+
+async def _sleep_for(seconds: float, deadline: float | None) -> None:
+    remaining = _remaining_seconds(deadline)
+    if remaining is None:
+        await asyncio.sleep(seconds)
+    elif remaining > 0:
+        await asyncio.sleep(min(seconds, remaining))
 
 
 def _register_file(store: DuckDbIngestStore, raw_root: Path, result: RawWriteResult) -> None:
@@ -119,6 +157,9 @@ async def run_live_collection(config: LiveCollectorConfig) -> LiveCollectorResul
     source_errors: dict[str, str] = {}
     events_written = 0
     files_written = 0
+    deadline = collection_deadline(config)
+    market_tokens: dict[str, Any] = {}
+    rtds_events_written = 0
 
     def register_result(result: RawWriteResult) -> None:
         _register_file(store, config.raw_root, result)
@@ -144,113 +185,135 @@ async def run_live_collection(config: LiveCollectorConfig) -> LiveCollectorResul
             register_result(result)
             files_written += 1
 
-    async with httpx.AsyncClient(timeout=15) as client:
-        try:
-            markets = await fetch_crypto_5m_markets(
-                client=client,
-                base_url="https://gamma-api.polymarket.com",
-                now=datetime.now(timezone.utc),
-                assets=config.assets,
-                windows_ahead=config.contract_windows_ahead,
-            )
-            source_errors.update(register_market_rules(config.duckdb_path, markets))
-            tokens = tuple(token for market in markets for token in extract_market_tokens(market))
-            for market in markets:
-                observed = datetime.now(timezone.utc)
-                record_event(
-                    CollectorEvent(
-                        source_key="polymarket_markets",
-                        stream_key="crypto_5m_markets_snapshot",
-                        symbol=str(market["slug"]),
-                        event_ts=observed,
-                        observed_ts=observed,
-                        payload=dict(market),
-                    )
-                )
-
-            for token in tokens:
-                observed = datetime.now(timezone.utc)
-                response = await client.get(
-                    "https://clob.polymarket.com/book",
-                    params={"token_id": token.token_id},
-                )
-                response.raise_for_status()
-                record_event(clob_book_event(response.json(), token, observed))
-        except Exception as exc:
-            source_errors["polymarket"] = f"{type(exc).__name__}: {exc}"
-
-    product_ids = tuple(f"{asset}-USD" for asset in config.assets)
-    coinbase_deadline = datetime.now(timezone.utc).timestamp() + config.duration_seconds
-    coinbase_attempt = 0
-    while datetime.now(timezone.utc).timestamp() < coinbase_deadline:
-        try:
-            async with websockets.connect(
-                "wss://advanced-trade-ws.coinbase.com",
-                open_timeout=10,
-            ) as ws:
-                await ws.send(json.dumps(build_coinbase_ticker_subscription(product_ids)))
-                coinbase_attempt = 0
-                while datetime.now(timezone.utc).timestamp() < coinbase_deadline:
-                    try:
-                        raw = await asyncio.wait_for(ws.recv(), timeout=5)
-                    except asyncio.TimeoutError:
-                        flush_due()
-                        continue
-                    observed = datetime.now(timezone.utc)
-                    for event in coinbase_ticker_events(json.loads(raw), observed):
-                        record_event(event)
-                break
-        except Exception as exc:
-            source_errors["coinbase_advanced_ws"] = f"{type(exc).__name__}: {exc}"
-            remaining = coinbase_deadline - datetime.now(timezone.utc).timestamp()
-            if remaining <= 0:
-                break
-            delay = min(compute_reconnect_delay(coinbase_attempt), remaining)
-            coinbase_attempt += 1
-            await asyncio.sleep(delay)
-
-    rtds_deadline = datetime.now(timezone.utc).timestamp() + min(config.duration_seconds, 10)
-    rtds_attempt = 0
-    rtds_events_written = 0
-    while datetime.now(timezone.utc).timestamp() < rtds_deadline:
-        try:
-            async with websockets.connect(
-                "wss://ws-live-data.polymarket.com",
-                open_timeout=10,
-            ) as ws:
-                await ws.send(json.dumps(build_rtds_subscriptions(config.assets)))
-                heartbeat_task = asyncio.create_task(_send_rtds_heartbeats(ws))
-                rtds_attempt = 0
+    async def market_loop() -> None:
+        async with httpx.AsyncClient(timeout=15) as client:
+            while _should_continue(deadline):
                 try:
-                    while datetime.now(timezone.utc).timestamp() < rtds_deadline:
+                    markets = await fetch_crypto_5m_markets(
+                        client=client,
+                        base_url="https://gamma-api.polymarket.com",
+                        now=datetime.now(timezone.utc),
+                        assets=config.assets,
+                        windows_ahead=config.windows_to_track,
+                    )
+                    source_errors.update(register_market_rules(config.duckdb_path, markets))
+                    tokens = tuple(
+                        token for market in markets for token in extract_market_tokens(market)
+                    )
+                    market_tokens.clear()
+                    market_tokens.update({token.token_id: token for token in tokens})
+                    for market in markets:
+                        observed = datetime.now(timezone.utc)
+                        record_event(
+                            CollectorEvent(
+                                source_key="polymarket_markets",
+                                stream_key="crypto_5m_markets_snapshot",
+                                symbol=str(market["slug"]),
+                                event_ts=observed,
+                                observed_ts=observed,
+                                payload=dict(market),
+                            )
+                        )
+                    flush_due()
+                except Exception as exc:
+                    source_errors["polymarket_markets"] = f"{type(exc).__name__}: {exc}"
+                await _sleep_for(config.market_refresh_interval_seconds, deadline)
+
+    async def clob_loop() -> None:
+        async with httpx.AsyncClient(timeout=15) as client:
+            while _should_continue(deadline):
+                for token in tuple(market_tokens.values()):
+                    if not _should_continue(deadline):
+                        break
+                    try:
+                        observed = datetime.now(timezone.utc)
+                        response = await client.get(
+                            "https://clob.polymarket.com/book",
+                            params={"token_id": token.token_id},
+                        )
+                        response.raise_for_status()
+                        record_event(clob_book_event(response.json(), token, observed))
+                    except Exception as exc:
+                        source_errors[f"polymarket_clob:{token.token_id}"] = (
+                            f"{type(exc).__name__}: {exc}"
+                        )
+                flush_due()
+                await _sleep_for(config.clob_snapshot_interval_seconds, deadline)
+
+    async def coinbase_loop() -> None:
+        product_ids = tuple(f"{asset}-USD" for asset in config.assets)
+        coinbase_attempt = 0
+        while _should_continue(deadline):
+            try:
+                async with websockets.connect(
+                    "wss://advanced-trade-ws.coinbase.com",
+                    open_timeout=10,
+                ) as ws:
+                    await ws.send(json.dumps(build_coinbase_ticker_subscription(product_ids)))
+                    coinbase_attempt = 0
+                    while _should_continue(deadline):
                         try:
                             raw = await asyncio.wait_for(ws.recv(), timeout=5)
                         except asyncio.TimeoutError:
                             flush_due()
                             continue
-                        if not raw:
-                            continue
                         observed = datetime.now(timezone.utc)
-                        for event in rtds_price_events(json.loads(raw), observed):
+                        for event in coinbase_ticker_events(json.loads(raw), observed):
                             record_event(event)
-                            rtds_events_written += 1
-                finally:
-                    heartbeat_task.cancel()
-                break
-        except Exception as exc:
-            source_errors["polymarket_rtds"] = f"{type(exc).__name__}: {exc}"
-            remaining = rtds_deadline - datetime.now(timezone.utc).timestamp()
-            if remaining <= 0:
-                break
-            delay = min(compute_reconnect_delay(rtds_attempt), remaining)
-            rtds_attempt += 1
-            await asyncio.sleep(delay)
+            except Exception as exc:
+                source_errors["coinbase_advanced_ws"] = f"{type(exc).__name__}: {exc}"
+                if not _should_continue(deadline):
+                    break
+                delay = compute_reconnect_delay(coinbase_attempt)
+                coinbase_attempt += 1
+                await _sleep_for(delay, deadline)
+
+    async def rtds_loop() -> None:
+        nonlocal rtds_events_written
+        rtds_attempt = 0
+        while _should_continue(deadline):
+            try:
+                async with websockets.connect(
+                    "wss://ws-live-data.polymarket.com",
+                    open_timeout=10,
+                ) as ws:
+                    await ws.send(json.dumps(build_rtds_subscriptions(config.assets)))
+                    heartbeat_task = asyncio.create_task(_send_rtds_heartbeats(ws))
+                    rtds_attempt = 0
+                    try:
+                        while _should_continue(deadline):
+                            try:
+                                raw = await asyncio.wait_for(ws.recv(), timeout=5)
+                            except asyncio.TimeoutError:
+                                flush_due()
+                                continue
+                            if not raw:
+                                continue
+                            observed = datetime.now(timezone.utc)
+                            for event in rtds_price_events(json.loads(raw), observed):
+                                record_event(event)
+                                rtds_events_written += 1
+                    finally:
+                        heartbeat_task.cancel()
+                        with suppress(asyncio.CancelledError):
+                            await heartbeat_task
+            except Exception as exc:
+                source_errors["polymarket_rtds"] = f"{type(exc).__name__}: {exc}"
+                if not _should_continue(deadline):
+                    break
+                delay = compute_reconnect_delay(rtds_attempt)
+                rtds_attempt += 1
+                await _sleep_for(delay, deadline)
+
+    try:
+        await asyncio.gather(market_loop(), clob_loop(), coinbase_loop(), rtds_loop())
+    finally:
+        for result in writer.flush_all():
+            register_result(result)
+            files_written += 1
+
     if rtds_events_written == 0 and "polymarket_rtds" not in source_errors:
         source_errors["polymarket_rtds"] = "NoMessages: RTDS emitted no price updates"
-
-    for result in writer.flush_all():
-        register_result(result)
-        files_written += 1
 
     return LiveCollectorResult(
         events_written=events_written,
