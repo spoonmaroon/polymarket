@@ -355,6 +355,51 @@ def test_build_volatility_snapshot_ignores_rtds_binance_proxy_mismatch() -> None
     assert snapshot.realized_returns == pytest.approx((math.log(101.0 / 100.0),))
 
 
+def test_build_volatility_snapshot_resets_return_history_after_stale_chainlink_gap() -> None:
+    asof_ts = BASE_TS + timedelta(seconds=7202)
+
+    snapshot = build_volatility_snapshot(
+        prices=(
+            _price(100.0, event_seconds=0),
+            _price(200.0, event_seconds=7200),
+            _price(202.0, event_seconds=7201),
+        ),
+        asof_ts=asof_ts,
+        seconds_left=60.0,
+        config=VolatilityConfig(
+            short_window=1,
+            medium_window=2,
+            long_window=3,
+            max_price_gap_seconds=5.0,
+        ),
+    )
+
+    assert snapshot.realized_returns == pytest.approx((math.log(202.0 / 200.0),))
+    assert snapshot.event_ts == BASE_TS + timedelta(seconds=7201)
+    assert snapshot.regime in {"normal", "unknown", "expanding", "contracting"}
+
+
+def test_build_volatility_snapshot_returns_missing_when_latest_chainlink_segment_has_no_return() -> None:
+    asof_ts = BASE_TS + timedelta(seconds=7200)
+
+    snapshot = build_volatility_snapshot(
+        prices=(
+            _price(100.0, event_seconds=0),
+            _price(200.0, event_seconds=7200),
+        ),
+        asof_ts=asof_ts,
+        seconds_left=60.0,
+        config=VolatilityConfig(max_price_gap_seconds=5.0),
+    )
+
+    assert snapshot.realized_returns == ()
+    assert snapshot.short_realized_vol is None
+    assert snapshot.medium_realized_vol is None
+    assert snapshot.long_realized_vol is None
+    assert snapshot.sigma_tau is None
+    assert snapshot.regime == "missing_continuous_reference_source"
+
+
 @pytest.mark.parametrize(
     "asof_ts",
     (
