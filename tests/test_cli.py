@@ -76,6 +76,8 @@ def test_parse_collect_market_ws_flags() -> None:
             "--disable-clob-websocket",
             "--clob-rest-backup-interval",
             "20",
+            "--clob-request-timeout",
+            "4",
             "--display-timezone",
             "America/Chicago",
         ]
@@ -83,6 +85,7 @@ def test_parse_collect_market_ws_flags() -> None:
 
     assert args.enable_clob_websocket is False
     assert args.clob_rest_backup_interval == 20.0
+    assert args.clob_request_timeout == 4.0
     assert args.display_timezone == "America/Chicago"
 
 
@@ -117,6 +120,7 @@ async def test_run_collect_command_uses_injected_runner(tmp_path: Path) -> None:
         seen["snapshot_interval"] = config.clob_snapshot_interval_seconds
         seen["enable_clob_websocket"] = config.enable_clob_websocket
         seen["clob_rest_backup_interval"] = config.clob_rest_backup_interval_seconds
+        seen["clob_request_timeout"] = config.clob_request_timeout_seconds
         seen["display_timezone"] = config.display_timezone
         seen["status_path"] = config.status_path
         return LiveCollectorResult(events_written=3, files_written=1)
@@ -147,6 +151,7 @@ async def test_run_collect_command_uses_injected_runner(tmp_path: Path) -> None:
         "snapshot_interval": 1.0,
         "enable_clob_websocket": True,
         "clob_rest_backup_interval": 15.0,
+        "clob_request_timeout": 5.0,
         "display_timezone": "America/Chicago",
         "status_path": tmp_path / "status.json",
     }

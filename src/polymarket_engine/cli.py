@@ -54,6 +54,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     collect.set_defaults(enable_clob_websocket=True)
     collect.add_argument("--snapshot-interval", type=float, default=1.0)
     collect.add_argument("--clob-rest-backup-interval", type=float, default=15.0)
+    collect.add_argument("--clob-request-timeout", type=float, default=5.0)
     collect.add_argument("--market-refresh-interval", type=float, default=30.0)
     collect.add_argument("--market-fetch-timeout", type=float, default=10.0)
     collect.add_argument("--coinbase-min-record-interval", type=float, default=1.0)
@@ -96,6 +97,7 @@ async def run_collect_command(
         enable_clob_websocket=args.enable_clob_websocket,
         clob_snapshot_interval_seconds=args.snapshot_interval,
         clob_rest_backup_interval_seconds=args.clob_rest_backup_interval,
+        clob_request_timeout_seconds=args.clob_request_timeout,
         market_refresh_interval_seconds=args.market_refresh_interval,
         market_fetch_timeout_seconds=args.market_fetch_timeout,
         coinbase_min_record_interval_seconds=args.coinbase_min_record_interval,

@@ -67,6 +67,7 @@ class LiveCollectorConfig:
     enable_clob_websocket: bool = True
     clob_snapshot_interval_seconds: float = 1.0
     clob_rest_backup_interval_seconds: float = 15.0
+    clob_request_timeout_seconds: float = 5.0
     market_refresh_interval_seconds: float = 30.0
     market_fetch_timeout_seconds: float = 10.0
     display_timezone: str = "America/Chicago"
@@ -88,6 +89,8 @@ class LiveCollectorConfig:
             raise ValueError("clob_snapshot_interval_seconds must be positive")
         if self.clob_rest_backup_interval_seconds <= 0:
             raise ValueError("clob_rest_backup_interval_seconds must be positive")
+        if self.clob_request_timeout_seconds <= 0:
+            raise ValueError("clob_request_timeout_seconds must be positive")
         if self.market_refresh_interval_seconds <= 0:
             raise ValueError("market_refresh_interval_seconds must be positive")
         if self.market_fetch_timeout_seconds <= 0:
@@ -299,6 +302,7 @@ def _prune_expired_contract_state(
     market_tokens: dict[str, object],
     latest_orderbooks: dict[str, dict[str, object]],
     latest_orderbooks_by_source: dict[str, dict[str, object]],
+    source_errors: dict[str, str],
 ) -> None:
     expired_token_ids: set[str] = set()
     for contract_id, contract in tuple(latest_contracts.items()):
@@ -315,6 +319,22 @@ def _prune_expired_contract_state(
         token_id = source_token_id.split(":", 1)[1]
         if token_id in expired_token_ids:
             latest_orderbooks_by_source.pop(source_token_id, None)
+
+    for token_id in expired_token_ids:
+        source_errors.pop(f"polymarket_clob:{token_id}", None)
+
+
+async def _fetch_clob_book_event(
+    client: httpx.AsyncClient,
+    token: MarketToken,
+) -> CollectorEvent:
+    observed = datetime.now(timezone.utc)
+    response = await client.get(
+        "https://clob.polymarket.com/book",
+        params={"token_id": token.token_id},
+    )
+    response.raise_for_status()
+    return clob_book_event(response.json(), token, observed)
 
 
 def _source_disagreement_rows(
@@ -558,6 +578,7 @@ async def run_live_collection(config: LiveCollectorConfig) -> LiveCollectorResul
             market_tokens=market_tokens,
             latest_orderbooks=latest_orderbooks,
             latest_orderbooks_by_source=latest_orderbooks_by_source,
+            source_errors=source_errors,
         )
         generated_at = generated_now.isoformat()
         try:
@@ -691,7 +712,11 @@ async def run_live_collection(config: LiveCollectorConfig) -> LiveCollectorResul
                 await _sleep_for(config.market_refresh_interval_seconds, deadline)
 
     async def clob_loop() -> None:
-        async with httpx.AsyncClient(timeout=15) as client:
+        timeout = httpx.Timeout(
+            config.clob_request_timeout_seconds,
+            connect=min(3.0, config.clob_request_timeout_seconds),
+        )
+        async with httpx.AsyncClient(timeout=timeout) as client:
             while _should_continue(deadline):
                 _prune_expired_contract_state(
                     now=datetime.now(timezone.utc),
@@ -699,22 +724,20 @@ async def run_live_collection(config: LiveCollectorConfig) -> LiveCollectorResul
                     market_tokens=market_tokens,
                     latest_orderbooks=latest_orderbooks,
                     latest_orderbooks_by_source=latest_orderbooks_by_source,
+                    source_errors=source_errors,
                 )
-                for token in tuple(market_tokens.values()):
-                    if not _should_continue(deadline):
-                        break
-                    try:
-                        observed = datetime.now(timezone.utc)
-                        response = await client.get(
-                            "https://clob.polymarket.com/book",
-                            params={"token_id": token.token_id},
-                        )
-                        response.raise_for_status()
-                        await record_event(clob_book_event(response.json(), token, observed))
+                tokens = tuple(market_tokens.values())
+                results = await asyncio.gather(
+                    *(_fetch_clob_book_event(client, token) for token in tokens),
+                    return_exceptions=True,
+                )
+                for token, result in zip(tokens, results, strict=True):
+                    if isinstance(result, CollectorEvent):
+                        await record_event(result)
                         source_errors.pop(f"polymarket_clob:{token.token_id}", None)
-                    except Exception as exc:
+                    elif isinstance(result, Exception):
                         source_errors[f"polymarket_clob:{token.token_id}"] = (
-                            f"{type(exc).__name__}: {exc}"
+                            f"{type(result).__name__}: {result}"
                         )
                 await flush_due()
                 sleep_seconds = (
