@@ -26,6 +26,8 @@ Outputs:
 
 Purpose: reconstruct what the model could see at every decision timestamp. Historical future movement is a label, not a feature. Live mode should collect settlement-source prices, proxy prices, order-book snapshots, WebSocket events, source-quality flags, and market metadata.
 
+The first live collector should track only the current and next BTC/ETH 5-minute contracts. This keeps the order-book set small: BTC current, BTC next, ETH current, and ETH next, each with UP and DOWN sides. Broader contract discovery can be added later after the first live replay path is stable.
+
 State groups:
 - contract state
 - price state
@@ -51,7 +53,13 @@ Engineering rule: the live decision should not depend on one fragile formula. Mo
 
 ### 4. Monte Carlo Path Generation
 
-Purpose: estimate both terminal and path-sensitive probabilities from as-of state.
+Purpose: estimate both terminal and path-sensitive probabilities from as-of state. The simulation must start from an explicit prior distribution: the engine's pre-expiry belief about realistic remaining BTC or ETH paths before the future is known.
+
+First-pass prior:
+- empirical conditional prior from historical BTC/ETH path fragments available before the decision time
+- conditioned on asset, horizon, seconds left, volatility regime, distance from threshold, recent wick/cross behavior, and source-quality state
+- updated by current live volatility through `sigma_tau`
+- rejected or widened when the comparable historical bucket is sparse
 
 Path generators:
 - empirical same-asset fragments
@@ -92,6 +100,7 @@ Feature families:
 - order-book and microstructure
 - source quality
 - news and event risk
+- noise control and residual uncertainty policy
 - mandatory hard gates
 
 ### 8. Portfolio Management and Position Sizing
@@ -180,6 +189,33 @@ Immediate order:
 - How should final-window wick risk be estimated without overfitting?
 - Which event/news sources are reliable enough to become gates?
 - What pass/fail standard is strict enough before real money?
+
+---
+
+## Build Slice: Sections 1-3 Bridge Completion
+
+This slice completes the bridge before probability modeling:
+
+- contract rules become side-level `ContractSpec` rows;
+- normalized price and order-book observations can be written to DuckDB;
+- `DecisionState` joins contract, price, volatility placeholder, and order-book state;
+- replay queries select only rows with timestamps `<= asof_ts`;
+- future settlement, later BTC/ETH movement, final labels, and later Polymarket quotes remain labels only;
+- retention metadata is recorded for raw partitions, but automatic deletion is not enabled.
+
+Retention defaults:
+
+- keep contract rules, rule hashes, decision states, labels, daily/hourly metrics, incident logs, and kill-switch logs forever;
+- keep raw tick/event data hot for 90 days if disk allows;
+- after the hot window, prefer aggregation/archive over deletion;
+- never delete without a retention manifest containing source, stream, partition, row count, sha256, first/last timestamp, retention class, and archive/delete timestamp.
+
+Deployment boundary:
+
+- `collect` mode starts live collection;
+- `paper` mode can later start live data plus simulated decisions/orders;
+- `live` mode later requires explicit mode selection, valid keys, kill-switch health, clock health, disk health, monitoring health, and an armed confirmation;
+- keys existing must not arm live trading by itself.
 
 ---
 
@@ -524,7 +560,7 @@ Tests:
 
 ### 7. Decision Layer and Risk Gates: How It Builds
 
-Create `src/polymarket_engine/decision/edge.py` and `src/polymarket_engine/decision/gates.py`.
+Create `src/polymarket_engine/decision/edge.py`, `src/polymarket_engine/decision/gates.py`, and later `src/polymarket_engine/decision/noise.py` once live shadow data is available.
 
 `edge.py` converts probabilities into tradability:
 
@@ -546,8 +582,9 @@ Build method:
 2. Penalize or block when `p_no_touch` is weak.
 3. Penalize or block when `z_path` is too close to zero.
 4. Penalize or block stale source data, stale order book, wide spread, thin depth, source disagreement, or event risk.
-5. Compare `edge_after_costs` against required edge.
-6. Emit a decision with explicit reasons.
+5. Remove, reconcile, or confirm noisy inputs before they reach the decision. Treat unresolved noise as wait, lower-confidence replay, or hard block.
+6. Compare `edge_after_costs` against required edge.
+7. Emit a decision with explicit reasons.
 
 Decision output:
 
@@ -819,7 +856,7 @@ Build in this order:
 2. DuckDB schema and store.
    - Acceptance: tests insert and read contracts, prices, books, decisions, and labels.
 3. Price and order-book ingestion adapters.
-   - Acceptance: fake adapters can produce deterministic ticks and book snapshots.
+   - Acceptance: real adapters parse live-source payloads, and deterministic fixtures prove parser and storage behavior without exposing a synthetic collector mode.
 4. `DecisionState` builder.
    - Acceptance: tests prove no future data enters state.
 5. Volatility and `sigma_tau`.
@@ -833,7 +870,7 @@ Build in this order:
 9. Exit state machine and exit strategy logging.
    - Acceptance: tests prove hold/watch/exit transitions and hold-to-expiry counterfactual labels.
 10. Replay and validation.
-   - Acceptance: one historical or synthetic contract replays end-to-end without future leakage.
+    - Acceptance: one historical contract replays end-to-end without future leakage.
 11. API and dashboard.
     - Acceptance: UI can inspect latest read-only decisions.
 
@@ -1304,31 +1341,61 @@ Figure 3. Multiple Monte Carlo path generators. The ensemble uses several ways t
 
 Figure 4. As-of decision snapshot. The observed series stops at the decision boundary; the hidden future is used only later for scoring.
 
-## 6.1 Are we using multiple generations?
+## 6.1 Prior distribution for path generation
+
+Monte Carlo paths do not come from nowhere. Before the engine can simulate future prices, it must define a prior distribution: the distribution of remaining path behavior the engine believes is realistic before the future of the current contract is known.
+
+For this project, the prior should be empirical and conditional rather than a purely subjective guess. It should be built from historical BTC and ETH path fragments that would have been available before the decision time. The prior answers:
+
+> Historically, when the contract state looked like this as of time $`t`$, what did the remaining path usually look like?
+
+The prior is conditioned on a small set of state variables:
+
+- asset: BTC or ETH;
+- horizon: 5-minute or 15-minute contract;
+- seconds left until expiry;
+- side and distance from the threshold;
+- `z_path` bucket;
+- realized-volatility regime and volatility trend;
+- recent wick frequency, threshold-cross behavior, and adverse excursion;
+- source-quality state, including stale feeds or settlement/proxy disagreement;
+- event window flag if scheduled or breaking news is active.
+
+Implementation rule: the prior may use older historical data and live data observed up to time $`t`$. It may not use the realized future of the contract being replayed. Future BTC/ETH movement, final settlement, and later Polymarket prices are labels only.
+
+In the first version, the engine should build prior buckets from historical path fragments. If the bucket is sufficiently populated, sampled fragments become the base Monte Carlo shocks. If the bucket is sparse, the engine should widen to a coarser bucket, increase the uncertainty buffer, or block the trade. This prevents the system from acting confident just because it found a tiny historical sample that happened to work.
+
+The prior is then adapted to the current market state. `sigma_tau` scales the sampled path shocks to current expected remaining movement, and stress overlays can add final-window wick or event-risk scenarios. This gives the engine a practical compromise: historical path realism plus current live volatility.
+
+This design is aligned with Monte Carlo simulation as the counting framework \[20\], dependent time-series resampling through bootstrap-style methods \[9\], and realized-volatility scaling through models such as HAR-RV \[21\].
+
+Plain English: the prior is the simulation's starting belief. Monte Carlo is the counting machine. The prior decides what kinds of paths the machine is allowed to count.
+
+## 6.2 Are we using multiple generations?
 
 Yes, but the paper should call them **multiple path generators** rather than future generations. This avoids confusion. A path generator is a way of creating simulated remaining paths from the same as-of state. It does not look at the future of the current contract.
 
 Using multiple generators is useful because each generator fails differently:
 
-- empirical fragments preserve real wicks but may have sparse comparable buckets;
+- empirical conditional priors preserve real wicks but may have sparse comparable buckets;
 - block bootstrap preserves short-term dependence but can create unnatural joins;
 - filtered historical simulation handles volatility scaling but can smooth path shape too much;
 - stress overlays expose final-window and news-window risk but should not dominate the central estimate.
 
 The point is not to average random models blindly. The point is to measure whether the trade only works under one fragile path assumption. If the edge disappears under reasonable path generators, the system should demand more edge or block.
 
-## 6.2 Generator set
+## 6.3 Generator set
 
 | Generator | Purpose | First-pass use |
 |----|----|----|
-| G1: empirical path fragments | Sample historical same-asset, same-horizon, similar-volatility fragments. | Primary estimate because it preserves real crypto wicks and jumps. |
+| G1: empirical conditional prior | Sample historical same-asset, same-horizon, similar-state path fragments from data available before the decision time. | Primary estimate because it preserves real crypto wicks, jumps, and path shape. |
 | G2: moving or stationary block bootstrap | Resample blocks of short returns to preserve dependence in time-series data. | Challenger and uncertainty source. |
-| G3: filtered historical simulation | Normalize historical residuals by realized volatility, then rescale to current `sigma_tau`. | Useful when current volatility differs from historical fragments. |
+| G3: filtered historical simulation | Normalize historical residuals by realized volatility, then rescale to current `sigma_tau`. | Useful when current volatility differs from the historical prior bucket. |
 | G4: stress overlays | Add final-window wicks, source-disagreement, or news-window shocks. | Risk overlay, not central fair value unless validated. |
 
 Block and stationary bootstrap methods are standard ways to resample dependent time-series data without pretending every return is independent. The stationary bootstrap is a classic method for weakly dependent time series. \[9\]
 
-## 6.3 Ensemble probability and dispersion
+## 6.4 Ensemble probability and dispersion
 
 Each generator $`g`$ produces a terminal probability and path-survival probability:
 
@@ -1367,7 +1434,7 @@ Variables:
 - $`u_{\text{gen}}`$ = uncertainty from disagreement across path generators.
 - Higher $`u_{\text{gen}}`$ means the result depends heavily on modeling choice.
 
-## 6.4 Conditioning variables
+## 6.5 Conditioning variables
 
 Monte Carlo does not need every feature. It should condition on a small, stable set:
 
@@ -1382,7 +1449,7 @@ Monte Carlo does not need every feature. It should condition on a small, stable 
 
 Execution variables such as bid-ask spread, depth, target-size VWAP, and quote age should usually remain decision gates rather than path-generation variables. That keeps the path engine focused on price behavior and the decision engine focused on tradability.
 
-## 6.5 Monte Carlo test cases and unanswered questions
+## 6.6 Monte Carlo test cases and unanswered questions
 
 The research plan should explicitly test the following:
 
@@ -1390,6 +1457,7 @@ The research plan should explicitly test the following:
 |----|----|
 | How many paths are enough near a trade? | Compare 1,000, 5,000, 10,000, and cached estimates against live shadow calibration. |
 | How should fragments be selected? | Compare same asset only, same horizon, same volatility regime, and same wick regime. |
+| How should the prior be built? | Compare strict conditional buckets, coarser fallback buckets, and sigma-scaled fragments. |
 | Should fragments be scaled? | Compare raw fragments vs `sigma_tau`-scaled fragments. |
 | How should final seconds be handled? | Test final-window overlays and separate final-30-second buckets. |
 | What happens during macro news? | Compare event-window vs non-event-window path libraries. |
@@ -1398,7 +1466,7 @@ The research plan should explicitly test the following:
 | How should Chainlink/proxy disagreement be handled? | Add source buffer or block, then validate against final labels. |
 | Do multiple generators agree? | Track generator dispersion and edge sensitivity. |
 
-## 6.6 Cached grids and refresh rules
+## 6.7 Cached grids and refresh rules
 
 A full Monte Carlo run on every tick is unnecessary. The live path should use cached probability grids and refresh only when the state changes enough to matter.
 
@@ -1711,7 +1779,27 @@ Variables:
 - `asset_relevance` = whether the event is broad macro, BTC-specific, ETH-specific, or crypto-wide.
 - `recent_vol_response` = observed volatility reaction after the event is known.
 
-## 9.6 Mandatory gates
+## 9.6 Noise control and residual uncertainty policy
+
+Noise is not a standalone alpha signal, and it should not be treated as something the model can simply pay for with a larger buffer. The first job is to remove or avoid it: reject bad ticks, require fresh timestamps, reconcile feeds, wait for confirmation, and block when the state cannot be trusted. Only after those controls pass should the engine price a contract.
+
+| Noise class | Examples | Primary control |
+|----|----|----|
+| Source/feed noise | stale Chainlink or RTDS, proxy disagreement, bad ticks, source switch, coarse OHLC replay | Reject bad ticks, require source freshness, compare against approved proxies, and block near K when feeds disagree. |
+| Market microstructure noise | wide spread, stale quote, fast book update rate, depth decay, vanishing liquidity | Use fresh target-size VWAP, quote-age gates, latency stress, and depth checks; block if executable price is not reliable. |
+| Threshold/path noise | repeated crosses around K, one-tick touches, congestion near K, adverse wicks | Require dwell/confirmation, avoid threshold chop, and wait or block when the danger line sits inside noisy movement. |
+| Model/data sparsity noise | sparse historical bucket, high generator dispersion, low path count, weak calibration bucket | Widen to a coarser validated bucket, collect more data, or block instead of faking precision. |
+| Event noise | scheduled macro release, exchange incident, oracle disruption, breaking crypto news | Switch to research-only logging or hard-block during severe windows until the event state is observable again. |
+
+After these controls, any remaining measured uncertainty is residual model or execution uncertainty, not raw noise. That residual can increase existing terms such as `b_source`, `b_execution`, `b_MC`, `b_path`, or `b_event`, but the engine should not use a generic noise fee to justify trading through dirty data.
+
+``` math
+e_{\text{req}} = e_{0} + b_{\text{execution}} + b_{\text{source}} + b_{\text{MC}} + b_{\text{path}} + b_{\text{event}}
+```
+
+Plain rule: clean the input first. If it cannot be cleaned, do not trade. Ambiguous states become wait or research-only logging; stale source, stale book, threshold-overlapping source disagreement, severe depth failure, or too-sparse path evidence becomes block. Every decision row should log the active noise flags and the action taken so validation can test whether the controls reduced false positives or merely deleted good trades.
+
+## 9.7 Mandatory gates
 
 A trade candidate must pass:
 

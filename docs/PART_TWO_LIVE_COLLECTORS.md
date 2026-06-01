@@ -10,6 +10,36 @@ touch data/raw/.polymarket_archive_root
 uv run polymarket-engine collect --assets BTC,ETH --duration 10
 ```
 
+## Always-On Local Command
+
+```bash
+uv run polymarket-engine collect \
+  --assets BTC,ETH \
+  --forever \
+  --windows-to-track 2 \
+  --snapshot-interval 1 \
+  --market-refresh-interval 30 \
+  --raw-root data/raw \
+  --duckdb-path data/db/polymarket.duckdb \
+  --status-path data/live/status.json
+```
+
+This tracks only the accepted BTC/ETH UP/DOWN contracts for the current
+5-minute window and the next 5-minute window. The collector remains read-only.
+
+In another terminal:
+
+```bash
+uv run polymarket-engine monitor \
+  --duckdb-path data/db/polymarket.duckdb \
+  --status-path data/live/status.json \
+  --refresh 1 \
+  --limit 8
+```
+
+The monitor prefers the atomic status file so it can run while DuckDB is being
+written by the collector. DuckDB remains the durable normalized store.
+
 The first network runner records:
 
 - Polymarket BTC/ETH 5-minute market snapshots discovered by deterministic slugs.
