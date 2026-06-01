@@ -15,6 +15,7 @@ from polymarket_engine.domain.contract_rules import (
     ContractRuleRejected,
     parse_polymarket_crypto_updown_rule,
 )
+from polymarket_engine.domain.market_state import OrderBookObservation, PriceObservation
 from polymarket_engine.ingestion.coinbase_ws import (
     build_coinbase_ticker_subscription,
     coinbase_ticker_events,
@@ -87,6 +88,8 @@ async def run_fake_collection(
 
     for result in results:
         _register_file(store, config.raw_root, result)
+    for event in events:
+        _write_normalized_event(store, event)
 
     return LiveCollectorResult(
         events_written=sum(result.row_count for result in results),
@@ -153,6 +156,12 @@ async def run_live_collection(config: LiveCollectorConfig) -> LiveCollectorResul
     def record_event(event: CollectorEvent) -> None:
         nonlocal events_written, files_written
         events_written += 1
+        try:
+            _write_normalized_event(store, event)
+        except Exception as exc:
+            source_errors[f"normalized:{event.source_key}:{event.stream_key}"] = (
+                f"{type(exc).__name__}: {exc}"
+            )
         result = writer.add(event)
         if result is not None:
             register_result(result)
@@ -278,6 +287,64 @@ async def run_live_collection(config: LiveCollectorConfig) -> LiveCollectorResul
         files_written=files_written,
         source_errors=source_errors,
     )
+
+
+def _write_normalized_event(store: DuckDbIngestStore, event: CollectorEvent) -> None:
+    price_tick = _price_observation_from_event(event)
+    if price_tick is not None:
+        store.insert_price_tick(price_tick)
+        return
+    orderbook = _orderbook_observation_from_event(event)
+    if orderbook is not None:
+        store.insert_orderbook_snapshot(orderbook)
+
+
+def _price_observation_from_event(event: CollectorEvent) -> PriceObservation | None:
+    if event.stream_key not in {"price_update", "ticker"}:
+        return None
+    raw_price = event.payload.get("value", event.payload.get("price"))
+    if raw_price is None:
+        return None
+    return PriceObservation(
+        source_key=event.source_key,
+        symbol=event.symbol,
+        event_ts=event.event_ts,
+        observed_ts=event.observed_ts,
+        price=float(str(raw_price)),
+        bid=_optional_float(event.payload.get("best_bid")),
+        ask=_optional_float(event.payload.get("best_ask")),
+        sequence=_optional_sequence(event.payload.get("sequence")),
+    )
+
+
+def _orderbook_observation_from_event(event: CollectorEvent) -> OrderBookObservation | None:
+    if event.source_key != "polymarket_clob" or event.stream_key != "orderbook_snapshot":
+        return None
+    return OrderBookObservation(
+        venue="polymarket",
+        contract_id=str(event.payload["contract_id"]),
+        token_id=str(event.payload["token_id"]),
+        event_ts=event.event_ts,
+        observed_ts=event.observed_ts,
+        best_bid=_optional_float(event.payload.get("best_bid")),
+        best_ask=_optional_float(event.payload.get("best_ask")),
+        bid_size_top=_optional_float(event.payload.get("bid_size_top")),
+        ask_size_top=_optional_float(event.payload.get("ask_size_top")),
+        spread=_optional_float(event.payload.get("spread")),
+        depth_json=str(event.payload["depth_json"]),
+    )
+
+
+def _optional_float(value: object) -> float | None:
+    if value is None:
+        return None
+    return float(str(value))
+
+
+def _optional_sequence(value: object) -> str | None:
+    if value is None:
+        return None
+    return str(value)
 
 
 async def _send_rtds_heartbeats(ws: _WebSocketSender) -> None:

@@ -24,6 +24,7 @@ class DuckDbIngestStore:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         schema_path = Path(__file__).with_name("schema.sql")
         with duckdb.connect(str(self.db_path)) as conn:
+            _drop_incompatible_tables(conn)
             conn.sql(schema_path.read_text())
 
     def register_ingest_file(
@@ -225,13 +226,17 @@ class DuckDbIngestStore:
             conn.execute(
                 """
                 insert or replace into features.asof_state_inputs
-                (state_id, contract_id, asof_ts, asset, side, threshold, seconds_left,
-                 settlement_price, settlement_source_key, proxy_prices_json,
+                (state_id, contract_id, asof_ts, asset, side, threshold,
+                 threshold_source_key, threshold_event_ts, threshold_observed_ts,
+                 seconds_left, settlement_price, settlement_source_key, settlement_event_ts,
+                 settlement_observed_ts, proxy_prices_json,
                  source_disagreement_bps, best_bid, best_ask, executable_price, spread,
-                 quote_age_ms, source_age_ms, book_age_ms, realized_returns_json,
-                 short_realized_vol, medium_realized_vol, long_realized_vol, sigma_tau,
-                 volatility_regime, data_quality_flags_json, created_at)
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 book_event_ts, book_observed_ts, quote_age_ms, source_age_ms,
+                 source_observed_lag_ms, book_age_ms, book_observed_lag_ms,
+                 realized_returns_json, short_realized_vol, medium_realized_vol,
+                 long_realized_vol, sigma_tau, volatility_regime, data_quality_flags_json,
+                 created_at)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     state.state_id,
@@ -240,18 +245,27 @@ class DuckDbIngestStore:
                     state.contract.asset,
                     state.contract.side,
                     state.threshold,
+                    state.threshold_source_key,
+                    state.threshold_event_ts,
+                    state.threshold_observed_ts,
                     state.seconds_left,
                     state.settlement_price,
                     state.settlement_source_key,
+                    state.settlement_event_ts,
+                    state.settlement_observed_ts,
                     _json(state.proxy_prices),
                     state.source_disagreement_bps,
                     state.best_bid,
                     state.best_ask,
                     state.executable_price,
                     state.spread,
+                    state.book_event_ts,
+                    state.book_observed_ts,
                     state.quote_age_ms,
                     state.source_age_ms,
+                    state.source_observed_lag_ms,
                     state.book_age_ms,
+                    state.book_observed_lag_ms,
                     _json(list(state.realized_returns)),
                     state.short_realized_vol,
                     state.medium_realized_vol,
@@ -335,6 +349,21 @@ class DuckDbIngestStore:
         symbol: str,
         asof_ts: datetime,
     ) -> PriceObservation | None:
+        return self.latest_price_tick_before(
+            source_key=source_key,
+            symbol=symbol,
+            event_ts_lte=asof_ts,
+            observed_ts_lte=asof_ts,
+        )
+
+    def latest_price_tick_before(
+        self,
+        *,
+        source_key: str,
+        symbol: str,
+        event_ts_lte: datetime,
+        observed_ts_lte: datetime,
+    ) -> PriceObservation | None:
         with duckdb.connect(str(self.db_path)) as conn:
             row = conn.execute(
                 """
@@ -345,10 +374,10 @@ class DuckDbIngestStore:
                   and symbol = ?
                   and event_ts <= ?
                   and observed_ts <= ?
-                order by observed_ts desc, event_ts desc
+                order by event_ts desc, observed_ts desc
                 limit 1
                 """,
-                [source_key, symbol, asof_ts, asof_ts],
+                [source_key, symbol, event_ts_lte, observed_ts_lte],
             ).fetchone()
         if row is None:
             return None
@@ -380,7 +409,7 @@ class DuckDbIngestStore:
                   and token_id = ?
                   and event_ts <= ?
                   and observed_ts <= ?
-                order by observed_ts desc, event_ts desc
+                order by event_ts desc, observed_ts desc
                 limit 1
                 """,
                 [venue, token_id, asof_ts, asof_ts],
@@ -405,3 +434,36 @@ class DuckDbIngestStore:
 def _parse_duckdb_timestamptz(value: str) -> datetime:
     parsed = datetime.fromisoformat(value.replace(" ", "T"))
     return parsed.astimezone(timezone.utc)
+
+
+def _drop_incompatible_tables(conn: duckdb.DuckDBPyConnection) -> None:
+    required_columns = {
+        ("core", "contracts"): {
+            "market_id",
+            "threshold_type",
+            "comparison_operator",
+            "settlement_source_name",
+            "parser_version",
+        },
+        ("features", "asof_state_inputs"): {
+            "threshold_source_key",
+            "settlement_event_ts",
+            "book_event_ts",
+            "source_observed_lag_ms",
+            "book_observed_lag_ms",
+        },
+    }
+    for (schema_name, table_name), columns in required_columns.items():
+        existing = {
+            str(row[0])
+            for row in conn.execute(
+                """
+                select column_name
+                from information_schema.columns
+                where table_schema = ? and table_name = ?
+                """,
+                [schema_name, table_name],
+            ).fetchall()
+        }
+        if existing and not columns.issubset(existing):
+            conn.execute(f"drop table {schema_name}.{table_name}")

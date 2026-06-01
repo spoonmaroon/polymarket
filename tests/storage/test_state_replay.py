@@ -69,6 +69,15 @@ def test_build_decision_state_from_store_never_uses_future_price_or_book(tmp_pat
     after = datetime(2026, 5, 31, 20, 3, 1, tzinfo=timezone.utc)
     asof_ts = datetime(2026, 5, 31, 20, 3, tzinfo=timezone.utc)
     store.insert_price_tick(
+        PriceObservation(
+            "polymarket_rtds_chainlink",
+            "BTC/USD",
+            contract.start_ts,
+            datetime(2026, 5, 31, 20, 0, 1, tzinfo=timezone.utc),
+            103_950.0,
+        )
+    )
+    store.insert_price_tick(
         PriceObservation("polymarket_rtds_chainlink", "BTC/USD", before, before, 104_000.0)
     )
     store.insert_price_tick(
@@ -104,7 +113,7 @@ def test_build_decision_state_from_store_never_uses_future_price_or_book(tmp_pat
     assert state.best_ask == 0.64
 
 
-def test_build_decision_state_from_store_raises_when_only_future_price_exists(
+def test_build_decision_state_from_store_ignores_future_price_after_threshold(
     tmp_path: Path,
 ) -> None:
     db_path = tmp_path / "replay.duckdb"
@@ -114,10 +123,59 @@ def test_build_decision_state_from_store_raises_when_only_future_price_exists(
     after = datetime(2026, 5, 31, 20, 3, 1, tzinfo=timezone.utc)
     asof_ts = datetime(2026, 5, 31, 20, 3, tzinfo=timezone.utc)
     store.insert_price_tick(
+        PriceObservation(
+            "polymarket_rtds_chainlink",
+            "BTC/USD",
+            contract.start_ts,
+            datetime(2026, 5, 31, 20, 0, 1, tzinfo=timezone.utc),
+            103_950.0,
+        )
+    )
+    store.insert_price_tick(
         PriceObservation("polymarket_rtds_chainlink", "BTC/USD", after, after, 105_000.0)
     )
 
-    with pytest.raises(DecisionStateUnavailable, match="no settlement price"):
+    state = build_decision_state_from_store(
+        store=store,
+        contract=contract,
+        asof_ts=asof_ts,
+        resolved_threshold_price=103_950.0,
+        settlement_source_key="polymarket_rtds_chainlink",
+        proxy_source_keys=(),
+        volatility=None,
+    )
+
+    assert state.settlement_price == 103_950.0
+
+
+def test_build_decision_state_from_store_requires_asof_threshold_observation(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "replay.duckdb"
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    contract = _contract()
+    asof_ts = datetime(2026, 5, 31, 20, 3, tzinfo=timezone.utc)
+    store.insert_price_tick(
+        PriceObservation(
+            "polymarket_rtds_chainlink",
+            "BTC/USD",
+            event_ts=datetime(2026, 5, 31, 20, 0, 1, tzinfo=timezone.utc),
+            observed_ts=datetime(2026, 5, 31, 20, 0, 1, tzinfo=timezone.utc),
+            price=103_950.0,
+        )
+    )
+    store.insert_price_tick(
+        PriceObservation(
+            "polymarket_rtds_chainlink",
+            "BTC/USD",
+            event_ts=asof_ts,
+            observed_ts=asof_ts,
+            price=104_000.0,
+        )
+    )
+
+    with pytest.raises(DecisionStateUnavailable, match="start-price contract requires"):
         build_decision_state_from_store(
             store=store,
             contract=contract,
@@ -127,3 +185,75 @@ def test_build_decision_state_from_store_raises_when_only_future_price_exists(
             proxy_source_keys=(),
             volatility=None,
         )
+
+
+def test_store_latest_price_tick_prefers_newer_event_over_late_old_tick(tmp_path: Path) -> None:
+    db_path = tmp_path / "replay.duckdb"
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    asof_ts = datetime(2026, 5, 31, 20, 3, tzinfo=timezone.utc)
+    newer_event = datetime(2026, 5, 31, 20, 2, 50, tzinfo=timezone.utc)
+    late_old_event = datetime(2026, 5, 31, 20, 2, 40, tzinfo=timezone.utc)
+    store.insert_price_tick(
+        PriceObservation(
+            "polymarket_rtds_chainlink",
+            "BTC/USD",
+            newer_event,
+            datetime(2026, 5, 31, 20, 2, 51, tzinfo=timezone.utc),
+            104_000.0,
+        )
+    )
+    store.insert_price_tick(
+        PriceObservation(
+            "polymarket_rtds_chainlink",
+            "BTC/USD",
+            late_old_event,
+            datetime(2026, 5, 31, 20, 2, 59, tzinfo=timezone.utc),
+            103_000.0,
+        )
+    )
+
+    tick = store.latest_price_tick(
+        source_key="polymarket_rtds_chainlink",
+        symbol="BTC/USD",
+        asof_ts=asof_ts,
+    )
+
+    assert tick is not None
+    assert tick.price == 104_000.0
+
+
+def test_build_decision_state_from_store_maps_coinbase_proxy_symbol(tmp_path: Path) -> None:
+    db_path = tmp_path / "replay.duckdb"
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    contract = _contract()
+    asof_ts = datetime(2026, 5, 31, 20, 3, tzinfo=timezone.utc)
+    store.insert_price_tick(
+        PriceObservation(
+            "polymarket_rtds_chainlink",
+            "BTC/USD",
+            contract.start_ts,
+            datetime(2026, 5, 31, 20, 0, 1, tzinfo=timezone.utc),
+            103_950.0,
+        )
+    )
+    store.insert_price_tick(
+        PriceObservation("polymarket_rtds_chainlink", "BTC/USD", asof_ts, asof_ts, 104_000.0)
+    )
+    store.insert_price_tick(
+        PriceObservation("coinbase_advanced_ws", "BTC-USD", asof_ts, asof_ts, 104_100.0)
+    )
+
+    state = build_decision_state_from_store(
+        store=store,
+        contract=contract,
+        asof_ts=asof_ts,
+        resolved_threshold_price=103_950.0,
+        settlement_source_key="polymarket_rtds_chainlink",
+        proxy_source_keys=("coinbase_advanced_ws",),
+        volatility=None,
+    )
+
+    assert state.proxy_prices == {"coinbase_advanced_ws": 104_100.0}
+    assert state.source_disagreement_bps is not None

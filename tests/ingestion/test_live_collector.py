@@ -39,6 +39,58 @@ async def test_run_fake_collection_writes_events_and_registers_files(tmp_path: P
     assert result.source_errors == {}
 
 
+@pytest.mark.anyio
+async def test_run_fake_collection_writes_normalized_price_and_book_rows(tmp_path: Path) -> None:
+    event_ts = datetime(2026, 5, 31, 21, 0, 0, tzinfo=timezone.utc)
+    observed_ts = datetime(2026, 5, 31, 21, 0, 1, tzinfo=timezone.utc)
+    events = (
+        CollectorEvent(
+            "polymarket_rtds_chainlink",
+            "price_update",
+            "BTC/USD",
+            event_ts,
+            observed_ts,
+            {"value": "104000.12"},
+        ),
+        CollectorEvent(
+            "polymarket_clob",
+            "orderbook_snapshot",
+            "btc-updown-5m-1780261200:Up",
+            event_ts,
+            observed_ts,
+            {
+                "contract_id": "0xabc",
+                "token_id": "111",
+                "best_bid": 0.66,
+                "best_ask": 0.68,
+                "bid_size_top": 7.0,
+                "ask_size_top": 4.0,
+                "spread": 0.02,
+                "depth_json": '{"bids":[],"asks":[]}',
+            },
+        ),
+    )
+    config = LiveCollectorConfig(
+        assets=("BTC",),
+        duration_seconds=1,
+        raw_root=tmp_path / "raw",
+        duckdb_path=tmp_path / "collector.duckdb",
+        max_batch_size=10,
+    )
+
+    result = await run_fake_collection(config, events)
+
+    assert result.events_written == 2
+    with duckdb.connect(str(config.duckdb_path), read_only=True) as conn:
+        price_rows = conn.sql("select source_key, symbol, price from core.price_ticks").fetchall()
+        book_rows = conn.sql(
+            "select venue, token_id, best_bid, best_ask from core.orderbook_snapshots"
+        ).fetchall()
+
+    assert price_rows == [("polymarket_rtds_chainlink", "BTC/USD", 104000.12)]
+    assert book_rows == [("polymarket", "111", 0.66, 0.68)]
+
+
 def test_register_market_rules_stores_accepted_contract_rule(tmp_path: Path) -> None:
     config = LiveCollectorConfig(
         assets=("BTC",),

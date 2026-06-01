@@ -19,6 +19,14 @@ def build_decision_state_from_store(
     proxy_source_keys: Sequence[str],
     volatility: VolatilitySnapshot | None,
 ) -> DecisionState:
+    threshold = None
+    if contract.threshold_type == "start_price":
+        threshold = store.latest_price_tick_before(
+            source_key=settlement_source_key,
+            symbol=contract.settlement_symbol,
+            event_ts_lte=contract.start_ts,
+            observed_ts_lte=asof_ts,
+        )
     settlement = store.latest_price_tick(
         source_key=settlement_source_key,
         symbol=contract.settlement_symbol,
@@ -31,7 +39,7 @@ def build_decision_state_from_store(
         if (
             tick := store.latest_price_tick(
                 source_key=source_key,
-                symbol=contract.settlement_symbol,
+                symbol=_proxy_symbol(source_key, contract),
                 asof_ts=asof_ts,
             )
         )
@@ -51,4 +59,13 @@ def build_decision_state_from_store(
         proxy_prices=proxy_prices,
         orderbooks=orderbooks,
         volatility=volatility,
+        threshold_observation=threshold,
     )
+
+
+def _proxy_symbol(source_key: str, contract: ContractSpec) -> str:
+    if source_key == "coinbase_advanced_ws":
+        return f"{contract.asset}-USD"
+    if source_key == "binance_spot_ws":
+        return f"{contract.asset}USDT"
+    return contract.settlement_symbol

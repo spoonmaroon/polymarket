@@ -10,6 +10,7 @@ DataQualityFlag = Literal[
     "stale_source",
     "stale_orderbook",
     "missing_orderbook",
+    "incomplete_orderbook",
     "source_disagreement",
     "missing_volatility",
 ]
@@ -85,18 +86,27 @@ class DecisionState:
     asof_ts: datetime
     contract: ContractSpec
     threshold: float
+    threshold_source_key: str | None
+    threshold_event_ts: datetime | None
+    threshold_observed_ts: datetime | None
     seconds_left: float
     settlement_price: float
     settlement_source_key: str
+    settlement_event_ts: datetime
+    settlement_observed_ts: datetime
     proxy_prices: dict[str, float]
     source_disagreement_bps: float | None
     best_bid: float | None
     best_ask: float | None
     executable_price: float | None
     spread: float | None
+    book_event_ts: datetime | None
+    book_observed_ts: datetime | None
     quote_age_ms: int | None
     source_age_ms: int | None
+    source_observed_lag_ms: int | None
     book_age_ms: int | None
+    book_observed_lag_ms: int | None
     realized_returns: tuple[float, ...]
     short_realized_vol: float | None
     medium_realized_vol: float | None
@@ -107,6 +117,12 @@ class DecisionState:
 
     def __post_init__(self) -> None:
         _require_utc(self.asof_ts, "asof_ts")
+        _require_optional_utc(self.threshold_event_ts, "threshold_event_ts")
+        _require_optional_utc(self.threshold_observed_ts, "threshold_observed_ts")
+        _require_utc(self.settlement_event_ts, "settlement_event_ts")
+        _require_utc(self.settlement_observed_ts, "settlement_observed_ts")
+        _require_optional_utc(self.book_event_ts, "book_event_ts")
+        _require_optional_utc(self.book_observed_ts, "book_observed_ts")
         if self.threshold <= 0:
             raise ValueError("threshold must be positive")
         if self.seconds_left < 0:
@@ -136,6 +152,11 @@ def _require_utc(value: datetime, field_name: str) -> None:
         raise ValueError(f"{field_name} must be timezone-aware")
     if value.utcoffset() != timezone.utc.utcoffset(value):
         raise ValueError(f"{field_name} must be normalized to UTC")
+
+
+def _require_optional_utc(value: datetime | None, field_name: str) -> None:
+    if value is not None:
+        _require_utc(value, field_name)
 
 
 def _validate_probability_price(value: float | None, field_name: str) -> None:
