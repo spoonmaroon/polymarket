@@ -108,6 +108,38 @@ async def test_fetch_crypto_5m_markets_fetches_by_slug() -> None:
 
 
 @pytest.mark.anyio
+async def test_fetch_crypto_updown_markets_sends_explicit_user_agent() -> None:
+    user_agents: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        user_agents.append(request.headers.get("user-agent", ""))
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "slug": request.url.params["slug"],
+                    "question": "Bitcoin Up or Down - May 31, 5:00PM-5:05PM ET",
+                    "outcomes": json.dumps(["Up", "Down"]),
+                    "clobTokenIds": json.dumps(["111", "222"]),
+                }
+            ],
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    await fetch_crypto_updown_markets(
+        client=client,
+        base_url="https://gamma-api.polymarket.com",
+        now=datetime(2026, 5, 31, 21, 4, 0, tzinfo=timezone.utc),
+        assets=("BTC",),
+        intervals=("5m",),
+        windows_ahead=1,
+    )
+    await client.aclose()
+
+    assert user_agents == ["polymarket-engine/0.1"]
+
+
+@pytest.mark.anyio
 async def test_fetch_crypto_updown_markets_fetches_15m_slugs() -> None:
     requested_slugs: list[str] = []
 
