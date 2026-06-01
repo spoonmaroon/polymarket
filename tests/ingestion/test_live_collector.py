@@ -202,6 +202,49 @@ def test_status_source_disagreement_reports_fresh_basis_in_bps() -> None:
     assert row["diff_bps"] is not None
 
 
+def test_status_source_disagreement_includes_optional_rtds_crypto_proxy() -> None:
+    generated_at = datetime(2026, 6, 1, 11, 20, tzinfo=timezone.utc)
+    latest_prices = {
+        "coinbase_advanced_ws:BTC-USD": {
+            "source_key": "coinbase_advanced_ws",
+            "symbol": "BTC-USD",
+            "observed_ts": "2026-06-01T11:19:59+00:00",
+            "price": 72_611.01,
+        },
+        "polymarket_rtds_crypto:BTC/USDT": {
+            "source_key": "polymarket_rtds_crypto",
+            "symbol": "BTC/USDT",
+            "observed_ts": "2026-06-01T11:19:59+00:00",
+            "price": 72_612.00,
+        },
+        "polymarket_rtds_chainlink:BTC/USD": {
+            "source_key": "polymarket_rtds_chainlink",
+            "symbol": "BTC/USD",
+            "observed_ts": "2026-06-01T11:19:58+00:00",
+            "price": 72_623.5125,
+        },
+    }
+    freshness = _price_freshness_rows(
+        latest_prices=latest_prices,
+        assets=("BTC",),
+        generated_at=generated_at,
+        coinbase_stale_after_ms=2_000,
+        rtds_stale_after_ms=5_000,
+    )
+
+    rows = _source_disagreement_rows(
+        latest_prices=latest_prices,
+        source_freshness=freshness,
+        assets=("BTC",),
+    )
+
+    assert {row["proxy_source_key"] for row in rows} == {
+        "coinbase_advanced_ws",
+        "polymarket_rtds_crypto",
+    }
+    assert all(row["usable"] is True for row in rows)
+
+
 def test_market_ws_top_of_book_normalizes_to_orderbook_observation() -> None:
     observed = datetime(2026, 6, 1, 11, 20, tzinfo=timezone.utc)
     event = CollectorEvent(

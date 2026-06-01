@@ -7,12 +7,14 @@ from polymarket_engine.ingestion.polymarket_rtds import (
 )
 
 
-def test_build_rtds_subscriptions_uses_all_chainlink_symbols_for_live_eth_updates() -> None:
+def test_build_rtds_subscriptions_uses_chainlink_and_binance_proxy_topics() -> None:
     subscriptions = build_rtds_subscriptions(("BTC", "ETH"))
 
     assert subscriptions["action"] == "subscribe"
     assert subscriptions["subscriptions"] == [
-        {"topic": "crypto_prices_chainlink", "type": "*", "filters": ""}
+        {"topic": "crypto_prices_chainlink", "type": "*", "filters": ""},
+        {"topic": "crypto_prices", "type": "update", "filters": '{"symbol":"btcusdt"}'},
+        {"topic": "crypto_prices", "type": "update", "filters": '{"symbol":"ethusdt"}'},
     ]
 
 
@@ -59,6 +61,28 @@ def test_rtds_price_events_parse_chainlink_snapshot_payload() -> None:
     assert {event.source_key for event in events} == {"polymarket_rtds_chainlink"}
     assert [event.symbol for event in events] == ["BTC/USD", "BTC/USD"]
     assert [event.payload["value"] for event in events] == [104000.12, 104001.34]
+
+
+def test_rtds_price_events_parse_binance_proxy_payload() -> None:
+    observed = datetime(2026, 5, 31, 21, 0, 1, tzinfo=timezone.utc)
+    message = {
+        "topic": "crypto_prices",
+        "type": "update",
+        "timestamp": 1780261201000,
+        "payload": {
+            "full_accuracy_value": "104001.12000000",
+            "symbol": "btcusdt",
+            "timestamp": 1780261200500,
+            "value": 104001.12,
+        },
+    }
+
+    events = rtds_price_events(message, observed, assets=("BTC", "ETH"))
+
+    assert len(events) == 1
+    assert events[0].source_key == "polymarket_rtds_crypto"
+    assert events[0].symbol == "BTC/USDT"
+    assert events[0].payload["value"] == 104001.12
 
 
 def test_rtds_price_events_filter_to_configured_assets_after_all_symbol_subscription() -> None:

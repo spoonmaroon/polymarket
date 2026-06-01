@@ -84,6 +84,8 @@ def _reject_bad_freshness_rows(
             continue
         identifier = row.get("symbol", row.get("contract_id", "unknown"))
         source_key = row.get("source_key", "")
+        if row.get("required") is False:
+            continue
         if row.get("missing"):
             if allow_missing_or_stale:
                 continue
