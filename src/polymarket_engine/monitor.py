@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -23,6 +23,7 @@ class MonitorSnapshot:
     source_freshness: tuple[dict[str, Any], ...] = ()
     source_disagreements: tuple[dict[str, Any], ...] = ()
     orderbook_freshness: tuple[dict[str, Any], ...] = ()
+    source_errors: dict[str, str] = field(default_factory=dict)
 
 
 def fetch_monitor_snapshot(
@@ -46,6 +47,7 @@ def fetch_monitor_snapshot(
             source_freshness=(),
             source_disagreements=(),
             orderbook_freshness=(),
+            source_errors={},
         )
 
     with _connect_read_only_with_retry(duckdb_path, lock_retry_seconds) as conn:
@@ -170,17 +172,34 @@ def fetch_monitor_snapshot(
     )
 
 
-def _snapshot_from_status(status_path: Path, limit: int) -> MonitorSnapshot:
+def _snapshot_from_status(
+    status_path: Path,
+    limit: int,
+    now: datetime | None = None,
+) -> MonitorSnapshot:
     payload = json.loads(status_path.read_text(encoding="utf-8"))
-    generated_at = datetime.fromisoformat(str(payload["generated_at"]))
+    generated_at = _parse_datetime(payload["generated_at"])
+    wall_time = datetime.now(timezone.utc) if now is None else _to_utc(now)
     price_rows = tuple(dict(row) for row in payload.get("prices", ()))
     orderbooks = tuple(dict(row) for row in payload.get("orderbooks", ())[:limit])
     contracts = tuple(dict(row) for row in payload.get("contracts", ())[:limit])
     ingest_counts = tuple(dict(row) for row in payload.get("ingest_counts", ()))
     normalized_health = tuple(dict(row) for row in payload.get("normalized_health", ()))
-    source_freshness = tuple(dict(row) for row in payload.get("source_freshness", ()))
-    source_disagreements = tuple(dict(row) for row in payload.get("source_disagreements", ()))
-    orderbook_freshness = tuple(dict(row) for row in payload.get("orderbook_freshness", ()))
+    source_freshness = _refresh_freshness_rows(
+        payload.get("source_freshness", ()),
+        now=wall_time,
+        fallback_ts=generated_at,
+    )
+    source_disagreements = _block_stale_disagreements(
+        payload.get("source_disagreements", ()),
+        source_freshness=source_freshness,
+    )
+    orderbook_freshness = _refresh_freshness_rows(
+        payload.get("orderbook_freshness", ()),
+        now=wall_time,
+        fallback_ts=generated_at,
+    )
+    source_errors = {str(key): str(value) for key, value in payload.get("source_errors", {}).items()}
     prices = {
         (str(row["source_key"]), str(row["symbol"])): float(row["price"]) for row in price_rows
     }
@@ -195,7 +214,86 @@ def _snapshot_from_status(status_path: Path, limit: int) -> MonitorSnapshot:
         source_freshness=source_freshness,
         source_disagreements=source_disagreements,
         orderbook_freshness=orderbook_freshness,
+        source_errors=source_errors,
     )
+
+
+def _refresh_freshness_rows(
+    rows: Any,
+    *,
+    now: datetime,
+    fallback_ts: datetime,
+) -> tuple[dict[str, Any], ...]:
+    refreshed: list[dict[str, Any]] = []
+    for raw_row in rows:
+        row = dict(raw_row)
+        observed_ts = _parse_optional_datetime(row.get("observed_ts")) or fallback_ts
+        age_ms = max(0, int((now - observed_ts).total_seconds() * 1000))
+        row["age_ms"] = age_ms
+        stale_after_ms = _optional_int(row.get("stale_after_ms"))
+        if row.get("missing"):
+            row["stale"] = True
+        elif stale_after_ms is None:
+            row["stale"] = True
+        else:
+            row["stale"] = age_ms > stale_after_ms
+        refreshed.append(row)
+    return tuple(refreshed)
+
+
+def _block_stale_disagreements(
+    rows: Any,
+    *,
+    source_freshness: tuple[dict[str, Any], ...],
+) -> tuple[dict[str, Any], ...]:
+    freshness_by_source = {
+        (str(row.get("source_key")), str(row.get("symbol"))): bool(row.get("stale"))
+        for row in source_freshness
+    }
+    patched: list[dict[str, Any]] = []
+    for raw_row in rows:
+        row = dict(raw_row)
+        primary_key = (str(row.get("primary_source_key")), str(row.get("primary_symbol")))
+        proxy_key = (str(row.get("proxy_source_key")), str(row.get("proxy_symbol")))
+        if freshness_by_source.get(primary_key):
+            row["usable"] = False
+            row["block_reason"] = "stale_reference_source"
+        elif freshness_by_source.get(proxy_key):
+            row["usable"] = False
+            row["block_reason"] = "stale_proxy_source"
+        patched.append(row)
+    return tuple(patched)
+
+
+def _parse_optional_datetime(value: object) -> datetime | None:
+    if value is None:
+        return None
+    return _parse_datetime(value)
+
+
+def _parse_datetime(value: object) -> datetime:
+    text = str(value).replace("Z", "+00:00")
+    return _to_utc(datetime.fromisoformat(text))
+
+
+def _to_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        raise ValueError("status timestamps must be timezone-aware")
+    return value.astimezone(timezone.utc)
+
+
+def _optional_int(value: object) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise TypeError("boolean is not a valid integer value")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        return int(value)
+    raise TypeError(f"unsupported integer value: {value!r}")
 
 
 def _connect_read_only_with_retry(
@@ -257,6 +355,13 @@ def render_monitor(snapshot: MonitorSnapshot) -> str:
                 )
     else:
         lines.append("  no source disagreement yet")
+
+    lines.extend(["", "Source Errors"])
+    if snapshot.source_errors:
+        for source_key, error in sorted(snapshot.source_errors.items()):
+            lines.append(f"  {source_key:<32} {error}")
+    else:
+        lines.append("  no source errors")
 
     lines.extend(["", "Active Contracts"])
     if snapshot.contracts:

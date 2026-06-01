@@ -325,6 +325,42 @@ def test_build_decision_state_flags_stale_source_missing_book_and_source_disagre
     assert state.executable_price is None
 
 
+def test_build_decision_state_flags_missing_volatility_when_sigma_is_unusable() -> None:
+    contract = _contract()
+    asof_ts = datetime(2026, 5, 31, 20, 3, tzinfo=timezone.utc)
+    settlement = PriceObservation(
+        source_key="polymarket_rtds_chainlink",
+        symbol="BTC/USD",
+        event_ts=asof_ts,
+        observed_ts=asof_ts,
+        price=104_000.0,
+    )
+    stale_volatility = VolatilitySnapshot(
+        event_ts=asof_ts,
+        observed_ts=asof_ts,
+        realized_returns=(),
+        short_realized_vol=None,
+        medium_realized_vol=None,
+        long_realized_vol=None,
+        sigma_tau=None,
+        regime="stale_reference_source",
+    )
+
+    state = build_decision_state(
+        contract=contract,
+        asof_ts=asof_ts,
+        settlement_prices=(settlement,),
+        proxy_prices=(),
+        orderbooks=(),
+        volatility=stale_volatility,
+        threshold_observation=_threshold_observation(),
+    )
+
+    assert state.sigma_tau is None
+    assert state.volatility_regime == "stale_reference_source"
+    assert "missing_volatility" in state.data_quality_flags
+
+
 def test_build_decision_state_ignores_wrong_asset_proxy_prices() -> None:
     contract = _contract()
     asof_ts = datetime(2026, 5, 31, 20, 3, tzinfo=timezone.utc)

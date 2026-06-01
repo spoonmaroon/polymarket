@@ -150,8 +150,8 @@ async def test_run_collect_command_uses_injected_runner(tmp_path: Path) -> None:
         "intervals": ("5m", "15m"),
         "snapshot_interval": 1.0,
         "enable_clob_websocket": True,
-        "clob_rest_backup_interval": 15.0,
-        "clob_request_timeout": 5.0,
+        "clob_rest_backup_interval": 5.0,
+        "clob_request_timeout": 2.0,
         "display_timezone": "America/Chicago",
         "status_path": tmp_path / "status.json",
     }

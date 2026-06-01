@@ -130,7 +130,7 @@ def build_decision_state(
         stale_source_after_ms=stale_source_after_ms,
         stale_book_after_ms=stale_book_after_ms,
         source_disagreement_block_bps=source_disagreement_block_bps,
-        has_volatility=volatility is not None,
+        has_volatility=volatility is not None and volatility.sigma_tau is not None,
     )
     state_id = f"{contract.contract_id}:{asof_ts.isoformat()}"
     seconds_left = (contract.expiry_ts - asof_ts).total_seconds()

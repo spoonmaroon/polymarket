@@ -22,6 +22,7 @@ class VolatilityConfig:
     expansion_multiplier: float = 1.15
     contraction_multiplier: float = 0.95
     max_price_gap_seconds: float = 5.0
+    max_reference_age_seconds: float = 10.0
 
     def __post_init__(self) -> None:
         _validate_windows(self.short_window, self.medium_window, self.long_window)
@@ -34,6 +35,7 @@ class VolatilityConfig:
         _validate_positive(self.expansion_multiplier, "expansion_multiplier")
         _validate_positive(self.contraction_multiplier, "contraction_multiplier")
         _validate_positive(self.max_price_gap_seconds, "max_price_gap_seconds")
+        _validate_positive(self.max_reference_age_seconds, "max_reference_age_seconds")
 
 
 def log_returns_from_prices(prices: Sequence[PriceObservation]) -> tuple[float, ...]:
@@ -120,6 +122,7 @@ def build_volatility_snapshot(
     asof_ts: datetime,
     seconds_left: float,
     config: VolatilityConfig | None = None,
+    symbol: str | None = None,
 ) -> VolatilitySnapshot:
     _require_utc(asof_ts, "asof_ts")
     active_config = VolatilityConfig() if config is None else config
@@ -128,6 +131,7 @@ def build_volatility_snapshot(
             price
             for price in prices
             if price.source_key == VOLATILITY_REFERENCE_SOURCE_KEY
+            if symbol is None or price.symbol == symbol
             if price.event_ts <= asof_ts and price.observed_ts <= asof_ts
         ),
         key=lambda price: (price.event_ts, price.observed_ts),
@@ -162,6 +166,23 @@ def build_volatility_snapshot(
             regime="missing_continuous_reference_source",
         )
 
+    latest = continuous_prices[-1]
+    latest_age_seconds = max(
+        (asof_ts - latest.event_ts).total_seconds(),
+        (asof_ts - latest.observed_ts).total_seconds(),
+    )
+    if latest_age_seconds > active_config.max_reference_age_seconds:
+        return VolatilitySnapshot(
+            event_ts=latest.event_ts,
+            observed_ts=latest.observed_ts,
+            realized_returns=(),
+            short_realized_vol=None,
+            medium_realized_vol=None,
+            long_realized_vol=None,
+            sigma_tau=None,
+            regime="stale_reference_source",
+        )
+
     returns = log_returns_from_prices(continuous_prices)
     short_vol = realized_volatility(returns, window=active_config.short_window)
     medium_vol = realized_volatility(returns, window=active_config.medium_window)
@@ -183,7 +204,6 @@ def build_volatility_snapshot(
         regime_multiplier=regime_multiplier(regime, active_config),
     )
 
-    latest = continuous_prices[-1]
     event_ts = latest.event_ts
     observed_ts = max(price.observed_ts for price in continuous_prices)
 
