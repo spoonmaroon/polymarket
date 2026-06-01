@@ -2906,6 +2906,7 @@ dependencies = [
 name = "polymarket-runtime-types"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "chrono",
  "rust_decimal",
  "serde",

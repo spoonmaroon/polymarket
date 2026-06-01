@@ -50,7 +50,7 @@
 - Test: `rust/crates/polymarket-runtime-types/src/contract.rs`
 - Test: `rust/crates/polymarket-runtime-types/src/state.rs`
 
-- [ ] **Step 1: Write contract type tests**
+- [x] **Step 1: Write contract type tests**
 
 Add this test module to the new `contract.rs`:
 
@@ -88,7 +88,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -99,7 +99,7 @@ cargo test -p polymarket-runtime-types contract::tests -q
 
 Expected: compile failure because `ContractWindow`, `ContractToken`, `ContractSide`, and `WarmedContract` are not defined.
 
-- [ ] **Step 3: Implement contract types**
+- [x] **Step 3: Implement contract types**
 
 Create `contract.rs` with:
 
@@ -187,7 +187,7 @@ impl WarmedContract {
 }
 ```
 
-- [ ] **Step 4: Export types**
+- [x] **Step 4: Export types**
 
 Modify `lib.rs`:
 
@@ -199,7 +199,7 @@ pub mod probe;
 pub mod state;
 ```
 
-- [ ] **Step 5: Add state snapshot types and tests**
+- [x] **Step 5: Add state snapshot types and tests**
 
 Create `state.rs`:
 
@@ -240,7 +240,7 @@ impl WarmStateSnapshot {
 
 Add a test that a snapshot with `stale_chainlink_btc` blocks trading.
 
-- [ ] **Step 6: Run tests**
+- [x] **Step 6: Run tests**
 
 Run:
 
