@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -271,9 +271,18 @@ def test_build_decision_state_from_store_builds_asof_volatility(tmp_path: Path) 
     store.upsert_contract_spec(contract)
     asof_ts = datetime(2026, 5, 31, 20, 3, tzinfo=timezone.utc)
     threshold_ts = datetime(2026, 5, 31, 20, 0, tzinfo=timezone.utc)
-    prices = (103_950.0, 103_980.0, 104_000.0, 104_050.0, 104_090.0)
-    for index, price in enumerate(prices):
-        ts = threshold_ts.replace(second=index)
+    store.insert_price_tick(
+        PriceObservation(
+            "polymarket_rtds_chainlink",
+            "BTC/USD",
+            threshold_ts,
+            threshold_ts,
+            103_950.0,
+        )
+    )
+    prices = (103_980.0, 104_000.0, 104_050.0, 104_090.0, 104_100.0)
+    for offset, price in zip((4, 3, 2, 1, 0), prices, strict=True):
+        ts = asof_ts - timedelta(seconds=offset)
         store.insert_price_tick(
             PriceObservation("polymarket_rtds_chainlink", "BTC/USD", ts, ts, price)
         )

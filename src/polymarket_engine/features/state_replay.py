@@ -74,6 +74,7 @@ def build_decision_state_from_store(
             asof_ts=asof_ts,
             seconds_left=(contract.expiry_ts - asof_ts).total_seconds(),
             config=volatility_config,
+            symbol=contract.settlement_symbol,
         )
     return build_decision_state(
         contract=contract,

@@ -16,8 +16,8 @@ def test_live_collector_defaults_to_current_and_next_windows() -> None:
     assert config.windows_to_track == 2
     assert config.intervals == ("5m", "15m")
     assert config.enable_clob_websocket is True
-    assert config.clob_rest_backup_interval_seconds == 15.0
-    assert config.clob_request_timeout_seconds == 5.0
+    assert config.clob_rest_backup_interval_seconds == 5.0
+    assert config.clob_request_timeout_seconds == 2.0
     assert config.display_timezone == "America/Chicago"
     assert config.clob_snapshot_interval_seconds == 1.0
     assert config.market_refresh_interval_seconds == 30.0

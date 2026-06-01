@@ -66,8 +66,8 @@ class LiveCollectorConfig:
     intervals: tuple[str, ...] = ("5m", "15m")
     enable_clob_websocket: bool = True
     clob_snapshot_interval_seconds: float = 1.0
-    clob_rest_backup_interval_seconds: float = 15.0
-    clob_request_timeout_seconds: float = 5.0
+    clob_rest_backup_interval_seconds: float = 5.0
+    clob_request_timeout_seconds: float = 2.0
     market_refresh_interval_seconds: float = 30.0
     market_fetch_timeout_seconds: float = 10.0
     display_timezone: str = "America/Chicago"

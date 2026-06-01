@@ -109,6 +109,8 @@ def test_estimate_sigma_tau_rejects_invalid_sigma_floor(sigma_floor: float) -> N
         ("expansion_multiplier", lambda: VolatilityConfig(expansion_multiplier=math.inf)),
         ("contraction_multiplier", lambda: VolatilityConfig(contraction_multiplier=math.nan)),
         ("contraction_multiplier", lambda: VolatilityConfig(contraction_multiplier=math.inf)),
+        ("max_reference_age_seconds", lambda: VolatilityConfig(max_reference_age_seconds=math.nan)),
+        ("max_reference_age_seconds", lambda: VolatilityConfig(max_reference_age_seconds=math.inf)),
     ),
 )
 def test_volatility_config_rejects_non_finite_positive_values(
@@ -355,6 +357,32 @@ def test_build_volatility_snapshot_ignores_rtds_binance_proxy_mismatch() -> None
     assert snapshot.realized_returns == pytest.approx((math.log(101.0 / 100.0),))
 
 
+def test_build_volatility_snapshot_filters_reference_prices_by_symbol_when_requested() -> None:
+    asof_ts = BASE_TS + timedelta(seconds=10)
+    eth_tick = PriceObservation(
+        source_key="polymarket_rtds_chainlink",
+        symbol="ETH/USD",
+        event_ts=BASE_TS + timedelta(seconds=2),
+        observed_ts=BASE_TS + timedelta(seconds=2),
+        price=5000.0,
+    )
+
+    snapshot = build_volatility_snapshot(
+        prices=(
+            _price(100.0, event_seconds=0),
+            _price(101.0, event_seconds=1),
+            eth_tick,
+        ),
+        asof_ts=asof_ts,
+        seconds_left=60.0,
+        config=VolatilityConfig(short_window=1, medium_window=2, long_window=3),
+        symbol="BTC/USD",
+    )
+
+    assert snapshot.realized_returns == pytest.approx((math.log(101.0 / 100.0),))
+    assert snapshot.event_ts == BASE_TS + timedelta(seconds=1)
+
+
 def test_build_volatility_snapshot_resets_return_history_after_stale_chainlink_gap() -> None:
     asof_ts = BASE_TS + timedelta(seconds=7202)
 
@@ -398,6 +426,31 @@ def test_build_volatility_snapshot_returns_missing_when_latest_chainlink_segment
     assert snapshot.long_realized_vol is None
     assert snapshot.sigma_tau is None
     assert snapshot.regime == "missing_continuous_reference_source"
+
+
+def test_build_volatility_snapshot_returns_missing_when_latest_chainlink_segment_is_stale() -> None:
+    asof_ts = BASE_TS + timedelta(seconds=120)
+
+    snapshot = build_volatility_snapshot(
+        prices=(
+            _price(100.0, event_seconds=0),
+            _price(101.0, event_seconds=1),
+            _price(102.0, event_seconds=2),
+        ),
+        asof_ts=asof_ts,
+        seconds_left=60.0,
+        config=VolatilityConfig(
+            short_window=1,
+            medium_window=2,
+            long_window=3,
+            max_price_gap_seconds=5.0,
+            max_reference_age_seconds=5.0,
+        ),
+    )
+
+    assert snapshot.realized_returns == ()
+    assert snapshot.sigma_tau is None
+    assert snapshot.regime == "stale_reference_source"
 
 
 @pytest.mark.parametrize(

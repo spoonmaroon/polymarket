@@ -7,7 +7,7 @@ import duckdb
 import pytest
 
 from polymarket_engine.domain.market_state import PriceObservation
-from polymarket_engine.monitor import fetch_monitor_snapshot, render_monitor
+from polymarket_engine.monitor import _snapshot_from_status, fetch_monitor_snapshot, render_monitor
 from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
 
 
@@ -128,6 +128,93 @@ def test_monitor_snapshot_prefers_atomic_status_file(tmp_path: Path) -> None:
     assert snapshot.source_disagreements[0]["block_reason"] == "stale_reference_source"
 
 
+def test_monitor_snapshot_recomputes_status_freshness_against_wall_time(tmp_path: Path) -> None:
+    status_path = tmp_path / "status.json"
+    status_path.write_text(
+        json.dumps(
+            {
+                "generated_at": "2026-05-31T21:30:00+00:00",
+                "prices": [],
+                "contracts": [],
+                "orderbooks": [],
+                "ingest_counts": [],
+                "normalized_health": [],
+                "source_freshness": [
+                    {
+                        "source_key": "polymarket_rtds_chainlink",
+                        "symbol": "BTC/USD",
+                        "observed_ts": "2026-05-31T21:30:00+00:00",
+                        "age_ms": 0,
+                        "stale_after_ms": 5000,
+                        "stale": False,
+                        "missing": False,
+                    }
+                ],
+                "source_disagreements": [
+                    {
+                        "asset": "BTC",
+                        "primary_source_key": "polymarket_rtds_chainlink",
+                        "primary_symbol": "BTC/USD",
+                        "primary_price": 73500.0,
+                        "proxy_source_key": "coinbase_advanced_ws",
+                        "proxy_symbol": "BTC-USD",
+                        "proxy_price": 73501.0,
+                        "diff": 1.0,
+                        "diff_bps": 0.14,
+                        "usable": True,
+                        "block_reason": None,
+                    }
+                ],
+                "orderbook_freshness": [
+                    {
+                        "asset": "BTC",
+                        "side": "UP",
+                        "contract_id": "btc-market:UP",
+                        "observed_ts": "2026-05-31T21:30:00+00:00",
+                        "age_ms": 0,
+                        "stale_after_ms": 5000,
+                        "stale": False,
+                        "missing": False,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    snapshot = _snapshot_from_status(
+        status_path,
+        limit=4,
+        now=datetime(2026, 5, 31, 21, 30, 10, tzinfo=timezone.utc),
+    )
+
+    assert snapshot.source_freshness[0]["stale"] is True
+    assert snapshot.source_freshness[0]["age_ms"] == 10_000
+    assert snapshot.source_disagreements[0]["usable"] is False
+    assert snapshot.source_disagreements[0]["block_reason"] == "stale_reference_source"
+    assert snapshot.orderbook_freshness[0]["stale"] is True
+    assert snapshot.orderbook_freshness[0]["age_ms"] == 10_000
+
+
+def test_monitor_snapshot_rejects_naive_status_timestamp(tmp_path: Path) -> None:
+    status_path = tmp_path / "status.json"
+    status_path.write_text(
+        json.dumps(
+            {
+                "generated_at": "2026-05-31T21:30:00",
+                "prices": [],
+                "contracts": [],
+                "orderbooks": [],
+                "ingest_counts": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="status timestamps must be timezone-aware"):
+        _snapshot_from_status(status_path, limit=4)
+
+
 def test_render_monitor_outputs_normalized_health_and_stale_sources() -> None:
     snapshot = fetch_monitor_snapshot(
         Path("missing.duckdb"),
@@ -171,6 +258,7 @@ def test_render_monitor_outputs_normalized_health_and_stale_sources() -> None:
             },
         ),
         orderbook_freshness=(),
+        source_errors={"polymarket_clob:111": "ConnectTimeout"},
     )
 
     output = render_monitor(enriched)
@@ -178,5 +266,7 @@ def test_render_monitor_outputs_normalized_health_and_stale_sources() -> None:
     assert "Normalized Health" in output
     assert "Source Freshness" in output
     assert "Source Disagreement" in output
+    assert "Source Errors" in output
+    assert "polymarket_clob:111" in output
     assert "STALE" in output
     assert "blocked=stale_reference_source" in output
