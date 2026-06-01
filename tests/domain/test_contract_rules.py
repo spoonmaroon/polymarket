@@ -14,6 +14,11 @@ The resolution source for this market is information from Chainlink, specificall
 Please note that this market is about the price according to Chainlink data stream BTC/USD, not according to other sources or spot exchanges."""
 
 
+ETH_DESCRIPTION = BTC_DESCRIPTION.replace("Bitcoin", "Ethereum").replace(
+    "BTC/USD", "ETH/USD"
+).replace("btc-usd", "eth-usd")
+
+
 def test_parse_btc_updown_start_price_rule() -> None:
     market = {
         "id": "2397858",
@@ -107,4 +112,80 @@ def test_parse_rejects_wrong_settlement_source() -> None:
     }
 
     with pytest.raises(ContractRuleRejected, match="unsupported settlement source"):
+        parse_polymarket_crypto_updown_rule(market)
+
+
+def test_parse_eth_updown_start_price_rule() -> None:
+    market = {
+        "id": "2397999",
+        "conditionId": "0xeth",
+        "slug": "eth-updown-5m-1780264500",
+        "question": "Ethereum Up or Down - May 31, 5:55PM-6:00PM ET",
+        "description": ETH_DESCRIPTION,
+        "eventStartTime": "2026-05-31T21:55:00Z",
+        "endDate": "2026-05-31T22:00:00Z",
+        "resolutionSource": "https://data.chain.link/streams/eth-usd",
+        "outcomes": '["Up", "Down"]',
+        "clobTokenIds": '["333", "444"]',
+    }
+
+    rule = parse_polymarket_crypto_updown_rule(market)
+
+    assert rule.asset == "ETH"
+    assert rule.settlement_symbol == "ETH/USD"
+    assert rule.settlement_source_url == "https://data.chain.link/streams/eth-usd"
+    assert rule.outcome_token_ids == {"Up": "333", "Down": "444"}
+
+
+def test_parse_rejects_unsupported_slug_before_state_building() -> None:
+    market = {
+        "id": "2397858",
+        "conditionId": "0xabc",
+        "slug": "btc-above-100000",
+        "question": "Bitcoin above 100000",
+        "description": BTC_DESCRIPTION,
+        "eventStartTime": "2026-05-31T21:55:00Z",
+        "endDate": "2026-05-31T22:00:00Z",
+        "resolutionSource": "https://data.chain.link/streams/btc-usd",
+        "outcomes": '["Up", "Down"]',
+        "clobTokenIds": '["111", "222"]',
+    }
+
+    with pytest.raises(ContractRuleRejected, match="unsupported slug"):
+        parse_polymarket_crypto_updown_rule(market)
+
+
+def test_parse_rejects_missing_end_price_rule() -> None:
+    market = {
+        "id": "2397858",
+        "conditionId": "0xabc",
+        "slug": "btc-updown-5m-1780264500",
+        "question": "Bitcoin Up or Down - May 31, 5:55PM-6:00PM ET",
+        "description": BTC_DESCRIPTION.replace("price at the end", "final quote"),
+        "eventStartTime": "2026-05-31T21:55:00Z",
+        "endDate": "2026-05-31T22:00:00Z",
+        "resolutionSource": "https://data.chain.link/streams/btc-usd",
+        "outcomes": '["Up", "Down"]',
+        "clobTokenIds": '["111", "222"]',
+    }
+
+    with pytest.raises(ContractRuleRejected, match="missing end-price comparison rule"):
+        parse_polymarket_crypto_updown_rule(market)
+
+
+def test_parse_rejects_naive_timestamps() -> None:
+    market = {
+        "id": "2397858",
+        "conditionId": "0xabc",
+        "slug": "btc-updown-5m-1780264500",
+        "question": "Bitcoin Up or Down - May 31, 5:55PM-6:00PM ET",
+        "description": BTC_DESCRIPTION,
+        "eventStartTime": "2026-05-31T21:55:00",
+        "endDate": "2026-05-31T22:00:00Z",
+        "resolutionSource": "https://data.chain.link/streams/btc-usd",
+        "outcomes": '["Up", "Down"]',
+        "clobTokenIds": '["111", "222"]',
+    }
+
+    with pytest.raises(ContractRuleRejected, match="timestamp must be timezone-aware"):
         parse_polymarket_crypto_updown_rule(market)
