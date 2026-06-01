@@ -726,18 +726,16 @@ async def run_live_collection(config: LiveCollectorConfig) -> LiveCollectorResul
                     latest_orderbooks_by_source=latest_orderbooks_by_source,
                     source_errors=source_errors,
                 )
-                tokens = tuple(market_tokens.values())
-                results = await asyncio.gather(
-                    *(_fetch_clob_book_event(client, token) for token in tokens),
-                    return_exceptions=True,
-                )
-                for token, result in zip(tokens, results, strict=True):
-                    if isinstance(result, CollectorEvent):
-                        await record_event(result)
+                for token in tuple(market_tokens.values()):
+                    if not _should_continue(deadline):
+                        break
+                    try:
+                        event = await _fetch_clob_book_event(client, token)
+                        await record_event(event)
                         source_errors.pop(f"polymarket_clob:{token.token_id}", None)
-                    elif isinstance(result, Exception):
+                    except Exception as exc:
                         source_errors[f"polymarket_clob:{token.token_id}"] = (
-                            f"{type(result).__name__}: {result}"
+                            f"{type(exc).__name__}: {exc}"
                         )
                 await flush_due()
                 sleep_seconds = (
