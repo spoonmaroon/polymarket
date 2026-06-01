@@ -10,6 +10,23 @@
 
 ---
 
+## Design Decision: Live Ticks Versus Permanent History
+
+The collector should consume every live Chainlink RTDS price update and every Polymarket CLOB book update in memory. Those updates are useful immediately for current price, rolling realized volatility, source freshness, order-book freshness, and future Monte Carlo path generation.
+
+The system should not store every raw tick forever. Permanent research history should preserve the information needed to replay decisions and estimate future paths:
+
+- Chainlink BTC/USD and ETH/USD 1-second OHLC bars.
+- intrasecond high and low, because `p_no_touch` depends on whether the path touched the danger line, not only where it closed.
+- update count per second, because update intensity is a useful noise/liquidity/regime signal.
+- first and last event timestamps, first and last observed timestamps, and maximum observed lag.
+- source-quality flags, stale-feed flags, and missing-data flags.
+- Polymarket top-of-book first/last/min/max bid, ask, spread, and top sizes per second.
+
+This means live operation is tick-driven, while long-term research is compact and replay-safe. Raw messages stay available for 90 days for parser audits, bug investigations, and exact replays. After that, compact bars become the durable historical source unless a partition is explicitly archived.
+
+Important boundary: compact bars are historical artifacts. The live decision engine must not use a completed 1-second bar before that second has actually finished. For an as-of decision at `12:00:00.400`, the engine may use raw updates observed at or before `12:00:00.400`, but it may not use the final high, low, or close of the `12:00:00` compact bar because that would leak later intrasecond information.
+
 ## File Structure
 
 - Modify `src/polymarket_engine/storage/schema.sql`
