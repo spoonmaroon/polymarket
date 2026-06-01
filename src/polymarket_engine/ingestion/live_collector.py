@@ -68,11 +68,12 @@ class LiveCollectorConfig:
     clob_snapshot_interval_seconds: float = 1.0
     clob_rest_backup_interval_seconds: float = 15.0
     market_refresh_interval_seconds: float = 30.0
+    market_fetch_timeout_seconds: float = 10.0
     display_timezone: str = "America/Chicago"
     orderbook_stale_after_ms: int = 10_000
     rtds_stale_after_ms: int = 5000
     rtds_idle_reconnect_seconds: float = 15.0
-    coinbase_stale_after_ms: int = 2000
+    coinbase_stale_after_ms: int = 10_000
 
     def __post_init__(self) -> None:
         if self.duration_seconds is not None and self.duration_seconds <= 0:
@@ -88,6 +89,8 @@ class LiveCollectorConfig:
             raise ValueError("clob_rest_backup_interval_seconds must be positive")
         if self.market_refresh_interval_seconds <= 0:
             raise ValueError("market_refresh_interval_seconds must be positive")
+        if self.market_fetch_timeout_seconds <= 0:
+            raise ValueError("market_fetch_timeout_seconds must be positive")
         if self.rtds_idle_reconnect_seconds <= 0:
             raise ValueError("rtds_idle_reconnect_seconds must be positive")
         if self.display_timezone != "America/Chicago":
@@ -600,14 +603,18 @@ async def run_live_collection(config: LiveCollectorConfig) -> LiveCollectorResul
         async with httpx.AsyncClient(timeout=15) as client:
             while _should_continue(deadline):
                 try:
-                    markets = await fetch_crypto_updown_markets(
-                        client=client,
-                        base_url="https://gamma-api.polymarket.com",
-                        now=datetime.now(timezone.utc),
-                        assets=config.assets,
-                        intervals=config.intervals,
-                        windows_ahead=config.windows_to_track,
+                    markets = await asyncio.wait_for(
+                        fetch_crypto_updown_markets(
+                            client=client,
+                            base_url="https://gamma-api.polymarket.com",
+                            now=datetime.now(timezone.utc),
+                            assets=config.assets,
+                            intervals=config.intervals,
+                            windows_ahead=config.windows_to_track,
+                        ),
+                        timeout=config.market_fetch_timeout_seconds,
                     )
+                    source_errors.pop("polymarket_markets", None)
                     async with write_lock:
                         source_errors.update(register_market_rules(config.duckdb_path, markets))
                     tokens = update_status_from_markets(markets)

@@ -26,6 +26,21 @@ def test_live_collector_does_not_expose_fake_collection_runtime() -> None:
     assert not hasattr(live_collector, "run_fake_collection")
 
 
+def test_live_collector_config_rejects_invalid_market_fetch_timeout(tmp_path: Path) -> None:
+    try:
+        LiveCollectorConfig(
+            assets=("BTC",),
+            duration_seconds=1,
+            raw_root=tmp_path / "raw",
+            duckdb_path=tmp_path / "collector.duckdb",
+            market_fetch_timeout_seconds=0,
+        )
+    except ValueError as exc:
+        assert "market_fetch_timeout_seconds" in str(exc)
+    else:  # pragma: no cover - defensive assertion branch
+        raise AssertionError("invalid market_fetch_timeout_seconds was accepted")
+
+
 def test_register_market_rules_stores_accepted_contract_rule(tmp_path: Path) -> None:
     config = LiveCollectorConfig(
         assets=("BTC",),

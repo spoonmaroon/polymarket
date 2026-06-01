@@ -13,6 +13,7 @@ set -- collect \
   --snapshot-interval "${POLYMARKET_REST_SNAPSHOT_INTERVAL:-1}" \
   --clob-rest-backup-interval "${POLYMARKET_CLOB_REST_BACKUP_INTERVAL:-15}" \
   --market-refresh-interval "${POLYMARKET_MARKET_REFRESH_INTERVAL:-30}" \
+  --market-fetch-timeout "${POLYMARKET_MARKET_FETCH_TIMEOUT:-10}" \
   --display-timezone "${POLYMARKET_DISPLAY_TZ:-America/Chicago}"
 
 if [ "${POLYMARKET_ENABLE_CLOB_WEBSOCKET:-1}" = "0" ]; then
