@@ -48,7 +48,10 @@ def _fresh_status() -> dict[str, object]:
     }
 
 
-def test_status_check_rejects_stale_source_freshness(tmp_path: Path, monkeypatch) -> None:
+def test_status_check_rejects_stale_source_freshness(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     script = _load_script()
     status = _fresh_status()
     status["source_freshness"] = [
@@ -72,7 +75,10 @@ def test_status_check_rejects_stale_source_freshness(tmp_path: Path, monkeypatch
         script.main()
 
 
-def test_status_check_rejects_missing_orderbook_freshness(tmp_path: Path, monkeypatch) -> None:
+def test_status_check_rejects_missing_orderbook_freshness(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     script = _load_script()
     status = _fresh_status()
     status["orderbook_freshness"] = [
@@ -93,4 +99,24 @@ def test_status_check_rejects_missing_orderbook_freshness(tmp_path: Path, monkey
     )
 
     with pytest.raises(SystemExit, match="orderbook_freshness missing"):
+        script.main()
+
+
+def test_status_check_rejects_required_source_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = _load_script()
+    status = _fresh_status()
+    status["source_errors"] = {
+        "polymarket_market_ws": "ConnectionClosed: websocket closed",
+    }
+    status_path = tmp_path / "status.json"
+    status_path.write_text(json.dumps(status), encoding="utf-8")
+    monkeypatch.setattr(
+        "sys.argv",
+        ["check_collector_status.py", "--status-path", str(status_path)],
+    )
+
+    with pytest.raises(SystemExit, match="required source error"):
         script.main()

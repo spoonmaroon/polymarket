@@ -51,6 +51,14 @@ def main() -> int:
         payload.get("orderbook_freshness", []),
         label="orderbook_freshness",
     )
+    _reject_required_source_errors(
+        payload.get("source_errors", {}),
+        required_source_keys=(
+            "polymarket_market_ws",
+            "polymarket_rtds",
+            "polymarket_markets",
+        ),
+    )
 
     print(
         {
@@ -77,6 +85,19 @@ def _reject_bad_freshness_rows(rows: object, *, label: str) -> None:
             raise SystemExit(
                 f"{label} stale: source={source_key} symbol={identifier} age_ms={row.get('age_ms')}"
             )
+
+
+def _reject_required_source_errors(
+    source_errors: object,
+    *,
+    required_source_keys: tuple[str, ...],
+) -> None:
+    if not isinstance(source_errors, dict):
+        return
+    for source_key in required_source_keys:
+        error = source_errors.get(source_key)
+        if error:
+            raise SystemExit(f"required source error: source={source_key} error={error}")
 
 
 if __name__ == "__main__":

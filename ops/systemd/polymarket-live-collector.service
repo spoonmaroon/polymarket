@@ -20,7 +20,7 @@ ExecStart=/home/spoon/.local/bin/uv run polymarket-engine collect --assets BTC,E
 Restart=on-failure
 RestartSec=15
 TimeoutStopSec=60
-KillMode=process
+KillMode=control-group
 
 StandardOutput=append:/home/spoon/polymarket/logs/live_collector.systemd.stdout.log
 StandardError=append:/home/spoon/polymarket/logs/live_collector.systemd.stderr.log

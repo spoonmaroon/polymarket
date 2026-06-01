@@ -24,6 +24,19 @@ def build_market_ws_subscribe_message(asset_ids: tuple[str, ...]) -> dict[str, o
     }
 
 
+def build_market_ws_assets_update_message(
+    asset_ids: tuple[str, ...],
+    *,
+    operation: str,
+) -> dict[str, object]:
+    return {
+        "operation": operation,
+        "assets_ids": list(asset_ids),
+        "type": "market",
+        "custom_feature_enabled": True,
+    }
+
+
 def clob_market_ws_events(
     message: object,
     tokens_by_id: dict[str, MarketToken],
@@ -63,7 +76,7 @@ def _book_event(
         source_key=_SOURCE_KEY,
         stream_key="orderbook_snapshot",
         symbol=_symbol(token),
-        event_ts=observed_ts,
+        event_ts=snapshot.event_ts,
         observed_ts=observed_ts,
         payload={
             **message,

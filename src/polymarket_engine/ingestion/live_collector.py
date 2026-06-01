@@ -30,6 +30,7 @@ from polymarket_engine.ingestion.contract_discovery import (
 from polymarket_engine.ingestion.polymarket_clob import clob_book_event
 from polymarket_engine.ingestion.polymarket_clob_ws import (
     CLOB_MARKET_WS_URL,
+    build_market_ws_assets_update_message,
     build_market_ws_subscribe_message,
     clob_market_ws_events,
 )
@@ -68,7 +69,7 @@ class LiveCollectorConfig:
     clob_rest_backup_interval_seconds: float = 15.0
     market_refresh_interval_seconds: float = 30.0
     display_timezone: str = "America/Chicago"
-    orderbook_stale_after_ms: int = 2_000
+    orderbook_stale_after_ms: int = 10_000
     rtds_stale_after_ms: int = 5000
     coinbase_stale_after_ms: int = 2000
 
@@ -190,18 +191,19 @@ def _price_freshness_rows(
 def _orderbook_freshness_rows(
     *,
     latest_contracts: dict[str, dict[str, object]],
-    latest_orderbooks: dict[str, dict[str, object]],
+    latest_orderbooks_by_source: dict[str, dict[str, object]],
     generated_at: datetime,
     stale_after_ms: int,
+    required_source_key: str,
 ) -> tuple[dict[str, object], ...]:
     rows: list[dict[str, object]] = []
     for contract in latest_contracts.values():
         token_id = str(contract["token_id"])
-        latest = latest_orderbooks.get(token_id)
+        latest = latest_orderbooks_by_source.get(f"{required_source_key}:{token_id}")
         rows.append(
             _freshness_row(
                 generated_at=generated_at,
-                source_key="polymarket_clob",
+                source_key=required_source_key,
                 symbol=token_id,
                 observed_ts=None if latest is None else latest.get("observed_ts"),
                 stale_after_ms=stale_after_ms,
@@ -345,6 +347,7 @@ async def run_live_collection(config: LiveCollectorConfig) -> LiveCollectorResul
     write_lock = asyncio.Lock()
     latest_prices: dict[str, dict[str, object]] = {}
     latest_orderbooks: dict[str, dict[str, object]] = {}
+    latest_orderbooks_by_source: dict[str, dict[str, object]] = {}
     latest_contracts: dict[str, dict[str, object]] = {}
     last_status_write = 0.0
 
@@ -384,6 +387,10 @@ async def run_live_collection(config: LiveCollectorConfig) -> LiveCollectorResul
         for token_id in tuple(latest_orderbooks):
             if token_id not in active_token_ids:
                 latest_orderbooks.pop(token_id, None)
+        for source_token_id in tuple(latest_orderbooks_by_source):
+            token_id = source_token_id.split(":", 1)[1]
+            if token_id not in active_token_ids:
+                latest_orderbooks_by_source.pop(source_token_id, None)
         return tuple(accepted_tokens)
 
     def publish_token_update(tokens: tuple[MarketToken, ...]) -> None:
@@ -404,7 +411,23 @@ async def run_live_collection(config: LiveCollectorConfig) -> LiveCollectorResul
             return
         orderbook = _orderbook_observation_from_event(event)
         if orderbook is not None:
+            source_row: dict[str, object] = {
+                "source_key": event.source_key,
+                "venue": orderbook.venue,
+                "contract_id": orderbook.contract_id,
+                "token_id": orderbook.token_id,
+                "observed_ts": orderbook.observed_ts.isoformat(),
+                "best_bid": orderbook.best_bid,
+                "best_ask": orderbook.best_ask,
+                "spread": orderbook.spread,
+                "bid_size_top": orderbook.bid_size_top,
+                "ask_size_top": orderbook.ask_size_top,
+            }
+            latest_orderbooks_by_source[f"{event.source_key}:{orderbook.token_id}"] = (
+                source_row
+            )
             latest_orderbooks[orderbook.token_id] = {
+                "source_key": event.source_key,
                 "venue": orderbook.venue,
                 "contract_id": orderbook.contract_id,
                 "token_id": orderbook.token_id,
@@ -471,9 +494,14 @@ async def run_live_collection(config: LiveCollectorConfig) -> LiveCollectorResul
             "orderbook_freshness": list(
                 _orderbook_freshness_rows(
                     latest_contracts=latest_contracts,
-                    latest_orderbooks=latest_orderbooks,
+                    latest_orderbooks_by_source=latest_orderbooks_by_source,
                     generated_at=generated_now,
                     stale_after_ms=config.orderbook_stale_after_ms,
+                    required_source_key=(
+                        "polymarket_market_ws"
+                        if config.enable_clob_websocket
+                        else "polymarket_clob"
+                    ),
                 )
             ),
             "source_errors": dict(source_errors),
@@ -586,7 +614,11 @@ async def run_live_collection(config: LiveCollectorConfig) -> LiveCollectorResul
                     await flush_due()
                     continue
             try:
-                async with websockets.connect(CLOB_MARKET_WS_URL, open_timeout=10) as ws:
+                async with websockets.connect(
+                    CLOB_MARKET_WS_URL,
+                    open_timeout=10,
+                    ping_interval=None,
+                ) as ws:
                     await ws.send(
                         json.dumps(build_market_ws_subscribe_message(tuple(active_tokens)))
                     )
@@ -607,12 +639,36 @@ async def run_live_collection(config: LiveCollectorConfig) -> LiveCollectorResul
                         if update_task in done:
                             tokens = update_task.result()
                             token_update_queue.task_done()
-                            active_tokens = {token.token_id: token for token in tokens}
-                            await ws.send(
-                                json.dumps(
-                                    build_market_ws_subscribe_message(tuple(active_tokens))
-                                )
+                            next_tokens = {token.token_id: token for token in tokens}
+                            added = tuple(
+                                token_id
+                                for token_id in next_tokens
+                                if token_id not in active_tokens
                             )
+                            removed = tuple(
+                                token_id
+                                for token_id in active_tokens
+                                if token_id not in next_tokens
+                            )
+                            active_tokens = next_tokens
+                            if removed:
+                                await ws.send(
+                                    json.dumps(
+                                        build_market_ws_assets_update_message(
+                                            removed,
+                                            operation="unsubscribe",
+                                        )
+                                    )
+                                )
+                            if added:
+                                await ws.send(
+                                    json.dumps(
+                                        build_market_ws_assets_update_message(
+                                            added,
+                                            operation="subscribe",
+                                        )
+                                    )
+                                )
                         if recv_task in done:
                             raw = recv_task.result()
                             if raw:

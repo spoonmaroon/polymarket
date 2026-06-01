@@ -18,7 +18,7 @@ touch "$DATA_DIR/raw/.polymarket_archive_root"
 
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
   LOG "deploy already running"
-  exit 0
+  exit 75
 fi
 trap 'rm -rf "$LOCK_DIR"' EXIT
 
@@ -44,7 +44,12 @@ if ! git pull --ff-only --quiet origin main; then
   exit 1
 fi
 
-if ! docker compose -f "$COMPOSE_FILE" up -d --build collector >> "$LOG_FILE" 2>&1; then
+COMPOSE_ENV_ARGS=()
+if [ -f "$REPO/deploy/collector/.env" ]; then
+  COMPOSE_ENV_ARGS=(--env-file "$REPO/deploy/collector/.env")
+fi
+
+if ! docker compose "${COMPOSE_ENV_ARGS[@]}" -f "$COMPOSE_FILE" up -d --build collector >> "$LOG_FILE" 2>&1; then
   LOG "docker compose failed"
   exit 1
 fi
@@ -63,5 +68,5 @@ for _ in $(seq 1 30); do
 done
 
 LOG "collector smoke failed; leaving container logs in docker compose"
-docker compose -f "$COMPOSE_FILE" logs --tail=80 collector >> "$LOG_FILE" 2>&1 || true
+docker compose "${COMPOSE_ENV_ARGS[@]}" -f "$COMPOSE_FILE" logs --tail=80 collector >> "$LOG_FILE" 2>&1 || true
 exit 1

@@ -2,13 +2,26 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import signal
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from pathlib import Path
+from typing import Protocol
 
 from polymarket_engine.ingestion.live_collector import LiveCollectorConfig, LiveCollectorResult
 
 
 CollectorRunner = Callable[[LiveCollectorConfig], Awaitable[LiveCollectorResult]]
+
+
+class _SignalLoop(Protocol):
+    def add_signal_handler(self, sig: signal.Signals, callback: Callable[[], object]) -> None: ...
+
+    def remove_signal_handler(self, sig: signal.Signals) -> bool: ...
+
+
+class _CancellableTask(Protocol):
+    def cancel(self) -> bool | None: ...
 
 
 def _asset_tuple(value: str) -> tuple[str, ...]:
@@ -84,7 +97,10 @@ async def run_collect_command(
         market_refresh_interval_seconds=args.market_refresh_interval,
         display_timezone=args.display_timezone,
     )
-    result = await selected_runner(config)
+    try:
+        result = await _run_collector_with_shutdown_signals(selected_runner, config)
+    except asyncio.CancelledError:
+        return 0
     print(
         {
             "events_written": result.events_written,
@@ -93,6 +109,49 @@ async def run_collect_command(
         }
     )
     return 0
+
+
+async def _run_collector_with_shutdown_signals(
+    runner: CollectorRunner,
+    config: LiveCollectorConfig,
+) -> LiveCollectorResult:
+    loop = asyncio.get_running_loop()
+    task: asyncio.Task[LiveCollectorResult] = asyncio.create_task(_await_runner(runner, config))
+    installed = _install_shutdown_signal_handlers(loop, task)
+    try:
+        return await task
+    finally:
+        _remove_shutdown_signal_handlers(loop, installed)
+
+
+async def _await_runner(
+    runner: CollectorRunner,
+    config: LiveCollectorConfig,
+) -> LiveCollectorResult:
+    return await runner(config)
+
+
+def _install_shutdown_signal_handlers(
+    loop: _SignalLoop,
+    task: _CancellableTask,
+) -> tuple[signal.Signals, ...]:
+    installed: list[signal.Signals] = []
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            loop.add_signal_handler(sig, task.cancel)
+        except (NotImplementedError, RuntimeError):
+            continue
+        installed.append(sig)
+    return tuple(installed)
+
+
+def _remove_shutdown_signal_handlers(
+    loop: _SignalLoop,
+    installed: tuple[signal.Signals, ...],
+) -> None:
+    for sig in installed:
+        with suppress(NotImplementedError, RuntimeError):
+            loop.remove_signal_handler(sig)
 
 
 def main(argv: list[str] | None = None) -> int:

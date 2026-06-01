@@ -1083,9 +1083,9 @@ The state builder converts raw event streams into a compact object that the prob
 | Contract rules | `market_id`, asset, side, expiry, rule text, rule hash, settlement source | Defines the object being priced. |
 | Polymarket order book | bids, asks, depth, timestamp, quote age, order-book hash if available | Defines executable entry and liquidity. |
 | Polymarket trades | trade price, size, side if available, timestamp | Helps validate activity and reconstruct fills. |
-| Settlement source | Chainlink stream value, timestamp, source status | Defines $`S_{t}`$ and $`S_{T}`$. |
-| Spot proxies | Binance, Coinbase, Kraken, robust basket, feed disagreement | Quality check and fallback research. |
-| Live ticks | 1-second or tick-level price data | Needed for `p_no_touch`, wick risk, and volatility. |
+| Settlement source | Chainlink stream value, timestamp, source status | Defines $`S_{t}`$, $`S_{T}`$, realized volatility, and `sigma_tau`. |
+| Spot proxies | Binance, Coinbase, Kraken, robust basket, feed disagreement | Quality checks only; not volatility inputs. |
+| Chainlink live ticks | 1-second or tick-level Chainlink price data | Needed for `p_no_touch`, wick risk, and volatility. |
 | News/event calendar | macro releases, Fed events, ETF events, exchange incidents, regulatory events | Risk context, gate, or required-edge buffer. |
 | Future ETF/GEX context | IV, skew, flow, GEX level proximity, quote age | Later ablation layer, not v1 authority. |
 
@@ -1763,13 +1763,13 @@ Decision rule: high congestion, high crossing count, or large adverse wick ratio
 
 ## 9.5 News and event-risk features
 
-News should be included, but as a risk context layer first. The system should not enter trades because a headline sounds bullish or bearish unless that feature later passes ablation. In v1, news and event features should adjust uncertainty, `sigma_tau`, `p_no_touch`, or required edge.
+News should be included, but as a risk context layer first. The system should not enter trades because a headline sounds bullish or bearish unless that feature later passes ablation. In v1, news and event features may adjust uncertainty, `p_no_touch`, or required edge. They must not directly recalculate `sigma_tau`; volatility remains Chainlink-only.
 
 | Feature group | Examples | First use |
 |----|----|----|
 | Scheduled macro | CPI, PCE, FOMC decision, FOMC minutes, NFP/jobs, unemployment, GDP, major Fed speeches | Block or demand more edge around high-impact windows. |
 | Crypto-specific news | ETF approval/rejection headlines, regulatory actions, major exchange outages, chain halts, liquidation cascades | Event-risk flag and stress overlay. |
-| ETF-related context | Spot ETF flow release windows, ETF market hours, ETF option IV/skew changes | Later volatility and risk-appetite context. |
+| ETF-related context | Spot ETF flow release windows, ETF market hours, ETF option IV/skew changes | Later uncertainty and risk-appetite context. |
 | Breaking-news state | `headline_time`, source reliability, asset relevance, duplicate-news filter | Log first; use only after timestamped validation. |
 | Post-release surprise | Actual minus consensus after release | Allowed only after release timestamp; never use revised or future data. |
 
@@ -2431,7 +2431,7 @@ Event features should be mechanical. A scheduled release can block or demand mor
 |----|----|----|
 | Scheduled macro | CPI, PPI, PCE, NFP, FOMC decision, FOMC minutes, major Fed speeches. | Hard-block or demand more edge inside the configured event window. |
 | Crypto-specific scheduled events | Major protocol upgrades, ETF decision deadlines, known unlocks, exchange maintenance. | Log by asset scope; block only if historically disruptive. |
-| ETF/options context | IBIT/ETHA option IV, skew, risk reversal, volume, open interest, quote age. | Adjust sigma_tau, uncertainty, or required edge after ablation support. |
+| ETF/options context | IBIT/ETHA option IV, skew, risk reversal, volume, open interest, quote age. | Adjust uncertainty or required edge after ablation support; do not directly adjust Chainlink-only `sigma_tau`. |
 | GEX and structure context | Gamma flip zone, large option strike concentration, nearby high-gamma levels. | Treat as structure-risk input, not a direct trade trigger. |
 | Breaking news | Regulatory headline, exchange outage, chain halt, liquidation cascade, custody/security incident. | Log first; future blocker only after timestamped validation. |
 | Exchange/chain status | Binance/Coinbase/Kraken status, Solana/Ethereum chain disruption, oracle interruption. | Immediate data-quality or asset-level block if source integrity is affected. |
@@ -2621,8 +2621,8 @@ engine, replay harness, execution simulator, dashboard, and validation workflow.
 | Polymarket order book | bids, asks, depth, timestamp, quote age, order-book hash if available | Defines executable entry and liquidity. |
 | Polymarket trades | trade price, size, side if available, timestamp | Helps validate activity and reconstruct fills. |
 | Settlement source | Chainlink stream value, timestamp, source status | Defines   and  . |
-| Spot proxies | Binance, Coinbase, Kraken, robust basket, feed disagreement | Quality check and fallback research. |
-| Live ticks | 1-second or tick-level price data | Needed for  p_no_touch , wick risk, and volatility. |
+| Spot proxies | Binance, Coinbase, Kraken, robust basket, feed disagreement | Quality checks only; not volatility inputs. |
+| Chainlink live ticks | 1-second or tick-level Chainlink price data | Needed for  p_no_touch , wick risk, and volatility. |
 | News/event calendar | macro releases, Fed events, ETF events, exchange incidents, regulatory events | Risk context, gate, or required-edge buffer. |
 | Future ETF/GEX context | IV, skew, flow, GEX level proximity, quote age | Later ablation layer, not v1 authority. |
 
@@ -2723,13 +2723,13 @@ If historical Tier 1 data is unavailable, the system should begin collecting it 
 
 #### 8.5 News and event-risk features
 
-News should be included, but as a risk context layer first. The system should not enter trades because a headline sounds bullish or bearish unless that feature later passes ablation. In v1, news and event features should adjust uncertainty, sigma_tau, p_no_touch, or required edge.
+News should be included, but as a risk context layer first. The system should not enter trades because a headline sounds bullish or bearish unless that feature later passes ablation. In v1, news and event features may adjust uncertainty, p_no_touch, or required edge. They must not directly recalculate sigma_tau; volatility remains Chainlink-only.
 
 | Feature group | Examples | First use |
 | --- | --- | --- |
 | Scheduled macro | CPI, PCE, FOMC decision, FOMC minutes, NFP/jobs, unemployment, GDP, major Fed speeches | Block or demand more edge around high-impact windows. |
 | Crypto-specific news | ETF approval/rejection headlines, regulatory actions, major exchange outages, chain halts, liquidation cascades | Event-risk flag and stress overlay. |
-| ETF-related context | Spot ETF flow release windows, ETF market hours, ETF option IV/skew changes | Later volatility and risk-appetite context. |
+| ETF-related context | Spot ETF flow release windows, ETF market hours, ETF option IV/skew changes | Later uncertainty and risk-appetite context. |
 | Breaking-news state | headline_time , source reliability, asset relevance, duplicate-news filter | Log first; use only after timestamped validation. |
 | Post-release surprise | Actual minus consensus after release | Allowed only after release timestamp; never use revised or future data. |
 

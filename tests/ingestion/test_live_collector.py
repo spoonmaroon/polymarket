@@ -6,6 +6,7 @@ import duckdb
 import polymarket_engine.ingestion.live_collector as live_collector
 from polymarket_engine.ingestion.live_collector import (
     LiveCollectorConfig,
+    _orderbook_freshness_rows,
     _orderbook_observation_from_event,
     _price_freshness_rows,
     _source_disagreement_rows,
@@ -198,3 +199,46 @@ def test_market_ws_top_of_book_normalizes_to_orderbook_observation() -> None:
     assert observation.token_id == "111"
     assert observation.best_bid == 0.49
     assert observation.best_ask == 0.50
+
+
+def test_orderbook_freshness_requires_market_ws_when_enabled() -> None:
+    generated_at = datetime(2026, 6, 1, 11, 20, tzinfo=timezone.utc)
+    latest_contracts: dict[str, dict[str, object]] = {
+        "btc:UP": {
+            "contract_id": "btc:UP",
+            "asset": "BTC",
+            "side": "UP",
+            "token_id": "111",
+        }
+    }
+    latest_by_source: dict[str, dict[str, object]] = {
+        "polymarket_clob:111": {
+            "source_key": "polymarket_clob",
+            "token_id": "111",
+            "observed_ts": "2026-06-01T11:19:59+00:00",
+        }
+    }
+
+    rows = _orderbook_freshness_rows(
+        latest_contracts=latest_contracts,
+        latest_orderbooks_by_source=latest_by_source,
+        generated_at=generated_at,
+        stale_after_ms=5_000,
+        required_source_key="polymarket_market_ws",
+    )
+
+    assert rows == (
+        {
+            "source_key": "polymarket_market_ws",
+            "symbol": "111",
+            "observed_ts": None,
+            "age_ms": None,
+            "stale_after_ms": 5_000,
+            "stale": True,
+            "missing": True,
+            "contract_id": "btc:UP",
+            "token_id": "111",
+            "asset": "BTC",
+            "side": "UP",
+        },
+    )

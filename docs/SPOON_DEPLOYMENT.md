@@ -15,6 +15,8 @@ mkdir -p /home/spoon/polymarket-data/{raw,db,live,logs}
 touch /home/spoon/polymarket-data/raw/.polymarket_archive_root
 cd /home/spoon/polymarket
 cp deploy/collector/.env.example deploy/collector/.env
+sed -i "s/^POLYMARKET_UID=.*/POLYMARKET_UID=$(id -u)/" deploy/collector/.env
+sed -i "s/^POLYMARKET_GID=.*/POLYMARKET_GID=$(id -g)/" deploy/collector/.env
 docker compose -f deploy/collector/docker-compose.yml --env-file deploy/collector/.env up -d --build collector
 python3 scripts/check_collector_status.py --status-path /home/spoon/polymarket-data/live/status.json
 ```
@@ -28,6 +30,7 @@ Install a cron entry on spoon:
 ```
 
 The deploy script fetches `origin/main`, refuses dirty server worktrees, pulls fast-forward only, rebuilds the collector image, restarts the collector, and smoke-checks the status file.
+If `deploy/collector/.env` exists, the deploy script uses it explicitly. Set `POLYMARKET_ENABLE_CLOB_WEBSOCKET=0` only as an operational kill switch for CLOB WebSocket problems; the deploy smoke check otherwise requires fresh WebSocket order-book rows.
 
 ## Retention
 

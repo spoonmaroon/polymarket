@@ -1,4 +1,6 @@
+import asyncio
 from pathlib import Path
+from signal import SIGTERM, Signals
 from typing import Any
 
 import pytest
@@ -148,3 +150,57 @@ async def test_run_collect_command_uses_injected_runner(tmp_path: Path) -> None:
         "display_timezone": "America/Chicago",
         "status_path": tmp_path / "status.json",
     }
+
+
+def test_shutdown_signal_handler_cancels_collector_task() -> None:
+    class FakeLoop:
+        def __init__(self) -> None:
+            self.handlers: dict[Signals, Any] = {}
+
+        def add_signal_handler(self, signal_number: Signals, callback: Any) -> None:
+            self.handlers[signal_number] = callback
+
+        def remove_signal_handler(self, signal_number: Signals) -> bool:
+            self.handlers.pop(signal_number, None)
+            return True
+
+    class FakeTask:
+        def __init__(self) -> None:
+            self.cancelled = False
+
+        def cancel(self) -> None:
+            self.cancelled = True
+
+    loop = FakeLoop()
+    task = FakeTask()
+
+    installed = cli._install_shutdown_signal_handlers(loop, task)  # noqa: SLF001
+    loop.handlers[SIGTERM]()
+
+    assert SIGTERM in installed
+    assert task.cancelled is True
+
+
+@pytest.mark.anyio
+async def test_run_collect_command_returns_zero_after_signal_cancel(tmp_path: Path) -> None:
+    async def fake_runner(config: LiveCollectorConfig) -> LiveCollectorResult:
+        raise asyncio.CancelledError
+
+    result = await cli.run_collect_command(
+        [
+            "collect",
+            "--assets",
+            "BTC,ETH",
+            "--duration",
+            "5",
+            "--raw-root",
+            str(tmp_path / "raw"),
+            "--duckdb-path",
+            str(tmp_path / "db.duckdb"),
+            "--status-path",
+            str(tmp_path / "status.json"),
+        ],
+        runner=fake_runner,
+    )
+
+    assert result == 0

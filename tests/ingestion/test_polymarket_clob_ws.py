@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from polymarket_engine.ingestion.contract_discovery import MarketToken
 from polymarket_engine.ingestion.polymarket_clob_ws import (
     CLOB_MARKET_WS_URL,
+    build_market_ws_assets_update_message,
     build_market_ws_subscribe_message,
     clob_market_ws_events,
 )
@@ -20,8 +21,19 @@ def test_build_market_ws_subscribe_message_requests_best_bid_ask() -> None:
     }
 
 
+def test_build_market_ws_assets_update_message_uses_market_operation_shape() -> None:
+    message = build_market_ws_assets_update_message(("333",), operation="subscribe")
+
+    assert message == {
+        "operation": "subscribe",
+        "assets_ids": ["333"],
+        "type": "market",
+        "custom_feature_enabled": True,
+    }
+
+
 def test_market_ws_book_becomes_orderbook_snapshot_event() -> None:
-    observed = datetime(2026, 6, 1, 10, 55, 1, tzinfo=timezone.utc)
+    observed = datetime(2026, 6, 1, 10, 55, 4, tzinfo=timezone.utc)
     token = MarketToken(slug="btc-updown-5m-1780301700", outcome="UP", token_id="111")
     events = clob_market_ws_events(
         {
@@ -42,7 +54,7 @@ def test_market_ws_book_becomes_orderbook_snapshot_event() -> None:
     assert event.source_key == "polymarket_market_ws"
     assert event.stream_key == "orderbook_snapshot"
     assert event.symbol == "btc-updown-5m-1780301700:UP"
-    assert event.event_ts.isoformat() == "2026-06-01T10:55:01+00:00"
+    assert event.event_ts.isoformat() == "2026-06-01T08:15:01+00:00"
     assert event.observed_ts == observed
     assert event.payload["token_id"] == "111"
     assert event.payload["contract_id"] == "0xabc"
