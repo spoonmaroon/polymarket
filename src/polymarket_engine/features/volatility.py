@@ -21,6 +21,7 @@ class VolatilityConfig:
     contraction_threshold: float = 0.80
     expansion_multiplier: float = 1.15
     contraction_multiplier: float = 0.95
+    max_price_gap_seconds: float = 5.0
 
     def __post_init__(self) -> None:
         _validate_windows(self.short_window, self.medium_window, self.long_window)
@@ -32,6 +33,7 @@ class VolatilityConfig:
             raise ValueError("expansion_threshold must be greater than contraction_threshold")
         _validate_positive(self.expansion_multiplier, "expansion_multiplier")
         _validate_positive(self.contraction_multiplier, "contraction_multiplier")
+        _validate_positive(self.max_price_gap_seconds, "max_price_gap_seconds")
 
 
 def log_returns_from_prices(prices: Sequence[PriceObservation]) -> tuple[float, ...]:
@@ -143,7 +145,24 @@ def build_volatility_snapshot(
             regime="missing_reference_source",
         )
 
-    returns = log_returns_from_prices(allowed_prices)
+    continuous_prices = _continuous_tail(
+        allowed_prices,
+        max_gap_seconds=active_config.max_price_gap_seconds,
+    )
+    if len(continuous_prices) < 2:
+        latest = continuous_prices[-1] if continuous_prices else allowed_prices[-1]
+        return VolatilitySnapshot(
+            event_ts=latest.event_ts,
+            observed_ts=latest.observed_ts,
+            realized_returns=(),
+            short_realized_vol=None,
+            medium_realized_vol=None,
+            long_realized_vol=None,
+            sigma_tau=None,
+            regime="missing_continuous_reference_source",
+        )
+
+    returns = log_returns_from_prices(continuous_prices)
     short_vol = realized_volatility(returns, window=active_config.short_window)
     medium_vol = realized_volatility(returns, window=active_config.medium_window)
     long_vol = realized_volatility(returns, window=active_config.long_window)
@@ -164,13 +183,9 @@ def build_volatility_snapshot(
         regime_multiplier=regime_multiplier(regime, active_config),
     )
 
-    if allowed_prices:
-        latest = allowed_prices[-1]
-        event_ts = latest.event_ts
-        observed_ts = max(price.observed_ts for price in allowed_prices)
-    else:
-        event_ts = asof_ts
-        observed_ts = asof_ts
+    latest = continuous_prices[-1]
+    event_ts = latest.event_ts
+    observed_ts = max(price.observed_ts for price in continuous_prices)
 
     return VolatilitySnapshot(
         event_ts=event_ts,
@@ -189,6 +204,26 @@ def _require_utc(value: datetime, field_name: str) -> None:
         raise ValueError(f"{field_name} must be timezone-aware")
     if value.utcoffset() != timezone.utc.utcoffset(value):
         raise ValueError(f"{field_name} must be normalized to UTC")
+
+
+def _continuous_tail(
+    prices: Sequence[PriceObservation],
+    *,
+    max_gap_seconds: float,
+) -> tuple[PriceObservation, ...]:
+    ordered = tuple(sorted(prices, key=lambda price: (price.event_ts, price.observed_ts)))
+    if len(ordered) < 2:
+        return ordered
+
+    start_index = len(ordered) - 1
+    for index in range(len(ordered) - 1, 0, -1):
+        previous = ordered[index - 1]
+        current = ordered[index]
+        event_gap = (current.event_ts - previous.event_ts).total_seconds()
+        if event_gap > max_gap_seconds:
+            break
+        start_index = index - 1
+    return ordered[start_index:]
 
 
 def _validate_windows(short_window: int, medium_window: int, long_window: int) -> None:
