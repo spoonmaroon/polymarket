@@ -47,14 +47,15 @@ class _WebSocketSender(Protocol):
 @dataclass(frozen=True)
 class LiveCollectorConfig:
     assets: tuple[str, ...]
-    duration_seconds: int
+    duration_seconds: int | None
     raw_root: Path
     duckdb_path: Path
     max_batch_size: int = 100
     flush_after_seconds: float = 5.0
     require_archive_sentinel: bool = False
-    contract_windows_ahead: int = 3
-    clob_snapshot_interval_seconds: int = 5
+    windows_to_track: int = 2
+    clob_snapshot_interval_seconds: float = 1.0
+    market_refresh_interval_seconds: float = 30.0
     rtds_stale_after_ms: int = 5000
     coinbase_stale_after_ms: int = 2000
 
