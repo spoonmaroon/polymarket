@@ -219,6 +219,20 @@ def _price_freshness_rows(
                     stale_after_ms=stale_after_ms,
                 )
             )
+        optional_symbol = f"{asset}/USDT"
+        optional_key = f"polymarket_rtds_crypto:{optional_symbol}"
+        if optional_key in latest_prices:
+            latest = latest_prices[optional_key]
+            rows.append(
+                _freshness_row(
+                    generated_at=generated_at,
+                    source_key="polymarket_rtds_crypto",
+                    symbol=optional_symbol,
+                    observed_ts=latest.get("observed_ts"),
+                    stale_after_ms=rtds_stale_after_ms,
+                    extra={"required": False},
+                )
+            )
     return tuple(rows)
 
 
@@ -305,37 +319,43 @@ def _source_disagreement_rows(
     for asset in assets:
         normalized_asset = asset.upper()
         primary_key = ("polymarket_rtds_chainlink", f"{normalized_asset}/USD")
-        proxy_key = ("coinbase_advanced_ws", f"{normalized_asset}-USD")
         primary = latest_prices.get(f"{primary_key[0]}:{primary_key[1]}")
-        proxy = latest_prices.get(f"{proxy_key[0]}:{proxy_key[1]}")
         primary_price = None if primary is None else float(str(primary["price"]))
-        proxy_price = None if proxy is None else float(str(proxy["price"]))
-        block_reason = _source_disagreement_block_reason(
-            primary_key=primary_key,
-            proxy_key=proxy_key,
-            primary_price=primary_price,
-            freshness=freshness,
+        proxy_keys = (
+            ("coinbase_advanced_ws", f"{normalized_asset}-USD"),
+            ("polymarket_rtds_crypto", f"{normalized_asset}/USDT"),
         )
-        diff: float | None = None
-        diff_bps: float | None = None
-        if block_reason is None and primary_price is not None and proxy_price is not None:
-            diff = proxy_price - primary_price
-            diff_bps = abs(diff) / primary_price * 10_000
-        rows.append(
-            {
-                "asset": normalized_asset,
-                "primary_source_key": primary_key[0],
-                "primary_symbol": primary_key[1],
-                "primary_price": primary_price,
-                "proxy_source_key": proxy_key[0],
-                "proxy_symbol": proxy_key[1],
-                "proxy_price": proxy_price,
-                "diff": diff,
-                "diff_bps": diff_bps,
-                "usable": block_reason is None,
-                "block_reason": block_reason,
-            }
-        )
+        for proxy_key in proxy_keys:
+            proxy = latest_prices.get(f"{proxy_key[0]}:{proxy_key[1]}")
+            if proxy is None and proxy_key not in freshness:
+                continue
+            proxy_price = None if proxy is None else float(str(proxy["price"]))
+            block_reason = _source_disagreement_block_reason(
+                primary_key=primary_key,
+                proxy_key=proxy_key,
+                primary_price=primary_price,
+                freshness=freshness,
+            )
+            diff: float | None = None
+            diff_bps: float | None = None
+            if block_reason is None and primary_price is not None and proxy_price is not None:
+                diff = proxy_price - primary_price
+                diff_bps = abs(diff) / primary_price * 10_000
+            rows.append(
+                {
+                    "asset": normalized_asset,
+                    "primary_source_key": primary_key[0],
+                    "primary_symbol": primary_key[1],
+                    "primary_price": primary_price,
+                    "proxy_source_key": proxy_key[0],
+                    "proxy_symbol": proxy_key[1],
+                    "proxy_price": proxy_price,
+                    "diff": diff,
+                    "diff_bps": diff_bps,
+                    "usable": block_reason is None,
+                    "block_reason": block_reason,
+                }
+            )
     return tuple(rows)
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from typing import Any
 
@@ -7,11 +8,22 @@ from polymarket_engine.ingestion.collector_events import CollectorEvent
 
 
 def build_rtds_subscriptions(assets: tuple[str, ...]) -> dict[str, object]:
-    _ = assets
+    crypto_price_subscriptions = [
+        {
+            "topic": "crypto_prices",
+            "type": "update",
+            "filters": json.dumps(
+                {"symbol": f"{asset.lower()}usdt"},
+                separators=(",", ":"),
+            ),
+        }
+        for asset in assets
+    ]
     return {
         "action": "subscribe",
         "subscriptions": [
             {"topic": "crypto_prices_chainlink", "type": "*", "filters": ""},
+            *crypto_price_subscriptions,
         ],
     }
 

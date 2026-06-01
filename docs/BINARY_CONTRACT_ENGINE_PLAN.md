@@ -441,7 +441,7 @@ Tests:
 ### 4. Volatility and `sigma_tau`: How It Builds
 Implementation status: this section is implemented by `src/polymarket_engine/features/volatility.py`, replayed through `src/polymarket_engine/features/state_replay.py`, and covered by `tests/features/test_volatility.py` plus `tests/storage/test_state_replay.py`. The implementation is as-of safe: future ticks are labels or ignored, never volatility inputs.
 
-Source rule: BTC/ETH volatility and `sigma_tau` are calculated from the Chainlink settlement-reference stream only, stored as `polymarket_rtds_chainlink`. Coinbase, Binance, and other exchange feeds are proxy/quality-check inputs, not volatility inputs. If a historical proxy point exactly matches the Chainlink point, it can be used as validation evidence, but it is not added as an extra return observation because duplicate rows can distort realized-volatility windows.
+Source rule: BTC/ETH volatility and `sigma_tau` are calculated from the Chainlink settlement-reference stream only, stored as `polymarket_rtds_chainlink`. Coinbase, Polymarket RTDS Binance (`polymarket_rtds_crypto`), and other exchange feeds are proxy/quality-check inputs, not volatility inputs. If a historical proxy point exactly matches the Chainlink point, it can be used as validation evidence, but it is not added as an extra return observation because duplicate rows can distort realized-volatility windows.
 
 Create `src/polymarket_engine/features/volatility.py`.
 
@@ -1017,8 +1017,8 @@ Important rule note: some Up/Down markets use the end price relative to the star
 The settlement-source layer should use the following hierarchy:
 
 1.  **Primary:** the exact source named in the market rules. For current short-dated crypto Up/Down examples, this appears to be Chainlink Data Streams for BTC/USD, ETH/USD, or SOL/USD. \[5\]\[6\]\[7\]
-2.  **Secondary:** Polymarket RTDS crypto stream if it provides the named Chainlink symbol or a venue-supported representation. \[2\]
-3.  **Proxy:** Binance, Coinbase, Kraken, or a robust exchange basket only for quality checks or when the primary source is unavailable.
+2.  **Secondary:** Polymarket RTDS Chainlink stream if it provides the named Chainlink symbol or a venue-supported representation. \[2\]
+3.  **Proxy:** Polymarket RTDS Binance (`crypto_prices`), Coinbase, Kraken, or a robust exchange basket only for quality checks. These are not settlement replacements.
 4.  **Block:** if the source is unknown, stale, missing, or materially inconsistent with validated proxies.
 
 A useful source-disagreement measure is:
@@ -2006,7 +2006,7 @@ Figure 8. Live shadow logger and validation database. Raw events stay immutable,
 | `raw_polymarket_book_events` | WebSocket order-book snapshots, price changes, and book deltas. |
 | `raw_polymarket_trades` | Public trade prints and activity. |
 | `raw_chainlink_prices` | BTC/USD, ETH/USD, and later SOL/USD settlement-source values. |
-| `raw_exchange_prices` | Binance, Coinbase, Kraken, or other proxy feeds. |
+| `raw_exchange_prices` | Polymarket RTDS Binance, Coinbase, Kraken, or other proxy feeds. |
 | `raw_news_events` | Timestamped macro, crypto, ETF, exchange, and regulatory event records. |
 | `contract_rules` | Rule text, rule hash, asset, side, settlement source, start/end times. |
 | `decision_snapshots` | One row per as-of model decision. |

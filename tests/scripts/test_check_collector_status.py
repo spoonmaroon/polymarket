@@ -156,3 +156,30 @@ def test_status_check_allows_transient_market_discovery_error(
     )
 
     assert script.main() == 0
+
+
+def test_status_check_allows_stale_optional_proxy_freshness(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = _load_script()
+    status = _fresh_status()
+    status["source_freshness"] = [
+        {
+            "source_key": "polymarket_rtds_crypto",
+            "symbol": "BTC/USDT",
+            "observed_ts": "2026-06-01T11:19:00+00:00",
+            "age_ms": 60_000,
+            "stale": True,
+            "missing": False,
+            "required": False,
+        }
+    ]
+    status_path = tmp_path / "status.json"
+    status_path.write_text(json.dumps(status), encoding="utf-8")
+    monkeypatch.setattr(
+        "sys.argv",
+        ["check_collector_status.py", "--status-path", str(status_path)],
+    )
+
+    assert script.main() == 0
