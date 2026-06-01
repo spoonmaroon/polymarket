@@ -45,6 +45,10 @@ class ContractSpec:
             raise ValueError("start_price threshold_price must be None until resolved")
         if self.threshold_price is not None and self.threshold_price <= 0:
             raise ValueError("threshold_price must be positive")
+        if self.side == "UP" and self.comparison_operator not in {">", ">="}:
+            raise ValueError("UP side requires greater-than comparison operator")
+        if self.side == "DOWN" and self.comparison_operator not in {"<", "<="}:
+            raise ValueError("DOWN side requires less-than comparison operator")
 
 
 def contract_specs_from_rule(rule: NormalizedContractRule) -> tuple[ContractSpec, ContractSpec]:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TypeVar
 
 from polymarket_engine.domain.contracts import ContractSpec
@@ -27,6 +27,7 @@ def validate_observation_asof(
     asof_ts: datetime,
     field_name: str,
 ) -> None:
+    _require_utc(asof_ts, "asof_ts")
     ensure_asof(observation.event_ts, asof_ts, f"{field_name} event_ts")
     ensure_asof(observation.observed_ts, asof_ts, f"{field_name} observed_ts")
 
@@ -35,6 +36,7 @@ def latest_asof(
     observations: Sequence[TObservation],
     asof_ts: datetime,
 ) -> TObservation | None:
+    _require_utc(asof_ts, "asof_ts")
     allowed = [
         observation
         for observation in observations
@@ -58,6 +60,7 @@ def build_decision_state(
     stale_book_after_ms: int = 2_000,
     source_disagreement_block_bps: float = 10.0,
 ) -> DecisionState:
+    _require_utc(asof_ts, "asof_ts")
     ensure_asof(asof_ts, contract.expiry_ts, "asof_ts")
     threshold = _threshold(contract, resolved_threshold_price)
 
@@ -74,7 +77,11 @@ def build_decision_state(
 
     proxy_latest: dict[str, PriceObservation] = {}
     for proxy in proxy_prices:
-        if proxy.event_ts <= asof_ts and proxy.observed_ts <= asof_ts:
+        if (
+            _symbol_matches_contract(proxy.symbol, contract)
+            and proxy.event_ts <= asof_ts
+            and proxy.observed_ts <= asof_ts
+        ):
             current = proxy_latest.get(proxy.source_key)
             if current is None or (proxy.observed_ts, proxy.event_ts) > (
                 current.observed_ts,
@@ -160,6 +167,15 @@ def _age_ms(asof_ts: datetime, observed_ts: datetime) -> int:
     return int((asof_ts - observed_ts).total_seconds() * 1000)
 
 
+def _symbol_matches_contract(symbol: str, contract: ContractSpec) -> bool:
+    return _symbol_asset(symbol) == contract.asset
+
+
+def _symbol_asset(symbol: str) -> str:
+    normalized = symbol.upper().replace("-", "/")
+    return normalized.split("/", maxsplit=1)[0]
+
+
 def _flags(
     *,
     source_age_ms: int,
@@ -183,3 +199,10 @@ def _flags(
     if not has_volatility:
         flags.append("missing_volatility")
     return flags
+
+
+def _require_utc(value: datetime, field_name: str) -> None:
+    if value.tzinfo is None:
+        raise ValueError(f"{field_name} must be timezone-aware")
+    if value.utcoffset() != timezone.utc.utcoffset(value):
+        raise ValueError(f"{field_name} must be normalized to UTC")

@@ -118,3 +118,28 @@ def test_fixed_threshold_requires_threshold_price() -> None:
             rule_hash="abc123",
             parser_version="manual_fixture",
         )
+
+
+def test_contract_spec_rejects_side_operator_mismatch() -> None:
+    with pytest.raises(ValueError, match="UP side requires greater-than comparison operator"):
+        ContractSpec(
+            contract_id="bad-up",
+            venue="polymarket",
+            market_id="manual-market",
+            condition_id="0xmanual",
+            slug="manual-btc-fixed",
+            asset="BTC",
+            side="UP",
+            token_id="token-up",
+            threshold_type="fixed_price",
+            threshold_price=105_000.0,
+            comparison_operator="<",
+            start_ts=datetime(2026, 5, 31, 21, 55, tzinfo=timezone.utc),
+            expiry_ts=datetime(2026, 5, 31, 22, 0, tzinfo=timezone.utc),
+            settlement_source_name="chainlink_data_streams",
+            settlement_source_url="https://data.chain.link/streams/btc-usd",
+            settlement_symbol="BTC/USD",
+            rule_text="Manual fixed threshold fixture.",
+            rule_hash="abc123",
+            parser_version="manual_fixture",
+        )

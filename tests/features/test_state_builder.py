@@ -165,6 +165,30 @@ def test_build_decision_state_rejects_selected_future_observation() -> None:
         validate_observation_asof(future_price, asof_ts, "future_price")
 
 
+def test_build_decision_state_rejects_naive_asof_ts_before_comparison() -> None:
+    contract = _contract()
+    naive_asof_ts = datetime(2026, 5, 31, 20, 3)
+    aware_price_ts = datetime(2026, 5, 31, 20, 2, 59, tzinfo=timezone.utc)
+    price = PriceObservation(
+        source_key="polymarket_rtds_chainlink",
+        symbol="BTC/USD",
+        event_ts=aware_price_ts,
+        observed_ts=aware_price_ts,
+        price=104_000.0,
+    )
+
+    with pytest.raises(ValueError, match="asof_ts must be timezone-aware"):
+        build_decision_state(
+            contract=contract,
+            asof_ts=naive_asof_ts,
+            resolved_threshold_price=103_950.0,
+            settlement_prices=(price,),
+            proxy_prices=(),
+            orderbooks=(),
+            volatility=None,
+        )
+
+
 def test_build_decision_state_raises_when_no_settlement_price_exists_before_asof() -> None:
     contract = _contract()
     asof_ts = datetime(2026, 5, 31, 20, 3, tzinfo=timezone.utc)
@@ -223,3 +247,54 @@ def test_build_decision_state_flags_stale_source_missing_book_and_source_disagre
     assert "source_disagreement" in state.data_quality_flags
     assert state.best_bid is None
     assert state.executable_price is None
+
+
+def test_build_decision_state_ignores_wrong_asset_proxy_prices() -> None:
+    contract = _contract()
+    asof_ts = datetime(2026, 5, 31, 20, 3, tzinfo=timezone.utc)
+    settlement = PriceObservation(
+        source_key="polymarket_rtds_chainlink",
+        symbol="BTC/USD",
+        event_ts=asof_ts,
+        observed_ts=asof_ts,
+        price=104_000.0,
+    )
+    eth_proxy = PriceObservation(
+        source_key="coinbase_advanced_ws",
+        symbol="ETH-USD",
+        event_ts=asof_ts,
+        observed_ts=asof_ts,
+        price=3_500.0,
+    )
+
+    state = build_decision_state(
+        contract=contract,
+        asof_ts=asof_ts,
+        resolved_threshold_price=103_950.0,
+        settlement_prices=(settlement,),
+        proxy_prices=(eth_proxy,),
+        orderbooks=(),
+        volatility=None,
+    )
+
+    assert state.proxy_prices == {}
+    assert state.source_disagreement_bps is None
+
+
+def test_orderbook_observation_rejects_impossible_polymarket_quote() -> None:
+    ts = datetime(2026, 5, 31, 20, 3, tzinfo=timezone.utc)
+
+    with pytest.raises(ValueError, match="best_bid must be less than or equal to best_ask"):
+        OrderBookObservation(
+            venue="polymarket",
+            contract_id="btc-market:UP",
+            token_id="111",
+            event_ts=ts,
+            observed_ts=ts,
+            best_bid=0.70,
+            best_ask=0.64,
+            bid_size_top=50.0,
+            ask_size_top=40.0,
+            spread=0.03,
+            depth_json='{"bids":[],"asks":[]}',
+        )

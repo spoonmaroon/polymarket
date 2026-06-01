@@ -50,6 +50,17 @@ class OrderBookObservation:
     def __post_init__(self) -> None:
         _require_utc(self.event_ts, "event_ts")
         _require_utc(self.observed_ts, "observed_ts")
+        _validate_probability_price(self.best_bid, "best_bid")
+        _validate_probability_price(self.best_ask, "best_ask")
+        _validate_nonnegative(self.bid_size_top, "bid_size_top")
+        _validate_nonnegative(self.ask_size_top, "ask_size_top")
+        _validate_probability_price(self.spread, "spread")
+        if self.best_bid is not None and self.best_ask is not None and self.best_bid > self.best_ask:
+            raise ValueError("best_bid must be less than or equal to best_ask")
+        if self.spread is not None and self.best_bid is not None and self.best_ask is not None:
+            expected_spread = self.best_ask - self.best_bid
+            if abs(self.spread - expected_spread) > 1e-9:
+                raise ValueError("spread must equal best_ask - best_bid")
 
 
 @dataclass(frozen=True)
@@ -125,3 +136,13 @@ def _require_utc(value: datetime, field_name: str) -> None:
         raise ValueError(f"{field_name} must be timezone-aware")
     if value.utcoffset() != timezone.utc.utcoffset(value):
         raise ValueError(f"{field_name} must be normalized to UTC")
+
+
+def _validate_probability_price(value: float | None, field_name: str) -> None:
+    if value is not None and not 0 <= value <= 1:
+        raise ValueError(f"{field_name} must be between 0 and 1")
+
+
+def _validate_nonnegative(value: float | None, field_name: str) -> None:
+    if value is not None and value < 0:
+        raise ValueError(f"{field_name} must be nonnegative")
