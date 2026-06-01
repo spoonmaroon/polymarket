@@ -327,3 +327,81 @@ class DuckDbIngestStore:
                     datetime.now(timezone.utc),
                 ],
             )
+
+    def latest_price_tick(
+        self,
+        *,
+        source_key: str,
+        symbol: str,
+        asof_ts: datetime,
+    ) -> PriceObservation | None:
+        with duckdb.connect(str(self.db_path)) as conn:
+            row = conn.execute(
+                """
+                select source_key, symbol, event_ts::VARCHAR, observed_ts::VARCHAR,
+                       price, bid, ask, sequence
+                from core.price_ticks
+                where source_key = ?
+                  and symbol = ?
+                  and event_ts <= ?
+                  and observed_ts <= ?
+                order by observed_ts desc, event_ts desc
+                limit 1
+                """,
+                [source_key, symbol, asof_ts, asof_ts],
+            ).fetchone()
+        if row is None:
+            return None
+        return PriceObservation(
+            source_key=row[0],
+            symbol=row[1],
+            event_ts=_parse_duckdb_timestamptz(row[2]),
+            observed_ts=_parse_duckdb_timestamptz(row[3]),
+            price=row[4],
+            bid=row[5],
+            ask=row[6],
+            sequence=row[7],
+        )
+
+    def latest_orderbook_snapshot(
+        self,
+        *,
+        venue: str,
+        token_id: str,
+        asof_ts: datetime,
+    ) -> OrderBookObservation | None:
+        with duckdb.connect(str(self.db_path)) as conn:
+            row = conn.execute(
+                """
+                select venue, contract_id, token_id, event_ts::VARCHAR, observed_ts::VARCHAR,
+                       best_bid, best_ask, bid_size_top, ask_size_top, spread, depth_json
+                from core.orderbook_snapshots
+                where venue = ?
+                  and token_id = ?
+                  and event_ts <= ?
+                  and observed_ts <= ?
+                order by observed_ts desc, event_ts desc
+                limit 1
+                """,
+                [venue, token_id, asof_ts, asof_ts],
+            ).fetchone()
+        if row is None:
+            return None
+        return OrderBookObservation(
+            venue=row[0],
+            contract_id=row[1],
+            token_id=row[2],
+            event_ts=_parse_duckdb_timestamptz(row[3]),
+            observed_ts=_parse_duckdb_timestamptz(row[4]),
+            best_bid=row[5],
+            best_ask=row[6],
+            bid_size_top=row[7],
+            ask_size_top=row[8],
+            spread=row[9],
+            depth_json=row[10],
+        )
+
+
+def _parse_duckdb_timestamptz(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value.replace(" ", "T"))
+    return parsed.astimezone(timezone.utc)
