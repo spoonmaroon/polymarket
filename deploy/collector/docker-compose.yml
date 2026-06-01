@@ -1,0 +1,44 @@
+name: polymarket-collector
+
+services:
+  collector:
+    build:
+      context: ../..
+      dockerfile: deploy/collector/Dockerfile
+    restart: unless-stopped
+    init: true
+    environment:
+      TZ: ${POLYMARKET_DISPLAY_TZ:-America/Chicago}
+      POLYMARKET_MODE: ${POLYMARKET_MODE:-collect}
+    command:
+      - collect
+      - --assets
+      - ${POLYMARKET_ASSETS:-BTC,ETH}
+      - --intervals
+      - ${POLYMARKET_INTERVALS:-5m,15m}
+      - --forever
+      - --windows-to-track
+      - ${POLYMARKET_WINDOWS_TO_TRACK:-2}
+      - --raw-root
+      - /var/lib/polymarket/raw
+      - --duckdb-path
+      - /var/lib/polymarket/db/polymarket.duckdb
+      - --status-path
+      - /var/lib/polymarket/live/status.json
+      - --max-batch-size
+      - ${POLYMARKET_MAX_BATCH_SIZE:-100}
+      - --snapshot-interval
+      - ${POLYMARKET_REST_SNAPSHOT_INTERVAL:-1}
+      - --clob-rest-backup-interval
+      - ${POLYMARKET_CLOB_REST_BACKUP_INTERVAL:-15}
+      - --market-refresh-interval
+      - ${POLYMARKET_MARKET_REFRESH_INTERVAL:-30}
+      - --display-timezone
+      - ${POLYMARKET_DISPLAY_TZ:-America/Chicago}
+    volumes:
+      - ${POLYMARKET_DATA_DIR:-/home/spoon/polymarket-data}/raw:/var/lib/polymarket/raw
+      - ${POLYMARKET_DATA_DIR:-/home/spoon/polymarket-data}/db:/var/lib/polymarket/db
+      - ${POLYMARKET_DATA_DIR:-/home/spoon/polymarket-data}/live:/var/lib/polymarket/live
+      - ${POLYMARKET_DATA_DIR:-/home/spoon/polymarket-data}/logs:/var/lib/polymarket/logs
+    tmpfs:
+      - /tmp

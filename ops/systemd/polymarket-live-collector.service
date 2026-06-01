@@ -1,4 +1,5 @@
 [Unit]
+# Fallback/manual runner. The preferred spoon runtime is deploy/collector/docker-compose.yml.
 Description=Polymarket BTC/ETH binary live collector
 After=network-online.target
 Wants=network-online.target
