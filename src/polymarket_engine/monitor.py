@@ -218,7 +218,11 @@ def _dict_rows(rows: list[tuple[Any, ...]], columns: tuple[str, ...]) -> list[di
 def _fmt_float(value: object, digits: int) -> str:
     if value is None:
         return "-"
-    return f"{float(value):.{digits}f}"
+    if isinstance(value, str):
+        return f"{float(value):.{digits}f}"
+    if isinstance(value, int | float):
+        return f"{float(value):.{digits}f}"
+    return "-"
 
 
 def _short_token(value: object) -> str:

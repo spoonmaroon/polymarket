@@ -26,6 +26,8 @@ Outputs:
 
 Purpose: reconstruct what the model could see at every decision timestamp. Historical future movement is a label, not a feature. Live mode should collect settlement-source prices, proxy prices, order-book snapshots, WebSocket events, source-quality flags, and market metadata.
 
+The first live collector should track only the current and next BTC/ETH 5-minute contracts. This keeps the order-book set small: BTC current, BTC next, ETH current, and ETH next, each with UP and DOWN sides. Broader contract discovery can be added later after the first live replay path is stable.
+
 State groups:
 - contract state
 - price state
