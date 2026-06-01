@@ -28,21 +28,47 @@ fees, spread, slippage, data latency, and path-reversal risk.
 The locked Part One data-source and database plan lives in
 [PART_ONE_DATA_CONTRACT.md](docs/PART_ONE_DATA_CONTRACT.md).
 
-## Live Read-Only Collection
+## Retired Python Live Collection
 
-The current live runner tracks BTC/ETH UP/DOWN for the current and next
-5-minute and 15-minute windows. It writes durable raw data, normalized DuckDB
-tables, and an atomic terminal-monitor status file with normalized-table and
-source-freshness health.
-
-```bash
-uv run polymarket-engine collect --assets BTC,ETH --intervals 5m,15m --forever --windows-to-track 2 --snapshot-interval 1 --market-refresh-interval 30
-```
+The old Python live collector is retired. `polymarket-engine collect`, the
+legacy Docker entrypoint, and the legacy systemd unit now fail closed so the
+old framework cannot be restarted by accident. The read-only monitor remains
+available for inspecting existing local data.
 
 In a second terminal:
 
 ```bash
 uv run polymarket-engine monitor --refresh 1 --limit 8
+```
+
+## Rust Live Probe
+
+The Rust live probe is the active read-only runtime test. It uses the official
+Polymarket Rust SDK to discover current BTC/ETH 5m markets, fetch CLOB order
+books, normalize them, pull Chainlink BTC/USD, pull Kraken XBT/USD as a proxy,
+calculate source disagreement, and write a latency report.
+
+Run:
+
+```bash
+cd rust
+cargo run -p polymarket-live-probe -- \
+  --assets BTC,ETH \
+  --interval 5m \
+  --windows 1 \
+  --timeout-seconds 25 \
+  --out ../reports/live_probe/latest.json
+```
+
+Verify:
+
+```bash
+uv run python scripts/verify_rust_probe_output.py \
+  reports/live_probe/latest.json \
+  --require-orderbooks \
+  --require-btc-prices \
+  --require-btc-disagreement \
+  --max-btc-disagreement-bps 100
 ```
 
 ## Read First

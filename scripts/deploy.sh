@@ -17,6 +17,9 @@ LOG() { echo "[$(date -Iseconds)] $*" | tee -a "$LOG_FILE"; }
 mkdir -p "$REPO/logs" "$DATA_DIR/raw" "$DATA_DIR/db" "$DATA_DIR/live" "$DATA_DIR/logs" "$(dirname "$DEPLOYED_MARKER")"
 touch "$DATA_DIR/raw/.polymarket_archive_root"
 
+LOG "Python collector deployment is retired. Use the Rust runtime path; refusing to start legacy collector."
+exit 64
+
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
   LOG "deploy already running"
   exit 75

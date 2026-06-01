@@ -1,4 +1,3 @@
-import asyncio
 from pathlib import Path
 from signal import SIGTERM, Signals
 from typing import Any
@@ -7,7 +6,6 @@ import pytest
 
 from polymarket_engine import cli
 from polymarket_engine.cli import parse_args
-from polymarket_engine.ingestion.live_collector import LiveCollectorConfig, LiveCollectorResult
 
 
 def test_parse_collect_args() -> None:
@@ -109,52 +107,23 @@ def test_parse_monitor_args() -> None:
 
 
 @pytest.mark.anyio
-async def test_run_collect_command_uses_injected_runner(tmp_path: Path) -> None:
-    seen: dict[str, Any] = {}
-
-    async def fake_runner(config: LiveCollectorConfig) -> LiveCollectorResult:
-        seen["assets"] = config.assets
-        seen["duration"] = config.duration_seconds
-        seen["windows_to_track"] = config.windows_to_track
-        seen["intervals"] = config.intervals
-        seen["snapshot_interval"] = config.clob_snapshot_interval_seconds
-        seen["enable_clob_websocket"] = config.enable_clob_websocket
-        seen["clob_rest_backup_interval"] = config.clob_rest_backup_interval_seconds
-        seen["clob_request_timeout"] = config.clob_request_timeout_seconds
-        seen["display_timezone"] = config.display_timezone
-        seen["status_path"] = config.status_path
-        return LiveCollectorResult(events_written=3, files_written=1)
-
-    result = await cli.run_collect_command(
-        [
-            "collect",
-            "--assets",
-            "BTC,ETH",
-            "--duration",
-            "5",
-            "--raw-root",
-            str(tmp_path / "raw"),
-            "--duckdb-path",
-            str(tmp_path / "db.duckdb"),
-            "--status-path",
-            str(tmp_path / "status.json"),
-        ],
-        runner=fake_runner,
-    )
-
-    assert result == 0
-    assert seen == {
-        "assets": ("BTC", "ETH"),
-        "duration": 5,
-        "windows_to_track": 2,
-        "intervals": ("5m", "15m"),
-        "snapshot_interval": 1.0,
-        "enable_clob_websocket": True,
-        "clob_rest_backup_interval": 5.0,
-        "clob_request_timeout": 2.0,
-        "display_timezone": "America/Chicago",
-        "status_path": tmp_path / "status.json",
-    }
+async def test_run_collect_command_rejects_retired_python_collector(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit, match="Python live collection is retired"):
+        await cli.run_collect_command(
+            [
+                "collect",
+                "--assets",
+                "BTC,ETH",
+                "--duration",
+                "5",
+                "--raw-root",
+                str(tmp_path / "raw"),
+                "--duckdb-path",
+                str(tmp_path / "db.duckdb"),
+                "--status-path",
+                str(tmp_path / "status.json"),
+            ]
+        )
 
 
 def test_shutdown_signal_handler_cancels_collector_task() -> None:
@@ -187,25 +156,6 @@ def test_shutdown_signal_handler_cancels_collector_task() -> None:
 
 
 @pytest.mark.anyio
-async def test_run_collect_command_returns_zero_after_signal_cancel(tmp_path: Path) -> None:
-    async def fake_runner(config: LiveCollectorConfig) -> LiveCollectorResult:
-        raise asyncio.CancelledError
-
-    result = await cli.run_collect_command(
-        [
-            "collect",
-            "--assets",
-            "BTC,ETH",
-            "--duration",
-            "5",
-            "--raw-root",
-            str(tmp_path / "raw"),
-            "--duckdb-path",
-            str(tmp_path / "db.duckdb"),
-            "--status-path",
-            str(tmp_path / "status.json"),
-        ],
-        runner=fake_runner,
-    )
-
-    assert result == 0
+async def test_run_collect_command_rejects_retired_collector_even_with_forever() -> None:
+    with pytest.raises(SystemExit, match="Python live collection is retired"):
+        await cli.run_collect_command(["collect", "--assets", "BTC,ETH", "--forever"])

@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import duckdb
+import pytest
 
 import polymarket_engine.ingestion.live_collector as live_collector
 from polymarket_engine.ingestion.live_collector import (
@@ -28,6 +29,23 @@ Please note that this market is about the price according to Chainlink data stre
 
 def test_live_collector_does_not_expose_fake_collection_runtime() -> None:
     assert not hasattr(live_collector, "run_fake_collection")
+
+
+@pytest.mark.anyio
+async def test_live_collector_runtime_is_retired(tmp_path: Path) -> None:
+    config = LiveCollectorConfig(
+        assets=("BTC",),
+        duration_seconds=1,
+        raw_root=tmp_path / "raw",
+        duckdb_path=tmp_path / "collector.duckdb",
+    )
+
+    try:
+        await live_collector.run_live_collection(config)
+    except RuntimeError as exc:
+        assert "Python live collection is retired" in str(exc)
+    else:  # pragma: no cover - defensive assertion branch
+        raise AssertionError("retired Python collector started")
 
 
 def test_live_collector_config_rejects_invalid_market_fetch_timeout(tmp_path: Path) -> None:

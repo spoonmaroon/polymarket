@@ -1,7 +1,7 @@
-name: polymarket-collector
+name: polymarket-python-collector-retired
 
 services:
-  collector:
+  retired-python-collector:
     build:
       context: ../..
       dockerfile: deploy/collector/Dockerfile
@@ -10,7 +10,7 @@ services:
     user: "${POLYMARKET_UID:-1000}:${POLYMARKET_GID:-1000}"
     environment:
       TZ: ${POLYMARKET_DISPLAY_TZ:-America/Chicago}
-      POLYMARKET_MODE: ${POLYMARKET_MODE:-collect}
+      POLYMARKET_MODE: ${POLYMARKET_MODE:-retired}
       POLYMARKET_ASSETS: ${POLYMARKET_ASSETS:-BTC,ETH}
       POLYMARKET_INTERVALS: ${POLYMARKET_INTERVALS:-5m,15m}
       POLYMARKET_WINDOWS_TO_TRACK: ${POLYMARKET_WINDOWS_TO_TRACK:-2}

@@ -1,6 +1,10 @@
 # Part Two Live Collectors
 
-Part Two turns the Part One data foundation into read-only live collection.
+Part Two originally turned the Part One data foundation into Python read-only
+live collection. That Python collector is now retired. Treat this document as
+historical design context only; the active live path is the Rust SDK runtime.
+`polymarket-engine collect`, the legacy Docker entrypoint, and the legacy
+systemd unit fail closed so the old framework cannot be restarted by accident.
 
 ## First Supported Command
 

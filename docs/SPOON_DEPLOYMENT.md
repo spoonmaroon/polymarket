@@ -1,6 +1,10 @@
 # Spoon Deployment Runbook
 
-The collector runs read-only on spoon from `/home/spoon/polymarket`. Persistent data lives outside the repo at `/home/spoon/polymarket-data`.
+The Python collector runbook below is retired design context. The legacy Docker
+entrypoint and systemd unit now fail closed; do not use this runbook to restart
+Python collection. The active read-only runtime is the Rust SDK probe.
+
+Persistent data lives outside the repo at `/home/spoon/polymarket-data`.
 
 ## Time Policy
 

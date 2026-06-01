@@ -3,15 +3,17 @@ from __future__ import annotations
 import argparse
 import asyncio
 import signal
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
 from typing import Protocol
 
-from polymarket_engine.ingestion.live_collector import LiveCollectorConfig, LiveCollectorResult
 
-
-CollectorRunner = Callable[[LiveCollectorConfig], Awaitable[LiveCollectorResult]]
+RETIRED_COLLECTOR_MESSAGE = (
+    "Python live collection is retired and cannot be started from this CLI. "
+    "Use the Rust live probe instead: cd rust && cargo run -p polymarket-live-probe -- "
+    "--assets BTC,ETH --interval 5m --windows 1"
+)
 
 
 class _SignalLoop(Protocol):
@@ -69,12 +71,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-async def run_collect_command(
-    argv: list[str] | None = None,
-    runner: CollectorRunner | None = None,
-) -> int:
-    from polymarket_engine.ingestion.live_collector import run_live_collection
-
+async def run_collect_command(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     if args.command == "monitor":
         from polymarket_engine.monitor import run_monitor
@@ -82,59 +79,7 @@ async def run_collect_command(
         return await run_monitor(args.duckdb_path, args.refresh, args.limit, args.status_path)
     if args.command != "collect":
         return 2
-    if args.duration is None and not args.forever:
-        raise SystemExit("collect requires --duration or --forever")
-    selected_runner = run_live_collection if runner is None else runner
-    config = LiveCollectorConfig(
-        assets=args.assets,
-        duration_seconds=None if args.forever else args.duration,
-        raw_root=args.raw_root,
-        duckdb_path=args.duckdb_path,
-        status_path=args.status_path,
-        max_batch_size=args.max_batch_size,
-        windows_to_track=args.windows_to_track,
-        intervals=args.intervals,
-        enable_clob_websocket=args.enable_clob_websocket,
-        clob_snapshot_interval_seconds=args.snapshot_interval,
-        clob_rest_backup_interval_seconds=args.clob_rest_backup_interval,
-        clob_request_timeout_seconds=args.clob_request_timeout,
-        market_refresh_interval_seconds=args.market_refresh_interval,
-        market_fetch_timeout_seconds=args.market_fetch_timeout,
-        coinbase_min_record_interval_seconds=args.coinbase_min_record_interval,
-        display_timezone=args.display_timezone,
-    )
-    try:
-        result = await _run_collector_with_shutdown_signals(selected_runner, config)
-    except asyncio.CancelledError:
-        return 0
-    print(
-        {
-            "events_written": result.events_written,
-            "files_written": result.files_written,
-            "source_errors": result.source_errors,
-        }
-    )
-    return 0
-
-
-async def _run_collector_with_shutdown_signals(
-    runner: CollectorRunner,
-    config: LiveCollectorConfig,
-) -> LiveCollectorResult:
-    loop = asyncio.get_running_loop()
-    task: asyncio.Task[LiveCollectorResult] = asyncio.create_task(_await_runner(runner, config))
-    installed = _install_shutdown_signal_handlers(loop, task)
-    try:
-        return await task
-    finally:
-        _remove_shutdown_signal_handlers(loop, installed)
-
-
-async def _await_runner(
-    runner: CollectorRunner,
-    config: LiveCollectorConfig,
-) -> LiveCollectorResult:
-    return await runner(config)
+    raise SystemExit(RETIRED_COLLECTOR_MESSAGE)
 
 
 def _install_shutdown_signal_handlers(

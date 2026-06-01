@@ -47,6 +47,10 @@ from polymarket_engine.storage.raw_writer import RawWriteResult
 from polymarket_engine.storage.recovery import cleanup_orphaned_tmp, ensure_archive_sentinel
 
 RTDS_HEARTBEAT_SECONDS = 5.0
+RETIRED_PYTHON_COLLECTOR_MESSAGE = (
+    "Python live collection is retired and cannot be started. "
+    "Use the Rust live probe runtime instead."
+)
 
 
 class _WebSocketSender(Protocol):
@@ -506,6 +510,8 @@ def _merge_status_from_markets(
 
 
 async def run_live_collection(config: LiveCollectorConfig) -> LiveCollectorResult:
+    raise RuntimeError(RETIRED_PYTHON_COLLECTOR_MESSAGE)
+
     store = DuckDbIngestStore(config.duckdb_path)
     store.apply_schema()
     ensure_archive_sentinel(config.raw_root)

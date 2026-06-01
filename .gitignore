@@ -88,5 +88,9 @@ coverage/
 
 # Generated reports / exports
 reports/generated/
+reports/live_probe/
 exports/
 screenshots/
+
+# Rust
+rust/target/

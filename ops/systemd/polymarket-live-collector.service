@@ -1,26 +1,18 @@
 [Unit]
-# Fallback/manual runner. The preferred spoon runtime is deploy/collector/docker-compose.yml.
-Description=Polymarket BTC/ETH binary live collector
+# Retired fallback/manual runner. The Python live collector must not be restarted.
+Description=RETIRED Polymarket Python live collector tombstone
 After=network-online.target
 Wants=network-online.target
-RequiresMountsFor=/home/spoon/polymarket/data/raw
 
 [Service]
-Type=exec
+Type=oneshot
 User=spoon
 WorkingDirectory=/home/spoon/polymarket
 Environment=PATH=/home/spoon/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=LANG=en_US.UTF-8
 Environment=LC_ALL=en_US.UTF-8
 
-ExecStartPre=/usr/bin/mkdir -p /home/spoon/polymarket/data/raw
-ExecStartPre=/usr/bin/touch /home/spoon/polymarket/data/raw/.polymarket_archive_root
-ExecStart=/home/spoon/.local/bin/uv run polymarket-engine collect --assets BTC,ETH --duration 86400 --raw-root /home/spoon/polymarket/data/raw --duckdb-path /home/spoon/polymarket/data/db/polymarket.duckdb --max-batch-size 100
-
-Restart=on-failure
-RestartSec=15
-TimeoutStopSec=60
-KillMode=control-group
+ExecStart=/bin/sh -c 'echo "Python Polymarket live collector is retired. Use rust/polymarket-live-probe."; exit 64'
 
 StandardOutput=append:/home/spoon/polymarket/logs/live_collector.systemd.stdout.log
 StandardError=append:/home/spoon/polymarket/logs/live_collector.systemd.stderr.log
