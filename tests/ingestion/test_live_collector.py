@@ -6,9 +6,11 @@ import duckdb
 import polymarket_engine.ingestion.live_collector as live_collector
 from polymarket_engine.ingestion.live_collector import (
     LiveCollectorConfig,
+    _is_rtds_socket_idle,
     _orderbook_freshness_rows,
     _orderbook_observation_from_event,
     _price_freshness_rows,
+    _prune_expired_contract_state,
     _source_disagreement_rows,
     register_market_rules,
 )
@@ -201,7 +203,7 @@ def test_market_ws_top_of_book_normalizes_to_orderbook_observation() -> None:
     assert observation.best_ask == 0.50
 
 
-def test_orderbook_freshness_requires_market_ws_when_enabled() -> None:
+def test_orderbook_freshness_accepts_rest_backup_when_market_ws_is_quiet() -> None:
     generated_at = datetime(2026, 6, 1, 11, 20, tzinfo=timezone.utc)
     latest_contracts: dict[str, dict[str, object]] = {
         "btc:UP": {
@@ -224,21 +226,98 @@ def test_orderbook_freshness_requires_market_ws_when_enabled() -> None:
         latest_orderbooks_by_source=latest_by_source,
         generated_at=generated_at,
         stale_after_ms=5_000,
-        required_source_key="polymarket_market_ws",
+        acceptable_source_keys=("polymarket_market_ws", "polymarket_clob"),
     )
 
     assert rows == (
         {
-            "source_key": "polymarket_market_ws",
+            "source_key": "polymarket_clob",
             "symbol": "111",
-            "observed_ts": None,
-            "age_ms": None,
+            "observed_ts": "2026-06-01T11:19:59+00:00",
+            "age_ms": 1000,
             "stale_after_ms": 5_000,
-            "stale": True,
-            "missing": True,
+            "stale": False,
+            "missing": False,
             "contract_id": "btc:UP",
             "token_id": "111",
             "asset": "BTC",
             "side": "UP",
         },
+    )
+
+
+def test_orderbook_freshness_reports_missing_when_no_source_has_book() -> None:
+    generated_at = datetime(2026, 6, 1, 11, 20, tzinfo=timezone.utc)
+    latest_contracts: dict[str, dict[str, object]] = {
+        "btc:UP": {
+            "contract_id": "btc:UP",
+            "asset": "BTC",
+            "side": "UP",
+            "token_id": "111",
+        }
+    }
+
+    rows = _orderbook_freshness_rows(
+        latest_contracts=latest_contracts,
+        latest_orderbooks_by_source={},
+        generated_at=generated_at,
+        stale_after_ms=5_000,
+        acceptable_source_keys=("polymarket_market_ws", "polymarket_clob"),
+    )
+
+    assert rows[0]["source_key"] == "polymarket_market_ws|polymarket_clob"
+    assert rows[0]["missing"] is True
+
+
+def test_prune_expired_contract_state_removes_dead_tokens() -> None:
+    now = datetime(2026, 6, 1, 13, 40, tzinfo=timezone.utc)
+    latest_contracts: dict[str, dict[str, object]] = {
+        "old:UP": {
+            "contract_id": "old:UP",
+            "expiry_ts": "2026-06-01T13:35:00+00:00",
+            "token_id": "old-token",
+        },
+        "live:UP": {
+            "contract_id": "live:UP",
+            "expiry_ts": "2026-06-01T13:45:00+00:00",
+            "token_id": "live-token",
+        },
+    }
+    market_tokens = {
+        "old-token": object(),
+        "live-token": object(),
+    }
+    latest_orderbooks: dict[str, dict[str, object]] = {
+        "old-token": {"token_id": "old-token"},
+        "live-token": {"token_id": "live-token"},
+    }
+    latest_orderbooks_by_source: dict[str, dict[str, object]] = {
+        "polymarket_clob:old-token": {"token_id": "old-token"},
+        "polymarket_clob:live-token": {"token_id": "live-token"},
+    }
+
+    _prune_expired_contract_state(
+        now=now,
+        latest_contracts=latest_contracts,
+        market_tokens=market_tokens,
+        latest_orderbooks=latest_orderbooks,
+        latest_orderbooks_by_source=latest_orderbooks_by_source,
+    )
+
+    assert set(latest_contracts) == {"live:UP"}
+    assert set(market_tokens) == {"live-token"}
+    assert set(latest_orderbooks) == {"live-token"}
+    assert set(latest_orderbooks_by_source) == {"polymarket_clob:live-token"}
+
+
+def test_rtds_idle_socket_reconnect_threshold() -> None:
+    assert _is_rtds_socket_idle(
+        last_message_monotonic=10.0,
+        now_monotonic=25.1,
+        idle_reconnect_seconds=15.0,
+    )
+    assert not _is_rtds_socket_idle(
+        last_message_monotonic=10.0,
+        now_monotonic=24.9,
+        idle_reconnect_seconds=15.0,
     )

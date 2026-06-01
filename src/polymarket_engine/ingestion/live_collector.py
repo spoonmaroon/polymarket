@@ -71,6 +71,7 @@ class LiveCollectorConfig:
     display_timezone: str = "America/Chicago"
     orderbook_stale_after_ms: int = 10_000
     rtds_stale_after_ms: int = 5000
+    rtds_idle_reconnect_seconds: float = 15.0
     coinbase_stale_after_ms: int = 2000
 
     def __post_init__(self) -> None:
@@ -87,6 +88,8 @@ class LiveCollectorConfig:
             raise ValueError("clob_rest_backup_interval_seconds must be positive")
         if self.market_refresh_interval_seconds <= 0:
             raise ValueError("market_refresh_interval_seconds must be positive")
+        if self.rtds_idle_reconnect_seconds <= 0:
+            raise ValueError("rtds_idle_reconnect_seconds must be positive")
         if self.display_timezone != "America/Chicago":
             raise ValueError("display_timezone must be America/Chicago for this project")
         if self.max_batch_size <= 0:
@@ -160,6 +163,15 @@ def _freshness_row(
     return base
 
 
+def _is_rtds_socket_idle(
+    *,
+    last_message_monotonic: float,
+    now_monotonic: float,
+    idle_reconnect_seconds: float,
+) -> bool:
+    return now_monotonic - last_message_monotonic >= idle_reconnect_seconds
+
+
 def _price_freshness_rows(
     *,
     latest_prices: dict[str, dict[str, object]],
@@ -194,16 +206,30 @@ def _orderbook_freshness_rows(
     latest_orderbooks_by_source: dict[str, dict[str, object]],
     generated_at: datetime,
     stale_after_ms: int,
-    required_source_key: str,
+    acceptable_source_keys: tuple[str, ...],
 ) -> tuple[dict[str, object], ...]:
     rows: list[dict[str, object]] = []
     for contract in latest_contracts.values():
         token_id = str(contract["token_id"])
-        latest = latest_orderbooks_by_source.get(f"{required_source_key}:{token_id}")
+        candidates = tuple(
+            latest
+            for source_key in acceptable_source_keys
+            if (latest := latest_orderbooks_by_source.get(f"{source_key}:{token_id}"))
+            is not None
+        )
+        latest = (
+            max(candidates, key=lambda row: str(row.get("observed_ts", "")))
+            if candidates
+            else None
+        )
         rows.append(
             _freshness_row(
                 generated_at=generated_at,
-                source_key=required_source_key,
+                source_key=(
+                    "|".join(acceptable_source_keys)
+                    if latest is None
+                    else str(latest["source_key"])
+                ),
                 symbol=token_id,
                 observed_ts=None if latest is None else latest.get("observed_ts"),
                 stale_after_ms=stale_after_ms,
@@ -216,6 +242,31 @@ def _orderbook_freshness_rows(
             )
         )
     return tuple(rows)
+
+
+def _prune_expired_contract_state(
+    *,
+    now: datetime,
+    latest_contracts: dict[str, dict[str, object]],
+    market_tokens: dict[str, object],
+    latest_orderbooks: dict[str, dict[str, object]],
+    latest_orderbooks_by_source: dict[str, dict[str, object]],
+) -> None:
+    expired_token_ids: set[str] = set()
+    for contract_id, contract in tuple(latest_contracts.items()):
+        expiry_ts = datetime.fromisoformat(str(contract["expiry_ts"]))
+        if expiry_ts <= now:
+            expired_token_ids.add(str(contract["token_id"]))
+            latest_contracts.pop(contract_id, None)
+
+    for token_id in expired_token_ids:
+        market_tokens.pop(token_id, None)
+        latest_orderbooks.pop(token_id, None)
+
+    for source_token_id in tuple(latest_orderbooks_by_source):
+        token_id = source_token_id.split(":", 1)[1]
+        if token_id in expired_token_ids:
+            latest_orderbooks_by_source.pop(source_token_id, None)
 
 
 def _source_disagreement_rows(
@@ -447,6 +498,13 @@ async def run_live_collection(config: LiveCollectorConfig) -> LiveCollectorResul
         last_status_write = now
         config.status_path.parent.mkdir(parents=True, exist_ok=True)
         generated_now = datetime.now(timezone.utc)
+        _prune_expired_contract_state(
+            now=generated_now,
+            latest_contracts=latest_contracts,
+            market_tokens=market_tokens,
+            latest_orderbooks=latest_orderbooks,
+            latest_orderbooks_by_source=latest_orderbooks_by_source,
+        )
         generated_at = generated_now.isoformat()
         try:
             normalized_health = store.normalized_table_health()
@@ -497,10 +555,10 @@ async def run_live_collection(config: LiveCollectorConfig) -> LiveCollectorResul
                     latest_orderbooks_by_source=latest_orderbooks_by_source,
                     generated_at=generated_now,
                     stale_after_ms=config.orderbook_stale_after_ms,
-                    required_source_key=(
-                        "polymarket_market_ws"
+                    acceptable_source_keys=(
+                        ("polymarket_market_ws", "polymarket_clob")
                         if config.enable_clob_websocket
-                        else "polymarket_clob"
+                        else ("polymarket_clob",)
                     ),
                 )
             ),
@@ -577,6 +635,13 @@ async def run_live_collection(config: LiveCollectorConfig) -> LiveCollectorResul
     async def clob_loop() -> None:
         async with httpx.AsyncClient(timeout=15) as client:
             while _should_continue(deadline):
+                _prune_expired_contract_state(
+                    now=datetime.now(timezone.utc),
+                    latest_contracts=latest_contracts,
+                    market_tokens=market_tokens,
+                    latest_orderbooks=latest_orderbooks,
+                    latest_orderbooks_by_source=latest_orderbooks_by_source,
+                )
                 for token in tuple(market_tokens.values()):
                     if not _should_continue(deadline):
                         break
@@ -619,6 +684,7 @@ async def run_live_collection(config: LiveCollectorConfig) -> LiveCollectorResul
                     open_timeout=10,
                     ping_interval=None,
                 ) as ws:
+                    source_errors.pop("polymarket_market_ws", None)
                     await ws.send(
                         json.dumps(build_market_ws_subscribe_message(tuple(active_tokens)))
                     )
@@ -726,19 +792,31 @@ async def run_live_collection(config: LiveCollectorConfig) -> LiveCollectorResul
                 async with websockets.connect(
                     "wss://ws-live-data.polymarket.com",
                     open_timeout=10,
+                    ping_interval=None,
                 ) as ws:
+                    source_errors.pop("polymarket_rtds", None)
                     await ws.send(json.dumps(build_rtds_subscriptions(config.assets)))
                     heartbeat_task = asyncio.create_task(_send_rtds_heartbeats(ws))
                     rtds_attempt = 0
+                    last_message_monotonic = time.monotonic()
                     try:
                         while _should_continue(deadline):
                             try:
                                 raw = await asyncio.wait_for(ws.recv(), timeout=5)
                             except asyncio.TimeoutError:
+                                if _is_rtds_socket_idle(
+                                    last_message_monotonic=last_message_monotonic,
+                                    now_monotonic=time.monotonic(),
+                                    idle_reconnect_seconds=config.rtds_idle_reconnect_seconds,
+                                ):
+                                    raise TimeoutError(
+                                        "RTDS socket idle; reconnecting to avoid stale Chainlink"
+                                    )
                                 await flush_due()
                                 continue
                             if not raw:
                                 continue
+                            last_message_monotonic = time.monotonic()
                             observed = datetime.now(timezone.utc)
                             for event in rtds_price_events(
                                 json.loads(raw),
