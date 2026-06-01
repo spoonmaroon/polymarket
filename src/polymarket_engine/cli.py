@@ -56,6 +56,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     collect.add_argument("--clob-rest-backup-interval", type=float, default=15.0)
     collect.add_argument("--market-refresh-interval", type=float, default=30.0)
     collect.add_argument("--market-fetch-timeout", type=float, default=10.0)
+    collect.add_argument("--coinbase-min-record-interval", type=float, default=1.0)
     collect.add_argument("--display-timezone", default="America/Chicago")
 
     monitor = subparsers.add_parser("monitor")
@@ -97,6 +98,7 @@ async def run_collect_command(
         clob_rest_backup_interval_seconds=args.clob_rest_backup_interval,
         market_refresh_interval_seconds=args.market_refresh_interval,
         market_fetch_timeout_seconds=args.market_fetch_timeout,
+        coinbase_min_record_interval_seconds=args.coinbase_min_record_interval,
         display_timezone=args.display_timezone,
     )
     try:

@@ -11,6 +11,7 @@ from polymarket_engine.ingestion.live_collector import (
     _orderbook_observation_from_event,
     _price_freshness_rows,
     _prune_expired_contract_state,
+    _should_record_sampled_symbol,
     _source_disagreement_rows,
     register_market_rules,
 )
@@ -335,4 +336,28 @@ def test_rtds_idle_socket_reconnect_threshold() -> None:
         last_message_monotonic=10.0,
         now_monotonic=24.9,
         idle_reconnect_seconds=15.0,
+    )
+
+
+def test_should_record_sampled_symbol_limits_proxy_write_rate() -> None:
+    observed = datetime(2026, 6, 1, 14, 20, tzinfo=timezone.utc)
+    last_seen: dict[str, datetime] = {}
+
+    assert _should_record_sampled_symbol(
+        last_seen=last_seen,
+        symbol="BTC-USD",
+        observed_ts=observed,
+        min_interval_seconds=1.0,
+    )
+    assert not _should_record_sampled_symbol(
+        last_seen=last_seen,
+        symbol="BTC-USD",
+        observed_ts=observed,
+        min_interval_seconds=1.0,
+    )
+    assert _should_record_sampled_symbol(
+        last_seen=last_seen,
+        symbol="BTC-USD",
+        observed_ts=observed.replace(second=21),
+        min_interval_seconds=1.0,
     )

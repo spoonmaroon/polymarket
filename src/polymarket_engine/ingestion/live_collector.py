@@ -74,6 +74,7 @@ class LiveCollectorConfig:
     rtds_stale_after_ms: int = 5000
     rtds_idle_reconnect_seconds: float = 15.0
     coinbase_stale_after_ms: int = 10_000
+    coinbase_min_record_interval_seconds: float = 1.0
 
     def __post_init__(self) -> None:
         if self.duration_seconds is not None and self.duration_seconds <= 0:
@@ -93,6 +94,8 @@ class LiveCollectorConfig:
             raise ValueError("market_fetch_timeout_seconds must be positive")
         if self.rtds_idle_reconnect_seconds <= 0:
             raise ValueError("rtds_idle_reconnect_seconds must be positive")
+        if self.coinbase_min_record_interval_seconds <= 0:
+            raise ValueError("coinbase_min_record_interval_seconds must be positive")
         if self.display_timezone != "America/Chicago":
             raise ValueError("display_timezone must be America/Chicago for this project")
         if self.max_batch_size <= 0:
@@ -173,6 +176,22 @@ def _is_rtds_socket_idle(
     idle_reconnect_seconds: float,
 ) -> bool:
     return now_monotonic - last_message_monotonic >= idle_reconnect_seconds
+
+
+def _should_record_sampled_symbol(
+    *,
+    last_seen: dict[str, datetime],
+    symbol: str,
+    observed_ts: datetime,
+    min_interval_seconds: float,
+) -> bool:
+    previous = last_seen.get(symbol)
+    if previous is not None:
+        elapsed = (observed_ts - previous).total_seconds()
+        if elapsed < min_interval_seconds:
+            return False
+    last_seen[symbol] = observed_ts
+    return True
 
 
 def _price_freshness_rows(
@@ -766,6 +785,7 @@ async def run_live_collection(config: LiveCollectorConfig) -> LiveCollectorResul
     async def coinbase_loop() -> None:
         product_ids = tuple(f"{asset}-USD" for asset in config.assets)
         coinbase_attempt = 0
+        last_recorded_by_symbol: dict[str, datetime] = {}
         while _should_continue(deadline):
             try:
                 async with websockets.connect(
@@ -782,7 +802,15 @@ async def run_live_collection(config: LiveCollectorConfig) -> LiveCollectorResul
                             continue
                         observed = datetime.now(timezone.utc)
                         for event in coinbase_ticker_events(json.loads(raw), observed):
-                            await record_event(event)
+                            if _should_record_sampled_symbol(
+                                last_seen=last_recorded_by_symbol,
+                                symbol=event.symbol,
+                                observed_ts=event.observed_ts,
+                                min_interval_seconds=(
+                                    config.coinbase_min_record_interval_seconds
+                                ),
+                            ):
+                                await record_event(event)
             except Exception as exc:
                 source_errors["coinbase_advanced_ws"] = f"{type(exc).__name__}: {exc}"
                 if not _should_continue(deadline):
