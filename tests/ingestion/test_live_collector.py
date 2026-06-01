@@ -395,6 +395,11 @@ def test_prune_expired_contract_state_removes_dead_tokens() -> None:
         "polymarket_clob:old-token": {"token_id": "old-token"},
         "polymarket_clob:live-token": {"token_id": "live-token"},
     }
+    source_errors = {
+        "polymarket_clob:old-token": "ConnectTimeout: ",
+        "polymarket_clob:live-token": "ConnectTimeout: ",
+        "polymarket_markets": "TimeoutError: ",
+    }
 
     _prune_expired_contract_state(
         now=now,
@@ -402,12 +407,17 @@ def test_prune_expired_contract_state_removes_dead_tokens() -> None:
         market_tokens=market_tokens,
         latest_orderbooks=latest_orderbooks,
         latest_orderbooks_by_source=latest_orderbooks_by_source,
+        source_errors=source_errors,
     )
 
     assert set(latest_contracts) == {"live:UP"}
     assert set(market_tokens) == {"live-token"}
     assert set(latest_orderbooks) == {"live-token"}
     assert set(latest_orderbooks_by_source) == {"polymarket_clob:live-token"}
+    assert source_errors == {
+        "polymarket_clob:live-token": "ConnectTimeout: ",
+        "polymarket_markets": "TimeoutError: ",
+    }
 
 
 def test_rtds_idle_socket_reconnect_threshold() -> None:

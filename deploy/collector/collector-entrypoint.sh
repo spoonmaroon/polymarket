@@ -12,6 +12,7 @@ set -- collect \
   --max-batch-size "${POLYMARKET_MAX_BATCH_SIZE:-100}" \
   --snapshot-interval "${POLYMARKET_REST_SNAPSHOT_INTERVAL:-1}" \
   --clob-rest-backup-interval "${POLYMARKET_CLOB_REST_BACKUP_INTERVAL:-15}" \
+  --clob-request-timeout "${POLYMARKET_CLOB_REQUEST_TIMEOUT:-5}" \
   --market-refresh-interval "${POLYMARKET_MARKET_REFRESH_INTERVAL:-30}" \
   --market-fetch-timeout "${POLYMARKET_MARKET_FETCH_TIMEOUT:-10}" \
   --coinbase-min-record-interval "${POLYMARKET_COINBASE_MIN_RECORD_INTERVAL:-1}" \
