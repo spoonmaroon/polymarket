@@ -178,6 +178,17 @@ def _is_rtds_socket_idle(
     return now_monotonic - last_message_monotonic >= idle_reconnect_seconds
 
 
+def _rtds_activity_timestamp(
+    *,
+    previous_monotonic: float,
+    chainlink_event_count: int,
+    now_monotonic: float,
+) -> float:
+    if chainlink_event_count <= 0:
+        return previous_monotonic
+    return now_monotonic
+
+
 def _should_record_sampled_symbol(
     *,
     last_seen: dict[str, datetime],
@@ -872,13 +883,22 @@ async def run_live_collection(config: LiveCollectorConfig) -> LiveCollectorResul
                                 continue
                             if not raw:
                                 continue
-                            last_message_monotonic = time.monotonic()
                             observed = datetime.now(timezone.utc)
-                            for event in rtds_price_events(
+                            events = rtds_price_events(
                                 json.loads(raw),
                                 observed,
                                 assets=config.assets,
-                            ):
+                            )
+                            last_message_monotonic = _rtds_activity_timestamp(
+                                previous_monotonic=last_message_monotonic,
+                                chainlink_event_count=sum(
+                                    1
+                                    for event in events
+                                    if event.source_key == "polymarket_rtds_chainlink"
+                                ),
+                                now_monotonic=time.monotonic(),
+                            )
+                            for event in events:
                                 await record_event(event)
                                 rtds_events_written += 1
                     finally:
