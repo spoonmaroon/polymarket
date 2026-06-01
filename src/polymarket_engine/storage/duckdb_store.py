@@ -3,10 +3,17 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import duckdb
 
+from polymarket_engine.domain.contracts import ContractSpec
 from polymarket_engine.domain.contract_rules import NormalizedContractRule
+from polymarket_engine.domain.market_state import DecisionState, OrderBookObservation, PriceObservation
+
+
+def _json(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
 class DuckDbIngestStore:
@@ -54,6 +61,34 @@ class DuckDbIngestStore:
                     datetime.now(timezone.utc),
                 ],
             )
+            conn.execute(
+                """
+                insert or replace into ops.retention_manifests
+                (manifest_id, file_id, source_key, stream_key, partition_date, partition_hour,
+                 path, sha256, row_count, first_event_ts, last_event_ts, retention_class,
+                 archive_after_days, delete_after_days, archived_at, deleted_at, recorded_at)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    f"{file_id}:raw_hot_90d",
+                    file_id,
+                    source_key,
+                    stream_key,
+                    partition_date,
+                    partition_hour,
+                    path,
+                    sha256,
+                    row_count,
+                    first_event_ts,
+                    last_event_ts,
+                    "raw_hot_90d",
+                    90,
+                    None,
+                    None,
+                    None,
+                    datetime.now(timezone.utc),
+                ],
+            )
 
     def upsert_contract_rule(self, rule: NormalizedContractRule) -> None:
         with duckdb.connect(str(self.db_path)) as conn:
@@ -89,6 +124,206 @@ class DuckDbIngestStore:
                     rule.parser_version,
                     rule.accepted,
                     rule.reject_reason,
+                    datetime.now(timezone.utc),
+                ],
+            )
+
+    def upsert_contract_spec(self, contract: ContractSpec) -> None:
+        now = datetime.now(timezone.utc)
+        with duckdb.connect(str(self.db_path)) as conn:
+            existing = conn.execute(
+                "select first_seen_ts from core.contracts where contract_id = ?",
+                [contract.contract_id],
+            ).fetchone()
+            first_seen_ts = now if existing is None else existing[0]
+            conn.execute(
+                """
+                insert or replace into core.contracts
+                (contract_id, venue, market_id, condition_id, slug, asset, side, token_id,
+                 threshold_type, threshold_price, comparison_operator, start_ts, expiry_ts,
+                 settlement_source_name, settlement_source_url, settlement_symbol, rule_text,
+                 rule_hash, parser_version, first_seen_ts, last_seen_ts)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    contract.contract_id,
+                    contract.venue,
+                    contract.market_id,
+                    contract.condition_id,
+                    contract.slug,
+                    contract.asset,
+                    contract.side,
+                    contract.token_id,
+                    contract.threshold_type,
+                    contract.threshold_price,
+                    contract.comparison_operator,
+                    contract.start_ts,
+                    contract.expiry_ts,
+                    contract.settlement_source_name,
+                    contract.settlement_source_url,
+                    contract.settlement_symbol,
+                    contract.rule_text,
+                    contract.rule_hash,
+                    contract.parser_version,
+                    first_seen_ts,
+                    now,
+                ],
+            )
+
+    def insert_price_tick(self, tick: PriceObservation, raw_file_id: str | None = None) -> None:
+        with duckdb.connect(str(self.db_path)) as conn:
+            conn.execute(
+                """
+                insert or replace into core.price_ticks
+                (source_key, symbol, event_ts, observed_ts, price, bid, ask, sequence, raw_file_id)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    tick.source_key,
+                    tick.symbol,
+                    tick.event_ts,
+                    tick.observed_ts,
+                    tick.price,
+                    tick.bid,
+                    tick.ask,
+                    tick.sequence,
+                    raw_file_id,
+                ],
+            )
+
+    def insert_orderbook_snapshot(
+        self,
+        snapshot: OrderBookObservation,
+        raw_file_id: str | None = None,
+    ) -> None:
+        with duckdb.connect(str(self.db_path)) as conn:
+            conn.execute(
+                """
+                insert or replace into core.orderbook_snapshots
+                (venue, contract_id, token_id, event_ts, observed_ts, best_bid, best_ask,
+                 bid_size_top, ask_size_top, spread, depth_json, raw_file_id)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    snapshot.venue,
+                    snapshot.contract_id,
+                    snapshot.token_id,
+                    snapshot.event_ts,
+                    snapshot.observed_ts,
+                    snapshot.best_bid,
+                    snapshot.best_ask,
+                    snapshot.bid_size_top,
+                    snapshot.ask_size_top,
+                    snapshot.spread,
+                    snapshot.depth_json,
+                    raw_file_id,
+                ],
+            )
+
+    def upsert_asof_state_input(self, state: DecisionState) -> None:
+        with duckdb.connect(str(self.db_path)) as conn:
+            conn.execute(
+                """
+                insert or replace into features.asof_state_inputs
+                (state_id, contract_id, asof_ts, asset, side, threshold, seconds_left,
+                 settlement_price, settlement_source_key, proxy_prices_json,
+                 source_disagreement_bps, best_bid, best_ask, executable_price, spread,
+                 quote_age_ms, source_age_ms, book_age_ms, realized_returns_json,
+                 short_realized_vol, medium_realized_vol, long_realized_vol, sigma_tau,
+                 volatility_regime, data_quality_flags_json, created_at)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    state.state_id,
+                    state.contract.contract_id,
+                    state.asof_ts,
+                    state.contract.asset,
+                    state.contract.side,
+                    state.threshold,
+                    state.seconds_left,
+                    state.settlement_price,
+                    state.settlement_source_key,
+                    _json(state.proxy_prices),
+                    state.source_disagreement_bps,
+                    state.best_bid,
+                    state.best_ask,
+                    state.executable_price,
+                    state.spread,
+                    state.quote_age_ms,
+                    state.source_age_ms,
+                    state.book_age_ms,
+                    _json(list(state.realized_returns)),
+                    state.short_realized_vol,
+                    state.medium_realized_vol,
+                    state.long_realized_vol,
+                    state.sigma_tau,
+                    state.volatility_regime,
+                    _json(list(state.data_quality_flags)),
+                    datetime.now(timezone.utc),
+                ],
+            )
+
+    def insert_decision_snapshot(
+        self,
+        *,
+        decision_id: str,
+        state: DecisionState,
+        model: dict[str, object],
+        decision: str,
+        block_reason: str | None,
+    ) -> None:
+        with duckdb.connect(str(self.db_path)) as conn:
+            conn.execute(
+                """
+                insert or replace into features.decision_snapshots
+                (decision_id, state_id, contract_id, asof_ts, market_id, token_id,
+                 state_json, model_json, decision, block_reason, created_at)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    decision_id,
+                    state.state_id,
+                    state.contract.contract_id,
+                    state.asof_ts,
+                    state.contract.market_id,
+                    state.contract.token_id,
+                    _json(state.to_json_dict()),
+                    _json(model),
+                    decision,
+                    block_reason,
+                    datetime.now(timezone.utc),
+                ],
+            )
+
+    def insert_decision_label(
+        self,
+        *,
+        decision_id: str,
+        contract_id: str,
+        expiry_ts: datetime,
+        settlement_price: float,
+        did_finish_win: bool,
+        did_no_touch: bool,
+        realized_edge: float | None,
+        label_source: str,
+    ) -> None:
+        with duckdb.connect(str(self.db_path)) as conn:
+            conn.execute(
+                """
+                insert or replace into validation.decision_labels
+                (decision_id, contract_id, expiry_ts, settlement_price, did_finish_win,
+                 did_no_touch, realized_edge, label_source, created_at)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    decision_id,
+                    contract_id,
+                    expiry_ts,
+                    settlement_price,
+                    did_finish_win,
+                    did_no_touch,
+                    realized_edge,
+                    label_source,
                     datetime.now(timezone.utc),
                 ],
             )
