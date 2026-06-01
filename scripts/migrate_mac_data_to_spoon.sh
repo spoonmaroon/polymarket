@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-set -u
-set -o pipefail
+set -euo pipefail
 
 LOCAL_REPO="${LOCAL_REPO:-/Users/goon/polymarket}"
 REMOTE_HOST="${REMOTE_HOST:-spoon}"
@@ -27,10 +26,15 @@ fi
 
 ssh "$REMOTE_HOST" "mkdir -p '$REMOTE_DATA_DIR/raw' '$REMOTE_DATA_DIR/db' '$REMOTE_DATA_DIR/live' '$REMOTE_DATA_DIR/logs' && touch '$REMOTE_DATA_DIR/raw/.polymarket_archive_root'"
 
-rsync -a --info=progress2 "$LOCAL_REPO/data/raw/" "$REMOTE_HOST:$REMOTE_DATA_DIR/raw/"
-rsync -a --info=progress2 "$LOCAL_REPO/data/db/" "$REMOTE_HOST:$REMOTE_DATA_DIR/db/"
-rsync -a --info=progress2 "$LOCAL_REPO/data/live/" "$REMOTE_HOST:$REMOTE_DATA_DIR/live/"
-rsync -a --info=progress2 "$LOCAL_REPO/logs/" "$REMOTE_HOST:$REMOTE_DATA_DIR/logs/"
+RSYNC_PROGRESS_ARGS=(--progress)
+if rsync --help 2>&1 | grep -q -- "--info="; then
+  RSYNC_PROGRESS_ARGS=(--info=progress2)
+fi
+
+rsync -a "${RSYNC_PROGRESS_ARGS[@]}" "$LOCAL_REPO/data/raw/" "$REMOTE_HOST:$REMOTE_DATA_DIR/raw/"
+rsync -a "${RSYNC_PROGRESS_ARGS[@]}" "$LOCAL_REPO/data/db/" "$REMOTE_HOST:$REMOTE_DATA_DIR/db/"
+rsync -a "${RSYNC_PROGRESS_ARGS[@]}" "$LOCAL_REPO/data/live/" "$REMOTE_HOST:$REMOTE_DATA_DIR/live/"
+rsync -a "${RSYNC_PROGRESS_ARGS[@]}" "$LOCAL_REPO/logs/" "$REMOTE_HOST:$REMOTE_DATA_DIR/logs/"
 
 echo "Migration copied data to $REMOTE_HOST:$REMOTE_DATA_DIR"
 echo "Next: run /home/spoon/polymarket/scripts/deploy.sh on spoon and verify status freshness."
