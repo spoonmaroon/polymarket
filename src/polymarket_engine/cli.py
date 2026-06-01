@@ -33,8 +33,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     collect.add_argument("--max-batch-size", type=int, default=100)
     collect.add_argument("--windows-to-track", type=int, default=2)
     collect.add_argument("--intervals", type=_interval_tuple, default=("5m", "15m"))
+    collect.add_argument(
+        "--disable-clob-websocket",
+        dest="enable_clob_websocket",
+        action="store_false",
+    )
+    collect.set_defaults(enable_clob_websocket=True)
     collect.add_argument("--snapshot-interval", type=float, default=1.0)
+    collect.add_argument("--clob-rest-backup-interval", type=float, default=15.0)
     collect.add_argument("--market-refresh-interval", type=float, default=30.0)
+    collect.add_argument("--display-timezone", default="America/Chicago")
 
     monitor = subparsers.add_parser("monitor")
     monitor.add_argument("--duckdb-path", type=Path, default=Path("data/db/polymarket.duckdb"))
@@ -70,8 +78,11 @@ async def run_collect_command(
         max_batch_size=args.max_batch_size,
         windows_to_track=args.windows_to_track,
         intervals=args.intervals,
+        enable_clob_websocket=args.enable_clob_websocket,
         clob_snapshot_interval_seconds=args.snapshot_interval,
+        clob_rest_backup_interval_seconds=args.clob_rest_backup_interval,
         market_refresh_interval_seconds=args.market_refresh_interval,
+        display_timezone=args.display_timezone,
     )
     result = await selected_runner(config)
     print(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from typing import Any
 
@@ -30,6 +31,8 @@ def clob_market_ws_events(
 ) -> tuple[CollectorEvent, ...]:
     if isinstance(message, str) and message.upper() in {"PING", "PONG"}:
         return ()
+    if isinstance(message, str):
+        message = json.loads(message)
     if not isinstance(message, dict):
         return ()
 

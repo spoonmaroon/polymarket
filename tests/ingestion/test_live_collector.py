@@ -6,10 +6,12 @@ import duckdb
 import polymarket_engine.ingestion.live_collector as live_collector
 from polymarket_engine.ingestion.live_collector import (
     LiveCollectorConfig,
+    _orderbook_observation_from_event,
     _price_freshness_rows,
     _source_disagreement_rows,
     register_market_rules,
 )
+from polymarket_engine.ingestion.collector_events import CollectorEvent
 
 
 BTC_DESCRIPTION = """This market will resolve to "Up" if the Bitcoin price at the end of the time range specified in the title is greater than or equal to the price at the beginning of that range. Otherwise, it will resolve to "Down".
@@ -166,3 +168,33 @@ def test_status_source_disagreement_reports_fresh_basis_in_bps() -> None:
     assert row["usable"] is True
     assert row["block_reason"] is None
     assert row["diff_bps"] is not None
+
+
+def test_market_ws_top_of_book_normalizes_to_orderbook_observation() -> None:
+    observed = datetime(2026, 6, 1, 11, 20, tzinfo=timezone.utc)
+    event = CollectorEvent(
+        source_key="polymarket_market_ws",
+        stream_key="top_of_book",
+        symbol="btc-updown-5m-1780301700:UP",
+        event_ts=observed,
+        observed_ts=observed,
+        payload={
+            "contract_id": "0xabc",
+            "token_id": "111",
+            "best_bid": 0.49,
+            "best_ask": 0.50,
+            "bid_size_top": None,
+            "ask_size_top": None,
+            "spread": 0.01,
+            "depth_json": '{"source":"best_bid_ask"}',
+        },
+    )
+
+    observation = _orderbook_observation_from_event(event)
+
+    assert observation is not None
+    assert observation.venue == "polymarket"
+    assert observation.contract_id == "0xabc"
+    assert observation.token_id == "111"
+    assert observation.best_bid == 0.49
+    assert observation.best_ask == 0.50

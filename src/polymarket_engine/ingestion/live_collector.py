@@ -28,6 +28,11 @@ from polymarket_engine.ingestion.contract_discovery import (
     fetch_crypto_updown_markets,
 )
 from polymarket_engine.ingestion.polymarket_clob import clob_book_event
+from polymarket_engine.ingestion.polymarket_clob_ws import (
+    CLOB_MARKET_WS_URL,
+    build_market_ws_subscribe_message,
+    clob_market_ws_events,
+)
 from polymarket_engine.ingestion.polymarket_rtds import (
     build_rtds_subscriptions,
     rtds_heartbeat_message,
@@ -58,8 +63,11 @@ class LiveCollectorConfig:
     require_archive_sentinel: bool = False
     windows_to_track: int = 2
     intervals: tuple[str, ...] = ("5m", "15m")
+    enable_clob_websocket: bool = True
     clob_snapshot_interval_seconds: float = 1.0
+    clob_rest_backup_interval_seconds: float = 15.0
     market_refresh_interval_seconds: float = 30.0
+    display_timezone: str = "America/Chicago"
     orderbook_stale_after_ms: int = 2_000
     rtds_stale_after_ms: int = 5000
     coinbase_stale_after_ms: int = 2000
@@ -74,8 +82,12 @@ class LiveCollectorConfig:
             raise ValueError(f"unsupported intervals: {sorted(unsupported_intervals)}")
         if self.clob_snapshot_interval_seconds <= 0:
             raise ValueError("clob_snapshot_interval_seconds must be positive")
+        if self.clob_rest_backup_interval_seconds <= 0:
+            raise ValueError("clob_rest_backup_interval_seconds must be positive")
         if self.market_refresh_interval_seconds <= 0:
             raise ValueError("market_refresh_interval_seconds must be positive")
+        if self.display_timezone != "America/Chicago":
+            raise ValueError("display_timezone must be America/Chicago for this project")
         if self.max_batch_size <= 0:
             raise ValueError("max_batch_size must be positive")
 
@@ -328,6 +340,7 @@ async def run_live_collection(config: LiveCollectorConfig) -> LiveCollectorResul
     files_written = 0
     deadline = collection_deadline(config)
     market_tokens: dict[str, Any] = {}
+    token_update_queue: asyncio.Queue[tuple[MarketToken, ...]] = asyncio.Queue(maxsize=1)
     rtds_events_written = 0
     write_lock = asyncio.Lock()
     latest_prices: dict[str, dict[str, object]] = {}
@@ -372,6 +385,12 @@ async def run_live_collection(config: LiveCollectorConfig) -> LiveCollectorResul
             if token_id not in active_token_ids:
                 latest_orderbooks.pop(token_id, None)
         return tuple(accepted_tokens)
+
+    def publish_token_update(tokens: tuple[MarketToken, ...]) -> None:
+        while not token_update_queue.empty():
+            token_update_queue.get_nowait()
+            token_update_queue.task_done()
+        token_update_queue.put_nowait(tokens)
 
     def update_status_from_event(event: CollectorEvent) -> None:
         price_tick = _price_observation_from_event(event)
@@ -468,8 +487,11 @@ async def run_live_collection(config: LiveCollectorConfig) -> LiveCollectorResul
         async with write_lock:
             events_written += 1
             update_status_from_event(event)
+            source_errors.pop(event.source_key, None)
+            source_errors.pop(f"{event.source_key}:{event.stream_key}", None)
             try:
                 _write_normalized_event(store, event)
+                source_errors.pop(f"normalized:{event.source_key}:{event.stream_key}", None)
             except Exception as exc:
                 source_errors[f"normalized:{event.source_key}:{event.stream_key}"] = (
                     f"{type(exc).__name__}: {exc}"
@@ -505,6 +527,7 @@ async def run_live_collection(config: LiveCollectorConfig) -> LiveCollectorResul
                     tokens = update_status_from_markets(markets)
                     market_tokens.clear()
                     market_tokens.update({token.token_id: token for token in tokens})
+                    publish_token_update(tokens)
                     write_status(force=True)
                     for market in markets:
                         observed = datetime.now(timezone.utc)
@@ -537,12 +560,79 @@ async def run_live_collection(config: LiveCollectorConfig) -> LiveCollectorResul
                         )
                         response.raise_for_status()
                         await record_event(clob_book_event(response.json(), token, observed))
+                        source_errors.pop(f"polymarket_clob:{token.token_id}", None)
                     except Exception as exc:
                         source_errors[f"polymarket_clob:{token.token_id}"] = (
                             f"{type(exc).__name__}: {exc}"
                         )
                 await flush_due()
-                await _sleep_for(config.clob_snapshot_interval_seconds, deadline)
+                sleep_seconds = (
+                    config.clob_rest_backup_interval_seconds
+                    if config.enable_clob_websocket
+                    else config.clob_snapshot_interval_seconds
+                )
+                await _sleep_for(sleep_seconds, deadline)
+
+    async def clob_market_ws_loop() -> None:
+        clob_ws_attempt = 0
+        active_tokens: dict[str, MarketToken] = {}
+        while _should_continue(deadline):
+            if not active_tokens:
+                try:
+                    tokens = await asyncio.wait_for(token_update_queue.get(), timeout=5)
+                    active_tokens = {token.token_id: token for token in tokens}
+                    token_update_queue.task_done()
+                except asyncio.TimeoutError:
+                    await flush_due()
+                    continue
+            try:
+                async with websockets.connect(CLOB_MARKET_WS_URL, open_timeout=10) as ws:
+                    await ws.send(
+                        json.dumps(build_market_ws_subscribe_message(tuple(active_tokens)))
+                    )
+                    clob_ws_attempt = 0
+                    while _should_continue(deadline):
+                        recv_task = asyncio.create_task(ws.recv())
+                        update_task = asyncio.create_task(token_update_queue.get())
+                        done, pending = await asyncio.wait(
+                            {recv_task, update_task},
+                            timeout=5,
+                            return_when=asyncio.FIRST_COMPLETED,
+                        )
+                        for task in pending:
+                            task.cancel()
+                        for task in pending:
+                            with suppress(asyncio.CancelledError):
+                                await task
+                        if update_task in done:
+                            tokens = update_task.result()
+                            token_update_queue.task_done()
+                            active_tokens = {token.token_id: token for token in tokens}
+                            await ws.send(
+                                json.dumps(
+                                    build_market_ws_subscribe_message(tuple(active_tokens))
+                                )
+                            )
+                        if recv_task in done:
+                            raw = recv_task.result()
+                            if raw:
+                                observed = datetime.now(timezone.utc)
+                                for event in clob_market_ws_events(
+                                    raw,
+                                    active_tokens,
+                                    observed,
+                                ):
+                                    await record_event(event)
+                        if not done:
+                            await ws.send("PING")
+                            await flush_due()
+            except Exception as exc:
+                source_errors["polymarket_market_ws"] = f"{type(exc).__name__}: {exc}"
+                if not _should_continue(deadline):
+                    break
+                delay = compute_reconnect_delay(clob_ws_attempt)
+                clob_ws_attempt += 1
+                await _sleep_for(delay, deadline)
 
     async def coinbase_loop() -> None:
         product_ids = tuple(f"{asset}-USD" for asset in config.assets)
@@ -614,7 +704,10 @@ async def run_live_collection(config: LiveCollectorConfig) -> LiveCollectorResul
                 await _sleep_for(delay, deadline)
 
     try:
-        await asyncio.gather(market_loop(), clob_loop(), coinbase_loop(), rtds_loop())
+        loops = [market_loop(), clob_loop(), coinbase_loop(), rtds_loop()]
+        if config.enable_clob_websocket:
+            loops.append(clob_market_ws_loop())
+        await asyncio.gather(*loops)
     finally:
         for result in writer.flush_all():
             register_result(result)
@@ -660,7 +753,9 @@ def _price_observation_from_event(event: CollectorEvent) -> PriceObservation | N
 
 
 def _orderbook_observation_from_event(event: CollectorEvent) -> OrderBookObservation | None:
-    if event.source_key != "polymarket_clob" or event.stream_key != "orderbook_snapshot":
+    if event.source_key not in {"polymarket_clob", "polymarket_market_ws"}:
+        return None
+    if event.stream_key not in {"orderbook_snapshot", "top_of_book"}:
         return None
     return OrderBookObservation(
         venue="polymarket",

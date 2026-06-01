@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timezone
 
 from polymarket_engine.ingestion.contract_discovery import MarketToken
@@ -76,6 +77,28 @@ def test_market_ws_best_bid_ask_becomes_top_of_book_event() -> None:
     assert event.payload["best_ask"] == 0.42
     assert round(float(event.payload["spread"]), 2) == 0.01
     assert event.payload["depth_json"] == '{"source":"best_bid_ask"}'
+
+
+def test_market_ws_accepts_json_string_messages() -> None:
+    observed = datetime(2026, 6, 1, 10, 55, 2, tzinfo=timezone.utc)
+    token = MarketToken(slug="eth-updown-5m-1780301700", outcome="DOWN", token_id="222")
+    events = clob_market_ws_events(
+        json.dumps(
+            {
+                "event_type": "best_bid_ask",
+                "asset_id": "222",
+                "market": "0xdef",
+                "timestamp": "1780301702000",
+                "best_bid": "0.41",
+                "best_ask": "0.42",
+            }
+        ),
+        {"222": token},
+        observed,
+    )
+
+    assert len(events) == 1
+    assert events[0].payload["best_bid"] == 0.41
 
 
 def test_market_ws_price_change_with_best_prices_updates_top_of_book() -> None:

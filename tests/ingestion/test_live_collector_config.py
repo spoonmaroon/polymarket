@@ -15,6 +15,9 @@ def test_live_collector_defaults_to_current_and_next_windows() -> None:
 
     assert config.windows_to_track == 2
     assert config.intervals == ("5m", "15m")
+    assert config.enable_clob_websocket is True
+    assert config.clob_rest_backup_interval_seconds == 15.0
+    assert config.display_timezone == "America/Chicago"
     assert config.clob_snapshot_interval_seconds == 1.0
     assert config.market_refresh_interval_seconds == 30.0
 
@@ -59,4 +62,24 @@ def test_live_collector_rejects_unsupported_contract_interval() -> None:
             raw_root=Path("data/raw"),
             duckdb_path=Path("data/db/polymarket.duckdb"),
             intervals=("1h",),
+        )
+
+
+def test_live_collector_rejects_invalid_rest_backup_and_timezone() -> None:
+    with pytest.raises(ValueError, match="clob_rest_backup_interval_seconds"):
+        LiveCollectorConfig(
+            assets=("BTC",),
+            duration_seconds=10,
+            raw_root=Path("data/raw"),
+            duckdb_path=Path("data/db/polymarket.duckdb"),
+            clob_rest_backup_interval_seconds=0,
+        )
+
+    with pytest.raises(ValueError, match="display_timezone"):
+        LiveCollectorConfig(
+            assets=("BTC",),
+            duration_seconds=10,
+            raw_root=Path("data/raw"),
+            duckdb_path=Path("data/db/polymarket.duckdb"),
+            display_timezone="UTC",
         )
