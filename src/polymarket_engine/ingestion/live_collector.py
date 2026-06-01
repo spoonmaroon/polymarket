@@ -10,6 +10,7 @@ from typing import Any, Protocol
 import httpx
 import websockets
 
+from polymarket_engine.domain.contracts import contract_specs_from_rule
 from polymarket_engine.domain.contract_rules import (
     ContractRuleRejected,
     parse_polymarket_crypto_updown_rule,
@@ -122,7 +123,10 @@ def register_market_rules(
     for market in markets:
         slug = str(market.get("slug", "unknown"))
         try:
-            store.upsert_contract_rule(parse_polymarket_crypto_updown_rule(market))
+            rule = parse_polymarket_crypto_updown_rule(market)
+            store.upsert_contract_rule(rule)
+            for contract in contract_specs_from_rule(rule):
+                store.upsert_contract_spec(contract)
         except ContractRuleRejected as exc:
             source_errors[f"contract_rule:{slug}"] = str(exc)
     return source_errors
