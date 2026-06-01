@@ -70,10 +70,10 @@ class LiveCollectorConfig:
     market_refresh_interval_seconds: float = 30.0
     market_fetch_timeout_seconds: float = 10.0
     display_timezone: str = "America/Chicago"
-    orderbook_stale_after_ms: int = 10_000
-    rtds_stale_after_ms: int = 5000
+    orderbook_stale_after_ms: int = 30_000
+    rtds_stale_after_ms: int = 30_000
     rtds_idle_reconnect_seconds: float = 15.0
-    coinbase_stale_after_ms: int = 10_000
+    coinbase_stale_after_ms: int = 30_000
     coinbase_min_record_interval_seconds: float = 1.0
 
     def __post_init__(self) -> None:

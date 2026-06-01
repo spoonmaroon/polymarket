@@ -75,7 +75,7 @@ def test_status_check_rejects_stale_source_freshness(
         script.main()
 
 
-def test_status_check_rejects_missing_orderbook_freshness(
+def test_status_check_tolerates_missing_future_orderbook_freshness(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -98,7 +98,24 @@ def test_status_check_rejects_missing_orderbook_freshness(
         ["check_collector_status.py", "--status-path", str(status_path)],
     )
 
-    with pytest.raises(SystemExit, match="orderbook_freshness missing"):
+    assert script.main() == 0
+
+
+def test_status_check_rejects_empty_orderbooks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = _load_script()
+    status = _fresh_status()
+    status["orderbooks"] = []
+    status_path = tmp_path / "status.json"
+    status_path.write_text(json.dumps(status), encoding="utf-8")
+    monkeypatch.setattr(
+        "sys.argv",
+        ["check_collector_status.py", "--status-path", str(status_path)],
+    )
+
+    with pytest.raises(SystemExit, match="status has no orderbook rows"):
         script.main()
 
 
@@ -120,3 +137,22 @@ def test_status_check_rejects_required_source_error(
 
     with pytest.raises(SystemExit, match="required source error"):
         script.main()
+
+
+def test_status_check_allows_transient_market_discovery_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = _load_script()
+    status = _fresh_status()
+    status["source_errors"] = {
+        "polymarket_markets": "ReadError: transient gamma fetch failure",
+    }
+    status_path = tmp_path / "status.json"
+    status_path.write_text(json.dumps(status), encoding="utf-8")
+    monkeypatch.setattr(
+        "sys.argv",
+        ["check_collector_status.py", "--status-path", str(status_path)],
+    )
+
+    assert script.main() == 0
