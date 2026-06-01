@@ -205,10 +205,10 @@ def _price_freshness_rows(
     rows: list[dict[str, object]] = []
     for asset in assets:
         checks = (
-            ("coinbase_advanced_ws", f"{asset}-USD", coinbase_stale_after_ms),
-            ("polymarket_rtds_chainlink", f"{asset}/USD", rtds_stale_after_ms),
+            ("coinbase_advanced_ws", f"{asset}-USD", coinbase_stale_after_ms, False),
+            ("polymarket_rtds_chainlink", f"{asset}/USD", rtds_stale_after_ms, True),
         )
-        for source_key, symbol, stale_after_ms in checks:
+        for source_key, symbol, stale_after_ms, required in checks:
             latest = latest_prices.get(f"{source_key}:{symbol}")
             rows.append(
                 _freshness_row(
@@ -217,6 +217,7 @@ def _price_freshness_rows(
                     symbol=symbol,
                     observed_ts=None if latest is None else latest.get("observed_ts"),
                     stale_after_ms=stale_after_ms,
+                    extra={} if required else {"required": False},
                 )
             )
         optional_symbol = f"{asset}/USDT"

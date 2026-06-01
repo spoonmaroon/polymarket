@@ -202,6 +202,33 @@ def test_status_source_disagreement_reports_fresh_basis_in_bps() -> None:
     assert row["diff_bps"] is not None
 
 
+def test_price_freshness_marks_coinbase_proxy_optional() -> None:
+    generated_at = datetime(2026, 6, 1, 11, 20, tzinfo=timezone.utc)
+    latest_prices = {
+        "polymarket_rtds_chainlink:BTC/USD": {
+            "source_key": "polymarket_rtds_chainlink",
+            "symbol": "BTC/USD",
+            "observed_ts": "2026-06-01T11:19:59+00:00",
+            "price": 72_623.5125,
+        },
+    }
+
+    freshness = _price_freshness_rows(
+        latest_prices=latest_prices,
+        assets=("BTC",),
+        generated_at=generated_at,
+        coinbase_stale_after_ms=2_000,
+        rtds_stale_after_ms=5_000,
+    )
+
+    coinbase_row = next(row for row in freshness if row["source_key"] == "coinbase_advanced_ws")
+    chainlink_row = next(
+        row for row in freshness if row["source_key"] == "polymarket_rtds_chainlink"
+    )
+    assert coinbase_row["required"] is False
+    assert chainlink_row.get("required", True) is True
+
+
 def test_status_source_disagreement_includes_optional_rtds_crypto_proxy() -> None:
     generated_at = datetime(2026, 6, 1, 11, 20, tzinfo=timezone.utc)
     latest_prices = {
