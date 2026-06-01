@@ -46,6 +46,11 @@ def main() -> int:
         raise SystemExit(f"price rows stale: age_ms={price_age_ms}")
     if book_age_ms > args.max_orderbook_age_ms:
         raise SystemExit(f"orderbook rows stale: age_ms={book_age_ms}")
+    _reject_bad_freshness_rows(payload.get("source_freshness", []), label="source_freshness")
+    _reject_bad_freshness_rows(
+        payload.get("orderbook_freshness", []),
+        label="orderbook_freshness",
+    )
 
     print(
         {
@@ -56,6 +61,22 @@ def main() -> int:
         }
     )
     return 0
+
+
+def _reject_bad_freshness_rows(rows: object, *, label: str) -> None:
+    if not isinstance(rows, list):
+        return
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        identifier = row.get("symbol", row.get("contract_id", "unknown"))
+        source_key = row.get("source_key", "")
+        if row.get("missing"):
+            raise SystemExit(f"{label} missing: source={source_key} symbol={identifier}")
+        if row.get("stale") or row.get("status") == "STALE":
+            raise SystemExit(
+                f"{label} stale: source={source_key} symbol={identifier} age_ms={row.get('age_ms')}"
+            )
 
 
 if __name__ == "__main__":
