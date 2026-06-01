@@ -15,6 +15,7 @@ uv run polymarket-engine collect --assets BTC,ETH --duration 10
 ```bash
 uv run polymarket-engine collect \
   --assets BTC,ETH \
+  --intervals 5m,15m \
   --forever \
   --windows-to-track 2 \
   --snapshot-interval 1 \
@@ -24,8 +25,8 @@ uv run polymarket-engine collect \
   --status-path data/live/status.json
 ```
 
-This tracks only the accepted BTC/ETH UP/DOWN contracts for the current
-5-minute window and the next 5-minute window. The collector remains read-only.
+This tracks only the accepted BTC/ETH UP/DOWN contracts for the current and
+next 5-minute and 15-minute windows. The collector remains read-only.
 
 In another terminal:
 
@@ -42,11 +43,12 @@ written by the collector. DuckDB remains the durable normalized store.
 
 The first network runner records:
 
-- Polymarket BTC/ETH 5-minute market snapshots discovered by deterministic slugs.
+- Polymarket BTC/ETH 5-minute and 15-minute market snapshots discovered by deterministic slugs.
 - Polymarket CLOB order book snapshots for Up and Down token ids.
 - Coinbase BTC/ETH ticker updates for live proxy price movement.
 - Polymarket RTDS/reference updates when the RTDS stream emits messages.
 - DuckDB ingest-file rows under `ops.ingest_files`.
+- Normalized-table counts/latest timestamps and source/orderbook freshness rows in the status file.
 - Immutable raw Parquet files under `data/raw/`.
 
 ## Source Rules
@@ -54,14 +56,23 @@ The first network runner records:
 - Polymarket website chart prices are not model truth.
 - Coinbase is the first live proxy feed for BTC/ETH price movement.
 - Polymarket RTDS is the first settlement/reference feed candidate.
+- Volatility and `sigma_tau` must use only the Chainlink settlement/reference rows from `polymarket_rtds_chainlink`.
+- Coinbase, Binance, and other proxies are for source-disagreement checks and feed-health diagnostics, not realized-volatility construction.
 - Binance.com is disabled by default on this machine because it returned `HTTP 451`.
 - Every source event must preserve both source timestamp and local receive timestamp.
 - Raw writes are crash-durable: `.parquet.tmp` files are atomically published and orphaned temporary files are cleaned at startup.
 - WebSocket outages are handled with capped reconnect backoff; other sources continue running when one feed disconnects.
+- RTDS subscribes to all Chainlink crypto symbols and filters locally to configured assets, because filtered multi-symbol subscriptions can omit live ETH updates.
 
 ## Safety
 
 Part Two does not trade, does not build model probabilities, and does not place orders.
+
+## Retention Policy
+
+Raw event data is retained hot for 90 days. Hot raw data includes Polymarket market snapshots, CLOB market WebSocket events, REST order-book backup snapshots, RTDS price updates, Coinbase price ticks, source errors, and raw collector payloads.
+
+After 90 days, raw events should be compacted into replay-safe research tables before deletion is enabled. The compact layer should preserve 1-second price bars, 1-second top-of-book rows, source freshness, contract windows, rule hashes, decision states, and final labels. Automatic deletion remains disabled until replay tests prove compacted tables reproduce the same as-of state for sampled contracts.
 
 ## Docker/VPS Migration Requirements
 

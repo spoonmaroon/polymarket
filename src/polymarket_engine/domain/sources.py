@@ -61,7 +61,7 @@ LOCKED_SOURCES: dict[str, DataSource] = {
         role=SourceRole.PRICE_PROXY,
         status=SourceStatus.PART_ONE,
         symbols=("BTCUSDT", "ETHUSDT"),
-        reason="Liquid free proxy for high-frequency price path and volatility reconstruction.",
+        reason="Liquid free proxy for source-disagreement checks only; not a volatility input.",
     ),
     "coinbase_advanced_ws": DataSource(
         key="coinbase_advanced_ws",

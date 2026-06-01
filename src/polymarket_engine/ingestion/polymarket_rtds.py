@@ -7,13 +7,12 @@ from polymarket_engine.ingestion.collector_events import CollectorEvent
 
 
 def build_rtds_subscriptions(assets: tuple[str, ...]) -> dict[str, object]:
-    chainlink_filters = [
-        {"topic": "crypto_prices_chainlink", "type": "*", "filters": f'{{"symbol":"{asset.lower()}/usd"}}'}
-        for asset in assets
-    ]
+    _ = assets
     return {
         "action": "subscribe",
-        "subscriptions": chainlink_filters,
+        "subscriptions": [
+            {"topic": "crypto_prices_chainlink", "type": "*", "filters": ""},
+        ],
     }
 
 
@@ -36,9 +35,14 @@ def _symbol(raw_symbol: str) -> str:
     return normalized
 
 
+def _symbol_asset(symbol: str) -> str:
+    return symbol.upper().replace("-", "/").split("/", maxsplit=1)[0]
+
+
 def rtds_price_events(
     message: dict[str, Any],
     observed_ts: datetime,
+    assets: tuple[str, ...] | None = None,
 ) -> tuple[CollectorEvent, ...]:
     topic = str(message.get("topic", ""))
     if topic not in {"crypto_prices_chainlink", "crypto_prices"}:
@@ -49,6 +53,8 @@ def rtds_price_events(
     raw_symbol = str(payload["symbol"])
     source_key = _source_key(topic, raw_symbol)
     symbol = _symbol(raw_symbol)
+    if assets is not None and _symbol_asset(symbol) not in {asset.upper() for asset in assets}:
+        return ()
 
     snapshot_points = payload.get("data")
     if isinstance(snapshot_points, list):

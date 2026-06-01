@@ -61,7 +61,7 @@ def parse_polymarket_crypto_updown_rule(market: dict[str, Any]) -> NormalizedCon
         raise ContractRuleRejected("missing rule text")
 
     slug = str(market.get("slug", ""))
-    slug_match = re.fullmatch(r"(btc|eth|sol)-updown-5m-\d+", slug)
+    slug_match = re.fullmatch(r"(btc|eth|sol)-updown-(5m|15m)-\d+", slug)
     if slug_match is None:
         raise ContractRuleRejected("unsupported slug")
 

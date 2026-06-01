@@ -30,12 +30,13 @@ The locked Part One data-source and database plan lives in
 
 ## Live Read-Only Collection
 
-The current live runner tracks BTC/ETH UP/DOWN for the current 5-minute window
-and the next 5-minute window. It writes durable raw data, normalized DuckDB
-tables, and an atomic terminal-monitor status file.
+The current live runner tracks BTC/ETH UP/DOWN for the current and next
+5-minute and 15-minute windows. It writes durable raw data, normalized DuckDB
+tables, and an atomic terminal-monitor status file with normalized-table and
+source-freshness health.
 
 ```bash
-uv run polymarket-engine collect --assets BTC,ETH --forever --windows-to-track 2 --snapshot-interval 1 --market-refresh-interval 30
+uv run polymarket-engine collect --assets BTC,ETH --intervals 5m,15m --forever --windows-to-track 2 --snapshot-interval 1 --market-refresh-interval 30
 ```
 
 In a second terminal:

@@ -1,0 +1,29 @@
+name: polymarket-collector
+
+services:
+  collector:
+    build:
+      context: ../..
+      dockerfile: deploy/collector/Dockerfile
+    restart: unless-stopped
+    init: true
+    user: "${POLYMARKET_UID:-1000}:${POLYMARKET_GID:-1000}"
+    environment:
+      TZ: ${POLYMARKET_DISPLAY_TZ:-America/Chicago}
+      POLYMARKET_MODE: ${POLYMARKET_MODE:-collect}
+      POLYMARKET_ASSETS: ${POLYMARKET_ASSETS:-BTC,ETH}
+      POLYMARKET_INTERVALS: ${POLYMARKET_INTERVALS:-5m,15m}
+      POLYMARKET_WINDOWS_TO_TRACK: ${POLYMARKET_WINDOWS_TO_TRACK:-2}
+      POLYMARKET_MAX_BATCH_SIZE: ${POLYMARKET_MAX_BATCH_SIZE:-100}
+      POLYMARKET_REST_SNAPSHOT_INTERVAL: ${POLYMARKET_REST_SNAPSHOT_INTERVAL:-1}
+      POLYMARKET_CLOB_REST_BACKUP_INTERVAL: ${POLYMARKET_CLOB_REST_BACKUP_INTERVAL:-15}
+      POLYMARKET_MARKET_REFRESH_INTERVAL: ${POLYMARKET_MARKET_REFRESH_INTERVAL:-30}
+      POLYMARKET_DISPLAY_TZ: ${POLYMARKET_DISPLAY_TZ:-America/Chicago}
+      POLYMARKET_ENABLE_CLOB_WEBSOCKET: ${POLYMARKET_ENABLE_CLOB_WEBSOCKET:-1}
+    volumes:
+      - ${POLYMARKET_DATA_DIR:-/home/spoon/polymarket-data}/raw:/var/lib/polymarket/raw
+      - ${POLYMARKET_DATA_DIR:-/home/spoon/polymarket-data}/db:/var/lib/polymarket/db
+      - ${POLYMARKET_DATA_DIR:-/home/spoon/polymarket-data}/live:/var/lib/polymarket/live
+      - ${POLYMARKET_DATA_DIR:-/home/spoon/polymarket-data}/logs:/var/lib/polymarket/logs
+    tmpfs:
+      - /tmp

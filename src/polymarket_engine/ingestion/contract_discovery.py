@@ -7,6 +7,8 @@ from typing import Any
 
 import httpx
 
+SUPPORTED_INTERVAL_MINUTES = {"5m": 5, "15m": 15}
+
 
 @dataclass(frozen=True)
 class MarketToken:
@@ -16,8 +18,12 @@ class MarketToken:
 
 
 def floor_to_5m_epoch(now: datetime) -> int:
+    return floor_to_interval_epoch(now, interval_minutes=5)
+
+
+def floor_to_interval_epoch(now: datetime, *, interval_minutes: int) -> int:
     floored = now.replace(second=0, microsecond=0)
-    floored = floored.replace(minute=(floored.minute // 5) * 5)
+    floored = floored.replace(minute=(floored.minute // interval_minutes) * interval_minutes)
     return int(floored.timestamp())
 
 
@@ -26,12 +32,33 @@ def crypto_5m_slugs(
     assets: tuple[str, ...] = ("BTC", "ETH"),
     windows_ahead: int = 3,
 ) -> tuple[str, ...]:
-    start = datetime.fromtimestamp(floor_to_5m_epoch(now), tz=now.tzinfo)
+    return crypto_updown_slugs(
+        now,
+        assets=assets,
+        intervals=("5m",),
+        windows_ahead=windows_ahead,
+    )
+
+
+def crypto_updown_slugs(
+    now: datetime,
+    assets: tuple[str, ...] = ("BTC", "ETH"),
+    intervals: tuple[str, ...] = ("5m", "15m"),
+    windows_ahead: int = 3,
+) -> tuple[str, ...]:
     slugs: list[str] = []
-    for window_index in range(windows_ahead):
-        epoch = int((start + timedelta(minutes=5 * window_index)).timestamp())
-        for asset in assets:
-            slugs.append(f"{asset.lower()}-updown-5m-{epoch}")
+    for interval in intervals:
+        interval_minutes = SUPPORTED_INTERVAL_MINUTES.get(interval)
+        if interval_minutes is None:
+            raise ValueError(f"unsupported interval: {interval}")
+        start = datetime.fromtimestamp(
+            floor_to_interval_epoch(now, interval_minutes=interval_minutes),
+            tz=now.tzinfo,
+        )
+        for window_index in range(windows_ahead):
+            epoch = int((start + timedelta(minutes=interval_minutes * window_index)).timestamp())
+            for asset in assets:
+                slugs.append(f"{asset.lower()}-updown-{interval}-{epoch}")
     return tuple(slugs)
 
 
@@ -64,8 +91,31 @@ async def fetch_crypto_5m_markets(
     assets: tuple[str, ...] = ("BTC", "ETH"),
     windows_ahead: int = 3,
 ) -> tuple[dict[str, Any], ...]:
+    return await fetch_crypto_updown_markets(
+        client=client,
+        base_url=base_url,
+        now=now,
+        assets=assets,
+        intervals=("5m",),
+        windows_ahead=windows_ahead,
+    )
+
+
+async def fetch_crypto_updown_markets(
+    client: httpx.AsyncClient,
+    base_url: str,
+    now: datetime,
+    assets: tuple[str, ...] = ("BTC", "ETH"),
+    intervals: tuple[str, ...] = ("5m", "15m"),
+    windows_ahead: int = 3,
+) -> tuple[dict[str, Any], ...]:
     markets: list[dict[str, Any]] = []
-    for slug in crypto_5m_slugs(now, assets=assets, windows_ahead=windows_ahead):
+    for slug in crypto_updown_slugs(
+        now,
+        assets=assets,
+        intervals=intervals,
+        windows_ahead=windows_ahead,
+    ):
         response = await client.get(f"{base_url.rstrip('/')}/markets", params={"slug": slug})
         response.raise_for_status()
         payload = response.json()

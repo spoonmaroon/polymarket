@@ -10,6 +10,7 @@ import duckdb
 from polymarket_engine.domain.contracts import ContractSpec
 from polymarket_engine.domain.contract_rules import NormalizedContractRule
 from polymarket_engine.domain.market_state import DecisionState, OrderBookObservation, PriceObservation
+from polymarket_engine.storage.retention import RAW_HOT_RETENTION_DAYS, retention_manifest_class
 
 
 def _json(value: Any) -> str:
@@ -71,7 +72,7 @@ class DuckDbIngestStore:
                 values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
-                    f"{file_id}:raw_hot_90d",
+                    f"{file_id}:{retention_manifest_class('raw')}",
                     file_id,
                     source_key,
                     stream_key,
@@ -82,8 +83,8 @@ class DuckDbIngestStore:
                     row_count,
                     first_event_ts,
                     last_event_ts,
-                    "raw_hot_90d",
-                    90,
+                    retention_manifest_class("raw"),
+                    RAW_HOT_RETENTION_DAYS,
                     None,
                     None,
                     None,
@@ -342,6 +343,34 @@ class DuckDbIngestStore:
                 ],
             )
 
+    def normalized_table_health(self) -> tuple[dict[str, object], ...]:
+        checks = (
+            ("core.contracts", "last_seen_ts"),
+            ("core.contract_rules", "updated_at"),
+            ("core.price_ticks", "observed_ts"),
+            ("core.orderbook_snapshots", "observed_ts"),
+            ("features.asof_state_inputs", "created_at"),
+            ("features.decision_snapshots", "created_at"),
+        )
+        rows: list[dict[str, object]] = []
+        with duckdb.connect(str(self.db_path)) as conn:
+            for table_name, latest_column in checks:
+                row = conn.execute(
+                    f"select count(*) as rows, max({latest_column}) from {table_name}"
+                ).fetchone()
+                if row is None:
+                    count, latest_ts = 0, None
+                else:
+                    count, latest_ts = row
+                rows.append(
+                    {
+                        "table": table_name,
+                        "rows": int(count),
+                        "latest_ts": _isoformat_utc(latest_ts),
+                    }
+                )
+        return tuple(rows)
+
     def latest_price_tick(
         self,
         *,
@@ -392,6 +421,49 @@ class DuckDbIngestStore:
             sequence=row[7],
         )
 
+    def price_ticks_before(
+        self,
+        *,
+        source_key: str,
+        symbol: str,
+        asof_ts: datetime,
+        limit: int,
+    ) -> tuple[PriceObservation, ...]:
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        with duckdb.connect(str(self.db_path)) as conn:
+            rows = conn.execute(
+                """
+                select source_key, symbol, event_ts::VARCHAR, observed_ts::VARCHAR,
+                       price, bid, ask, sequence
+                from (
+                    select source_key, symbol, event_ts, observed_ts, price, bid, ask, sequence
+                    from core.price_ticks
+                    where source_key = ?
+                      and symbol = ?
+                      and event_ts <= ?
+                      and observed_ts <= ?
+                    order by event_ts desc, observed_ts desc
+                    limit ?
+                ) as latest_ticks
+                order by event_ts asc, observed_ts asc
+                """,
+                [source_key, symbol, asof_ts, asof_ts, limit],
+            ).fetchall()
+        return tuple(
+            PriceObservation(
+                source_key=row[0],
+                symbol=row[1],
+                event_ts=_parse_duckdb_timestamptz(row[2]),
+                observed_ts=_parse_duckdb_timestamptz(row[3]),
+                price=row[4],
+                bid=row[5],
+                ask=row[6],
+                sequence=row[7],
+            )
+            for row in rows
+        )
+
     def latest_orderbook_snapshot(
         self,
         *,
@@ -434,6 +506,12 @@ class DuckDbIngestStore:
 def _parse_duckdb_timestamptz(value: str) -> datetime:
     parsed = datetime.fromisoformat(value.replace(" ", "T"))
     return parsed.astimezone(timezone.utc)
+
+
+def _isoformat_utc(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    return value.astimezone(timezone.utc).isoformat()
 
 
 def _drop_incompatible_tables(conn: duckdb.DuckDBPyConnection) -> None:

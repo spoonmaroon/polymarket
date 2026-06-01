@@ -19,6 +19,10 @@ class MonitorSnapshot:
     orderbooks: tuple[dict[str, Any], ...]
     contracts: tuple[dict[str, Any], ...]
     ingest_counts: tuple[dict[str, Any], ...]
+    normalized_health: tuple[dict[str, Any], ...] = ()
+    source_freshness: tuple[dict[str, Any], ...] = ()
+    source_disagreements: tuple[dict[str, Any], ...] = ()
+    orderbook_freshness: tuple[dict[str, Any], ...] = ()
 
 
 def fetch_monitor_snapshot(
@@ -38,6 +42,10 @@ def fetch_monitor_snapshot(
             orderbooks=(),
             contracts=(),
             ingest_counts=(),
+            normalized_health=(),
+            source_freshness=(),
+            source_disagreements=(),
+            orderbook_freshness=(),
         )
 
     with _connect_read_only_with_retry(duckdb_path, lock_retry_seconds) as conn:
@@ -169,6 +177,10 @@ def _snapshot_from_status(status_path: Path, limit: int) -> MonitorSnapshot:
     orderbooks = tuple(dict(row) for row in payload.get("orderbooks", ())[:limit])
     contracts = tuple(dict(row) for row in payload.get("contracts", ())[:limit])
     ingest_counts = tuple(dict(row) for row in payload.get("ingest_counts", ()))
+    normalized_health = tuple(dict(row) for row in payload.get("normalized_health", ()))
+    source_freshness = tuple(dict(row) for row in payload.get("source_freshness", ()))
+    source_disagreements = tuple(dict(row) for row in payload.get("source_disagreements", ()))
+    orderbook_freshness = tuple(dict(row) for row in payload.get("orderbook_freshness", ()))
     prices = {
         (str(row["source_key"]), str(row["symbol"])): float(row["price"]) for row in price_rows
     }
@@ -179,6 +191,10 @@ def _snapshot_from_status(status_path: Path, limit: int) -> MonitorSnapshot:
         orderbooks=orderbooks,
         contracts=contracts,
         ingest_counts=ingest_counts,
+        normalized_health=normalized_health,
+        source_freshness=source_freshness,
+        source_disagreements=source_disagreements,
+        orderbook_freshness=orderbook_freshness,
     )
 
 
@@ -212,6 +228,36 @@ def render_monitor(snapshot: MonitorSnapshot) -> str:
     else:
         lines.append("  no price ticks yet")
 
+    lines.extend(["", "Source Freshness"])
+    if snapshot.source_freshness:
+        for row in snapshot.source_freshness:
+            state = "STALE" if row.get("stale") else "OK"
+            lines.append(
+                f"  {row['source_key']:<28} {row['symbol']:<8} {state:<5} "
+                f"age_ms={_fmt_int(row.get('age_ms')):<8} obs={row.get('observed_ts')}"
+            )
+    else:
+        lines.append("  no source freshness yet")
+
+    lines.extend(["", "Source Disagreement"])
+    if snapshot.source_disagreements:
+        for row in snapshot.source_disagreements:
+            if row.get("usable"):
+                lines.append(
+                    f"  {row['asset']:<3} {row['primary_source_key']}:{row['primary_symbol']} "
+                    f"vs {row['proxy_source_key']}:{row['proxy_symbol']} "
+                    f"diff={_fmt_float(row.get('diff'), 4)} "
+                    f"diff_bps={_fmt_float(row.get('diff_bps'), 2)}"
+                )
+            else:
+                lines.append(
+                    f"  {row['asset']:<3} {row['primary_source_key']}:{row['primary_symbol']} "
+                    f"vs {row['proxy_source_key']}:{row['proxy_symbol']} "
+                    f"blocked={row.get('block_reason')}"
+                )
+    else:
+        lines.append("  no source disagreement yet")
+
     lines.extend(["", "Active Contracts"])
     if snapshot.contracts:
         for row in snapshot.contracts:
@@ -235,6 +281,18 @@ def render_monitor(snapshot: MonitorSnapshot) -> str:
     else:
         lines.append("  no order books yet")
 
+    lines.extend(["", "Orderbook Freshness"])
+    if snapshot.orderbook_freshness:
+        for row in snapshot.orderbook_freshness:
+            state = "STALE" if row.get("stale") else "OK"
+            lines.append(
+                f"  {row.get('asset', ''):<3} {row.get('side', ''):<4} "
+                f"{str(row.get('contract_id', '')):<14} {state:<5} "
+                f"age_ms={_fmt_int(row.get('age_ms')):<8}"
+            )
+    else:
+        lines.append("  no orderbook freshness yet")
+
     lines.extend(["", "Ingest"])
     if snapshot.ingest_counts:
         for row in snapshot.ingest_counts:
@@ -244,6 +302,15 @@ def render_monitor(snapshot: MonitorSnapshot) -> str:
             )
     else:
         lines.append("  no ingest files yet")
+
+    lines.extend(["", "Normalized Health"])
+    if snapshot.normalized_health:
+        for row in snapshot.normalized_health:
+            lines.append(
+                f"  {row['table']:<32} rows={row['rows']:<8} latest={row.get('latest_ts')}"
+            )
+    else:
+        lines.append("  no normalized health yet")
 
     return "\n".join(lines)
 
@@ -271,6 +338,16 @@ def _fmt_float(value: object, digits: int) -> str:
         return f"{float(value):.{digits}f}"
     if isinstance(value, int | float):
         return f"{float(value):.{digits}f}"
+    return "-"
+
+
+def _fmt_int(value: object) -> str:
+    if value is None:
+        return "-"
+    if isinstance(value, str):
+        return str(int(value))
+    if isinstance(value, int | float):
+        return str(int(value))
     return "-"
 
 

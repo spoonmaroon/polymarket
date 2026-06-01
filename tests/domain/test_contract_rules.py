@@ -137,6 +137,27 @@ def test_parse_eth_updown_start_price_rule() -> None:
     assert rule.outcome_token_ids == {"Up": "333", "Down": "444"}
 
 
+def test_parse_15m_updown_start_price_rule() -> None:
+    market = {
+        "id": "2398001",
+        "conditionId": "0xbtc15",
+        "slug": "btc-updown-15m-1780264500",
+        "question": "Bitcoin Up or Down - May 31, 5:45PM-6:00PM ET",
+        "description": BTC_DESCRIPTION,
+        "eventStartTime": "2026-05-31T21:45:00Z",
+        "endDate": "2026-05-31T22:00:00Z",
+        "resolutionSource": "https://data.chain.link/streams/btc-usd",
+        "outcomes": '["Up", "Down"]',
+        "clobTokenIds": '["111", "222"]',
+    }
+
+    rule = parse_polymarket_crypto_updown_rule(market)
+
+    assert rule.slug == "btc-updown-15m-1780264500"
+    assert rule.start_ts == datetime(2026, 5, 31, 21, 45, tzinfo=timezone.utc)
+    assert rule.end_ts == datetime(2026, 5, 31, 22, 0, tzinfo=timezone.utc)
+
+
 def test_parse_rejects_unsupported_slug_before_state_building() -> None:
     market = {
         "id": "2397858",

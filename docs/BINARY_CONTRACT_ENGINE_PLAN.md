@@ -439,6 +439,9 @@ Tests:
 - `tests/storage/test_duckdb_store.py` should create a temp DuckDB database, apply `schema.sql`, insert one fake contract, one price tick, one order-book snapshot, one decision, and one label.
 
 ### 4. Volatility and `sigma_tau`: How It Builds
+Implementation status: this section is implemented by `src/polymarket_engine/features/volatility.py`, replayed through `src/polymarket_engine/features/state_replay.py`, and covered by `tests/features/test_volatility.py` plus `tests/storage/test_state_replay.py`. The implementation is as-of safe: future ticks are labels or ignored, never volatility inputs.
+
+Source rule: BTC/ETH volatility and `sigma_tau` are calculated from the Chainlink settlement-reference stream only, stored as `polymarket_rtds_chainlink`. Coinbase, Binance, and other exchange feeds are proxy/quality-check inputs, not volatility inputs. If a historical proxy point exactly matches the Chainlink point, it can be used as validation evidence, but it is not added as an extra return observation because duplicate rows can distort realized-volatility windows.
 
 Create `src/polymarket_engine/features/volatility.py`.
 
@@ -446,12 +449,13 @@ This module turns recent log returns into the movement scale used by Monte Carlo
 
 Build method:
 
-1. Convert prices into log returns: `r_t = ln(S_t / S_{t-1})`.
-2. Compute short, medium, and long realized-volatility windows.
-3. Blend them using preset weights.
-4. Apply a minimum volatility floor.
-5. Apply a regime multiplier when volatility is expanding or contracting.
-6. Scale the result to seconds left.
+1. Select only Chainlink settlement-reference prices for the contract asset.
+2. Convert those prices into log returns: `r_t = ln(S_t / S_{t-1})`.
+3. Compute short, medium, and long realized-volatility windows.
+4. Blend them using preset weights.
+5. Apply a minimum volatility floor.
+6. Apply a regime multiplier when volatility is expanding or contracting.
+7. Scale the result to seconds left.
 
 First-pass function:
 
@@ -475,6 +479,8 @@ Tests:
 
 - `tests/features/test_volatility.py` should prove higher recent returns produce higher `sigma_tau`.
 - A flat tape should still return at least `sigma_floor`.
+- Missing Chainlink reference data should produce missing volatility, not fake confidence.
+- Proxy feeds should be rejected or ignored for volatility construction.
 - Weights must sum to one; invalid weights should raise a clear error.
 
 ### 5. Probability Outputs: How It Builds
@@ -1077,9 +1083,9 @@ The state builder converts raw event streams into a compact object that the prob
 | Contract rules | `market_id`, asset, side, expiry, rule text, rule hash, settlement source | Defines the object being priced. |
 | Polymarket order book | bids, asks, depth, timestamp, quote age, order-book hash if available | Defines executable entry and liquidity. |
 | Polymarket trades | trade price, size, side if available, timestamp | Helps validate activity and reconstruct fills. |
-| Settlement source | Chainlink stream value, timestamp, source status | Defines $`S_{t}`$ and $`S_{T}`$. |
-| Spot proxies | Binance, Coinbase, Kraken, robust basket, feed disagreement | Quality check and fallback research. |
-| Live ticks | 1-second or tick-level price data | Needed for `p_no_touch`, wick risk, and volatility. |
+| Settlement source | Chainlink stream value, timestamp, source status | Defines $`S_{t}`$, $`S_{T}`$, realized volatility, and `sigma_tau`. |
+| Spot proxies | Binance, Coinbase, Kraken, robust basket, feed disagreement | Quality checks only; not volatility inputs. |
+| Chainlink live ticks | 1-second or tick-level Chainlink price data | Needed for `p_no_touch`, wick risk, and volatility. |
 | News/event calendar | macro releases, Fed events, ETF events, exchange incidents, regulatory events | Risk context, gate, or required-edge buffer. |
 | Future ETF/GEX context | IV, skew, flow, GEX level proximity, quote age | Later ablation layer, not v1 authority. |
 
@@ -1245,6 +1251,8 @@ Plain English: sigma_tau estimates how much the asset can still move before expi
 If sigma_tau is too small, the model becomes overconfident. If it is too large, the model becomes too scared to trade. The first version should therefore use a conservative realized-volatility estimate with a floor and regime adjustment.
 
 The system is not trying to forecast direction with `sigma_tau`. It is estimating how much the settlement-source price can still move before expiry.
+
+For BTC/ETH binary contracts, the settlement-source price means the Chainlink reference stream named by the rule. Exchange proxy feeds can diagnose feed disagreement and bad ticks, but they must not be used to calculate realized volatility or `sigma_tau`. If Chainlink data is missing for a replay window, the correct output is missing volatility, not a proxy-derived substitute.
 
 A first-pass movement scale is:
 
@@ -1755,13 +1763,13 @@ Decision rule: high congestion, high crossing count, or large adverse wick ratio
 
 ## 9.5 News and event-risk features
 
-News should be included, but as a risk context layer first. The system should not enter trades because a headline sounds bullish or bearish unless that feature later passes ablation. In v1, news and event features should adjust uncertainty, `sigma_tau`, `p_no_touch`, or required edge.
+News should be included, but as a risk context layer first. The system should not enter trades because a headline sounds bullish or bearish unless that feature later passes ablation. In v1, news and event features may adjust uncertainty, `p_no_touch`, or required edge. They must not directly recalculate `sigma_tau`; volatility remains Chainlink-only.
 
 | Feature group | Examples | First use |
 |----|----|----|
 | Scheduled macro | CPI, PCE, FOMC decision, FOMC minutes, NFP/jobs, unemployment, GDP, major Fed speeches | Block or demand more edge around high-impact windows. |
 | Crypto-specific news | ETF approval/rejection headlines, regulatory actions, major exchange outages, chain halts, liquidation cascades | Event-risk flag and stress overlay. |
-| ETF-related context | Spot ETF flow release windows, ETF market hours, ETF option IV/skew changes | Later volatility and risk-appetite context. |
+| ETF-related context | Spot ETF flow release windows, ETF market hours, ETF option IV/skew changes | Later uncertainty and risk-appetite context. |
 | Breaking-news state | `headline_time`, source reliability, asset relevance, duplicate-news filter | Log first; use only after timestamped validation. |
 | Post-release surprise | Actual minus consensus after release | Allowed only after release timestamp; never use revised or future data. |
 
@@ -2423,7 +2431,7 @@ Event features should be mechanical. A scheduled release can block or demand mor
 |----|----|----|
 | Scheduled macro | CPI, PPI, PCE, NFP, FOMC decision, FOMC minutes, major Fed speeches. | Hard-block or demand more edge inside the configured event window. |
 | Crypto-specific scheduled events | Major protocol upgrades, ETF decision deadlines, known unlocks, exchange maintenance. | Log by asset scope; block only if historically disruptive. |
-| ETF/options context | IBIT/ETHA option IV, skew, risk reversal, volume, open interest, quote age. | Adjust sigma_tau, uncertainty, or required edge after ablation support. |
+| ETF/options context | IBIT/ETHA option IV, skew, risk reversal, volume, open interest, quote age. | Adjust uncertainty or required edge after ablation support; do not directly adjust Chainlink-only `sigma_tau`. |
 | GEX and structure context | Gamma flip zone, large option strike concentration, nearby high-gamma levels. | Treat as structure-risk input, not a direct trade trigger. |
 | Breaking news | Regulatory headline, exchange outage, chain halt, liquidation cascade, custody/security incident. | Log first; future blocker only after timestamped validation. |
 | Exchange/chain status | Binance/Coinbase/Kraken status, Solana/Ethereum chain disruption, oracle interruption. | Immediate data-quality or asset-level block if source integrity is affected. |
@@ -2613,8 +2621,8 @@ engine, replay harness, execution simulator, dashboard, and validation workflow.
 | Polymarket order book | bids, asks, depth, timestamp, quote age, order-book hash if available | Defines executable entry and liquidity. |
 | Polymarket trades | trade price, size, side if available, timestamp | Helps validate activity and reconstruct fills. |
 | Settlement source | Chainlink stream value, timestamp, source status | Defines   and  . |
-| Spot proxies | Binance, Coinbase, Kraken, robust basket, feed disagreement | Quality check and fallback research. |
-| Live ticks | 1-second or tick-level price data | Needed for  p_no_touch , wick risk, and volatility. |
+| Spot proxies | Binance, Coinbase, Kraken, robust basket, feed disagreement | Quality checks only; not volatility inputs. |
+| Chainlink live ticks | 1-second or tick-level Chainlink price data | Needed for  p_no_touch , wick risk, and volatility. |
 | News/event calendar | macro releases, Fed events, ETF events, exchange incidents, regulatory events | Risk context, gate, or required-edge buffer. |
 | Future ETF/GEX context | IV, skew, flow, GEX level proximity, quote age | Later ablation layer, not v1 authority. |
 
@@ -2715,13 +2723,13 @@ If historical Tier 1 data is unavailable, the system should begin collecting it 
 
 #### 8.5 News and event-risk features
 
-News should be included, but as a risk context layer first. The system should not enter trades because a headline sounds bullish or bearish unless that feature later passes ablation. In v1, news and event features should adjust uncertainty, sigma_tau, p_no_touch, or required edge.
+News should be included, but as a risk context layer first. The system should not enter trades because a headline sounds bullish or bearish unless that feature later passes ablation. In v1, news and event features may adjust uncertainty, p_no_touch, or required edge. They must not directly recalculate sigma_tau; volatility remains Chainlink-only.
 
 | Feature group | Examples | First use |
 | --- | --- | --- |
 | Scheduled macro | CPI, PCE, FOMC decision, FOMC minutes, NFP/jobs, unemployment, GDP, major Fed speeches | Block or demand more edge around high-impact windows. |
 | Crypto-specific news | ETF approval/rejection headlines, regulatory actions, major exchange outages, chain halts, liquidation cascades | Event-risk flag and stress overlay. |
-| ETF-related context | Spot ETF flow release windows, ETF market hours, ETF option IV/skew changes | Later volatility and risk-appetite context. |
+| ETF-related context | Spot ETF flow release windows, ETF market hours, ETF option IV/skew changes | Later uncertainty and risk-appetite context. |
 | Breaking-news state | headline_time , source reliability, asset relevance, duplicate-news filter | Log first; use only after timestamped validation. |
 | Post-release surprise | Actual minus consensus after release | Allowed only after release timestamp; never use revised or future data. |
 
