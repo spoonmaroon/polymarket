@@ -24,6 +24,7 @@ from polymarket_engine.ingestion.coinbase_ws import (
 )
 from polymarket_engine.ingestion.collector_events import CollectorEvent
 from polymarket_engine.ingestion.contract_discovery import (
+    LAST_MARKET_DISCOVERY_ERRORS,
     MarketToken,
     fetch_crypto_updown_markets,
 )
@@ -337,6 +338,11 @@ async def _fetch_clob_book_event(
     return clob_book_event(response.json(), token, observed)
 
 
+def _require_discovered_markets(markets: tuple[dict[str, Any], ...]) -> None:
+    if not markets:
+        raise ValueError("no Polymarket markets returned")
+
+
 def _source_disagreement_rows(
     *,
     latest_prices: dict[str, dict[str, object]],
@@ -451,6 +457,54 @@ def register_market_rules(
     return source_errors
 
 
+def _merge_status_from_markets(
+    *,
+    markets: tuple[dict[str, Any], ...],
+    latest_contracts: dict[str, dict[str, object]],
+    latest_orderbooks: dict[str, dict[str, object]],
+    latest_orderbooks_by_source: dict[str, dict[str, object]],
+) -> tuple[MarketToken, ...]:
+    accepted_tokens: list[MarketToken] = []
+    active_token_ids = {
+        str(contract["token_id"])
+        for contract in latest_contracts.values()
+    }
+    for market in markets:
+        try:
+            rule = parse_polymarket_crypto_updown_rule(market)
+            contracts = contract_specs_from_rule(rule)
+        except ContractRuleRejected:
+            continue
+        for contract in contracts:
+            latest_contracts[contract.contract_id] = {
+                "contract_id": contract.contract_id,
+                "asset": contract.asset,
+                "side": contract.side,
+                "token_id": contract.token_id,
+                "threshold_type": contract.threshold_type,
+                "settlement_symbol": contract.settlement_symbol,
+                "start_ts": contract.start_ts.isoformat(),
+                "expiry_ts": contract.expiry_ts.isoformat(),
+            }
+            if contract.token_id not in active_token_ids:
+                accepted_tokens.append(
+                    MarketToken(
+                        slug=contract.slug,
+                        outcome=contract.side,
+                        token_id=contract.token_id,
+                    )
+                )
+                active_token_ids.add(contract.token_id)
+    for token_id in tuple(latest_orderbooks):
+        if token_id not in active_token_ids:
+            latest_orderbooks.pop(token_id, None)
+    for source_token_id in tuple(latest_orderbooks_by_source):
+        token_id = source_token_id.split(":", 1)[1]
+        if token_id not in active_token_ids:
+            latest_orderbooks_by_source.pop(source_token_id, None)
+    return tuple(accepted_tokens)
+
+
 async def run_live_collection(config: LiveCollectorConfig) -> LiveCollectorResult:
     store = DuckDbIngestStore(config.duckdb_path)
     store.apply_schema()
@@ -480,43 +534,12 @@ async def run_live_collection(config: LiveCollectorConfig) -> LiveCollectorResul
         _register_file(store, config.raw_root, result)
 
     def update_status_from_markets(markets: tuple[dict[str, Any], ...]) -> tuple[MarketToken, ...]:
-        accepted_tokens: list[MarketToken] = []
-        active_token_ids: set[str] = set()
-        latest_contracts.clear()
-        for market in markets:
-            try:
-                rule = parse_polymarket_crypto_updown_rule(market)
-                contracts = contract_specs_from_rule(rule)
-            except ContractRuleRejected:
-                continue
-            for contract in contracts:
-                latest_contracts[contract.contract_id] = {
-                    "contract_id": contract.contract_id,
-                    "asset": contract.asset,
-                    "side": contract.side,
-                    "token_id": contract.token_id,
-                    "threshold_type": contract.threshold_type,
-                    "settlement_symbol": contract.settlement_symbol,
-                    "start_ts": contract.start_ts.isoformat(),
-                    "expiry_ts": contract.expiry_ts.isoformat(),
-                }
-                if contract.token_id not in active_token_ids:
-                    accepted_tokens.append(
-                        MarketToken(
-                            slug=contract.slug,
-                            outcome=contract.side,
-                            token_id=contract.token_id,
-                        )
-                    )
-                    active_token_ids.add(contract.token_id)
-        for token_id in tuple(latest_orderbooks):
-            if token_id not in active_token_ids:
-                latest_orderbooks.pop(token_id, None)
-        for source_token_id in tuple(latest_orderbooks_by_source):
-            token_id = source_token_id.split(":", 1)[1]
-            if token_id not in active_token_ids:
-                latest_orderbooks_by_source.pop(source_token_id, None)
-        return tuple(accepted_tokens)
+        return _merge_status_from_markets(
+            markets=markets,
+            latest_contracts=latest_contracts,
+            latest_orderbooks=latest_orderbooks,
+            latest_orderbooks_by_source=latest_orderbooks_by_source,
+        )
 
     def publish_token_update(tokens: tuple[MarketToken, ...]) -> None:
         while not token_update_queue.empty():
@@ -686,13 +709,22 @@ async def run_live_collection(config: LiveCollectorConfig) -> LiveCollectorResul
                         ),
                         timeout=config.market_fetch_timeout_seconds,
                     )
+                    _require_discovered_markets(markets)
                     source_errors.pop("polymarket_markets", None)
+                    for key in tuple(source_errors):
+                        if key.startswith("polymarket_markets:"):
+                            source_errors.pop(key, None)
+                    source_errors.update(
+                        {
+                            f"polymarket_markets:{slug}": error
+                            for slug, error in LAST_MARKET_DISCOVERY_ERRORS.items()
+                        }
+                    )
                     async with write_lock:
                         source_errors.update(register_market_rules(config.duckdb_path, markets))
                     tokens = update_status_from_markets(markets)
-                    market_tokens.clear()
                     market_tokens.update({token.token_id: token for token in tokens})
-                    publish_token_update(tokens)
+                    publish_token_update(tuple(market_tokens.values()))
                     write_status(force=True)
                     for market in markets:
                         observed = datetime.now(timezone.utc)
@@ -709,6 +741,12 @@ async def run_live_collection(config: LiveCollectorConfig) -> LiveCollectorResul
                     await flush_due()
                 except Exception as exc:
                     source_errors["polymarket_markets"] = f"{type(exc).__name__}: {exc}"
+                    source_errors.update(
+                        {
+                            f"polymarket_markets:{slug}": error
+                            for slug, error in LAST_MARKET_DISCOVERY_ERRORS.items()
+                        }
+                    )
                 await _sleep_for(config.market_refresh_interval_seconds, deadline)
 
     async def clob_loop() -> None:

@@ -7,10 +7,12 @@ import polymarket_engine.ingestion.live_collector as live_collector
 from polymarket_engine.ingestion.live_collector import (
     LiveCollectorConfig,
     _is_rtds_socket_idle,
+    _merge_status_from_markets,
     _orderbook_freshness_rows,
     _orderbook_observation_from_event,
     _price_freshness_rows,
     _prune_expired_contract_state,
+    _require_discovered_markets,
     _rtds_activity_timestamp,
     _should_record_sampled_symbol,
     _source_disagreement_rows,
@@ -41,6 +43,15 @@ def test_live_collector_config_rejects_invalid_market_fetch_timeout(tmp_path: Pa
         assert "market_fetch_timeout_seconds" in str(exc)
     else:  # pragma: no cover - defensive assertion branch
         raise AssertionError("invalid market_fetch_timeout_seconds was accepted")
+
+
+def test_live_collector_rejects_empty_market_discovery_before_state_update() -> None:
+    try:
+        _require_discovered_markets(())
+    except ValueError as exc:
+        assert "no Polymarket markets returned" in str(exc)
+    else:  # pragma: no cover - defensive assertion branch
+        raise AssertionError("empty market discovery was accepted")
 
 
 def test_live_collector_default_freshness_windows_tolerate_quiet_rtds_ticks(tmp_path: Path) -> None:
@@ -119,6 +130,53 @@ def test_register_market_rules_also_writes_side_level_contracts(tmp_path: Path) 
         ("2397858:DOWN", "BTC", "DOWN", "222"),
         ("2397858:UP", "BTC", "UP", "111"),
     ]
+
+
+def test_partial_market_discovery_merges_without_deleting_existing_contracts() -> None:
+    existing_eth_contract: dict[str, object] = {
+        "contract_id": "eth-market:UP",
+        "asset": "ETH",
+        "side": "UP",
+        "token_id": "333",
+        "threshold_type": "start_price",
+        "settlement_symbol": "ETH/USD",
+        "start_ts": "2026-05-31T21:55:00+00:00",
+        "expiry_ts": "2026-05-31T22:00:00+00:00",
+    }
+    latest_contracts: dict[str, dict[str, object]] = {
+        "eth-market:UP": existing_eth_contract,
+    }
+    latest_orderbooks: dict[str, dict[str, object]] = {"333": {"token_id": "333"}}
+    latest_orderbooks_by_source: dict[str, dict[str, object]] = {
+        "polymarket_clob:333": {"token_id": "333"}
+    }
+    btc_market = {
+        "id": "2397858",
+        "conditionId": "0xabc",
+        "slug": "btc-updown-5m-1780264500",
+        "question": "Bitcoin Up or Down - May 31, 5:55PM-6:00PM ET",
+        "description": BTC_DESCRIPTION,
+        "eventStartTime": "2026-05-31T21:55:00Z",
+        "endDate": "2026-05-31T22:00:00Z",
+        "resolutionSource": "https://data.chain.link/streams/btc-usd",
+        "outcomes": '["Up", "Down"]',
+        "clobTokenIds": '["111", "222"]',
+    }
+
+    accepted_tokens = _merge_status_from_markets(
+        markets=(btc_market,),
+        latest_contracts=latest_contracts,
+        latest_orderbooks=latest_orderbooks,
+        latest_orderbooks_by_source=latest_orderbooks_by_source,
+    )
+
+    assert "eth-market:UP" in latest_contracts
+    assert latest_contracts["eth-market:UP"] == existing_eth_contract
+    assert "2397858:UP" in latest_contracts
+    assert "2397858:DOWN" in latest_contracts
+    assert latest_orderbooks == {"333": {"token_id": "333"}}
+    assert latest_orderbooks_by_source == {"polymarket_clob:333": {"token_id": "333"}}
+    assert {token.token_id for token in accepted_tokens} == {"111", "222"}
 
 
 def test_status_source_disagreement_blocks_stale_chainlink_reference() -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -12,6 +13,7 @@ GAMMA_REQUEST_HEADERS = {
     "Accept": "application/json",
     "User-Agent": "polymarket-engine/0.1",
 }
+LAST_MARKET_DISCOVERY_ERRORS: dict[str, str] = {}
 
 
 @dataclass(frozen=True)
@@ -113,20 +115,47 @@ async def fetch_crypto_updown_markets(
     intervals: tuple[str, ...] = ("5m", "15m"),
     windows_ahead: int = 3,
 ) -> tuple[dict[str, Any], ...]:
-    markets: list[dict[str, Any]] = []
-    for slug in crypto_updown_slugs(
+    slugs = crypto_updown_slugs(
         now,
         assets=assets,
         intervals=intervals,
         windows_ahead=windows_ahead,
-    ):
-        response = await client.get(
-            f"{base_url.rstrip('/')}/markets",
-            params={"slug": slug},
-            headers=GAMMA_REQUEST_HEADERS,
-        )
-        response.raise_for_status()
-        payload = response.json()
-        items = payload if isinstance(payload, list) else payload.get("markets", [])
-        markets.extend(dict(item) for item in items)
+    )
+    results = await asyncio.gather(
+        *(
+            _fetch_market_slug(client=client, base_url=base_url, slug=slug)
+            for slug in slugs
+        ),
+        return_exceptions=True,
+    )
+    markets: list[dict[str, Any]] = []
+    errors: list[tuple[str, BaseException]] = []
+    partial_errors: dict[str, str] = {}
+    for slug, result in zip(slugs, results, strict=True):
+        if isinstance(result, BaseException):
+            errors.append((slug, result))
+            partial_errors[slug] = f"{type(result).__name__}: {result}"
+            continue
+        markets.extend(result)
+    LAST_MARKET_DISCOVERY_ERRORS.clear()
+    LAST_MARKET_DISCOVERY_ERRORS.update(partial_errors)
+    if not markets and errors:
+        raise errors[0][1]
     return tuple(markets)
+
+
+async def _fetch_market_slug(
+    *,
+    client: httpx.AsyncClient,
+    base_url: str,
+    slug: str,
+) -> tuple[dict[str, Any], ...]:
+    response = await client.get(
+        f"{base_url.rstrip('/')}/markets",
+        params={"slug": slug},
+        headers=GAMMA_REQUEST_HEADERS,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    items = payload if isinstance(payload, list) else payload.get("markets", [])
+    return tuple(dict(item) for item in items)
