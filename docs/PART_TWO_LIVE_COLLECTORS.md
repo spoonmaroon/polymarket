@@ -60,6 +60,7 @@ The first network runner records:
 - Polymarket RTDS Binance is collected as an additional no-auth proxy. It can improve source-disagreement diagnostics, but it still must not replace Chainlink for settlement, volatility, or `sigma_tau`.
 - Volatility and `sigma_tau` must use only the Chainlink settlement/reference rows from `polymarket_rtds_chainlink`.
 - Coinbase, Binance, and other proxies are for source-disagreement checks and feed-health diagnostics, not realized-volatility construction.
+- A historical proxy row that exactly matches the same timestamped Chainlink value may be kept as validation evidence. It must not become an additional realized-volatility observation, because that would double-count one move.
 - Binance.com is disabled by default on this machine because it returned `HTTP 451`.
 - Every source event must preserve both source timestamp and local receive timestamp.
 - Raw writes are crash-durable: `.parquet.tmp` files are atomically published and orphaned temporary files are cleaned at startup.

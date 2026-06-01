@@ -378,6 +378,48 @@ def test_build_decision_state_from_store_rejects_binance_volatility_source(
         )
 
 
+def test_build_decision_state_from_store_rejects_rtds_binance_volatility_source(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "replay-rtds-binance-volatility.duckdb"
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    contract = _contract()
+    asof_ts = datetime(2026, 5, 31, 20, 3, tzinfo=timezone.utc)
+    threshold_ts = datetime(2026, 5, 31, 20, 0, tzinfo=timezone.utc)
+    store.insert_price_tick(
+        PriceObservation(
+            "polymarket_rtds_chainlink",
+            "BTC/USD",
+            threshold_ts,
+            threshold_ts,
+            103_950.0,
+        )
+    )
+    store.insert_price_tick(
+        PriceObservation("polymarket_rtds_chainlink", "BTC/USD", asof_ts, asof_ts, 104_100.0)
+    )
+    prices = (104_000.0, 104_180.0, 104_020.0, 104_300.0, 104_120.0)
+    for index, price in enumerate(prices):
+        ts = threshold_ts.replace(second=index)
+        store.insert_price_tick(
+            PriceObservation("polymarket_rtds_crypto", "BTC/USDT", ts, ts, price)
+        )
+
+    with pytest.raises(ValueError, match="volatility_source_key must be polymarket_rtds_chainlink"):
+        build_decision_state_from_store(
+            store=store,
+            contract=contract,
+            asof_ts=asof_ts,
+            resolved_threshold_price=103_950.0,
+            settlement_source_key="polymarket_rtds_chainlink",
+            proxy_source_keys=(),
+            volatility=None,
+            volatility_source_key="polymarket_rtds_crypto",
+            volatility_lookback_limit=10,
+        )
+
+
 def test_build_decision_state_from_store_without_volatility_source_keeps_missing_flag(
     tmp_path: Path,
 ) -> None:

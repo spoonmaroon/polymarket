@@ -299,6 +299,62 @@ def test_build_volatility_snapshot_uses_chainlink_prices_only() -> None:
     )
 
 
+def test_build_volatility_snapshot_does_not_duplicate_exact_proxy_matches() -> None:
+    asof_ts = BASE_TS + timedelta(seconds=10)
+    prices = (
+        _price(100.0, event_seconds=0),
+        PriceObservation(
+            source_key="polymarket_rtds_crypto",
+            symbol="BTC/USDT",
+            event_ts=BASE_TS,
+            observed_ts=BASE_TS,
+            price=100.0,
+        ),
+        _price(101.0, event_seconds=1),
+        PriceObservation(
+            source_key="coinbase_advanced_ws",
+            symbol="BTC-USD",
+            event_ts=BASE_TS + timedelta(seconds=1),
+            observed_ts=BASE_TS + timedelta(seconds=1),
+            price=101.0,
+        ),
+    )
+
+    snapshot = build_volatility_snapshot(
+        prices=prices,
+        asof_ts=asof_ts,
+        seconds_left=60.0,
+        config=VolatilityConfig(short_window=1, medium_window=2, long_window=3),
+    )
+
+    assert snapshot.realized_returns == pytest.approx((math.log(101.0 / 100.0),))
+
+
+def test_build_volatility_snapshot_ignores_rtds_binance_proxy_mismatch() -> None:
+    asof_ts = BASE_TS + timedelta(seconds=10)
+    prices = (
+        _price(100.0, event_seconds=0),
+        _price(101.0, event_seconds=1),
+        PriceObservation(
+            source_key="polymarket_rtds_crypto",
+            symbol="BTC/USDT",
+            event_ts=BASE_TS + timedelta(seconds=2),
+            observed_ts=BASE_TS + timedelta(seconds=2),
+            price=120.0,
+        ),
+    )
+
+    snapshot = build_volatility_snapshot(
+        prices=prices,
+        asof_ts=asof_ts,
+        seconds_left=60.0,
+        config=VolatilityConfig(short_window=1, medium_window=2, long_window=3),
+    )
+
+    assert snapshot.event_ts == BASE_TS + timedelta(seconds=1)
+    assert snapshot.realized_returns == pytest.approx((math.log(101.0 / 100.0),))
+
+
 @pytest.mark.parametrize(
     "asof_ts",
     (
