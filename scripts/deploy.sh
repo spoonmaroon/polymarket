@@ -11,6 +11,7 @@ STATUS_PATH="$DATA_DIR/live/status.json"
 LOCK_DIR="/tmp/polymarket-deploy.lock.d"
 LOG_FILE="$REPO/logs/deploy.log"
 DEPLOYED_MARKER="$HOME/.polymarket/last-deployed-sha"
+DEPLOY_SMOKE_ATTEMPTS="${DEPLOY_SMOKE_ATTEMPTS:-90}"
 LOG() { echo "[$(date -Iseconds)] $*" | tee -a "$LOG_FILE"; }
 
 mkdir -p "$REPO/logs" "$DATA_DIR/raw" "$DATA_DIR/db" "$DATA_DIR/live" "$DATA_DIR/logs" "$(dirname "$DEPLOYED_MARKER")"
@@ -54,7 +55,7 @@ if ! docker compose "${COMPOSE_ENV_ARGS[@]}" -f "$COMPOSE_FILE" up -d --build co
   exit 1
 fi
 
-for _ in $(seq 1 30); do
+for _ in $(seq 1 "$DEPLOY_SMOKE_ATTEMPTS"); do
   if python3 "$REPO/scripts/check_collector_status.py" \
     --status-path "$STATUS_PATH" \
     --max-status-age-seconds 30 \
