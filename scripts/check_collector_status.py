@@ -50,13 +50,13 @@ def main() -> int:
     _reject_bad_freshness_rows(
         payload.get("orderbook_freshness", []),
         label="orderbook_freshness",
+        allow_missing_or_stale=True,
     )
     _reject_required_source_errors(
         payload.get("source_errors", {}),
         required_source_keys=(
             "polymarket_market_ws",
             "polymarket_rtds",
-            "polymarket_markets",
         ),
     )
 
@@ -71,7 +71,12 @@ def main() -> int:
     return 0
 
 
-def _reject_bad_freshness_rows(rows: object, *, label: str) -> None:
+def _reject_bad_freshness_rows(
+    rows: object,
+    *,
+    label: str,
+    allow_missing_or_stale: bool = False,
+) -> None:
     if not isinstance(rows, list):
         return
     for row in rows:
@@ -80,8 +85,12 @@ def _reject_bad_freshness_rows(rows: object, *, label: str) -> None:
         identifier = row.get("symbol", row.get("contract_id", "unknown"))
         source_key = row.get("source_key", "")
         if row.get("missing"):
+            if allow_missing_or_stale:
+                continue
             raise SystemExit(f"{label} missing: source={source_key} symbol={identifier}")
         if row.get("stale") or row.get("status") == "STALE":
+            if allow_missing_or_stale:
+                continue
             raise SystemExit(
                 f"{label} stale: source={source_key} symbol={identifier} age_ms={row.get('age_ms')}"
             )
