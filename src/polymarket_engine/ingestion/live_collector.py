@@ -716,16 +716,16 @@ async def run_live_collection(config: LiveCollectorConfig) -> LiveCollectorResul
             config.clob_request_timeout_seconds,
             connect=min(3.0, config.clob_request_timeout_seconds),
         )
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            while _should_continue(deadline):
-                _prune_expired_contract_state(
-                    now=datetime.now(timezone.utc),
-                    latest_contracts=latest_contracts,
-                    market_tokens=market_tokens,
-                    latest_orderbooks=latest_orderbooks,
-                    latest_orderbooks_by_source=latest_orderbooks_by_source,
-                    source_errors=source_errors,
-                )
+        while _should_continue(deadline):
+            _prune_expired_contract_state(
+                now=datetime.now(timezone.utc),
+                latest_contracts=latest_contracts,
+                market_tokens=market_tokens,
+                latest_orderbooks=latest_orderbooks,
+                latest_orderbooks_by_source=latest_orderbooks_by_source,
+                source_errors=source_errors,
+            )
+            async with httpx.AsyncClient(timeout=timeout) as client:
                 for token in tuple(market_tokens.values()):
                     if not _should_continue(deadline):
                         break
@@ -737,13 +737,13 @@ async def run_live_collection(config: LiveCollectorConfig) -> LiveCollectorResul
                         source_errors[f"polymarket_clob:{token.token_id}"] = (
                             f"{type(exc).__name__}: {exc}"
                         )
-                await flush_due()
-                sleep_seconds = (
-                    config.clob_rest_backup_interval_seconds
-                    if config.enable_clob_websocket
-                    else config.clob_snapshot_interval_seconds
-                )
-                await _sleep_for(sleep_seconds, deadline)
+            await flush_due()
+            sleep_seconds = (
+                config.clob_rest_backup_interval_seconds
+                if config.enable_clob_websocket
+                else config.clob_snapshot_interval_seconds
+            )
+            await _sleep_for(sleep_seconds, deadline)
 
     async def clob_market_ws_loop() -> None:
         clob_ws_attempt = 0
