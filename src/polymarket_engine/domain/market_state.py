@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from polymarket_engine.domain.contracts import ContractSpec
 
@@ -116,7 +116,7 @@ class DecisionState:
 
     def to_json_dict(self) -> dict[str, Any]:
         raw = asdict(self)
-        return _json_ready(raw)
+        return cast(dict[str, Any], _json_ready(raw))
 
 
 def _json_ready(value: Any) -> Any:
