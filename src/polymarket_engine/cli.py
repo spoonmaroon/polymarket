@@ -15,6 +15,10 @@ def _asset_tuple(value: str) -> tuple[str, ...]:
     return tuple(asset.strip().upper() for asset in value.split(",") if asset.strip())
 
 
+def _interval_tuple(value: str) -> tuple[str, ...]:
+    return tuple(interval.strip().lower() for interval in value.split(",") if interval.strip())
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="polymarket-engine")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -28,6 +32,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     collect.add_argument("--status-path", type=Path, default=Path("data/live/status.json"))
     collect.add_argument("--max-batch-size", type=int, default=100)
     collect.add_argument("--windows-to-track", type=int, default=2)
+    collect.add_argument("--intervals", type=_interval_tuple, default=("5m", "15m"))
     collect.add_argument("--snapshot-interval", type=float, default=1.0)
     collect.add_argument("--market-refresh-interval", type=float, default=30.0)
 
@@ -64,6 +69,7 @@ async def run_collect_command(
         status_path=args.status_path,
         max_batch_size=args.max_batch_size,
         windows_to_track=args.windows_to_track,
+        intervals=args.intervals,
         clob_snapshot_interval_seconds=args.snapshot_interval,
         market_refresh_interval_seconds=args.market_refresh_interval,
     )

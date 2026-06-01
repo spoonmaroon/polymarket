@@ -136,6 +136,48 @@ def test_store_writes_contract_price_book_state_decision_and_label(tmp_path: Pat
         ).fetchall() == [(True, True)]
 
 
+def test_normalized_table_health_reports_counts_and_latest_writes(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.duckdb"
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    contract = _contract()
+    asof_ts = datetime(2026, 5, 31, 20, 3, tzinfo=timezone.utc)
+
+    store.upsert_contract_spec(contract)
+    store.insert_price_tick(
+        PriceObservation(
+            source_key="polymarket_rtds_chainlink",
+            symbol="BTC/USD",
+            event_ts=asof_ts,
+            observed_ts=asof_ts,
+            price=104_000.0,
+        )
+    )
+    store.insert_orderbook_snapshot(
+        OrderBookObservation(
+            venue="polymarket",
+            contract_id=contract.contract_id,
+            token_id=contract.token_id,
+            event_ts=asof_ts,
+            observed_ts=asof_ts,
+            best_bid=0.61,
+            best_ask=0.64,
+            bid_size_top=50.0,
+            ask_size_top=40.0,
+            spread=0.03,
+            depth_json='{"bids":[],"asks":[]}',
+        )
+    )
+
+    health = store.normalized_table_health()
+
+    by_table = {row["table"]: row for row in health}
+    assert by_table["core.contracts"]["rows"] == 1
+    assert by_table["core.price_ticks"]["latest_ts"] == asof_ts.isoformat()
+    assert by_table["core.orderbook_snapshots"]["rows"] == 1
+    assert by_table["features.asof_state_inputs"]["rows"] == 0
+
+
 def test_register_ingest_file_records_retention_manifest(tmp_path: Path) -> None:
     db_path = tmp_path / "collector.duckdb"
     raw_path = tmp_path / "file.parquet"

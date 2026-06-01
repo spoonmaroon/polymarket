@@ -8,8 +8,10 @@ import pytest
 from polymarket_engine.ingestion.contract_discovery import (
     MarketToken,
     crypto_5m_slugs,
+    crypto_updown_slugs,
     extract_market_tokens,
     fetch_crypto_5m_markets,
+    fetch_crypto_updown_markets,
     floor_to_5m_epoch,
 )
 
@@ -33,6 +35,26 @@ def test_crypto_5m_slugs_use_polymarket_epoch_pattern() -> None:
         "eth-updown-5m-1780261200",
         "btc-updown-5m-1780261500",
         "eth-updown-5m-1780261500",
+    )
+
+
+def test_crypto_updown_slugs_include_5m_and_15m_scopes() -> None:
+    now = datetime(2026, 5, 31, 21, 17, 0, tzinfo=timezone.utc)
+
+    assert crypto_updown_slugs(
+        now,
+        assets=("BTC", "ETH"),
+        intervals=("5m", "15m"),
+        windows_ahead=2,
+    ) == (
+        "btc-updown-5m-1780262100",
+        "eth-updown-5m-1780262100",
+        "btc-updown-5m-1780262400",
+        "eth-updown-5m-1780262400",
+        "btc-updown-15m-1780262100",
+        "eth-updown-15m-1780262100",
+        "btc-updown-15m-1780263000",
+        "eth-updown-15m-1780263000",
     )
 
 
@@ -83,3 +105,36 @@ async def test_fetch_crypto_5m_markets_fetches_by_slug() -> None:
     assert requested_urls == [
         "https://gamma-api.polymarket.com/markets?slug=btc-updown-5m-1780261200"
     ]
+
+
+@pytest.mark.anyio
+async def test_fetch_crypto_updown_markets_fetches_15m_slugs() -> None:
+    requested_slugs: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested_slugs.append(str(request.url.params["slug"]))
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "slug": request.url.params["slug"],
+                    "question": "Bitcoin Up or Down - May 31, 5:15PM-5:30PM ET",
+                    "outcomes": json.dumps(["Up", "Down"]),
+                    "clobTokenIds": json.dumps(["111", "222"]),
+                }
+            ],
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    markets = await fetch_crypto_updown_markets(
+        client=client,
+        base_url="https://gamma-api.polymarket.com",
+        now=datetime(2026, 5, 31, 21, 17, 0, tzinfo=timezone.utc),
+        assets=("BTC",),
+        intervals=("15m",),
+        windows_ahead=1,
+    )
+    await client.aclose()
+
+    assert len(markets) == 1
+    assert requested_slugs == ["btc-updown-15m-1780262100"]

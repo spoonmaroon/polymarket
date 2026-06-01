@@ -24,8 +24,8 @@ from polymarket_engine.ingestion.coinbase_ws import (
 )
 from polymarket_engine.ingestion.collector_events import CollectorEvent
 from polymarket_engine.ingestion.contract_discovery import (
-    fetch_crypto_5m_markets,
     MarketToken,
+    fetch_crypto_updown_markets,
 )
 from polymarket_engine.ingestion.polymarket_clob import clob_book_event
 from polymarket_engine.ingestion.polymarket_rtds import (
@@ -57,8 +57,10 @@ class LiveCollectorConfig:
     flush_after_seconds: float = 5.0
     require_archive_sentinel: bool = False
     windows_to_track: int = 2
+    intervals: tuple[str, ...] = ("5m", "15m")
     clob_snapshot_interval_seconds: float = 1.0
     market_refresh_interval_seconds: float = 30.0
+    orderbook_stale_after_ms: int = 2_000
     rtds_stale_after_ms: int = 5000
     coinbase_stale_after_ms: int = 2000
 
@@ -67,6 +69,9 @@ class LiveCollectorConfig:
             raise ValueError("duration_seconds must be positive or None")
         if self.windows_to_track <= 0:
             raise ValueError("windows_to_track must be positive")
+        unsupported_intervals = set(self.intervals) - {"5m", "15m"}
+        if unsupported_intervals:
+            raise ValueError(f"unsupported intervals: {sorted(unsupported_intervals)}")
         if self.clob_snapshot_interval_seconds <= 0:
             raise ValueError("clob_snapshot_interval_seconds must be positive")
         if self.market_refresh_interval_seconds <= 0:
@@ -105,6 +110,98 @@ async def _sleep_for(seconds: float, deadline: float | None) -> None:
         await asyncio.sleep(seconds)
     elif remaining > 0:
         await asyncio.sleep(min(seconds, remaining))
+
+
+def _freshness_row(
+    *,
+    generated_at: datetime,
+    source_key: str,
+    symbol: str,
+    observed_ts: object | None,
+    stale_after_ms: int,
+    extra: dict[str, object] | None = None,
+) -> dict[str, object]:
+    base: dict[str, object] = {
+        "source_key": source_key,
+        "symbol": symbol,
+        "observed_ts": None,
+        "age_ms": None,
+        "stale_after_ms": stale_after_ms,
+        "stale": True,
+        "missing": True,
+    }
+    if extra:
+        base.update(extra)
+    if observed_ts is None:
+        return base
+    observed = datetime.fromisoformat(str(observed_ts))
+    age_ms = max(0, int((generated_at - observed).total_seconds() * 1000))
+    base.update(
+        {
+            "observed_ts": observed.isoformat(),
+            "age_ms": age_ms,
+            "stale": age_ms > stale_after_ms,
+            "missing": False,
+        }
+    )
+    return base
+
+
+def _price_freshness_rows(
+    *,
+    latest_prices: dict[str, dict[str, object]],
+    assets: tuple[str, ...],
+    generated_at: datetime,
+    coinbase_stale_after_ms: int,
+    rtds_stale_after_ms: int,
+) -> tuple[dict[str, object], ...]:
+    rows: list[dict[str, object]] = []
+    for asset in assets:
+        checks = (
+            ("coinbase_advanced_ws", f"{asset}-USD", coinbase_stale_after_ms),
+            ("polymarket_rtds_chainlink", f"{asset}/USD", rtds_stale_after_ms),
+        )
+        for source_key, symbol, stale_after_ms in checks:
+            latest = latest_prices.get(f"{source_key}:{symbol}")
+            rows.append(
+                _freshness_row(
+                    generated_at=generated_at,
+                    source_key=source_key,
+                    symbol=symbol,
+                    observed_ts=None if latest is None else latest.get("observed_ts"),
+                    stale_after_ms=stale_after_ms,
+                )
+            )
+    return tuple(rows)
+
+
+def _orderbook_freshness_rows(
+    *,
+    latest_contracts: dict[str, dict[str, object]],
+    latest_orderbooks: dict[str, dict[str, object]],
+    generated_at: datetime,
+    stale_after_ms: int,
+) -> tuple[dict[str, object], ...]:
+    rows: list[dict[str, object]] = []
+    for contract in latest_contracts.values():
+        token_id = str(contract["token_id"])
+        latest = latest_orderbooks.get(token_id)
+        rows.append(
+            _freshness_row(
+                generated_at=generated_at,
+                source_key="polymarket_clob",
+                symbol=token_id,
+                observed_ts=None if latest is None else latest.get("observed_ts"),
+                stale_after_ms=stale_after_ms,
+                extra={
+                    "contract_id": str(contract["contract_id"]),
+                    "token_id": token_id,
+                    "asset": str(contract["asset"]),
+                    "side": str(contract["side"]),
+                },
+            )
+        )
+    return tuple(rows)
 
 
 def _register_file(store: DuckDbIngestStore, raw_root: Path, result: RawWriteResult) -> None:
@@ -237,7 +334,13 @@ async def run_live_collection(config: LiveCollectorConfig) -> LiveCollectorResul
             return
         last_status_write = now
         config.status_path.parent.mkdir(parents=True, exist_ok=True)
-        generated_at = datetime.now(timezone.utc).isoformat()
+        generated_now = datetime.now(timezone.utc)
+        generated_at = generated_now.isoformat()
+        try:
+            normalized_health = store.normalized_table_health()
+        except Exception as exc:
+            source_errors["normalized_health"] = f"{type(exc).__name__}: {exc}"
+            normalized_health = ()
         status = {
             "generated_at": generated_at,
             "prices": sorted(latest_prices.values(), key=lambda row: str(row["source_key"])),
@@ -260,6 +363,24 @@ async def run_live_collection(config: LiveCollectorConfig) -> LiveCollectorResul
                     "last_event_ts": generated_at,
                 }
             ],
+            "normalized_health": list(normalized_health),
+            "source_freshness": list(
+                _price_freshness_rows(
+                    latest_prices=latest_prices,
+                    assets=config.assets,
+                    generated_at=generated_now,
+                    coinbase_stale_after_ms=config.coinbase_stale_after_ms,
+                    rtds_stale_after_ms=config.rtds_stale_after_ms,
+                )
+            ),
+            "orderbook_freshness": list(
+                _orderbook_freshness_rows(
+                    latest_contracts=latest_contracts,
+                    latest_orderbooks=latest_orderbooks,
+                    generated_at=generated_now,
+                    stale_after_ms=config.orderbook_stale_after_ms,
+                )
+            ),
             "source_errors": dict(source_errors),
         }
         tmp_path = config.status_path.with_suffix(f"{config.status_path.suffix}.tmp")
@@ -295,11 +416,12 @@ async def run_live_collection(config: LiveCollectorConfig) -> LiveCollectorResul
         async with httpx.AsyncClient(timeout=15) as client:
             while _should_continue(deadline):
                 try:
-                    markets = await fetch_crypto_5m_markets(
+                    markets = await fetch_crypto_updown_markets(
                         client=client,
                         base_url="https://gamma-api.polymarket.com",
                         now=datetime.now(timezone.utc),
                         assets=config.assets,
+                        intervals=config.intervals,
                         windows_ahead=config.windows_to_track,
                     )
                     async with write_lock:
@@ -313,7 +435,7 @@ async def run_live_collection(config: LiveCollectorConfig) -> LiveCollectorResul
                         await record_event(
                             CollectorEvent(
                                 source_key="polymarket_markets",
-                                stream_key="crypto_5m_markets_snapshot",
+                                stream_key="crypto_updown_markets_snapshot",
                                 symbol=str(market["slug"]),
                                 event_ts=observed,
                                 observed_ts=observed,
@@ -396,7 +518,11 @@ async def run_live_collection(config: LiveCollectorConfig) -> LiveCollectorResul
                             if not raw:
                                 continue
                             observed = datetime.now(timezone.utc)
-                            for event in rtds_price_events(json.loads(raw), observed):
+                            for event in rtds_price_events(
+                                json.loads(raw),
+                                observed,
+                                assets=config.assets,
+                            ):
                                 await record_event(event)
                                 rtds_events_written += 1
                     finally:

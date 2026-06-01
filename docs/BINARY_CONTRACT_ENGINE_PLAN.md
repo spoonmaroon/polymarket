@@ -439,6 +439,9 @@ Tests:
 - `tests/storage/test_duckdb_store.py` should create a temp DuckDB database, apply `schema.sql`, insert one fake contract, one price tick, one order-book snapshot, one decision, and one label.
 
 ### 4. Volatility and `sigma_tau`: How It Builds
+Implementation status: this section is implemented by `src/polymarket_engine/features/volatility.py`, replayed through `src/polymarket_engine/features/state_replay.py`, and covered by `tests/features/test_volatility.py` plus `tests/storage/test_state_replay.py`. The implementation is as-of safe: future ticks are labels or ignored, never volatility inputs.
+
+Source rule: BTC/ETH volatility and `sigma_tau` are calculated from the Chainlink settlement-reference stream only, stored as `polymarket_rtds_chainlink`. Coinbase, Binance, and other exchange feeds are proxy/quality-check inputs, not volatility inputs. If a historical proxy point exactly matches the Chainlink point, it can be used as validation evidence, but it is not added as an extra return observation because duplicate rows can distort realized-volatility windows.
 
 Create `src/polymarket_engine/features/volatility.py`.
 
@@ -446,12 +449,13 @@ This module turns recent log returns into the movement scale used by Monte Carlo
 
 Build method:
 
-1. Convert prices into log returns: `r_t = ln(S_t / S_{t-1})`.
-2. Compute short, medium, and long realized-volatility windows.
-3. Blend them using preset weights.
-4. Apply a minimum volatility floor.
-5. Apply a regime multiplier when volatility is expanding or contracting.
-6. Scale the result to seconds left.
+1. Select only Chainlink settlement-reference prices for the contract asset.
+2. Convert those prices into log returns: `r_t = ln(S_t / S_{t-1})`.
+3. Compute short, medium, and long realized-volatility windows.
+4. Blend them using preset weights.
+5. Apply a minimum volatility floor.
+6. Apply a regime multiplier when volatility is expanding or contracting.
+7. Scale the result to seconds left.
 
 First-pass function:
 
@@ -475,6 +479,8 @@ Tests:
 
 - `tests/features/test_volatility.py` should prove higher recent returns produce higher `sigma_tau`.
 - A flat tape should still return at least `sigma_floor`.
+- Missing Chainlink reference data should produce missing volatility, not fake confidence.
+- Proxy feeds should be rejected or ignored for volatility construction.
 - Weights must sum to one; invalid weights should raise a clear error.
 
 ### 5. Probability Outputs: How It Builds
@@ -1245,6 +1251,8 @@ Plain English: sigma_tau estimates how much the asset can still move before expi
 If sigma_tau is too small, the model becomes overconfident. If it is too large, the model becomes too scared to trade. The first version should therefore use a conservative realized-volatility estimate with a floor and regime adjustment.
 
 The system is not trying to forecast direction with `sigma_tau`. It is estimating how much the settlement-source price can still move before expiry.
+
+For BTC/ETH binary contracts, the settlement-source price means the Chainlink reference stream named by the rule. Exchange proxy feeds can diagnose feed disagreement and bad ticks, but they must not be used to calculate realized volatility or `sigma_tau`. If Chainlink data is missing for a replay window, the correct output is missing volatility, not a proxy-derived substitute.
 
 A first-pass movement scale is:
 

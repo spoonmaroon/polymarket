@@ -28,6 +28,7 @@ def test_parse_collect_args() -> None:
     assert args.duration == 60
     assert args.forever is False
     assert args.windows_to_track == 2
+    assert args.intervals == ("5m", "15m")
     assert args.snapshot_interval == 1.0
     assert args.market_refresh_interval == 30.0
     assert args.raw_root == Path("data/raw")
@@ -44,6 +45,8 @@ def test_parse_collect_forever_args() -> None:
             "--forever",
             "--windows-to-track",
             "2",
+            "--intervals",
+            "5m,15m",
             "--snapshot-interval",
             "1",
             "--market-refresh-interval",
@@ -55,6 +58,7 @@ def test_parse_collect_forever_args() -> None:
     assert args.forever is True
     assert args.duration is None
     assert args.windows_to_track == 2
+    assert args.intervals == ("5m", "15m")
     assert args.snapshot_interval == 1.0
     assert args.market_refresh_interval == 30.0
 
@@ -86,6 +90,7 @@ async def test_run_collect_command_uses_injected_runner(tmp_path: Path) -> None:
         seen["assets"] = config.assets
         seen["duration"] = config.duration_seconds
         seen["windows_to_track"] = config.windows_to_track
+        seen["intervals"] = config.intervals
         seen["snapshot_interval"] = config.clob_snapshot_interval_seconds
         seen["status_path"] = config.status_path
         return LiveCollectorResult(events_written=3, files_written=1)
@@ -112,6 +117,7 @@ async def test_run_collect_command_uses_injected_runner(tmp_path: Path) -> None:
         "assets": ("BTC", "ETH"),
         "duration": 5,
         "windows_to_track": 2,
+        "intervals": ("5m", "15m"),
         "snapshot_interval": 1.0,
         "status_path": tmp_path / "status.json",
     }
