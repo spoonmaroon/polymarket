@@ -28,6 +28,22 @@ fees, spread, slippage, data latency, and path-reversal risk.
 The locked Part One data-source and database plan lives in
 [PART_ONE_DATA_CONTRACT.md](docs/PART_ONE_DATA_CONTRACT.md).
 
+## Live Read-Only Collection
+
+The current live runner tracks BTC/ETH UP/DOWN for the current 5-minute window
+and the next 5-minute window. It writes durable raw data, normalized DuckDB
+tables, and an atomic terminal-monitor status file.
+
+```bash
+uv run polymarket-engine collect --assets BTC,ETH --forever --windows-to-track 2 --snapshot-interval 1 --market-refresh-interval 30
+```
+
+In a second terminal:
+
+```bash
+uv run polymarket-engine monitor --refresh 1 --limit 8
+```
+
 ## Read First
 
 - [PLAN.md](docs/PLAN.md) - complete merged architecture, research, build,

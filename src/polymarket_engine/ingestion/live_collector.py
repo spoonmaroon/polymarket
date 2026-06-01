@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -23,8 +24,8 @@ from polymarket_engine.ingestion.coinbase_ws import (
 )
 from polymarket_engine.ingestion.collector_events import CollectorEvent
 from polymarket_engine.ingestion.contract_discovery import (
-    extract_market_tokens,
     fetch_crypto_5m_markets,
+    MarketToken,
 )
 from polymarket_engine.ingestion.polymarket_clob import clob_book_event
 from polymarket_engine.ingestion.polymarket_rtds import (
@@ -51,6 +52,7 @@ class LiveCollectorConfig:
     duration_seconds: int | None
     raw_root: Path
     duckdb_path: Path
+    status_path: Path = Path("data/live/status.json")
     max_batch_size: int = 100
     flush_after_seconds: float = 5.0
     require_archive_sentinel: bool = False
@@ -160,30 +162,134 @@ async def run_live_collection(config: LiveCollectorConfig) -> LiveCollectorResul
     deadline = collection_deadline(config)
     market_tokens: dict[str, Any] = {}
     rtds_events_written = 0
+    write_lock = asyncio.Lock()
+    latest_prices: dict[str, dict[str, object]] = {}
+    latest_orderbooks: dict[str, dict[str, object]] = {}
+    latest_contracts: dict[str, dict[str, object]] = {}
+    last_status_write = 0.0
 
     def register_result(result: RawWriteResult) -> None:
         _register_file(store, config.raw_root, result)
 
-    def record_event(event: CollectorEvent) -> None:
-        nonlocal events_written, files_written
-        events_written += 1
-        try:
-            _write_normalized_event(store, event)
-        except Exception as exc:
-            source_errors[f"normalized:{event.source_key}:{event.stream_key}"] = (
-                f"{type(exc).__name__}: {exc}"
-            )
-        result = writer.add(event)
-        if result is not None:
-            register_result(result)
-            files_written += 1
+    def update_status_from_markets(markets: tuple[dict[str, Any], ...]) -> tuple[MarketToken, ...]:
+        accepted_tokens: list[MarketToken] = []
+        active_token_ids: set[str] = set()
+        latest_contracts.clear()
+        for market in markets:
+            try:
+                rule = parse_polymarket_crypto_updown_rule(market)
+                contracts = contract_specs_from_rule(rule)
+            except ContractRuleRejected:
+                continue
+            for contract in contracts:
+                latest_contracts[contract.contract_id] = {
+                    "contract_id": contract.contract_id,
+                    "asset": contract.asset,
+                    "side": contract.side,
+                    "token_id": contract.token_id,
+                    "threshold_type": contract.threshold_type,
+                    "settlement_symbol": contract.settlement_symbol,
+                    "start_ts": contract.start_ts.isoformat(),
+                    "expiry_ts": contract.expiry_ts.isoformat(),
+                }
+                if contract.token_id not in active_token_ids:
+                    accepted_tokens.append(
+                        MarketToken(
+                            slug=contract.slug,
+                            outcome=contract.side,
+                            token_id=contract.token_id,
+                        )
+                    )
+                    active_token_ids.add(contract.token_id)
+        for token_id in tuple(latest_orderbooks):
+            if token_id not in active_token_ids:
+                latest_orderbooks.pop(token_id, None)
+        return tuple(accepted_tokens)
 
-    def flush_due() -> None:
+    def update_status_from_event(event: CollectorEvent) -> None:
+        price_tick = _price_observation_from_event(event)
+        if price_tick is not None:
+            latest_prices[f"{price_tick.source_key}:{price_tick.symbol}"] = {
+                "source_key": price_tick.source_key,
+                "symbol": price_tick.symbol,
+                "observed_ts": price_tick.observed_ts.isoformat(),
+                "price": price_tick.price,
+            }
+            return
+        orderbook = _orderbook_observation_from_event(event)
+        if orderbook is not None:
+            latest_orderbooks[orderbook.token_id] = {
+                "venue": orderbook.venue,
+                "contract_id": orderbook.contract_id,
+                "token_id": orderbook.token_id,
+                "observed_ts": orderbook.observed_ts.isoformat(),
+                "best_bid": orderbook.best_bid,
+                "best_ask": orderbook.best_ask,
+                "spread": orderbook.spread,
+                "bid_size_top": orderbook.bid_size_top,
+                "ask_size_top": orderbook.ask_size_top,
+            }
+
+    def write_status(force: bool = False) -> None:
+        nonlocal last_status_write
+        now = time.monotonic()
+        if not force and now - last_status_write < 1.0:
+            return
+        last_status_write = now
+        config.status_path.parent.mkdir(parents=True, exist_ok=True)
+        generated_at = datetime.now(timezone.utc).isoformat()
+        status = {
+            "generated_at": generated_at,
+            "prices": sorted(latest_prices.values(), key=lambda row: str(row["source_key"])),
+            "orderbooks": sorted(
+                latest_orderbooks.values(),
+                key=lambda row: str(row["observed_ts"]),
+                reverse=True,
+            ),
+            "contracts": sorted(
+                latest_contracts.values(),
+                key=lambda row: (str(row["expiry_ts"]), str(row["asset"]), str(row["side"])),
+                reverse=True,
+            ),
+            "ingest_counts": [
+                {
+                    "source_key": "collector",
+                    "stream_key": "events_total",
+                    "files": files_written,
+                    "rows": events_written,
+                    "last_event_ts": generated_at,
+                }
+            ],
+            "source_errors": dict(source_errors),
+        }
+        tmp_path = config.status_path.with_suffix(f"{config.status_path.suffix}.tmp")
+        tmp_path.write_text(json.dumps(status, sort_keys=True), encoding="utf-8")
+        tmp_path.replace(config.status_path)
+
+    async def record_event(event: CollectorEvent) -> None:
+        nonlocal events_written, files_written
+        async with write_lock:
+            events_written += 1
+            update_status_from_event(event)
+            try:
+                _write_normalized_event(store, event)
+            except Exception as exc:
+                source_errors[f"normalized:{event.source_key}:{event.stream_key}"] = (
+                    f"{type(exc).__name__}: {exc}"
+                )
+            result = writer.add(event)
+            if result is not None:
+                register_result(result)
+                files_written += 1
+            write_status()
+
+    async def flush_due() -> None:
         nonlocal files_written
-        result = writer.maybe_flush()
-        if result is not None:
-            register_result(result)
-            files_written += 1
+        async with write_lock:
+            result = writer.maybe_flush()
+            if result is not None:
+                register_result(result)
+                files_written += 1
 
     async def market_loop() -> None:
         async with httpx.AsyncClient(timeout=15) as client:
@@ -196,15 +302,15 @@ async def run_live_collection(config: LiveCollectorConfig) -> LiveCollectorResul
                         assets=config.assets,
                         windows_ahead=config.windows_to_track,
                     )
-                    source_errors.update(register_market_rules(config.duckdb_path, markets))
-                    tokens = tuple(
-                        token for market in markets for token in extract_market_tokens(market)
-                    )
+                    async with write_lock:
+                        source_errors.update(register_market_rules(config.duckdb_path, markets))
+                    tokens = update_status_from_markets(markets)
                     market_tokens.clear()
                     market_tokens.update({token.token_id: token for token in tokens})
+                    write_status(force=True)
                     for market in markets:
                         observed = datetime.now(timezone.utc)
-                        record_event(
+                        await record_event(
                             CollectorEvent(
                                 source_key="polymarket_markets",
                                 stream_key="crypto_5m_markets_snapshot",
@@ -214,7 +320,7 @@ async def run_live_collection(config: LiveCollectorConfig) -> LiveCollectorResul
                                 payload=dict(market),
                             )
                         )
-                    flush_due()
+                    await flush_due()
                 except Exception as exc:
                     source_errors["polymarket_markets"] = f"{type(exc).__name__}: {exc}"
                 await _sleep_for(config.market_refresh_interval_seconds, deadline)
@@ -232,12 +338,12 @@ async def run_live_collection(config: LiveCollectorConfig) -> LiveCollectorResul
                             params={"token_id": token.token_id},
                         )
                         response.raise_for_status()
-                        record_event(clob_book_event(response.json(), token, observed))
+                        await record_event(clob_book_event(response.json(), token, observed))
                     except Exception as exc:
                         source_errors[f"polymarket_clob:{token.token_id}"] = (
                             f"{type(exc).__name__}: {exc}"
                         )
-                flush_due()
+                await flush_due()
                 await _sleep_for(config.clob_snapshot_interval_seconds, deadline)
 
     async def coinbase_loop() -> None:
@@ -255,11 +361,11 @@ async def run_live_collection(config: LiveCollectorConfig) -> LiveCollectorResul
                         try:
                             raw = await asyncio.wait_for(ws.recv(), timeout=5)
                         except asyncio.TimeoutError:
-                            flush_due()
+                            await flush_due()
                             continue
                         observed = datetime.now(timezone.utc)
                         for event in coinbase_ticker_events(json.loads(raw), observed):
-                            record_event(event)
+                            await record_event(event)
             except Exception as exc:
                 source_errors["coinbase_advanced_ws"] = f"{type(exc).__name__}: {exc}"
                 if not _should_continue(deadline):
@@ -285,13 +391,13 @@ async def run_live_collection(config: LiveCollectorConfig) -> LiveCollectorResul
                             try:
                                 raw = await asyncio.wait_for(ws.recv(), timeout=5)
                             except asyncio.TimeoutError:
-                                flush_due()
+                                await flush_due()
                                 continue
                             if not raw:
                                 continue
                             observed = datetime.now(timezone.utc)
                             for event in rtds_price_events(json.loads(raw), observed):
-                                record_event(event)
+                                await record_event(event)
                                 rtds_events_written += 1
                     finally:
                         heartbeat_task.cancel()
@@ -311,6 +417,7 @@ async def run_live_collection(config: LiveCollectorConfig) -> LiveCollectorResul
         for result in writer.flush_all():
             register_result(result)
             files_written += 1
+        write_status(force=True)
 
     if rtds_events_written == 0 and "polymarket_rtds" not in source_errors:
         source_errors["polymarket_rtds"] = "NoMessages: RTDS emitted no price updates"

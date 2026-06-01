@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,7 +21,15 @@ class MonitorSnapshot:
     ingest_counts: tuple[dict[str, Any], ...]
 
 
-def fetch_monitor_snapshot(duckdb_path: Path, limit: int = 8) -> MonitorSnapshot:
+def fetch_monitor_snapshot(
+    duckdb_path: Path,
+    limit: int = 8,
+    lock_retry_seconds: float = 2.0,
+    status_path: Path | None = None,
+) -> MonitorSnapshot:
+    if status_path is not None and status_path.exists():
+        return _snapshot_from_status(status_path, limit=limit)
+
     if not duckdb_path.exists():
         return MonitorSnapshot(
             generated_at=datetime.now(timezone.utc),
@@ -30,7 +40,7 @@ def fetch_monitor_snapshot(duckdb_path: Path, limit: int = 8) -> MonitorSnapshot
             ingest_counts=(),
         )
 
-    with duckdb.connect(str(duckdb_path), read_only=True) as conn:
+    with _connect_read_only_with_retry(duckdb_path, lock_retry_seconds) as conn:
         price_rows = tuple(
             _dict_rows(
                 conn.sql(
@@ -152,6 +162,40 @@ def fetch_monitor_snapshot(duckdb_path: Path, limit: int = 8) -> MonitorSnapshot
     )
 
 
+def _snapshot_from_status(status_path: Path, limit: int) -> MonitorSnapshot:
+    payload = json.loads(status_path.read_text(encoding="utf-8"))
+    generated_at = datetime.fromisoformat(str(payload["generated_at"]))
+    price_rows = tuple(dict(row) for row in payload.get("prices", ()))
+    orderbooks = tuple(dict(row) for row in payload.get("orderbooks", ())[:limit])
+    contracts = tuple(dict(row) for row in payload.get("contracts", ())[:limit])
+    ingest_counts = tuple(dict(row) for row in payload.get("ingest_counts", ()))
+    prices = {
+        (str(row["source_key"]), str(row["symbol"])): float(row["price"]) for row in price_rows
+    }
+    return MonitorSnapshot(
+        generated_at=generated_at,
+        prices=prices,
+        price_rows=price_rows,
+        orderbooks=orderbooks,
+        contracts=contracts,
+        ingest_counts=ingest_counts,
+    )
+
+
+def _connect_read_only_with_retry(
+    duckdb_path: Path,
+    lock_retry_seconds: float,
+) -> duckdb.DuckDBPyConnection:
+    deadline = time.monotonic() + lock_retry_seconds
+    while True:
+        try:
+            return duckdb.connect(str(duckdb_path), read_only=True)
+        except duckdb.IOException as exc:
+            if "Could not set lock" not in str(exc) or time.monotonic() >= deadline:
+                raise
+            time.sleep(0.1)
+
+
 def render_monitor(snapshot: MonitorSnapshot) -> str:
     lines = [
         "Polymarket Engine Monitor | READ ONLY",
@@ -204,9 +248,14 @@ def render_monitor(snapshot: MonitorSnapshot) -> str:
     return "\n".join(lines)
 
 
-async def run_monitor(duckdb_path: Path, refresh_seconds: float, limit: int) -> int:
+async def run_monitor(
+    duckdb_path: Path,
+    refresh_seconds: float,
+    limit: int,
+    status_path: Path | None = None,
+) -> int:
     while True:
-        snapshot = fetch_monitor_snapshot(duckdb_path, limit=limit)
+        snapshot = fetch_monitor_snapshot(duckdb_path, limit=limit, status_path=status_path)
         print("\033[2J\033[H" + render_monitor(snapshot), flush=True)
         await asyncio.sleep(refresh_seconds)
 

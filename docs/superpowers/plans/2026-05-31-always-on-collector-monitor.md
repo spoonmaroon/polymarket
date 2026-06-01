@@ -1,10 +1,10 @@
 # Always-On Collector And Terminal Monitor Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Build a read-only always-on BTC/ETH collector that tracks only the current and next 5-minute Polymarket contracts, snapshots active order books every second, and exposes a terminal monitor for a second tab.
 
-**Architecture:** Keep collection and display separate. The collector keeps persistent WebSocket loops for Coinbase and Polymarket RTDS, refreshes Gamma market discovery on a slower cadence, snapshots the active CLOB books every second, and writes raw Parquet plus normalized DuckDB rows. The monitor only reads DuckDB and renders the latest normalized state; it must not trade, mutate collector state, or invent synthetic data.
+**Architecture:** Keep collection and display separate. The collector keeps persistent WebSocket loops for Coinbase and Polymarket RTDS, refreshes Gamma market discovery on a slower cadence, snapshots accepted active CLOB books every second, and writes raw Parquet plus normalized DuckDB rows. It also publishes an atomic read-only status file so a second terminal can monitor live state without fighting DuckDB writer locks. The monitor must not trade, mutate collector state, or invent synthetic data.
 
 **Tech Stack:** Python 3.11+, asyncio, httpx, websockets, DuckDB, pytest, ruff, mypy, existing `polymarket_engine` CLI.
 
@@ -39,7 +39,7 @@
 - Modify: `/Users/goon/polymarket/src/polymarket_engine/cli.py`
 - Test: `/Users/goon/polymarket/tests/test_cli.py`
 
-- [ ] **Step 1: Write failing CLI tests**
+- [x] **Step 1: Write failing CLI tests**
 
 Add tests that assert:
 
@@ -87,7 +87,7 @@ assert seen == {
 }
 ```
 
-- [ ] **Step 2: Run CLI tests to verify RED**
+- [x] **Step 2: Run CLI tests to verify RED**
 
 Run:
 
@@ -98,7 +98,7 @@ uv run pytest tests/test_cli.py -v
 
 Expected: FAIL because `--forever`, `--windows-to-track`, `--snapshot-interval`, `--market-refresh-interval`, and `monitor` do not exist yet.
 
-- [ ] **Step 3: Implement CLI flags**
+- [x] **Step 3: Implement CLI flags**
 
 Update `parse_args()`:
 
@@ -125,7 +125,7 @@ duration_seconds = None if args.forever else args.duration
 
 Pass new values into `LiveCollectorConfig`.
 
-- [ ] **Step 4: Run CLI tests to verify GREEN**
+- [x] **Step 4: Run CLI tests to verify GREEN**
 
 Run:
 
@@ -136,7 +136,7 @@ uv run pytest tests/test_cli.py -v
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/polymarket_engine/cli.py tests/test_cli.py
@@ -151,7 +151,7 @@ git commit -m "feat: add always-on collector cli flags"
 - Modify: `/Users/goon/polymarket/src/polymarket_engine/ingestion/live_collector.py`
 - Test: `/Users/goon/polymarket/tests/ingestion/test_live_collector_config.py`
 
-- [ ] **Step 1: Write failing config tests**
+- [x] **Step 1: Write failing config tests**
 
 Create tests:
 
@@ -185,7 +185,7 @@ def test_live_collector_allows_forever_duration() -> None:
     assert config.duration_seconds is None
 ```
 
-- [ ] **Step 2: Run config tests to verify RED**
+- [x] **Step 2: Run config tests to verify RED**
 
 Run:
 
@@ -196,7 +196,7 @@ uv run pytest tests/ingestion/test_live_collector_config.py -v
 
 Expected: FAIL because `duration_seconds=None`, `windows_to_track`, and `market_refresh_interval_seconds` are not supported yet.
 
-- [ ] **Step 3: Implement config and concurrent loops**
+- [x] **Step 3: Implement config and concurrent loops**
 
 Change `LiveCollectorConfig`:
 
@@ -240,7 +240,7 @@ Rules:
 - No source loop should stop the whole collector after one source error.
 - Final `flush_all()` must still run when finite mode exits.
 
-- [ ] **Step 4: Run collector unit tests**
+- [x] **Step 4: Run collector unit tests**
 
 Run:
 
@@ -251,7 +251,7 @@ uv run pytest tests/ingestion/test_live_collector.py tests/ingestion/test_live_c
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/polymarket_engine/ingestion/live_collector.py tests/ingestion/test_live_collector_config.py
@@ -267,7 +267,7 @@ git commit -m "feat: collect current and next contracts continuously"
 - Modify: `/Users/goon/polymarket/src/polymarket_engine/cli.py`
 - Test: `/Users/goon/polymarket/tests/test_monitor.py`
 
-- [ ] **Step 1: Write failing monitor tests**
+- [x] **Step 1: Write failing monitor tests**
 
 Create tests:
 
@@ -305,7 +305,7 @@ def test_render_monitor_outputs_read_only_status(tmp_path: Path) -> None:
     assert "READ ONLY" in output
 ```
 
-- [ ] **Step 2: Run monitor tests to verify RED**
+- [x] **Step 2: Run monitor tests to verify RED**
 
 Run:
 
@@ -316,7 +316,7 @@ uv run pytest tests/test_monitor.py -v
 
 Expected: FAIL because `polymarket_engine.monitor` does not exist.
 
-- [ ] **Step 3: Implement monitor module**
+- [x] **Step 3: Implement monitor module**
 
 Create:
 
@@ -344,7 +344,7 @@ async def run_monitor(duckdb_path: Path, refresh_seconds: float, limit: int) -> 
         await asyncio.sleep(refresh_seconds)
 ```
 
-- [ ] **Step 4: Wire monitor command**
+- [x] **Step 4: Wire monitor command**
 
 In `cli.py`:
 
@@ -355,7 +355,7 @@ if args.command == "monitor":
     return await run_monitor(args.duckdb_path, args.refresh, args.limit)
 ```
 
-- [ ] **Step 5: Run monitor tests to verify GREEN**
+- [x] **Step 5: Run monitor tests to verify GREEN**
 
 Run:
 
@@ -366,7 +366,7 @@ uv run pytest tests/test_monitor.py tests/test_cli.py -v
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/polymarket_engine/monitor.py src/polymarket_engine/cli.py tests/test_monitor.py tests/test_cli.py
@@ -380,7 +380,7 @@ git commit -m "feat: add read-only terminal monitor"
 **Files:**
 - Modify: `/Users/goon/polymarket/docs/BINARY_CONTRACT_ENGINE_PLAN.md`
 
-- [ ] **Step 1: Update plan wording**
+- [x] **Step 1: Update plan wording**
 
 Add a short note to the collection section:
 
@@ -388,7 +388,7 @@ Add a short note to the collection section:
 The first live collector should track only the current and next BTC/ETH 5-minute contracts. This keeps the order-book set small: BTC current, BTC next, ETH current, and ETH next, each with UP and DOWN sides. Broader contract discovery can be added later after the first live replay path is stable.
 ```
 
-- [ ] **Step 2: Run full verification**
+- [x] **Step 2: Run full verification**
 
 Run:
 
@@ -404,7 +404,7 @@ Expected:
 - ruff passes
 - mypy passes
 
-- [ ] **Step 3: Run finite live smoke**
+- [x] **Step 3: Run finite live smoke**
 
 Run:
 
@@ -418,7 +418,7 @@ Expected:
 - `source_errors` is `{}` or only a clearly non-fatal source-specific transient error
 - normalized rows are written to DuckDB
 
-- [ ] **Step 4: Run monitor smoke**
+- [x] **Step 4: Run monitor smoke**
 
 Run:
 
@@ -432,10 +432,9 @@ Expected:
 - monitor prints `READ ONLY`
 - monitor exits because `timeout` kills it
 
-- [ ] **Step 5: Commit docs and verification fixes**
+- [x] **Step 5: Commit docs and verification fixes**
 
 ```bash
 git add docs/BINARY_CONTRACT_ENGINE_PLAN.md
 git commit -m "docs: document current and next collection scope"
 ```
-

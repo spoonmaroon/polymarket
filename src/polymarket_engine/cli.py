@@ -25,6 +25,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     collect.add_argument("--forever", action="store_true")
     collect.add_argument("--raw-root", type=Path, default=Path("data/raw"))
     collect.add_argument("--duckdb-path", type=Path, default=Path("data/db/polymarket.duckdb"))
+    collect.add_argument("--status-path", type=Path, default=Path("data/live/status.json"))
     collect.add_argument("--max-batch-size", type=int, default=100)
     collect.add_argument("--windows-to-track", type=int, default=2)
     collect.add_argument("--snapshot-interval", type=float, default=1.0)
@@ -32,6 +33,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     monitor = subparsers.add_parser("monitor")
     monitor.add_argument("--duckdb-path", type=Path, default=Path("data/db/polymarket.duckdb"))
+    monitor.add_argument("--status-path", type=Path, default=Path("data/live/status.json"))
     monitor.add_argument("--refresh", type=float, default=1.0)
     monitor.add_argument("--limit", type=int, default=8)
 
@@ -48,7 +50,7 @@ async def run_collect_command(
     if args.command == "monitor":
         from polymarket_engine.monitor import run_monitor
 
-        return await run_monitor(args.duckdb_path, args.refresh, args.limit)
+        return await run_monitor(args.duckdb_path, args.refresh, args.limit, args.status_path)
     if args.command != "collect":
         return 2
     if args.duration is None and not args.forever:
@@ -59,6 +61,7 @@ async def run_collect_command(
         duration_seconds=None if args.forever else args.duration,
         raw_root=args.raw_root,
         duckdb_path=args.duckdb_path,
+        status_path=args.status_path,
         max_batch_size=args.max_batch_size,
         windows_to_track=args.windows_to_track,
         clob_snapshot_interval_seconds=args.snapshot_interval,
