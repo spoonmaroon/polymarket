@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from polymarket_engine.ingestion.contract_discovery import (
+    LAST_MARKET_DISCOVERY_ERRORS,
     MarketToken,
     crypto_5m_slugs,
     crypto_updown_slugs,
@@ -170,3 +171,60 @@ async def test_fetch_crypto_updown_markets_fetches_15m_slugs() -> None:
 
     assert len(markets) == 1
     assert requested_slugs == ["btc-updown-15m-1780262100"]
+
+
+@pytest.mark.anyio
+async def test_fetch_crypto_updown_markets_keeps_partial_success_when_one_slug_times_out() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        slug = str(request.url.params["slug"])
+        if slug == "eth-updown-5m-1780261200":
+            raise httpx.ConnectTimeout("simulated slow Gamma slug")
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "slug": slug,
+                    "question": "Bitcoin Up or Down - May 31, 5:00PM-5:05PM ET",
+                    "outcomes": json.dumps(["Up", "Down"]),
+                    "clobTokenIds": json.dumps(["111", "222"]),
+                }
+            ],
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    markets = await fetch_crypto_updown_markets(
+        client=client,
+        base_url="https://gamma-api.polymarket.com",
+        now=datetime(2026, 5, 31, 21, 4, 0, tzinfo=timezone.utc),
+        assets=("BTC", "ETH"),
+        intervals=("5m",),
+        windows_ahead=1,
+    )
+    await client.aclose()
+
+    assert tuple(market["slug"] for market in markets) == ("btc-updown-5m-1780261200",)
+    assert LAST_MARKET_DISCOVERY_ERRORS == {
+        "eth-updown-5m-1780261200": "ConnectTimeout: simulated slow Gamma slug"
+    }
+
+
+@pytest.mark.anyio
+async def test_fetch_crypto_updown_markets_raises_when_all_slugs_fail() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectTimeout("simulated total Gamma outage")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    with pytest.raises(httpx.ConnectTimeout):
+        await fetch_crypto_updown_markets(
+            client=client,
+            base_url="https://gamma-api.polymarket.com",
+            now=datetime(2026, 5, 31, 21, 4, 0, tzinfo=timezone.utc),
+            assets=("BTC", "ETH"),
+            intervals=("5m",),
+            windows_ahead=1,
+        )
+    await client.aclose()
+    assert set(LAST_MARKET_DISCOVERY_ERRORS) == {
+        "btc-updown-5m-1780261200",
+        "eth-updown-5m-1780261200",
+    }
