@@ -45,6 +45,10 @@ async def run_collect_command(
     from polymarket_engine.ingestion.live_collector import run_live_collection
 
     args = parse_args(argv)
+    if args.command == "monitor":
+        from polymarket_engine.monitor import run_monitor
+
+        return await run_monitor(args.duckdb_path, args.refresh, args.limit)
     if args.command != "collect":
         return 2
     if args.duration is None and not args.forever:
