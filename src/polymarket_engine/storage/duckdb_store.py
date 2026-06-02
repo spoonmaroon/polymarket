@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from types import TracebackType
@@ -52,6 +53,66 @@ def _contract_specs_signature(contracts: Sequence[ContractSpec]) -> tuple[tuple[
         for contract in contracts
     )
     return tuple(sorted(rows, key=lambda row: (str(row[0]), repr(row))))
+
+
+@dataclass
+class OrderBookSnapshotBatch:
+    venues: list[str] = field(default_factory=list)
+    contract_ids: list[str] = field(default_factory=list)
+    token_ids: list[str] = field(default_factory=list)
+    event_timestamps: list[datetime] = field(default_factory=list)
+    observed_timestamps: list[datetime] = field(default_factory=list)
+    best_bids: list[float | None] = field(default_factory=list)
+    best_asks: list[float | None] = field(default_factory=list)
+    bid_sizes_top: list[float | None] = field(default_factory=list)
+    ask_sizes_top: list[float | None] = field(default_factory=list)
+    spreads: list[float | None] = field(default_factory=list)
+    depth_json_values: list[str] = field(default_factory=list)
+
+    def __len__(self) -> int:
+        return len(self.venues)
+
+    def append(
+        self,
+        *,
+        venue: str,
+        contract_id: str,
+        token_id: str,
+        event_ts: datetime,
+        observed_ts: datetime,
+        best_bid: float | None,
+        best_ask: float | None,
+        bid_size_top: float | None,
+        ask_size_top: float | None,
+        spread: float | None,
+        depth_json: str,
+    ) -> None:
+        self.venues.append(venue)
+        self.contract_ids.append(contract_id)
+        self.token_ids.append(token_id)
+        self.event_timestamps.append(event_ts)
+        self.observed_timestamps.append(observed_ts)
+        self.best_bids.append(best_bid)
+        self.best_asks.append(best_ask)
+        self.bid_sizes_top.append(bid_size_top)
+        self.ask_sizes_top.append(ask_size_top)
+        self.spreads.append(spread)
+        self.depth_json_values.append(depth_json)
+
+    def append_observation(self, snapshot: OrderBookObservation) -> None:
+        self.append(
+            venue=snapshot.venue,
+            contract_id=snapshot.contract_id,
+            token_id=snapshot.token_id,
+            event_ts=snapshot.event_ts,
+            observed_ts=snapshot.observed_ts,
+            best_bid=snapshot.best_bid,
+            best_ask=snapshot.best_ask,
+            bid_size_top=snapshot.bid_size_top,
+            ask_size_top=snapshot.ask_size_top,
+            spread=snapshot.spread,
+            depth_json=snapshot.depth_json,
+        )
 
 
 class DuckDbIngestStore:
@@ -418,47 +479,32 @@ class DuckDbIngestStore:
     ) -> None:
         if not snapshots:
             return
-        venues: list[str] = []
-        contract_ids: list[str] = []
-        token_ids: list[str] = []
-        event_timestamps: list[datetime] = []
-        observed_timestamps: list[datetime] = []
-        best_bids: list[float | None] = []
-        best_asks: list[float | None] = []
-        bid_sizes_top: list[float | None] = []
-        ask_sizes_top: list[float | None] = []
-        spreads: list[float | None] = []
-        depth_json_values: list[str] = []
-        raw_file_ids: list[str | None] = []
-
+        batch = OrderBookSnapshotBatch()
         for snapshot in snapshots:
-            venues.append(snapshot.venue)
-            contract_ids.append(snapshot.contract_id)
-            token_ids.append(snapshot.token_id)
-            event_timestamps.append(snapshot.event_ts)
-            observed_timestamps.append(snapshot.observed_ts)
-            best_bids.append(snapshot.best_bid)
-            best_asks.append(snapshot.best_ask)
-            bid_sizes_top.append(snapshot.bid_size_top)
-            ask_sizes_top.append(snapshot.ask_size_top)
-            spreads.append(snapshot.spread)
-            depth_json_values.append(snapshot.depth_json)
-            raw_file_ids.append(raw_file_id)
+            batch.append_observation(snapshot)
+        self.insert_orderbook_snapshot_batch(batch, raw_file_id=raw_file_id)
 
+    def insert_orderbook_snapshot_batch(
+        self,
+        batch: OrderBookSnapshotBatch,
+        raw_file_id: str | None = None,
+    ) -> None:
+        if not batch:
+            return
         frame = pl.DataFrame(
             {
-                "venue": venues,
-                "contract_id": contract_ids,
-                "token_id": token_ids,
-                "event_ts": event_timestamps,
-                "observed_ts": observed_timestamps,
-                "best_bid": best_bids,
-                "best_ask": best_asks,
-                "bid_size_top": bid_sizes_top,
-                "ask_size_top": ask_sizes_top,
-                "spread": spreads,
-                "depth_json": depth_json_values,
-                "raw_file_id": raw_file_ids,
+                "venue": batch.venues,
+                "contract_id": batch.contract_ids,
+                "token_id": batch.token_ids,
+                "event_ts": batch.event_timestamps,
+                "observed_ts": batch.observed_timestamps,
+                "best_bid": batch.best_bids,
+                "best_ask": batch.best_asks,
+                "bid_size_top": batch.bid_sizes_top,
+                "ask_size_top": batch.ask_sizes_top,
+                "spread": batch.spreads,
+                "depth_json": batch.depth_json_values,
+                "raw_file_id": [raw_file_id] * len(batch),
             }
         )
         with self._connection() as conn:

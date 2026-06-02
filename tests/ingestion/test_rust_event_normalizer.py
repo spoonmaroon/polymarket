@@ -232,6 +232,64 @@ def test_top_of_book_rows_skip_intermediate_row_materialization(
     assert top_of_book_row_calls == 0
 
 
+def test_top_of_book_rows_skip_orderbook_observation_materialization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "state.duckdb"
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    raw_path = (
+        tmp_path
+        / "raw"
+        / "polymarket_clob_market_ws"
+        / "best_bid_ask"
+        / "date=2026-06-02"
+        / "hour=05"
+        / "events.jsonl"
+    )
+    _write_jsonl(
+        raw_path,
+        _orderbook_row(
+            "token-1",
+            "2026-06-02T05:33:54Z",
+            "2026-06-02T05:33:55Z",
+            0.61,
+            0.64,
+        ),
+    )
+    orderbook_observation_calls = 0
+    real_orderbook_observation = OrderBookObservation
+
+    def counting_orderbook_observation(
+        *args: Any,
+        **kwargs: Any,
+    ) -> OrderBookObservation:
+        nonlocal orderbook_observation_calls
+        orderbook_observation_calls += 1
+        return real_orderbook_observation(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "polymarket_engine.ingestion.rust_event_normalizer.OrderBookObservation",
+        counting_orderbook_observation,
+    )
+
+    result = normalize_rust_event_file(path=raw_path, store=store)
+
+    assert result.orderbooks_written == 1
+    with duckdb.connect(str(db_path), read_only=True) as conn:
+        row = conn.execute(
+            """
+            select contract_id, token_id, best_bid, best_ask, spread
+            from core.orderbook_snapshots
+            """
+        ).fetchone()
+    assert row is not None
+    assert row[:4] == ("0xabc", "token-1", 0.61, 0.64)
+    assert round(float(row[4]), 2) == 0.03
+    assert orderbook_observation_calls == 0
+
+
 def test_normalizes_clob_spread_from_bid_ask_when_payload_spread_is_stale(tmp_path: Path) -> None:
     db_path = tmp_path / "state.duckdb"
     store = DuckDbIngestStore(db_path)

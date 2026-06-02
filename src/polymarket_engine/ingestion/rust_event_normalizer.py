@@ -10,7 +10,10 @@ from pathlib import Path
 from typing import Any
 
 from polymarket_engine.domain.market_state import OrderBookObservation, PriceObservation
-from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
+from polymarket_engine.storage.duckdb_store import (
+    DuckDbIngestStore,
+    OrderBookSnapshotBatch,
+)
 
 
 STATE_MANAGER_SCHEMA_VERSION = "rust-live-probe-state-manager-v1"
@@ -148,7 +151,7 @@ def normalize_rust_event_file(
     orderbooks_written = 0
     event_time_bounds = _EventTimeBounds()
     price_ticks: list[PriceObservation] = []
-    orderbooks: list[OrderBookObservation] = []
+    orderbooks = OrderBookSnapshotBatch()
     price_state_cache: dict[tuple[str, str], tuple[object, ...]]
     orderbook_state_cache: dict[tuple[str, str], tuple[object, ...]]
     price_state_cache = (
@@ -201,7 +204,7 @@ def normalize_rust_event_file(
     if price_ticks:
         store.insert_price_ticks(price_ticks, raw_file_id=file_id)
     if orderbooks:
-        store.insert_orderbook_snapshots(orderbooks, raw_file_id=file_id)
+        store.insert_orderbook_snapshot_batch(orderbooks, raw_file_id=file_id)
 
     if end_byte_offset > start_byte_offset:
         store.upsert_raw_file_checkpoint(
@@ -387,7 +390,7 @@ def _append_orderbooks_from_row(
     *,
     row: dict[str, Any],
     orderbook_state_cache: dict[tuple[str, str], tuple[object, ...]],
-    orderbooks: list[OrderBookObservation],
+    orderbooks: OrderBookSnapshotBatch,
     event_time_bounds: _EventTimeBounds,
 ) -> None:
     if _append_top_of_book_from_raw(
@@ -402,7 +405,7 @@ def _append_orderbooks_from_row(
         state_key = _orderbook_state_key(book)
         if orderbook_state_cache.get(token_key) != state_key:
             orderbook_state_cache[token_key] = state_key
-            orderbooks.append(book)
+            orderbooks.append_observation(book)
             event_time_bounds.record(book.event_ts)
 
 
@@ -410,7 +413,7 @@ def _append_top_of_book_from_raw(
     *,
     row: dict[str, Any],
     orderbook_state_cache: dict[tuple[str, str], tuple[object, ...]],
-    orderbooks: list[OrderBookObservation],
+    orderbooks: OrderBookSnapshotBatch,
     event_time_bounds: _EventTimeBounds,
 ) -> bool:
     if row.get("source_key") != "polymarket_clob_market_ws":
@@ -426,6 +429,8 @@ def _append_top_of_book_from_raw(
         else _optional_probability_float(payload.get("spread"), "spread")
     )
     spread = _canonical_spread(best_bid, best_ask, spread_fallback)
+    if best_bid is not None and best_ask is not None and best_bid > best_ask:
+        raise ValueError("best_bid must be less than or equal to best_ask")
     token_id = str(payload.get("token_id") or row.get("symbol"))
     contract_id = str(payload["contract_id"])
     event_ts = _parse_ts(row["event_ts"])
@@ -444,7 +449,7 @@ def _append_top_of_book_from_raw(
     )
     if orderbook_state_cache.get(token_key) != state_key:
         orderbook_state_cache[token_key] = state_key
-        orderbook = OrderBookObservation(
+        orderbooks.append(
             venue="polymarket",
             contract_id=contract_id,
             token_id=token_id,
@@ -457,8 +462,7 @@ def _append_top_of_book_from_raw(
             spread=spread,
             depth_json=_top_of_book_depth_json(payload),
         )
-        orderbooks.append(orderbook)
-        event_time_bounds.record(orderbook.event_ts)
+        event_time_bounds.record(event_ts)
     return True
 
 
