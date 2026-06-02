@@ -1,6 +1,9 @@
 use anyhow::{Result, anyhow};
-use chrono::{Datelike, Timelike};
-use polymarket_runtime_types::HotDecisionState;
+use chrono::{DateTime, Datelike, Timelike, Utc};
+use polymarket_runtime_types::{
+    ContractSide, HotDecisionQualityFlag, HotDecisionState, HotDecisionTriggerKind,
+};
+use rust_decimal::Decimal;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
@@ -52,6 +55,34 @@ pub struct HotDecisionJournalWriter {
     journal: HotDecisionJournal,
     open_path: Option<PathBuf>,
     file: Option<BufWriter<File>>,
+}
+
+#[derive(Clone, PartialEq)]
+struct HotDecisionPersistSignature {
+    partition_year: i32,
+    partition_month: u32,
+    partition_day: u32,
+    partition_hour: u32,
+    trigger_kind: HotDecisionTriggerKind,
+    trigger_symbol: Option<String>,
+    trigger_token_id: Option<String>,
+    contract_asset: String,
+    contract_interval: String,
+    contract_start_ts: DateTime<Utc>,
+    contract_end_ts: DateTime<Utc>,
+    up_token_id: String,
+    down_token_id: String,
+    side: ContractSide,
+    token_id: String,
+    threshold_price: Option<Decimal>,
+    threshold_event_ts: Option<DateTime<Utc>>,
+    settlement_price: Option<Decimal>,
+    settlement_event_ts: Option<DateTime<Utc>>,
+    best_bid: Option<Decimal>,
+    best_ask: Option<Decimal>,
+    executable_price: Option<Decimal>,
+    spread: Option<Decimal>,
+    data_quality_flags: Vec<HotDecisionQualityFlag>,
 }
 
 impl HotDecisionJournalWriter {
@@ -113,6 +144,49 @@ fn write_hot_decision_jsonl_batch<W: Write>(
     Ok(())
 }
 
+fn hot_decision_persist_signature(state: &HotDecisionState) -> HotDecisionPersistSignature {
+    HotDecisionPersistSignature {
+        partition_year: state.asof_ts.year(),
+        partition_month: state.asof_ts.month(),
+        partition_day: state.asof_ts.day(),
+        partition_hour: state.asof_ts.hour(),
+        trigger_kind: state.trigger_kind.clone(),
+        trigger_symbol: state.trigger_symbol.clone(),
+        trigger_token_id: state.trigger_token_id.clone(),
+        contract_asset: state.contract.window.asset.clone(),
+        contract_interval: state.contract.window.interval.clone(),
+        contract_start_ts: state.contract.window.start_ts,
+        contract_end_ts: state.contract.window.end_ts,
+        up_token_id: state.contract.up.token_id.clone(),
+        down_token_id: state.contract.down.token_id.clone(),
+        side: state.side.clone(),
+        token_id: state.token_id.clone(),
+        threshold_price: state.threshold_price,
+        threshold_event_ts: state.threshold_event_ts,
+        settlement_price: state.settlement_price,
+        settlement_event_ts: state.settlement_event_ts,
+        best_bid: state.best_bid,
+        best_ask: state.best_ask,
+        executable_price: state.executable_price,
+        spread: state.spread,
+        data_quality_flags: state.data_quality_flags.clone(),
+    }
+}
+
+fn append_if_changed(
+    journal: &mut HotDecisionJournalWriter,
+    state: &HotDecisionState,
+    last_signature: &mut Option<HotDecisionPersistSignature>,
+) -> Result<()> {
+    let signature = hot_decision_persist_signature(state);
+    if last_signature.as_ref() == Some(&signature) {
+        return Ok(());
+    }
+    *last_signature = Some(signature);
+    journal.append_buffered(state)?;
+    Ok(())
+}
+
 #[derive(Clone)]
 pub struct HotDecisionSink {
     sender: mpsc::Sender<HotDecisionState>,
@@ -123,14 +197,15 @@ impl HotDecisionSink {
         let (sender, mut receiver) = mpsc::channel(buffer_size.max(1));
         let mut journal = HotDecisionJournal::new(root).writer();
         let handle = tokio::spawn(async move {
+            let mut last_signature: Option<HotDecisionPersistSignature> = None;
             while let Some(state) = receiver.recv().await {
-                journal.append_buffered(&state)?;
+                append_if_changed(&mut journal, &state, &mut last_signature)?;
                 let mut drained = 1;
                 while drained < HOT_DECISION_SINK_BATCH_LIMIT {
                     let Ok(state) = receiver.try_recv() else {
                         break;
                     };
-                    journal.append_buffered(&state)?;
+                    append_if_changed(&mut journal, &state, &mut last_signature)?;
                     drained += 1;
                 }
                 journal.flush()?;
@@ -181,6 +256,91 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
         assert_eq!(row["schema_version"], HOT_DECISION_STATE_SCHEMA_VERSION);
         assert_eq!(row["data_quality_flags"], serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn sink_skips_consecutive_duplicate_hot_decision_market_state() {
+        let root = std::env::temp_dir().join(format!(
+            "polymarket-hot-decision-dedup-{}-{}",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap()
+        ));
+        let (sink, handle) = HotDecisionSink::start(root.clone(), 16);
+        let start = Utc.timestamp_opt(1_780_302_400, 0).unwrap();
+        let first = sample_state(start);
+        let mut duplicate = first.clone();
+        duplicate.state_id = "state-2".to_owned();
+        duplicate.asof_ts = start + Duration::seconds(1);
+        duplicate.source_age_ms = Some(501);
+        duplicate.book_age_ms = Some(61);
+        duplicate.latency.observed_to_state_us = 900;
+
+        sink.try_record(first).unwrap();
+        sink.try_record(duplicate).unwrap();
+        drop(sink);
+        handle.await.unwrap().unwrap();
+
+        let path = root
+            .join("polymarket_decision_state")
+            .join("hot_state")
+            .join("date=2026-06-01")
+            .join("hour=08")
+            .join("decision-state.jsonl");
+        let rows = std::fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&rows[0]).unwrap()["state_id"],
+            "state-1"
+        );
+    }
+
+    #[tokio::test]
+    async fn sink_persists_hot_decision_when_market_state_changes_after_duplicate() {
+        let root = std::env::temp_dir().join(format!(
+            "polymarket-hot-decision-dedup-change-{}-{}",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap()
+        ));
+        let (sink, handle) = HotDecisionSink::start(root.clone(), 16);
+        let start = Utc.timestamp_opt(1_780_302_400, 0).unwrap();
+        let first = sample_state(start);
+        let mut duplicate = first.clone();
+        duplicate.state_id = "state-2".to_owned();
+        duplicate.asof_ts = start + Duration::seconds(1);
+        let mut changed = first.clone();
+        changed.state_id = "state-3".to_owned();
+        changed.best_bid = Some(rust_decimal::Decimal::new(62, 2));
+
+        sink.try_record(first).unwrap();
+        sink.try_record(duplicate).unwrap();
+        sink.try_record(changed).unwrap();
+        drop(sink);
+        handle.await.unwrap().unwrap();
+
+        let path = root
+            .join("polymarket_decision_state")
+            .join("hot_state")
+            .join("date=2026-06-01")
+            .join("hour=08")
+            .join("decision-state.jsonl");
+        let rows = std::fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&rows[0]).unwrap()["state_id"],
+            "state-1"
+        );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&rows[1]).unwrap()["state_id"],
+            "state-3"
+        );
     }
 
     #[test]
