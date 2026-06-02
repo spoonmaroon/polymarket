@@ -151,7 +151,7 @@ def test_register_market_rules_also_writes_side_level_contracts(tmp_path: Path) 
     ]
 
 
-def test_register_market_rules_batches_side_level_contract_writes(
+def test_register_market_rules_batches_rule_and_side_level_contract_writes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -172,6 +172,9 @@ def test_register_market_rules_batches_side_level_contract_writes(
 
         def upsert_contract_rule(self, rule: Any) -> None:
             calls.append(("rule", rule.slug))
+
+        def upsert_contract_rules(self, rules: Any) -> None:
+            calls.append(("rules", tuple(rule.slug for rule in rules)))
 
         def upsert_contract_spec(self, contract: Any) -> None:
             calls.append(("single", contract.contract_id))
@@ -207,7 +210,7 @@ def test_register_market_rules_batches_side_level_contract_writes(
     assert errors == {}
     assert calls == [
         ("schema", tmp_path / "contracts.duckdb"),
-        ("rule", "btc-updown-5m-1780264500"),
+        ("rules", ("btc-updown-5m-1780264500",)),
         ("batch", ("2397858:UP", "2397858:DOWN")),
     ]
 

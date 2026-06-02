@@ -201,7 +201,44 @@ class DuckDbIngestStore:
             )
 
     def upsert_contract_rule(self, rule: NormalizedContractRule) -> None:
+        self.upsert_contract_rules((rule,))
+
+    def upsert_contract_rules(self, rules: Sequence[NormalizedContractRule]) -> None:
+        if not rules:
+            return
+        now = datetime.now(timezone.utc)
+        rows_frame = pl.DataFrame(
+            {
+                "market_id": [rule.market_id for rule in rules],
+                "condition_id": [rule.condition_id for rule in rules],
+                "slug": [rule.slug for rule in rules],
+                "asset": [rule.asset for rule in rules],
+                "contract_type": [rule.contract_type for rule in rules],
+                "start_ts": [rule.start_ts for rule in rules],
+                "end_ts": [rule.end_ts for rule in rules],
+                "expiry_ts": [rule.expiry_ts for rule in rules],
+                "threshold_type": [rule.threshold_type for rule in rules],
+                "threshold_price": [rule.threshold_price for rule in rules],
+                "comparison_operator_up": [rule.comparison_operator_up for rule in rules],
+                "comparison_operator_down": [
+                    rule.comparison_operator_down for rule in rules
+                ],
+                "settlement_source_name": [rule.settlement_source_name for rule in rules],
+                "settlement_source_url": [rule.settlement_source_url for rule in rules],
+                "settlement_symbol": [rule.settlement_symbol for rule in rules],
+                "outcome_token_ids_json": [
+                    json.dumps(rule.outcome_token_ids, sort_keys=True) for rule in rules
+                ],
+                "rule_text": [rule.rule_text for rule in rules],
+                "rule_hash": [rule.rule_hash for rule in rules],
+                "parser_version": [rule.parser_version for rule in rules],
+                "accepted": [rule.accepted for rule in rules],
+                "reject_reason": [rule.reject_reason for rule in rules],
+                "updated_at": [now for _ in rules],
+            }
+        )
         with self._connection() as conn:
+            conn.register("contract_rule_rows", rows_frame)
             conn.execute(
                 """
                 insert or replace into core.contract_rules
@@ -210,32 +247,13 @@ class DuckDbIngestStore:
                  comparison_operator_down, settlement_source_name, settlement_source_url,
                  settlement_symbol, outcome_token_ids_json, rule_text, rule_hash,
                  parser_version, accepted, reject_reason, updated_at)
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                select market_id, condition_id, slug, asset, contract_type, start_ts, end_ts,
+                       expiry_ts, threshold_type, threshold_price, comparison_operator_up,
+                       comparison_operator_down, settlement_source_name, settlement_source_url,
+                       settlement_symbol, outcome_token_ids_json, rule_text, rule_hash,
+                       parser_version, accepted, reject_reason, updated_at
+                from contract_rule_rows
                 """,
-                [
-                    rule.market_id,
-                    rule.condition_id,
-                    rule.slug,
-                    rule.asset,
-                    rule.contract_type,
-                    rule.start_ts,
-                    rule.end_ts,
-                    rule.expiry_ts,
-                    rule.threshold_type,
-                    rule.threshold_price,
-                    rule.comparison_operator_up,
-                    rule.comparison_operator_down,
-                    rule.settlement_source_name,
-                    rule.settlement_source_url,
-                    rule.settlement_symbol,
-                    json.dumps(rule.outcome_token_ids, sort_keys=True),
-                    rule.rule_text,
-                    rule.rule_hash,
-                    rule.parser_version,
-                    rule.accepted,
-                    rule.reject_reason,
-                    datetime.now(timezone.utc),
-                ],
             )
 
     def upsert_contract_spec(self, contract: ContractSpec) -> None:

@@ -15,6 +15,7 @@ import websockets
 from polymarket_engine.domain.contracts import ContractSpec, contract_specs_from_rule
 from polymarket_engine.domain.contract_rules import (
     ContractRuleRejected,
+    NormalizedContractRule,
     parse_polymarket_crypto_updown_rule,
 )
 from polymarket_engine.domain.market_state import OrderBookObservation, PriceObservation
@@ -447,6 +448,7 @@ def register_market_rules(
     markets: tuple[dict[str, Any], ...],
 ) -> dict[str, str]:
     source_errors: dict[str, str] = {}
+    rules: list[NormalizedContractRule] = []
     contracts: list[ContractSpec] = []
     with DuckDbIngestStore(duckdb_path) as store:
         store.apply_schema()
@@ -454,10 +456,11 @@ def register_market_rules(
             slug = str(market.get("slug", "unknown"))
             try:
                 rule = parse_polymarket_crypto_updown_rule(market)
-                store.upsert_contract_rule(rule)
+                rules.append(rule)
                 contracts.extend(contract_specs_from_rule(rule))
             except ContractRuleRejected as exc:
                 source_errors[f"contract_rule:{slug}"] = str(exc)
+        store.upsert_contract_rules(tuple(rules))
         store.upsert_contract_specs(tuple(contracts))
     return source_errors
 
