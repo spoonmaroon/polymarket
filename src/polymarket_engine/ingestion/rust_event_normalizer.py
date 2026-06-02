@@ -165,8 +165,12 @@ def normalize_rust_event_file(
         raw_line_handler=file_id_hasher.update,
     ):
         rows_read += 1
-        price_tick = _price_tick_row_from_raw(row)
-        if price_tick is not None:
+        if (
+            row.get("source_key") == "polymarket_rtds_chainlink"
+            and row.get("stream_key") == "price_update"
+        ):
+            price_tick = _price_tick_row_from_raw(row)
+            assert price_tick is not None
             if price_state_cache.get(price_tick.symbol_key) == price_tick.state_key:
                 continue
             price_state_cache[price_tick.symbol_key] = price_tick.state_key

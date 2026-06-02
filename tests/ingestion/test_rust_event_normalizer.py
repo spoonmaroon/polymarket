@@ -753,7 +753,7 @@ def test_duplicate_top_of_book_rows_skip_depth_json_materialization(
     assert store.insert_orderbook_snapshots_calls == 0
 
 
-def test_clob_rows_probe_price_tick_parser_once(
+def test_clob_rows_skip_price_tick_parser_probe(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -801,7 +801,7 @@ def test_clob_rows_probe_price_tick_parser_once(
     result = normalize_rust_event_file(path=raw_path, store=store)
 
     assert result.orderbooks_written == 1
-    assert price_probe_calls == 1
+    assert price_probe_calls == 0
 
 
 def test_normalizer_waits_for_complete_appended_jsonl_line(tmp_path: Path) -> None:
