@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from types import TracebackType
 from typing import Any
 
 import duckdb
@@ -27,11 +29,35 @@ def _strict_json(value: Any) -> str:
 class DuckDbIngestStore:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
+        self._conn: duckdb.DuckDBPyConnection | None = None
+
+    def __enter__(self) -> DuckDbIngestStore:
+        if self._conn is None:
+            self._conn = duckdb.connect(str(self.db_path))
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        if self._conn is not None:
+            self._conn.close()
+            self._conn = None
+
+    @contextmanager
+    def _connection(self) -> Iterator[duckdb.DuckDBPyConnection]:
+        if self._conn is not None:
+            yield self._conn
+            return
+        with duckdb.connect(str(self.db_path)) as conn:
+            yield conn
 
     def apply_schema(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         schema_path = Path(__file__).with_name("schema.sql")
-        with duckdb.connect(str(self.db_path)) as conn:
+        with self._connection() as conn:
             _drop_incompatible_tables(conn)
             conn.sql(schema_path.read_text())
 
@@ -48,7 +74,7 @@ class DuckDbIngestStore:
         first_event_ts: datetime,
         last_event_ts: datetime,
     ) -> None:
-        with duckdb.connect(str(self.db_path)) as conn:
+        with self._connection() as conn:
             conn.execute(
                 """
                 insert or replace into ops.ingest_files
@@ -100,7 +126,7 @@ class DuckDbIngestStore:
             )
 
     def raw_file_checkpoint(self, path: Path) -> int | None:
-        with duckdb.connect(str(self.db_path)) as conn:
+        with self._connection() as conn:
             row = conn.execute(
                 """
                 select byte_offset
@@ -123,7 +149,7 @@ class DuckDbIngestStore:
         first_event_ts: datetime | None,
         last_event_ts: datetime | None,
     ) -> None:
-        with duckdb.connect(str(self.db_path)) as conn:
+        with self._connection() as conn:
             conn.execute(
                 """
                 insert or replace into ops.raw_file_checkpoints
@@ -145,7 +171,7 @@ class DuckDbIngestStore:
             )
 
     def upsert_contract_rule(self, rule: NormalizedContractRule) -> None:
-        with duckdb.connect(str(self.db_path)) as conn:
+        with self._connection() as conn:
             conn.execute(
                 """
                 insert or replace into core.contract_rules
@@ -184,7 +210,7 @@ class DuckDbIngestStore:
 
     def upsert_contract_spec(self, contract: ContractSpec) -> None:
         now = datetime.now(timezone.utc)
-        with duckdb.connect(str(self.db_path)) as conn:
+        with self._connection() as conn:
             existing = conn.execute(
                 "select first_seen_ts from core.contracts where contract_id = ?",
                 [contract.contract_id],
@@ -247,7 +273,7 @@ class DuckDbIngestStore:
                 "raw_file_id": [raw_file_id for _ in ticks],
             }
         )
-        with duckdb.connect(str(self.db_path)) as conn:
+        with self._connection() as conn:
             conn.register("price_tick_rows", frame)
             conn.execute(
                 """
@@ -288,7 +314,7 @@ class DuckDbIngestStore:
                 "raw_file_id": [raw_file_id for _ in snapshots],
             }
         )
-        with duckdb.connect(str(self.db_path)) as conn:
+        with self._connection() as conn:
             conn.register("orderbook_snapshot_rows", frame)
             conn.execute(
                 """
@@ -302,7 +328,7 @@ class DuckDbIngestStore:
             )
 
     def upsert_asof_state_input(self, state: DecisionState) -> None:
-        with duckdb.connect(str(self.db_path)) as conn:
+        with self._connection() as conn:
             conn.execute(
                 """
                 insert or replace into features.asof_state_inputs
@@ -366,7 +392,7 @@ class DuckDbIngestStore:
         decision: str,
         block_reason: str | None,
     ) -> None:
-        with duckdb.connect(str(self.db_path)) as conn:
+        with self._connection() as conn:
             conn.execute(
                 """
                 insert or replace into features.decision_snapshots
@@ -401,7 +427,7 @@ class DuckDbIngestStore:
         realized_edge: float | None,
         label_source: str,
     ) -> None:
-        with duckdb.connect(str(self.db_path)) as conn:
+        with self._connection() as conn:
             conn.execute(
                 """
                 insert or replace into validation.decision_labels
@@ -433,7 +459,7 @@ class DuckDbIngestStore:
             raise ValueError("output state_id must match probability_input state_id")
         if output.asof_ts != probability_input.asof_ts:
             raise ValueError("output asof_ts must match probability_input asof_ts")
-        with duckdb.connect(str(self.db_path)) as conn:
+        with self._connection() as conn:
             conn.execute(
                 """
                 insert or replace into features.probability_outputs
@@ -467,7 +493,7 @@ class DuckDbIngestStore:
             ("features.probability_outputs", "created_at"),
         )
         rows: list[dict[str, object]] = []
-        with duckdb.connect(str(self.db_path)) as conn:
+        with self._connection() as conn:
             for table_name, latest_column in checks:
                 row = conn.execute(
                     f"select count(*) as rows, max({latest_column}) from {table_name}"
@@ -507,7 +533,7 @@ class DuckDbIngestStore:
         event_ts_lte: datetime,
         observed_ts_lte: datetime,
     ) -> PriceObservation | None:
-        with duckdb.connect(str(self.db_path)) as conn:
+        with self._connection() as conn:
             row = conn.execute(
                 """
                 select source_key, symbol, event_ts::VARCHAR, observed_ts::VARCHAR,
@@ -545,7 +571,7 @@ class DuckDbIngestStore:
     ) -> tuple[PriceObservation, ...]:
         if limit <= 0:
             raise ValueError("limit must be positive")
-        with duckdb.connect(str(self.db_path)) as conn:
+        with self._connection() as conn:
             rows = conn.execute(
                 """
                 select source_key, symbol, event_ts::VARCHAR, observed_ts::VARCHAR,
@@ -585,7 +611,7 @@ class DuckDbIngestStore:
         token_id: str,
         asof_ts: datetime,
     ) -> OrderBookObservation | None:
-        with duckdb.connect(str(self.db_path)) as conn:
+        with self._connection() as conn:
             row = conn.execute(
                 """
                 select venue, contract_id, token_id, event_ts::VARCHAR, observed_ts::VARCHAR,

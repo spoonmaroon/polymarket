@@ -1,12 +1,15 @@
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+from typing import Any, cast
 
 import duckdb
+import pytest
 
 from polymarket_engine.domain.contracts import ContractSpec
 from polymarket_engine.domain.market_state import DecisionState, OrderBookObservation, PriceObservation
 from polymarket_engine.probability.schema import ProbabilityInput, ProbabilityOutput
+from polymarket_engine.storage import duckdb_store
 from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
 
 
@@ -220,6 +223,30 @@ def test_store_inserts_probability_output_with_json_artifacts(tmp_path: Path) ->
     assert json.loads(input_json)["state_id"] == state.state_id
     assert json.loads(input_json)["z_path"] == probability_input.z_path
     assert json.loads(output_json)["diagnostics"]["paths"] == 1000
+
+
+def test_store_context_reuses_one_duckdb_connection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "state.duckdb"
+    DuckDbIngestStore(db_path).apply_schema()
+    duckdb_module = getattr(duckdb_store, "duckdb")
+    real_connect = duckdb_module.connect
+    connect_count = 0
+
+    def counting_connect(*args: Any, **kwargs: Any) -> duckdb.DuckDBPyConnection:
+        nonlocal connect_count
+        connect_count += 1
+        return cast(duckdb.DuckDBPyConnection, real_connect(*args, **kwargs))
+
+    monkeypatch.setattr(duckdb_module, "connect", counting_connect)
+
+    with DuckDbIngestStore(db_path) as store:
+        store.normalized_table_health()
+        store.normalized_table_health()
+
+    assert connect_count == 1
 
 
 def test_store_inserts_probability_output_with_negative_seed(tmp_path: Path) -> None:

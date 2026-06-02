@@ -72,8 +72,29 @@ def run_rust_normalizer_cycle(
     reprocess_all: bool = False,
     apply_schema: bool = True,
 ) -> RustNormalizerCycleResult:
+    with DuckDbIngestStore(db_path) as store:
+        return _run_rust_normalizer_cycle_with_store(
+            raw_root=raw_root,
+            store=store,
+            status_path=status_path,
+            normalized_health_path=normalized_health_path,
+            include_next=include_next,
+            reprocess_all=reprocess_all,
+            apply_schema=apply_schema,
+        )
+
+
+def _run_rust_normalizer_cycle_with_store(
+    *,
+    raw_root: Path,
+    store: DuckDbIngestStore,
+    status_path: Path,
+    normalized_health_path: Path,
+    include_next: bool,
+    reprocess_all: bool,
+    apply_schema: bool,
+) -> RustNormalizerCycleResult:
     cycle_started = time.perf_counter()
-    store = DuckDbIngestStore(db_path)
     if apply_schema:
         store.apply_schema()
 
@@ -124,23 +145,24 @@ def run_rust_normalizer_loop(
     reprocess_all: bool = False,
     max_cycles: int | None = None,
 ) -> None:
-    DuckDbIngestStore(db_path).apply_schema()
-    cycles_run = 0
-    while True:
-        result = run_rust_normalizer_cycle(
-            raw_root=raw_root,
-            db_path=db_path,
-            status_path=status_path,
-            normalized_health_path=normalized_health_path,
-            include_next=include_next,
-            reprocess_all=reprocess_all,
-            apply_schema=False,
-        )
-        print(_cycle_log_line(result), flush=True)
-        cycles_run += 1
-        if max_cycles is not None and cycles_run >= max_cycles:
-            return
-        time.sleep(interval_seconds)
+    with DuckDbIngestStore(db_path) as store:
+        store.apply_schema()
+        cycles_run = 0
+        while True:
+            result = _run_rust_normalizer_cycle_with_store(
+                raw_root=raw_root,
+                store=store,
+                status_path=status_path,
+                normalized_health_path=normalized_health_path,
+                include_next=include_next,
+                reprocess_all=reprocess_all,
+                apply_schema=False,
+            )
+            print(_cycle_log_line(result), flush=True)
+            cycles_run += 1
+            if max_cycles is not None and cycles_run >= max_cycles:
+                return
+            time.sleep(interval_seconds)
 
 
 def _normalizer_summary(results: tuple[RustEventNormalizeResult, ...]) -> dict[str, int]:
