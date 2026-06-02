@@ -56,6 +56,10 @@ struct Args {
     raw_event_dir: Option<PathBuf>,
     #[arg(long, default_value_t = 16_384)]
     raw_event_buffer_size: usize,
+    #[arg(long)]
+    decision_snapshot_dir: Option<PathBuf>,
+    #[arg(long, default_value_t = 16_384)]
+    decision_event_buffer_size: usize,
     #[arg(long, default_value = "reports/live_probe/latest.json")]
     out: PathBuf,
 }
@@ -196,10 +200,23 @@ async fn run_state_manager(args: Args) -> Result<()> {
     let raw_event_sink = raw_event_writer
         .as_ref()
         .map(|(sink, _handle)| sink.clone());
+    let decision_writer = args
+        .decision_snapshot_dir
+        .clone()
+        .map(|dir| {
+            decision_journal::HotDecisionSink::start(dir, args.decision_event_buffer_size)
+        });
+    let decision_sink = decision_writer
+        .as_ref()
+        .map(|(sink, _handle)| sink.clone());
     let mut timer = report::ProbeTimer::start();
     timer.mark("start");
-    let mut runtime =
-        state_manager::StateManagerRuntime::start_with_raw_events(config, raw_event_sink).await?;
+    let mut runtime = state_manager::StateManagerRuntime::start_with_raw_events_and_hot_decisions(
+        config,
+        raw_event_sink,
+        decision_sink,
+    )
+    .await?;
     let snapshot_journal = args
         .state_snapshot_dir
         .clone()
@@ -252,6 +269,12 @@ async fn run_state_manager(args: Args) -> Result<()> {
             .await
             .map_err(|error| anyhow!("raw event journal task failed: {error}"))??;
     }
+    if let Some((sink, handle)) = decision_writer {
+        drop(sink);
+        handle
+            .await
+            .map_err(|error| anyhow!("hot decision journal task failed: {error}"))??;
+    }
     Ok(())
 }
 
@@ -280,6 +303,23 @@ mod tests {
 
         assert_eq!(args.raw_event_dir, Some(PathBuf::from("/tmp/raw-events")));
         assert_eq!(args.raw_event_buffer_size, 8192);
+    }
+
+    #[test]
+    fn parses_hot_decision_journal_cli_options() {
+        let args = Args::parse_from([
+            "polymarket-live-probe",
+            "--decision-snapshot-dir",
+            "/tmp/decision-states",
+            "--decision-event-buffer-size",
+            "4096",
+        ]);
+
+        assert_eq!(
+            args.decision_snapshot_dir,
+            Some(PathBuf::from("/tmp/decision-states"))
+        );
+        assert_eq!(args.decision_event_buffer_size, 4096);
     }
 }
 
