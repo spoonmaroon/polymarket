@@ -12,7 +12,7 @@ from typing import Any, Protocol
 import httpx
 import websockets
 
-from polymarket_engine.domain.contracts import contract_specs_from_rule
+from polymarket_engine.domain.contracts import ContractSpec, contract_specs_from_rule
 from polymarket_engine.domain.contract_rules import (
     ContractRuleRejected,
     parse_polymarket_crypto_updown_rule,
@@ -446,18 +446,19 @@ def register_market_rules(
     duckdb_path: Path,
     markets: tuple[dict[str, Any], ...],
 ) -> dict[str, str]:
-    store = DuckDbIngestStore(duckdb_path)
-    store.apply_schema()
     source_errors: dict[str, str] = {}
-    for market in markets:
-        slug = str(market.get("slug", "unknown"))
-        try:
-            rule = parse_polymarket_crypto_updown_rule(market)
-            store.upsert_contract_rule(rule)
-            for contract in contract_specs_from_rule(rule):
-                store.upsert_contract_spec(contract)
-        except ContractRuleRejected as exc:
-            source_errors[f"contract_rule:{slug}"] = str(exc)
+    contracts: list[ContractSpec] = []
+    with DuckDbIngestStore(duckdb_path) as store:
+        store.apply_schema()
+        for market in markets:
+            slug = str(market.get("slug", "unknown"))
+            try:
+                rule = parse_polymarket_crypto_updown_rule(market)
+                store.upsert_contract_rule(rule)
+                contracts.extend(contract_specs_from_rule(rule))
+            except ContractRuleRejected as exc:
+                source_errors[f"contract_rule:{slug}"] = str(exc)
+        store.upsert_contract_specs(tuple(contracts))
     return source_errors
 
 

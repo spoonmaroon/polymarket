@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import duckdb
 import pytest
@@ -147,6 +148,67 @@ def test_register_market_rules_also_writes_side_level_contracts(tmp_path: Path) 
     assert rows == [
         ("2397858:DOWN", "BTC", "DOWN", "222"),
         ("2397858:UP", "BTC", "UP", "111"),
+    ]
+
+
+def test_register_market_rules_batches_side_level_contract_writes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, object]] = []
+
+    class _Store:
+        def __init__(self, db_path: Path) -> None:
+            self.db_path = db_path
+
+        def __enter__(self) -> "_Store":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            pass
+
+        def apply_schema(self) -> None:
+            calls.append(("schema", self.db_path))
+
+        def upsert_contract_rule(self, rule: Any) -> None:
+            calls.append(("rule", rule.slug))
+
+        def upsert_contract_spec(self, contract: Any) -> None:
+            calls.append(("single", contract.contract_id))
+
+        def upsert_contract_specs(self, contracts: Any) -> None:
+            calls.append(
+                (
+                    "batch",
+                    tuple(contract.contract_id for contract in contracts),
+                )
+            )
+
+    monkeypatch.setattr(live_collector, "DuckDbIngestStore", _Store)
+
+    errors = register_market_rules(
+        tmp_path / "contracts.duckdb",
+        (
+            {
+                "id": "2397858",
+                "conditionId": "0xabc",
+                "slug": "btc-updown-5m-1780264500",
+                "question": "Bitcoin Up or Down - May 31, 5:55PM-6:00PM ET",
+                "description": BTC_DESCRIPTION,
+                "eventStartTime": "2026-05-31T21:55:00Z",
+                "endDate": "2026-05-31T22:00:00Z",
+                "resolutionSource": "https://data.chain.link/streams/btc-usd",
+                "outcomes": '["Up", "Down"]',
+                "clobTokenIds": '["111", "222"]',
+            },
+        ),
+    )
+
+    assert errors == {}
+    assert calls == [
+        ("schema", tmp_path / "contracts.duckdb"),
+        ("rule", "btc-updown-5m-1780264500"),
+        ("batch", ("2397858:UP", "2397858:DOWN")),
     ]
 
 
