@@ -546,7 +546,13 @@ def _payload(row: dict[str, Any]) -> dict[str, Any]:
 def _parse_ts(value: object) -> datetime:
     raw = str(value)
     if raw.endswith("Z"):
-        raw = f"{raw[:-1]}+00:00"
+        return datetime.fromisoformat(_trim_fraction_to_microseconds(raw[:-1])).replace(
+            tzinfo=timezone.utc
+        )
+    if raw.endswith("+00:00"):
+        return datetime.fromisoformat(_trim_fraction_to_microseconds(raw[:-6])).replace(
+            tzinfo=timezone.utc
+        )
     if "." in raw:
         head, tail = raw.split(".", 1)
         offset_start = max(tail.rfind("+"), tail.rfind("-"))
@@ -562,6 +568,15 @@ def _parse_ts(value: object) -> datetime:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def _trim_fraction_to_microseconds(raw: str) -> str:
+    if "." not in raw:
+        return raw
+    head, fraction = raw.split(".", 1)
+    if len(fraction) > 6:
+        return f"{head}.{fraction[:6]}"
+    return raw
 
 
 def _number(value: object, field_name: str) -> float:

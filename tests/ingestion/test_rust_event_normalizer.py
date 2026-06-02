@@ -16,6 +16,7 @@ from polymarket_engine.ingestion.rust_event_normalizer import (
     _complete_jsonl_byte_limit,
     _file_id,
     _iter_jsonl,
+    _parse_ts,
     normalize_rust_event_file,
     normalize_rust_event_tree,
 )
@@ -910,6 +911,28 @@ def test_complete_jsonl_byte_limit_does_not_scan_complete_tail() -> None:
     assert limit == len(raw_bytes)
     assert path.last_reader is not None
     assert path.last_reader.bytes_read <= 4096
+
+
+def test_parse_ts_fast_paths_utc_z_without_offset_rewrite(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen_inputs: list[str] = []
+    real_datetime = datetime
+
+    class TrackingDatetime:
+        @staticmethod
+        def fromisoformat(value: str) -> datetime:
+            seen_inputs.append(value)
+            if value.endswith("+00:00"):
+                return real_datetime.fromisoformat(value)
+            return real_datetime.fromisoformat(f"{value}+00:00")
+
+    monkeypatch.setattr(rust_event_normalizer, "datetime", TrackingDatetime)
+
+    parsed = _parse_ts("2026-06-02T05:33:54.123456789Z")
+
+    assert parsed == datetime.fromisoformat("2026-06-02T05:33:54.123456+00:00")
+    assert seen_inputs == ["2026-06-02T05:33:54.123456"]
 
 
 def _write_jsonl(path: Path, *rows: object) -> None:
