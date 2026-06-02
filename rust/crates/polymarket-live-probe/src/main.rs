@@ -8,6 +8,7 @@ use tracing::info;
 
 mod book_state;
 mod clob_ws;
+mod hot_decision;
 mod polymarket;
 mod prices;
 mod raw_event_journal;
