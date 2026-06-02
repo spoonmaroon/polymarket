@@ -11,6 +11,9 @@ from typing import Any
 import duckdb
 
 
+CHAINLINK_SOURCE_KEY = "polymarket_rtds_chainlink"
+
+
 @dataclass(frozen=True)
 class MonitorSnapshot:
     generated_at: datetime
@@ -24,6 +27,10 @@ class MonitorSnapshot:
     source_disagreements: tuple[dict[str, Any], ...] = ()
     orderbook_freshness: tuple[dict[str, Any], ...] = ()
     source_errors: dict[str, str] = field(default_factory=dict)
+    latency_marks: tuple[dict[str, Any], ...] = ()
+    hot_decision_telemetry: dict[str, Any] | None = None
+    health_flags: tuple[str, ...] = ()
+    websocket_status: tuple[dict[str, Any], ...] = ()
 
 
 def fetch_monitor_snapshot(
@@ -180,13 +187,13 @@ def _snapshot_from_status(
     payload = json.loads(status_path.read_text(encoding="utf-8"))
     generated_at = _parse_datetime(payload["generated_at"])
     wall_time = datetime.now(timezone.utc) if now is None else _to_utc(now)
-    price_rows = tuple(dict(row) for row in payload.get("prices", ()))
+    price_rows = _status_price_rows(payload)
     orderbooks = tuple(dict(row) for row in payload.get("orderbooks", ())[:limit])
-    contracts = tuple(dict(row) for row in payload.get("contracts", ())[:limit])
+    contracts = _status_contract_rows(payload, limit=limit)
     ingest_counts = tuple(dict(row) for row in payload.get("ingest_counts", ()))
     normalized_health = tuple(dict(row) for row in payload.get("normalized_health", ()))
-    source_freshness = _refresh_freshness_rows(
-        payload.get("source_freshness", ()),
+    source_freshness, orderbook_freshness = _status_freshness_rows(
+        payload,
         now=wall_time,
         fallback_ts=generated_at,
     )
@@ -194,12 +201,8 @@ def _snapshot_from_status(
         payload.get("source_disagreements", ()),
         source_freshness=source_freshness,
     )
-    orderbook_freshness = _refresh_freshness_rows(
-        payload.get("orderbook_freshness", ()),
-        now=wall_time,
-        fallback_ts=generated_at,
-    )
     source_errors = {str(key): str(value) for key, value in payload.get("source_errors", {}).items()}
+    hot_decision_telemetry = payload.get("hot_decision_telemetry")
     prices = {
         (str(row["source_key"]), str(row["symbol"])): float(row["price"]) for row in price_rows
     }
@@ -215,6 +218,110 @@ def _snapshot_from_status(
         source_disagreements=source_disagreements,
         orderbook_freshness=orderbook_freshness,
         source_errors=source_errors,
+        latency_marks=tuple(dict(row) for row in payload.get("latency_marks", ())),
+        hot_decision_telemetry=dict(hot_decision_telemetry)
+        if isinstance(hot_decision_telemetry, dict)
+        else None,
+        health_flags=tuple(str(flag) for flag in payload.get("health_flags", ())),
+        websocket_status=tuple(dict(row) for row in payload.get("websocket_status", ())),
+    )
+
+
+def _status_price_rows(payload: dict[str, Any]) -> tuple[dict[str, Any], ...]:
+    if "prices" in payload:
+        rows = payload.get("prices", ())
+    else:
+        rows = payload.get("chainlink_prices", ())
+    return tuple(dict(row) for row in rows)
+
+
+def _status_contract_rows(payload: dict[str, Any], *, limit: int) -> tuple[dict[str, Any], ...]:
+    if "contracts" in payload:
+        return tuple(dict(row) for row in payload.get("contracts", ())[:limit])
+    return _state_manager_contract_rows(payload, limit=limit)
+
+
+def _state_manager_contract_rows(
+    payload: dict[str, Any],
+    *,
+    limit: int,
+) -> tuple[dict[str, Any], ...]:
+    rows: list[dict[str, Any]] = []
+    for group in ("current", "next", "next_next"):
+        for raw_contract in payload.get(group, ()):
+            contract = dict(raw_contract)
+            window = dict(contract.get("window", {}))
+            asset = str(window.get("asset", ""))
+            interval = str(window.get("interval", ""))
+            start_ts = str(window.get("start_ts", ""))
+            expiry_ts = str(window.get("end_ts", ""))
+            contract_id = _state_manager_contract_id(
+                asset=asset,
+                interval=interval,
+                start_ts=start_ts,
+            )
+            for token_key in ("up", "down"):
+                token = dict(contract.get(token_key, {}))
+                rows.append(
+                    {
+                        "contract_id": contract_id,
+                        "asset": asset,
+                        "side": str(token.get("side", token_key)).upper(),
+                        "token_id": token.get("token_id", ""),
+                        "threshold_type": "above" if token_key == "up" else "below",
+                        "settlement_symbol": f"{asset}/USD" if asset else "",
+                        "start_ts": start_ts,
+                        "expiry_ts": expiry_ts,
+                        "window": group,
+                    }
+                )
+                if len(rows) >= limit:
+                    return tuple(rows)
+    return tuple(rows)
+
+
+def _state_manager_contract_id(*, asset: str, interval: str, start_ts: str) -> str:
+    if not asset or not interval or not start_ts:
+        return ""
+    try:
+        start_key = str(int(_parse_datetime(start_ts).timestamp()))
+    except ValueError:
+        start_key = start_ts
+    return f"{asset.lower()}-updown-{interval}-{start_key}"
+
+
+def _status_freshness_rows(
+    payload: dict[str, Any],
+    *,
+    now: datetime,
+    fallback_ts: datetime,
+) -> tuple[tuple[dict[str, Any], ...], tuple[dict[str, Any], ...]]:
+    if "source_freshness" in payload or "orderbook_freshness" in payload:
+        return (
+            _refresh_freshness_rows(
+                payload.get("source_freshness", ()),
+                now=now,
+                fallback_ts=fallback_ts,
+            ),
+            _refresh_freshness_rows(
+                payload.get("orderbook_freshness", ()),
+                now=now,
+                fallback_ts=fallback_ts,
+            ),
+        )
+
+    source_rows: list[dict[str, Any]] = []
+    orderbook_rows: list[dict[str, Any]] = []
+    for raw_row in payload.get("freshness", ()):
+        row = dict(raw_row)
+        if row.get("source_key") == CHAINLINK_SOURCE_KEY:
+            source_rows.append(row)
+        else:
+            orderbook_rows.append(row)
+
+    return (
+        _refresh_freshness_rows(source_rows, now=now, fallback_ts=fallback_ts),
+        _refresh_freshness_rows(orderbook_rows, now=now, fallback_ts=fallback_ts),
     )
 
 
@@ -227,7 +334,13 @@ def _refresh_freshness_rows(
     refreshed: list[dict[str, Any]] = []
     for raw_row in rows:
         row = dict(raw_row)
-        observed_ts = _parse_optional_datetime(row.get("observed_ts")) or fallback_ts
+        observed_ts = _parse_optional_datetime(row.get("observed_ts"))
+        if observed_ts is None and "age_ms" in row and "stale" in row:
+            row["age_ms"] = _optional_int(row.get("age_ms"))
+            row["stale"] = _optional_bool(row.get("stale"))
+            refreshed.append(row)
+            continue
+        observed_ts = observed_ts or fallback_ts
         age_ms = max(0, int((now - observed_ts).total_seconds() * 1000))
         row["age_ms"] = age_ms
         stale_after_ms = _optional_int(row.get("stale_after_ms"))
@@ -294,6 +407,18 @@ def _optional_int(value: object) -> int | None:
     if isinstance(value, str):
         return int(value)
     raise TypeError(f"unsupported integer value: {value!r}")
+
+
+def _optional_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"true", "1", "yes"}:
+            return True
+        if text in {"false", "0", "no"}:
+            return False
+    return bool(value)
 
 
 def _connect_read_only_with_retry(
@@ -397,6 +522,33 @@ def render_monitor(snapshot: MonitorSnapshot) -> str:
             )
     else:
         lines.append("  no orderbook freshness yet")
+
+    lines.extend(["", "Latency Marks"])
+    if snapshot.latency_marks:
+        for row in snapshot.latency_marks:
+            lines.append(f"  {row.get('name', ''):<36} elapsed_ms={row.get('elapsed_ms')}")
+    else:
+        lines.append("  no latency marks yet")
+
+    lines.extend(["", "Hot Decisions"])
+    if snapshot.hot_decision_telemetry:
+        telemetry = snapshot.hot_decision_telemetry
+        lines.append(
+            f"  states_built={telemetry.get('states_built')} "
+            f"states_persist_queued={telemetry.get('states_persist_queued')} "
+            f"dropped_events={telemetry.get('dropped_events')} "
+            f"last_state_age_ms={telemetry.get('last_state_age_ms')} "
+            f"last_observed_to_state_us={telemetry.get('last_observed_to_state_us')}"
+        )
+    else:
+        lines.append("  no hot decision telemetry yet")
+
+    lines.extend(["", "Health Flags"])
+    if snapshot.health_flags:
+        for flag in snapshot.health_flags:
+            lines.append(f"  {flag}")
+    else:
+        lines.append("  no health flags")
 
     lines.extend(["", "Ingest"])
     if snapshot.ingest_counts:

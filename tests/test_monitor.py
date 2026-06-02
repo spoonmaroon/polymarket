@@ -128,6 +128,128 @@ def test_monitor_snapshot_prefers_atomic_status_file(tmp_path: Path) -> None:
     assert snapshot.source_disagreements[0]["block_reason"] == "stale_reference_source"
 
 
+def test_monitor_snapshot_reads_rust_state_manager_status(tmp_path: Path) -> None:
+    status_path = tmp_path / "status.json"
+    status_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "rust-live-probe-state-manager-v1",
+                "mode": "state-manager",
+                "generated_at": "2026-06-02T07:41:52.606221430Z",
+                "current": [
+                    {
+                        "window": {
+                            "asset": "BTC",
+                            "interval": "5m",
+                            "start_ts": "2026-06-02T07:40:00Z",
+                            "end_ts": "2026-06-02T07:45:00Z",
+                        },
+                        "up": {"asset": "BTC", "side": "Up", "token_id": "btc-up"},
+                        "down": {"asset": "BTC", "side": "Down", "token_id": "btc-down"},
+                    }
+                ],
+                "next": [],
+                "next_next": [],
+                "chainlink_prices": [
+                    {
+                        "source_key": "polymarket_rtds_chainlink",
+                        "symbol": "BTC/USD",
+                        "event_ts": "2026-06-02T07:41:51Z",
+                        "observed_ts": "2026-06-02T07:41:52.176844852Z",
+                        "price": "70120.61797938941",
+                    },
+                    {
+                        "source_key": "polymarket_rtds_chainlink",
+                        "symbol": "ETH/USD",
+                        "event_ts": "2026-06-02T07:41:51Z",
+                        "observed_ts": "2026-06-02T07:41:52.079619611Z",
+                        "price": "1984.4558728754",
+                    },
+                ],
+                "proxy_prices": [],
+                "orderbooks": [
+                    {
+                        "venue": "polymarket",
+                        "source_key": "polymarket_rust_sdk",
+                        "market_slug": "btc-updown-5m-1780386000",
+                        "contract_id": "btc-updown-5m-1780386000",
+                        "token_id": "btc-up",
+                        "asset": "BTC",
+                        "side": "UP",
+                        "event_ts": "2026-06-02T07:41:50Z",
+                        "observed_ts": "2026-06-02T07:41:52Z",
+                        "best_bid": "0.49",
+                        "best_ask": "0.51",
+                        "spread": "0.02",
+                        "bid_size_top": "10.0",
+                        "ask_size_top": "12.0",
+                        "bids": [],
+                        "asks": [],
+                    }
+                ],
+                "freshness": [
+                    {
+                        "source_key": "polymarket_rtds_chainlink",
+                        "symbol": "BTC/USD",
+                        "age_ms": 429,
+                        "stale": False,
+                    },
+                    {
+                        "source_key": "polymarket_rtds_chainlink",
+                        "symbol": "ETH/USD",
+                        "age_ms": 526,
+                        "stale": False,
+                    },
+                    {
+                        "source_key": "polymarket_rust_sdk",
+                        "symbol": "btc-up",
+                        "age_ms": 4271,
+                        "stale": False,
+                    },
+                ],
+                "latency_marks": [
+                    {"name": "chainlink_observed_age_ms", "elapsed_ms": 526},
+                    {"name": "orderbook_observed_age_ms", "elapsed_ms": 4271},
+                ],
+                "health_flags": [],
+                "hot_decision_telemetry": {
+                    "states_built": 4890,
+                    "states_persist_queued": 4890,
+                    "dropped_events": 0,
+                    "last_state_age_ms": 3,
+                    "last_observed_to_state_us": 105,
+                },
+                "subscriptions": [],
+                "websocket_status": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    snapshot = _snapshot_from_status(
+        status_path,
+        limit=12,
+        now=datetime(2026, 6, 2, 7, 41, 52, tzinfo=timezone.utc),
+    )
+    output = render_monitor(snapshot)
+
+    assert snapshot.prices[("polymarket_rtds_chainlink", "BTC/USD")] == pytest.approx(
+        70120.61797938941
+    )
+    assert snapshot.prices[("polymarket_rtds_chainlink", "ETH/USD")] == pytest.approx(
+        1984.4558728754
+    )
+    assert snapshot.source_freshness[0]["age_ms"] == 429
+    assert snapshot.orderbook_freshness[0]["symbol"] == "btc-up"
+    assert snapshot.contracts[0]["contract_id"] == "btc-updown-5m-1780386000"
+    assert "BTC/USD" in output
+    assert "ETH/USD" in output
+    assert "70120.6180" in output
+    assert "1984.4559" in output
+    assert "Hot Decisions" in output
+    assert "states_built=4890" in output
+
+
 def test_monitor_snapshot_recomputes_status_freshness_against_wall_time(tmp_path: Path) -> None:
     status_path = tmp_path / "status.json"
     status_path.write_text(
