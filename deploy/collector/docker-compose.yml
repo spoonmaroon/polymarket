@@ -43,6 +43,10 @@ services:
           "30000",
           "--max-websocket-event-age-ms",
           "30000",
+          "--raw-root",
+          "/var/lib/polymarket/raw",
+          "--max-raw-event-age-ms",
+          "30000",
         ]
       interval: 30s
       timeout: 5s

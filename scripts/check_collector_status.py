@@ -2,8 +2,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from datetime import datetime, timezone
 from pathlib import Path
+
+
+RAW_WEBSOCKET_JOURNALS = (
+    "polymarket_rtds_chainlink/price_update",
+    "polymarket_clob_market_ws/best_bid_ask",
+)
 
 
 def _parse_timestamp(value: object) -> datetime:
@@ -23,6 +30,8 @@ def main() -> int:
     parser.add_argument("--max-price-age-ms", type=int, default=10_000)
     parser.add_argument("--max-orderbook-age-ms", type=int, default=10_000)
     parser.add_argument("--max-websocket-event-age-ms", type=int, default=10_000)
+    parser.add_argument("--raw-root", type=Path)
+    parser.add_argument("--max-raw-event-age-ms", type=int, default=30_000)
     args = parser.parse_args()
 
     payload = json.loads(args.status_path.read_text(encoding="utf-8"))
@@ -52,6 +61,11 @@ def main() -> int:
             payload,
             max_websocket_event_age_ms=args.max_websocket_event_age_ms,
         )
+        if args.raw_root is not None:
+            _reject_stale_raw_websocket_journals(
+                args.raw_root,
+                max_raw_event_age_ms=args.max_raw_event_age_ms,
+            )
     else:
         _reject_bad_freshness_rows(payload.get("source_freshness", []), label="source_freshness")
         _reject_bad_freshness_rows(
@@ -218,6 +232,28 @@ def _reject_bad_websocket_status(rows: object, *, max_event_age_ms: int) -> None
             "state-manager missing websocket_status sources: "
             + ", ".join(sorted(missing))
         )
+
+
+def _reject_stale_raw_websocket_journals(
+    raw_root: Path,
+    *,
+    max_raw_event_age_ms: int,
+) -> None:
+    now = time.time()
+    for relative in RAW_WEBSOCKET_JOURNALS:
+        newest = _newest_raw_journal(raw_root / relative)
+        if newest is None:
+            raise SystemExit(f"raw journal missing: stream={relative}")
+        age_ms = int((now - newest.stat().st_mtime) * 1000)
+        if age_ms > max_raw_event_age_ms:
+            raise SystemExit(f"raw journal stale: stream={relative} age_ms={age_ms}")
+
+
+def _newest_raw_journal(root: Path) -> Path | None:
+    files = [path for path in root.rglob("events.jsonl") if path.is_file()]
+    if not files:
+        return None
+    return max(files, key=lambda path: path.stat().st_mtime)
 
 
 if __name__ == "__main__":

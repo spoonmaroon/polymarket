@@ -27,6 +27,7 @@ def test_collector_container_healthcheck_uses_status_validator() -> None:
     compose = (ROOT / "deploy" / "collector" / "docker-compose.yml").read_text(
         encoding="utf-8"
     )
+    script = (ROOT / "scripts" / "deploy.sh").read_text(encoding="utf-8")
 
     assert "python3" in dockerfile
     assert "scripts/check_collector_status.py" in dockerfile
@@ -34,6 +35,11 @@ def test_collector_container_healthcheck_uses_status_validator() -> None:
     assert "--max-price-age-ms" in compose
     assert "--max-orderbook-age-ms" in compose
     assert "--max-websocket-event-age-ms" in compose
+    assert "--raw-root" in compose
+    assert "/var/lib/polymarket/raw" in compose
+    assert "--max-raw-event-age-ms" in compose
+    assert '--raw-root "$DATA_DIR/raw"' in script
+    assert "--max-raw-event-age-ms 30000" in script
     assert "30000" in compose
 
 

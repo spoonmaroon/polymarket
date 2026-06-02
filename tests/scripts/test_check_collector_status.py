@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from types import ModuleType
@@ -100,6 +102,14 @@ def _fresh_state_manager_status() -> dict[str, object]:
         ],
         "health_flags": [],
     }
+
+
+def _write_raw_event_journal(root: Path, relative: str, *, mtime_age_seconds: float) -> None:
+    path = root / relative / "date=2026-06-02" / "hour=04" / "events.jsonl"
+    path.parent.mkdir(parents=True)
+    path.write_text('{"ok": true}\n', encoding="utf-8")
+    mtime = time.time() - mtime_age_seconds
+    os.utime(path, (mtime, mtime))
 
 
 def test_status_check_rejects_stale_source_freshness(
@@ -284,6 +294,75 @@ def test_state_manager_status_accepts_healthy_websocket_rows(
     monkeypatch.setattr(
         "sys.argv",
         ["check_collector_status.py", "--status-path", str(status_path)],
+    )
+
+    assert script.main() == 0
+
+
+def test_state_manager_status_rejects_stale_raw_websocket_journal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = _load_script()
+    status_path = tmp_path / "status.json"
+    raw_root = tmp_path / "raw"
+    status_path.write_text(json.dumps(_fresh_state_manager_status()), encoding="utf-8")
+    _write_raw_event_journal(
+        raw_root,
+        "polymarket_rtds_chainlink/price_update",
+        mtime_age_seconds=60.0,
+    )
+    _write_raw_event_journal(
+        raw_root,
+        "polymarket_clob_market_ws/best_bid_ask",
+        mtime_age_seconds=0.0,
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "check_collector_status.py",
+            "--status-path",
+            str(status_path),
+            "--raw-root",
+            str(raw_root),
+            "--max-raw-event-age-ms",
+            "10000",
+        ],
+    )
+
+    with pytest.raises(SystemExit, match="raw journal stale"):
+        script.main()
+
+
+def test_state_manager_status_accepts_fresh_raw_websocket_journals(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = _load_script()
+    status_path = tmp_path / "status.json"
+    raw_root = tmp_path / "raw"
+    status_path.write_text(json.dumps(_fresh_state_manager_status()), encoding="utf-8")
+    _write_raw_event_journal(
+        raw_root,
+        "polymarket_rtds_chainlink/price_update",
+        mtime_age_seconds=0.0,
+    )
+    _write_raw_event_journal(
+        raw_root,
+        "polymarket_clob_market_ws/best_bid_ask",
+        mtime_age_seconds=0.0,
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "check_collector_status.py",
+            "--status-path",
+            str(status_path),
+            "--raw-root",
+            str(raw_root),
+            "--max-raw-event-age-ms",
+            "10000",
+        ],
     )
 
     assert script.main() == 0
