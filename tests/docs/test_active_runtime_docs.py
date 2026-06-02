@@ -56,6 +56,20 @@ def test_live_docs_keep_hot_decisions_inside_rust_state_manager() -> None:
     assert "must not sit on the live decision path" in text
 
 
+def test_engine_plan_reflects_active_runtime_boundary() -> None:
+    text = (ROOT / "docs" / "BINARY_CONTRACT_ENGINE_PLAN.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "BTC/ETH 5-minute current, next, and next-next contract windows" in text
+    assert "Rust owns hot read-only state" in text
+    assert "append-only hot `DecisionState` snapshots" in text
+    assert "DuckDB/Python own raw-journal normalization, replay" in text
+    assert "DuckDB must not sit on the live decision path" in text
+    assert "hot-state replay equivalence is proven" in text
+    assert "`polymarket-engine collect` is retired and must fail closed" in text
+
+
 def test_spoon_docs_include_latency_probe_without_order_placement() -> None:
     text = (ROOT / "docs" / "SPOON_DEPLOYMENT.md").read_text(encoding="utf-8")
 
