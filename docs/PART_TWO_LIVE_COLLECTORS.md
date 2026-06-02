@@ -2,66 +2,74 @@
 
 Part Two originally turned the Part One data foundation into Python read-only
 live collection. That Python collector is now retired. Treat this document as
-historical design context only; the active live path is the Rust SDK runtime.
+historical design context only; the active live path is the Rust SDK state-manager runtime.
 `polymarket-engine collect`, the legacy Docker entrypoint, and the legacy
 systemd unit fail closed so the old framework cannot be restarted by accident.
 
-## First Supported Command
+## Active 5m State-Manager Command
+
+The current operational scope is BTC/ETH 5m current, next, and next-next windows.
+15m support remains a planned modeling horizon, but the active
+always-on runtime is intentionally 5m-only until the warm-state path and
+durable persistence are stable.
 
 ```bash
-mkdir -p data/raw
-touch data/raw/.polymarket_archive_root
-uv run polymarket-engine collect --assets BTC,ETH --duration 10
-```
-
-## Always-On Local Command
-
-```bash
-uv run polymarket-engine collect \
+cd rust
+cargo run -p polymarket-live-probe -- \
+  --mode state-manager \
   --assets BTC,ETH \
-  --intervals 5m,15m \
-  --forever \
-  --windows-to-track 2 \
-  --snapshot-interval 1 \
-  --market-refresh-interval 30 \
-  --raw-root data/raw \
-  --duckdb-path data/db/polymarket.duckdb \
-  --status-path data/live/status.json
+  --interval 5m \
+  --prewarm-windows 3 \
+  --run-for-seconds 30 \
+  --out ../reports/live_probe/state_manager.json
 ```
 
-This tracks only the accepted BTC/ETH UP/DOWN contracts for the current and
-next 5-minute and 15-minute windows. The collector remains read-only.
-
-In another terminal:
+Verify the generated report:
 
 ```bash
-uv run polymarket-engine monitor \
-  --duckdb-path data/db/polymarket.duckdb \
-  --status-path data/live/status.json \
-  --refresh 1 \
-  --limit 8
+python3 scripts/verify_state_manager_report.py reports/live_probe/state_manager.json
 ```
 
-The monitor prefers the atomic status file so it can run while DuckDB is being
-written by the collector. DuckDB remains the durable normalized store.
+## Always-On Docker Runtime
 
-The first network runner records:
+The deployed spoon runtime uses `deploy/collector/docker-compose.yml` and
+`deploy/collector/collector-entrypoint.sh`. It starts the Rust binary with:
 
-- Polymarket BTC/ETH 5-minute and 15-minute market snapshots discovered by deterministic slugs.
-- Polymarket CLOB order book snapshots for Up and Down token ids.
-- Coinbase BTC/ETH ticker updates for live proxy price movement.
-- Polymarket RTDS Chainlink reference updates from `crypto_prices_chainlink`.
-- Polymarket RTDS Binance proxy updates from `crypto_prices` for BTC/USDT and ETH/USDT.
-- DuckDB ingest-file rows under `ops.ingest_files`.
-- Normalized-table counts/latest timestamps and source/orderbook freshness rows in the status file.
-- Immutable raw Parquet files under `data/raw/`.
+```bash
+polymarket-live-probe \
+  --mode state-manager \
+  --assets BTC,ETH \
+  --interval 5m \
+  --prewarm-windows 2 \
+  --forever \
+  --out /var/lib/polymarket/live/status.json
+```
+
+The runtime remains read-only. It keeps the current, next, and next-next 5m
+contracts warm so rollover does not require contract discovery on the hot path.
+
+The Rust state-manager status file records:
+
+- BTC/ETH 5m current, next, and next-next contract windows.
+- Up and Down token ids discovered before rollover.
+- Polymarket CLOB WebSocket top-of-book state for warmed token ids.
+- REST order-book backup snapshots during refresh.
+- Polymarket RTDS Chainlink BTC/USD and ETH/USD reference ticks.
+- Source/order-book freshness rows.
+- WebSocket connection status for Chainlink and CLOB streams.
+- Health flags that force the checker to fail closed.
+
+Current caveat: the Rust state-manager writes the atomic status file but does
+not yet persist every raw event into Parquet or normalized DuckDB tables. That
+durable persistence step remains required before long-run research labels and
+probability backtests can rely on the Rust runtime as the sole data source.
 
 ## Source Rules
 
 - Polymarket website chart prices are not model truth.
-- Coinbase is a live exchange proxy for BTC/ETH price movement, not a settlement proxy.
+- Proxy exchange feeds are quality-check inputs, not settlement proxies.
 - Polymarket RTDS Chainlink is the first settlement/reference feed candidate.
-- Polymarket RTDS Binance is collected as an additional no-auth proxy. It can improve source-disagreement diagnostics, but it still must not replace Chainlink for settlement, volatility, or `sigma_tau`.
+- Polymarket RTDS Binance can improve source-disagreement diagnostics, but it still must not replace Chainlink for settlement, volatility, or `sigma_tau`.
 - Volatility and `sigma_tau` must use only the Chainlink settlement/reference rows from `polymarket_rtds_chainlink`.
 - Coinbase, Binance, and other proxies are for source-disagreement checks and feed-health diagnostics, not realized-volatility construction.
 - A historical proxy row that exactly matches the same timestamped Chainlink value may be kept as validation evidence. It must not become an additional realized-volatility observation, because that would double-count one move.
@@ -77,7 +85,7 @@ Part Two does not trade, does not build model probabilities, and does not place 
 
 ## Retention Policy
 
-Raw event data is retained hot for 90 days. Hot raw data includes Polymarket market snapshots, CLOB market WebSocket events, REST order-book backup snapshots, RTDS Chainlink price updates, RTDS Binance proxy price updates, Coinbase price ticks, source errors, and raw collector payloads.
+Raw event data should be retained hot for 90 days once Rust persistence is added. Hot raw data should include Polymarket market snapshots, CLOB market WebSocket events, REST order-book backup snapshots, RTDS Chainlink price updates, proxy price updates, source errors, and raw collector payloads.
 
 After 90 days, raw events should be compacted into replay-safe research tables before deletion is enabled. The compact layer should preserve 1-second price bars, 1-second top-of-book rows, source freshness, contract windows, rule hashes, decision states, and final labels. Automatic deletion remains disabled until replay tests prove compacted tables reproduce the same as-of state for sampled contracts.
 

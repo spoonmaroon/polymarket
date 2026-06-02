@@ -2,7 +2,9 @@
 
 The Python collector runbook below is retired design context. The legacy Docker
 entrypoint and systemd unit now fail closed; do not use this runbook to restart
-Python collection. The active read-only runtime is the Rust SDK probe.
+Python collection. The active read-only runtime is the Rust SDK state manager.
+It is intentionally scoped to BTC/ETH 5m current, next, and next-next windows
+until the warm-state path and durable persistence are stable.
 
 Persistent data lives outside the repo at `/home/spoon/polymarket-data`.
 
@@ -34,12 +36,12 @@ Install a cron entry on spoon:
 ```
 
 The deploy script fetches the configured deploy ref, refuses dirty server worktrees, fast-forwards only, rebuilds the Rust collector image, restarts the collector, and smoke-checks the status file.
-If `deploy/collector/.env` exists, the deploy script uses it explicitly. The collector is read-only and runs Chainlink RTDS plus Polymarket CLOB WebSocket state-manager mode.
+If `deploy/collector/.env` exists, the deploy script uses it explicitly. The collector is read-only and runs Chainlink RTDS plus Polymarket CLOB WebSocket state-manager mode with `POLYMARKET_INTERVAL=5m`.
 
 For branch testing before merge:
 
 ```bash
-POLYMARKET_DEPLOY_REF=origin/codex/ws-state-manager-design DEPLOY_FORCE=1 /home/spoon/polymarket/scripts/deploy.sh
+POLYMARKET_DEPLOY_REF=origin/main DEPLOY_FORCE=1 /home/spoon/polymarket/scripts/deploy.sh
 ```
 
 ## Retention

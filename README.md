@@ -30,7 +30,7 @@ The locked Part One data-source and database plan lives in
 
 ## Retired Python Live Collection
 
-The old Python live collector is retired. `polymarket-engine collect`, the
+The legacy Python collector is retired. `polymarket-engine collect`, the
 legacy Docker entrypoint, and the legacy systemd unit now fail closed so the
 old framework cannot be restarted by accident. The read-only monitor remains
 available for inspecting existing local data.
@@ -41,34 +41,34 @@ In a second terminal:
 uv run polymarket-engine monitor --refresh 1 --limit 8
 ```
 
-## Rust Live Probe
+## Rust State Manager
 
-The Rust live probe is the active read-only runtime test. It uses the official
-Polymarket Rust SDK to discover current BTC/ETH 5m markets, fetch CLOB order
-books, normalize them, pull Chainlink BTC/USD, pull Kraken XBT/USD as a proxy,
-calculate source disagreement, and write a latency report.
+The Rust state-manager is the active read-only runtime. It uses the official
+Polymarket Rust SDK to keep BTC/ETH 5m current, next, and next-next contract
+windows warm, subscribe to CLOB WebSocket top-of-book updates, collect
+Chainlink RTDS BTC/USD and ETH/USD reference ticks, track WebSocket status, and
+write an atomic health/status report.
 
-Run:
+The active deployment is intentionally 5m-only for now. 15m remains part of
+the research plan, but it is not part of the current always-on Rust collector.
+
+Run a finite smoke:
 
 ```bash
 cd rust
 cargo run -p polymarket-live-probe -- \
+  --mode state-manager \
   --assets BTC,ETH \
   --interval 5m \
-  --windows 1 \
-  --timeout-seconds 25 \
-  --out ../reports/live_probe/latest.json
+  --prewarm-windows 3 \
+  --run-for-seconds 30 \
+  --out ../reports/live_probe/state_manager.json
 ```
 
 Verify:
 
 ```bash
-uv run python scripts/verify_rust_probe_output.py \
-  reports/live_probe/latest.json \
-  --require-orderbooks \
-  --require-btc-prices \
-  --require-btc-disagreement \
-  --max-btc-disagreement-bps 100
+python3 scripts/verify_state_manager_report.py reports/live_probe/state_manager.json
 ```
 
 ## Read First
