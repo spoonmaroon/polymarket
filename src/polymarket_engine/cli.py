@@ -89,6 +89,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     normalized_health.add_argument("--duckdb-path", type=Path, required=True)
     normalized_health.add_argument("--out", type=Path, required=True)
 
+    current_states = subparsers.add_parser("build-current-decision-states")
+    current_states.add_argument("--duckdb-path", type=Path, required=True)
+    current_states.add_argument("--status-path", type=Path, required=True)
+    current_states.add_argument(
+        "--include-next",
+        action="store_true",
+        help="Also build states for the next warmed contract window.",
+    )
+
     return parser.parse_args(argv)
 
 
@@ -102,6 +111,8 @@ async def run_collect_command(argv: list[str] | None = None) -> int:
         return _run_normalize_rust_events(args)
     if args.command == "write-normalized-health":
         return _run_write_normalized_health(args)
+    if args.command == "build-current-decision-states":
+        return _run_build_current_decision_states(args)
     if args.command != "collect":
         return 2
     raise SystemExit(RETIRED_COLLECTOR_MESSAGE)
@@ -144,6 +155,39 @@ def _run_write_normalized_health(args: argparse.Namespace) -> int:
     store = DuckDbIngestStore(args.duckdb_path)
     status = write_normalized_health_status(store=store, out_path=args.out)
     print(json.dumps(status, sort_keys=True))
+    return 0
+
+
+def _run_build_current_decision_states(args: argparse.Namespace) -> int:
+    from polymarket_engine.features.rust_decision_snapshots import (
+        build_current_decision_state_snapshots,
+    )
+    from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
+
+    store = DuckDbIngestStore(args.duckdb_path)
+    result = build_current_decision_state_snapshots(
+        status_path=args.status_path,
+        store=store,
+        include_next=args.include_next,
+    )
+    print(
+        json.dumps(
+            {
+                "asof_ts": result.asof_ts.isoformat(),
+                "contracts_upserted": result.contracts_upserted,
+                "states_written": result.states_written,
+                "unavailable": [
+                    {
+                        "contract_id": row.contract_id,
+                        "token_id": row.token_id,
+                        "reason": row.reason,
+                    }
+                    for row in result.unavailable
+                ],
+            },
+            sort_keys=True,
+        )
+    )
     return 0
 
 

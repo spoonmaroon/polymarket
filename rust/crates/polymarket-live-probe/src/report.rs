@@ -72,6 +72,7 @@ pub struct StateManagerReport {
     pub health_flags: Vec<String>,
     pub subscriptions: Vec<StateManagerSubscription>,
     pub websocket_status: Vec<WebSocketStatus>,
+    pub latency_marks: Vec<LatencyMark>,
 }
 
 impl ProbeTimer {
@@ -114,6 +115,7 @@ pub fn build_report(input: ReportInput) -> ProbeReport {
 }
 
 pub fn build_state_manager_report(input: StateManagerReportInput) -> StateManagerReport {
+    let latency_marks = state_manager_latency_marks(&input.snapshot);
     StateManagerReport {
         schema_version: STATE_MANAGER_REPORT_SCHEMA_VERSION.to_owned(),
         mode: STATE_MANAGER_REPORT_MODE.to_owned(),
@@ -129,7 +131,61 @@ pub fn build_state_manager_report(input: StateManagerReportInput) -> StateManage
         health_flags: input.snapshot.health_flags,
         subscriptions: input.subscriptions,
         websocket_status: input.websocket_status,
+        latency_marks,
     }
+}
+
+fn state_manager_latency_marks(snapshot: &WarmStateSnapshot) -> Vec<LatencyMark> {
+    let mut marks = Vec::new();
+    if let Some(value) = snapshot
+        .chainlink_prices
+        .iter()
+        .map(|tick| duration_ms(snapshot.observed_ts - tick.observed_ts))
+        .max()
+    {
+        marks.push(LatencyMark {
+            name: "chainlink_observed_age_ms".to_owned(),
+            elapsed_ms: value,
+        });
+    }
+    if let Some(value) = snapshot
+        .chainlink_prices
+        .iter()
+        .map(|tick| duration_ms(tick.observed_ts - tick.event_ts))
+        .max()
+    {
+        marks.push(LatencyMark {
+            name: "chainlink_event_to_observed_ms".to_owned(),
+            elapsed_ms: value,
+        });
+    }
+    if let Some(value) = snapshot
+        .orderbooks
+        .iter()
+        .map(|book| duration_ms(snapshot.observed_ts - book.observed_ts))
+        .max()
+    {
+        marks.push(LatencyMark {
+            name: "orderbook_observed_age_ms".to_owned(),
+            elapsed_ms: value,
+        });
+    }
+    if let Some(value) = snapshot
+        .orderbooks
+        .iter()
+        .map(|book| duration_ms(book.observed_ts - book.event_ts))
+        .max()
+    {
+        marks.push(LatencyMark {
+            name: "orderbook_event_to_observed_ms".to_owned(),
+            elapsed_ms: value,
+        });
+    }
+    marks
+}
+
+fn duration_ms(duration: chrono::Duration) -> u128 {
+    u128::try_from(duration.num_milliseconds()).unwrap_or(0)
 }
 
 pub fn write_report(path: &Path, report: &ProbeReport) -> Result<()> {
@@ -155,9 +211,10 @@ mod tests {
     use super::*;
     use chrono::{TimeZone, Utc};
     use polymarket_runtime_types::{
-        ContractSide, ContractToken, ContractWindow, FeedFreshness, WarmStateSnapshot,
-        WarmedContract,
+        BookLevel, ContractSide, ContractToken, ContractWindow, FeedFreshness, NormalizedOrderBook,
+        NormalizedPriceTick, WarmStateSnapshot, WarmedContract,
     };
+    use rust_decimal::Decimal;
 
     #[test]
     fn report_has_schema_version() {
@@ -235,6 +292,7 @@ mod tests {
         assert!(value.get("orderbooks").unwrap().is_array());
         assert!(value.get("freshness").unwrap().is_array());
         assert!(value.get("health_flags").unwrap().is_array());
+        assert!(value.get("latency_marks").unwrap().is_array());
         assert_eq!(
             value["subscriptions"][0]["source_key"],
             "polymarket_clob_market_ws"
@@ -249,6 +307,70 @@ mod tests {
         assert_eq!(value["websocket_status"][0]["ended_stream_count"], 0);
         assert_eq!(value["websocket_status"][0]["stream_error_count"], 0);
         assert_eq!(value["websocket_status"][0]["last_event_age_ms"], 25);
+    }
+
+    #[test]
+    fn state_manager_report_exposes_first_class_latency_marks() {
+        let generated_base = Utc.timestamp_opt(1_780_302_400, 0).unwrap();
+        let snapshot = WarmStateSnapshot {
+            observed_ts: generated_base,
+            current: vec![],
+            next: vec![],
+            next_next: vec![],
+            chainlink_prices: vec![NormalizedPriceTick {
+                source_key: "polymarket_rtds_chainlink".to_owned(),
+                symbol: "BTC/USD".to_owned(),
+                event_ts: generated_base - chrono::Duration::milliseconds(2_000),
+                observed_ts: generated_base - chrono::Duration::milliseconds(500),
+                price: Decimal::new(70_100, 0),
+            }],
+            proxy_prices: vec![],
+            orderbooks: vec![NormalizedOrderBook {
+                venue: "polymarket".to_owned(),
+                source_key: "polymarket_rust_sdk".to_owned(),
+                market_slug: "btc-updown-5m-1780302400".to_owned(),
+                contract_id: "0xabc".to_owned(),
+                token_id: "token-1".to_owned(),
+                asset: "BTC".to_owned(),
+                side: "UP".to_owned(),
+                event_ts: generated_base - chrono::Duration::milliseconds(3_000),
+                observed_ts: generated_base - chrono::Duration::milliseconds(800),
+                best_bid: Some(Decimal::new(50, 2)),
+                best_ask: Some(Decimal::new(52, 2)),
+                spread: Some(Decimal::new(2, 2)),
+                bid_size_top: None,
+                ask_size_top: None,
+                bids: vec![BookLevel {
+                    price: Decimal::new(50, 2),
+                    size: Decimal::new(100, 0),
+                }],
+                asks: vec![BookLevel {
+                    price: Decimal::new(52, 2),
+                    size: Decimal::new(90, 0),
+                }],
+                depth_json: serde_json::json!({}),
+            }],
+            freshness: vec![],
+            health_flags: vec![],
+        };
+
+        let mut report = build_state_manager_report(StateManagerReportInput {
+            elapsed_ms: 10,
+            snapshot,
+            subscriptions: vec![],
+            websocket_status: vec![],
+        });
+        report.generated_at = generated_base;
+        let by_name = report
+            .latency_marks
+            .iter()
+            .map(|mark| (mark.name.as_str(), mark.elapsed_ms))
+            .collect::<std::collections::BTreeMap<_, _>>();
+
+        assert_eq!(by_name["chainlink_observed_age_ms"], 500);
+        assert_eq!(by_name["chainlink_event_to_observed_ms"], 1_500);
+        assert_eq!(by_name["orderbook_observed_age_ms"], 800);
+        assert_eq!(by_name["orderbook_event_to_observed_ms"], 2_200);
     }
 
     #[test]

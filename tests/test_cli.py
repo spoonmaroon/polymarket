@@ -144,6 +144,24 @@ def test_parse_write_normalized_health_args() -> None:
     assert args.out == Path("data/live/normalized_health.json")
 
 
+def test_parse_build_current_decision_states_args() -> None:
+    args = parse_args(
+        [
+            "build-current-decision-states",
+            "--duckdb-path",
+            "data/db/polymarket.duckdb",
+            "--status-path",
+            "data/live/status.json",
+            "--include-next",
+        ]
+    )
+
+    assert args.command == "build-current-decision-states"
+    assert args.duckdb_path == Path("data/db/polymarket.duckdb")
+    assert args.status_path == Path("data/live/status.json")
+    assert args.include_next is True
+
+
 @pytest.mark.anyio
 async def test_run_normalize_rust_events_command_writes_duckdb(
     tmp_path: Path,
@@ -234,6 +252,67 @@ async def test_run_write_normalized_health_command_writes_status(
         "core.orderbook_snapshots",
         "features.asof_state_inputs",
     }
+
+
+@pytest.mark.anyio
+async def test_run_build_current_decision_states_command(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    db_path = tmp_path / "state.duckdb"
+    status_path = tmp_path / "status.json"
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    status_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "rust-live-probe-state-manager-v1",
+                "mode": "state-manager",
+                "generated_at": "2026-06-02T06:02:00+00:00",
+                "current": [
+                    {
+                        "window": {
+                            "asset": "BTC",
+                            "interval": "5m",
+                            "start_ts": "2026-06-02T06:00:00+00:00",
+                            "end_ts": "2026-06-02T06:05:00+00:00",
+                        },
+                        "up": {"asset": "BTC", "side": "Up", "token_id": "up-token"},
+                        "down": {"asset": "BTC", "side": "Down", "token_id": "down-token"},
+                    }
+                ],
+                "orderbooks": [
+                    {
+                        "market_slug": "btc-updown-5m-1780380000",
+                        "contract_id": "0xcondition",
+                        "token_id": "up-token",
+                    },
+                    {
+                        "market_slug": "btc-updown-5m-1780380000",
+                        "contract_id": "0xcondition",
+                        "token_id": "down-token",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = await cli.run_collect_command(
+        [
+            "build-current-decision-states",
+            "--duckdb-path",
+            str(db_path),
+            "--status-path",
+            str(status_path),
+        ]
+    )
+
+    assert result == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["contracts_upserted"] == 2
+    assert payload["states_written"] == 0
+    assert len(payload["unavailable"]) == 2
 
 
 @pytest.mark.anyio

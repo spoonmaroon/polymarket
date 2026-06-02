@@ -111,7 +111,49 @@
       "stale": false
     }
   ],
+  "latency_marks": [
+    {
+      "name": "chainlink_observed_age_ms",
+      "elapsed_ms": 100
+    },
+    {
+      "name": "chainlink_event_to_observed_ms",
+      "elapsed_ms": 100
+    },
+    {
+      "name": "orderbook_observed_age_ms",
+      "elapsed_ms": 100
+    },
+    {
+      "name": "orderbook_event_to_observed_ms",
+      "elapsed_ms": 100
+    }
+  ],
   "health_flags": [],
   "subscriptions": [],
+  "websocket_status": [
+    {
+      "source_key": "polymarket_rtds_chainlink",
+      "channel": "crypto_prices_chainlink",
+      "connection_state": "Connected",
+      "reconnect_count": 0,
+      "subscription_count": 1,
+      "active_token_count": 2,
+      "ended_stream_count": 0,
+      "stream_error_count": 0,
+      "last_event_age_ms": 100
+    },
+    {
+      "source_key": "polymarket_clob_market_ws",
+      "channel": "market",
+      "connection_state": "Connected",
+      "reconnect_count": 0,
+      "subscription_count": 8,
+      "active_token_count": 8,
+      "ended_stream_count": 0,
+      "stream_error_count": 0,
+      "last_event_age_ms": 100
+    }
+  ],
   "generated_at": "2026-06-02T00:00:00Z"
 }

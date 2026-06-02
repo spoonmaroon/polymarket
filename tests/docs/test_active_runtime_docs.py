@@ -15,6 +15,8 @@ def test_part_two_docs_describe_active_5m_rust_state_manager() -> None:
     assert "append-only raw WebSocket journals and state" in text
     assert "polymarket-engine normalize-rust-events" in text
     assert "write-normalized-health" in text
+    assert "build-current-decision-states" in text
+    assert "latency_marks" in text
     assert "--intervals 5m,15m" not in text
 
 
@@ -27,3 +29,4 @@ def test_readme_points_to_state_manager_not_legacy_collector() -> None:
     assert "legacy Python collector is retired" in text
     assert "normalize-rust-events" in text
     assert "write-normalized-health" in text
+    assert "build-current-decision-states" in text

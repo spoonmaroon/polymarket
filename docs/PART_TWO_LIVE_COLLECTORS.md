@@ -58,6 +58,8 @@ The Rust state-manager status file records:
 - Polymarket RTDS Chainlink BTC/USD and ETH/USD reference ticks.
 - Source/order-book freshness rows.
 - WebSocket connection status for Chainlink and CLOB streams.
+- First-class `latency_marks` for Chainlink and order-book observed age plus
+  event-to-observed lag.
 - Health flags that force the checker to fail closed.
 - Append-only raw Chainlink RTDS and Polymarket CLOB WebSocket journals under
   `/var/lib/polymarket/raw/polymarket_rtds_chainlink/price_update` and
@@ -77,6 +79,11 @@ journals. Use `--include-state-snapshots` only for recovery/audit backfills,
 because state snapshots repeat the latest known price/book state every second.
 Use `polymarket-engine write-normalized-health` to publish a separate
 `normalized_health.json` file with DuckDB table counts and latest timestamps.
+Use `polymarket-engine build-current-decision-states` after normalization to
+write exact current as-of `DecisionState` snapshots into DuckDB. That
+`DecisionState` snapshot is the live pre-probability boundary: future decisions
+should persist this exact state first, while raw Chainlink/CLOB event journals
+remain the replay/audit trail.
 
 ## Source Rules
 
@@ -93,6 +100,9 @@ Use `polymarket-engine write-normalized-health` to publish a separate
   snapshots. Normalized DuckDB replay rows are produced by
   `polymarket-engine normalize-rust-events`; do not restart the retired Python
   collector to fill those tables.
+- Live decisions should persist exact `DecisionState` snapshots before
+  probability work. They do not need to synchronously wait for every raw event to
+  be normalized, because raw event journals remain append-only and replayable.
 - WebSocket outages are handled with capped reconnect backoff; other sources continue running when one feed disconnects.
 - RTDS subscribes to all Chainlink crypto symbols and filters locally to configured assets, because filtered multi-symbol subscriptions can omit live ETH updates. It also subscribes to per-symbol RTDS Binance proxy filters for the configured assets.
 

@@ -87,6 +87,14 @@ uv run polymarket-engine write-normalized-health \
   --out data/live/normalized_health.json
 ```
 
+Build current as-of `DecisionState` snapshots from normalized rows:
+
+```bash
+uv run polymarket-engine build-current-decision-states \
+  --duckdb-path data/db/polymarket.duckdb \
+  --status-path data/live/status.json
+```
+
 ## Read First
 
 - [PLAN.md](docs/PLAN.md) - complete merged architecture, research, build,

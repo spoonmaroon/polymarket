@@ -203,6 +203,28 @@ def validate_websocket_status(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return statuses
 
 
+def validate_latency_marks(payload: dict[str, Any]) -> None:
+    rows = require_list(payload, "latency_marks")
+    required = {
+        "chainlink_observed_age_ms",
+        "chainlink_event_to_observed_ms",
+        "orderbook_observed_age_ms",
+        "orderbook_event_to_observed_ms",
+    }
+    names: set[str] = set()
+    for idx, row in enumerate(rows):
+        mark = require_object(row, f"latency_marks[{idx}]")
+        name = require_non_empty_string(mark.get("name"), f"latency_marks[{idx}].name")
+        require_non_negative_number(
+            mark.get("elapsed_ms"),
+            f"latency_marks[{idx}].elapsed_ms",
+        )
+        names.add(name)
+    missing = sorted(required - names)
+    if missing:
+        fail("latency_marks missing: " + ", ".join(missing))
+
+
 def validate(payload: dict[str, Any]) -> list[str]:
     if payload.get("schema_version") != STATE_MANAGER_SCHEMA_VERSION:
         fail(f'schema_version must be "{STATE_MANAGER_SCHEMA_VERSION}"')
@@ -216,6 +238,7 @@ def validate(payload: dict[str, Any]) -> list[str]:
     validate_contracts(require_list(payload, "next_next"), "next_next", require_assets=False)
     validate_optional_price_list(payload, "proxy_prices")
     validate_freshness(payload)
+    validate_latency_marks(payload)
 
     orderbooks = require_list(payload, "orderbooks")
     orderbook_tokens = {

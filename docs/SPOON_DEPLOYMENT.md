@@ -78,6 +78,21 @@ uv run polymarket-engine write-normalized-health \
   --out /home/spoon/polymarket-data/live/normalized_health.json
 ```
 
+Then snapshot current as-of decision state:
+
+```bash
+uv run polymarket-engine build-current-decision-states \
+  --duckdb-path /home/spoon/polymarket-data/db/polymarket.duckdb \
+  --status-path /home/spoon/polymarket-data/live/status.json
+```
+
+Durability decision: persist exact `DecisionState` snapshots as the pre-
+probability live decision boundary, and keep append-only Chainlink/CLOB raw
+event journals as the replay/audit trail. Live decision work does not need to
+block until every raw event has already been normalized into DuckDB, but replay
+tests must prove the stored raw journals can reconstruct sampled
+`DecisionState` rows before probability or trading work starts.
+
 ## Manual Health Checks
 
 ```bash

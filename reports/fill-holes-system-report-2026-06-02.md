@@ -2,14 +2,16 @@
 
 Date: 2026-06-02
 
-Scope: local implementation on branch `codex/rust-raw-normalizer`, read-only
-Spoon inspection, and no Spoon data deletion.
+Scope: local implementation on branch `codex/rust-raw-normalizer`, Spoon
+deployment, raw normalization, normalized health, current `DecisionState`
+snapshots, and latency status marks.
 
 ## Verdict
 
-Sections 1-4 are still not fully "done" in the sense needed for probability
-work, but the largest data-path hole found in the 2026-06-02 reports is now
-filled locally.
+Sections 1-2 are now the active fixed target for read-only live collection and
+as-of replay after deployment verification. Sections 3-4 remain intentionally
+blocked from probability implementation until replay tests prove sampled
+`DecisionState` rows are reconstructable from raw journals.
 
 The active architecture is:
 
@@ -45,6 +47,7 @@ replay/research layer. The retired Python collector should stay stopped.
 2. Added CLI entrypoints:
    - `uv run polymarket-engine normalize-rust-events --raw-root ... --duckdb-path ...`
    - `uv run polymarket-engine write-normalized-health --duckdb-path ... --out ...`
+   - `uv run polymarket-engine build-current-decision-states --duckdb-path ... --status-path ...`
 
 3. Added a normalized DuckDB health status writer:
    - `src/polymarket_engine/health/normalized_status.py`
@@ -60,6 +63,17 @@ replay/research layer. The retired Python collector should stay stopped.
 5. Created a reusable report skill:
    - `/Users/goon/.codex/skills/polymarket-system-report/SKILL.md`
 
+6. Added first-class Rust state-manager latency marks:
+   - `chainlink_observed_age_ms`
+   - `chainlink_event_to_observed_ms`
+   - `orderbook_observed_age_ms`
+   - `orderbook_event_to_observed_ms`
+
+7. Added the `DecisionState` durability bridge:
+   - current Rust status produces side-level `ContractSpec` rows;
+   - normalized Chainlink/CLOB rows build exact as-of `DecisionState` rows;
+   - `features.asof_state_inputs` is the pre-probability live decision boundary.
+
 ## Important Design Choice
 
 The normalizer defaults to direct WebSocket journals only.
@@ -74,6 +88,15 @@ optional = state-manager snapshots with --include-state-snapshots
 Reason: state snapshots repeat the latest known price/book state every second.
 They are useful for audit and recovery, but direct WebSocket journals preserve
 cleaner event lineage for replay.
+
+Durability decision:
+
+```text
+Persist exact DecisionState snapshots before probability decisions.
+Keep append-only Chainlink/CLOB raw journals as the replay/audit source.
+Do not require every raw event to be normalized before a live decision,
+but require replay tests proving raw journals can reconstruct sampled states.
+```
 
 ## Spoon Five-Minute Live Sample
 
@@ -138,30 +161,18 @@ DuckDB counts from the same inspection:
 
 | Section | Status | Hole |
 |---|---|---|
-| 1. Contract rules and settlement source | Mostly implemented | Need fresh-slate live contract normalization after reset/deploy. |
-| 2. Data and as-of state | Improved | Raw Rust Chainlink/CLOB can now be normalized into DuckDB locally; Spoon still needs coordinated deploy/run. |
+| 1. Contract rules and settlement source | Fixed for current live 5m Rust state | Rust status can derive side-level live `ContractSpec` rows after fresh slate. |
+| 2. Data and as-of state | Fixed for current live 5m Rust state after deploy/run | Raw Rust Chainlink/CLOB normalize into DuckDB, normalized health is written, and current `DecisionState` snapshots are persisted. |
 | 3. Core probability outputs | Not started | Correctly blocked until normalized replay rows and `DecisionState` snapshots are current. |
 | 4. Monte Carlo path generation | Not started | Method is documented; implementation should wait for replay-safe live state. |
 
 ## Remaining Holes
 
-1. Deploy this branch to Spoon, then run:
-   ```bash
-   uv run polymarket-engine normalize-rust-events \
-     --raw-root /home/spoon/polymarket-data/raw \
-     --duckdb-path /home/spoon/polymarket-data/db/polymarket.duckdb
-   uv run polymarket-engine write-normalized-health \
-     --duckdb-path /home/spoon/polymarket-data/db/polymarket.duckdb \
-     --out /home/spoon/polymarket-data/live/normalized_health.json
-   ```
-2. Build the next bridge from normalized rows to current `DecisionState`
-   snapshots in DuckDB.
-3. Decide whether every Chainlink/CLOB event must be persisted before each live
-   decision, or whether each live decision can persist an exact `DecisionState`
-   snapshot first and rely on raw journals for replay.
-4. Add first-class latency marks to the status schema instead of deriving all
-   latency from event/observed timestamps.
-5. Only after the above, start probability outputs.
+1. Add replay tests that rebuild sampled `DecisionState` rows from raw journals
+   and compare them to persisted `features.asof_state_inputs`.
+2. Let the collector run long enough after a fresh slate to accumulate enough
+   Chainlink ticks for non-missing volatility on every current state.
+3. Only after the above, start probability outputs.
 
 ## Fresh-Slate Data Wipe
 
