@@ -173,3 +173,11 @@ The service uses:
 - `RequiresMountsFor=/home/spoon/polymarket/data/raw` so it does not write to the wrong path.
 - `Restart=on-failure` and `RestartSec=15` so transient failures do not require manual restart.
 - `TimeoutStopSec=60` so shutdown has time to flush buffered Parquet files.
+
+Hot decision restart policy: after a Rust process restart, current-window hot
+`DecisionState` rows are explicitly blocked when the process cannot prove the
+window-start Chainlink threshold from in-memory ticks. Those rows stay visible
+in hot JSONL and replay reports with `MissingThreshold` and
+`RestartWarmupBlocked` until the next warmed window starts, unless the threshold
+tick is observed in memory. The hot path must not recover this threshold from
+raw journals or DuckDB; raw/DuckDB recovery is replay-only.

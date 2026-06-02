@@ -14,6 +14,7 @@ pub enum HotDecisionTriggerKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HotDecisionQualityFlag {
     MissingThreshold,
+    RestartWarmupBlocked,
     MissingSettlementPrice,
     MissingOrderbook,
     IncompleteOrderbook,

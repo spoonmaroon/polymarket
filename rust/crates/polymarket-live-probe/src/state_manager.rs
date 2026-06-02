@@ -59,6 +59,7 @@ impl StateManagerRuntime {
         raw_event_sink: Option<RawEventSink>,
         decision_sink: Option<HotDecisionSink>,
     ) -> Result<Self> {
+        let runtime_started_at = Utc::now();
         let latest_prices = prices::LatestPrices::default();
         let book_state = LiveBookState::default();
         let warmed = Arc::new(RwLock::new(Vec::new()));
@@ -70,7 +71,7 @@ impl StateManagerRuntime {
         let telemetry_for_worker = hot_decision_telemetry.clone();
         let hot_decision_worker = decision_sink.map(|sink| {
             start_hot_decision_worker(
-                HotDecisionConfig::default(),
+                hot_decision_config_for_runtime_start(runtime_started_at),
                 latest_prices.clone(),
                 book_state.clone(),
                 warmed.clone(),
@@ -230,6 +231,13 @@ impl StateManagerRuntime {
                 .signed_duration_since(self.last_refresh)
                 .num_milliseconds()
                 >= self.config.rest_backup_interval_ms
+    }
+}
+
+fn hot_decision_config_for_runtime_start(runtime_started_at: DateTime<Utc>) -> HotDecisionConfig {
+    HotDecisionConfig {
+        restart_started_at: Some(runtime_started_at),
+        ..HotDecisionConfig::default()
     }
 }
 
@@ -553,6 +561,15 @@ mod tests {
             observed_ts,
             price: Decimal::new(100_000, 0),
         }
+    }
+
+    #[test]
+    fn hot_decision_worker_config_marks_runtime_restart_start() {
+        let runtime_started_at = Utc.timestamp_opt(1_780_302_445, 0).unwrap();
+
+        let config = hot_decision_config_for_runtime_start(runtime_started_at);
+
+        assert_eq!(config.restart_started_at, Some(runtime_started_at));
     }
 
     #[test]

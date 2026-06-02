@@ -249,6 +249,34 @@ def test_replay_selection_reports_all_skip_reasons_for_one_row(tmp_path: Path) -
     }
 
 
+def test_replay_selection_blocks_restart_warmup_rows(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.duckdb"
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    start_ts = datetime(2026, 6, 2, 8, 10, tzinfo=timezone.utc)
+    asof_ts = start_ts + timedelta(seconds=72, milliseconds=500)
+
+    selection = replay_ready_hot_decision_rows(
+        rows=[
+            {
+                **_hot_row(start_ts, asof_ts),
+                "threshold_price": None,
+                "threshold_event_ts": None,
+                "data_quality_flags": ["RestartWarmupBlocked"],
+            },
+        ],
+        store=store,
+        limit=10,
+    )
+
+    assert selection.rows == ()
+    assert selection.rows_skipped_quality_blocked == 1
+    assert selection.rows_skipped_not_replay_ready == 0
+    assert selection.rows_skipped_quality_blocked_by_reason == {
+        "RestartWarmupBlocked": 1,
+    }
+
+
 def _hot_row(start_ts: datetime, asof_ts: datetime) -> dict[str, object]:
     return {
         "schema_version": "rust-hot-decision-state-v1",

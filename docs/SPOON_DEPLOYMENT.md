@@ -106,6 +106,14 @@ The gate avoids normalizer DB lock collisions by verifying hot-state replay
 against a copied read-only snapshot. It does not pause collector or normalizer,
 and it must not enter the hot live decision path.
 
+Restart warm-state policy: if the Rust collector restarts inside an already
+open contract window and has not observed that window's Chainlink threshold in
+memory, hot `DecisionState` rows for that window remain visible but blocked with
+`MissingThreshold` and `RestartWarmupBlocked`. They continue to appear in hot
+JSONL and replay reports until the next warmed window starts, or until the
+threshold tick is observed in memory. Do not recover the threshold from raw
+journals or DuckDB in the hot path; those stores are for replay and audit.
+
 Durability decision: persist exact `DecisionState` snapshots as the pre-
 probability live decision boundary, and keep append-only Chainlink/CLOB raw
 event journals as the replay/audit trail. Live decision work does not need to

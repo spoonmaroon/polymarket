@@ -144,6 +144,7 @@ impl HotDecisionTelemetry {
 pub struct HotDecisionConfig {
     pub stale_source_after_ms: i64,
     pub stale_orderbook_after_ms: i64,
+    pub restart_started_at: Option<DateTime<Utc>>,
 }
 
 impl Default for HotDecisionConfig {
@@ -151,6 +152,7 @@ impl Default for HotDecisionConfig {
         Self {
             stale_source_after_ms: 30_000,
             stale_orderbook_after_ms: 30_000,
+            restart_started_at: None,
         }
     }
 }
@@ -199,6 +201,15 @@ impl HotDecisionBuilder {
 
                 if threshold.is_none() {
                     flags.push(HotDecisionQualityFlag::MissingThreshold);
+                    if self
+                        .config
+                        .restart_started_at
+                        .is_some_and(|restart_started_at| {
+                            contract.window.start_ts < restart_started_at
+                        })
+                    {
+                        flags.push(HotDecisionQualityFlag::RestartWarmupBlocked);
+                    }
                 }
                 if settlement.is_none() {
                     flags.push(HotDecisionQualityFlag::MissingSettlementPrice);
@@ -449,6 +460,118 @@ mod tests {
             !states[0]
                 .data_quality_flags
                 .contains(&HotDecisionQualityFlag::MissingOrderbook)
+        );
+    }
+
+    #[test]
+    fn restart_inside_current_window_without_threshold_blocks_hot_decision() {
+        let start = Utc.timestamp_opt(1_780_302_400, 0).unwrap();
+        let restart_started_at = start + Duration::seconds(45);
+        let asof = restart_started_at + Duration::seconds(12);
+        let contract = WarmedContract::new(
+            ContractWindow::new("BTC", "5m", start, start + Duration::seconds(300)).unwrap(),
+            ContractToken::new("BTC", ContractSide::Up, "up-token"),
+            ContractToken::new("BTC", ContractSide::Down, "down-token"),
+        )
+        .unwrap();
+        let prices = vec![price(
+            "BTC/USD",
+            asof - Duration::seconds(1),
+            asof - Duration::milliseconds(200),
+            70_050,
+        )];
+        let books = vec![book(
+            "up-token",
+            asof - Duration::milliseconds(80),
+            asof,
+            61,
+            64,
+        )];
+        let event = HotPathEvent::OrderBookTopOfBook {
+            token_id: "up-token".to_owned(),
+            event_ts: asof - Duration::milliseconds(80),
+            observed_ts: asof,
+        };
+        let config = HotDecisionConfig {
+            restart_started_at: Some(restart_started_at),
+            ..HotDecisionConfig::default()
+        };
+
+        let states = HotDecisionBuilder::new(config).build_for_event(
+            &event,
+            &[contract],
+            &prices,
+            &books,
+            asof,
+        );
+
+        assert_eq!(states.len(), 1);
+        assert_eq!(states[0].settlement_price, Some(Decimal::new(70_050, 0)));
+        assert_eq!(states[0].best_ask, Some(Decimal::new(64, 2)));
+        assert!(
+            states[0]
+                .data_quality_flags
+                .contains(&HotDecisionQualityFlag::MissingThreshold)
+        );
+        assert!(
+            states[0]
+                .data_quality_flags
+                .contains(&HotDecisionQualityFlag::RestartWarmupBlocked)
+        );
+    }
+
+    #[test]
+    fn window_start_after_restart_missing_threshold_is_not_restart_blocked() {
+        let restart_started_at = Utc.timestamp_opt(1_780_302_400, 0).unwrap();
+        let start = restart_started_at + Duration::seconds(300);
+        let asof = start + Duration::seconds(12);
+        let contract = WarmedContract::new(
+            ContractWindow::new("BTC", "5m", start, start + Duration::seconds(300)).unwrap(),
+            ContractToken::new("BTC", ContractSide::Up, "up-token"),
+            ContractToken::new("BTC", ContractSide::Down, "down-token"),
+        )
+        .unwrap();
+        let prices = vec![price(
+            "BTC/USD",
+            asof - Duration::seconds(1),
+            asof - Duration::milliseconds(200),
+            70_050,
+        )];
+        let books = vec![book(
+            "up-token",
+            asof - Duration::milliseconds(80),
+            asof,
+            61,
+            64,
+        )];
+        let event = HotPathEvent::OrderBookTopOfBook {
+            token_id: "up-token".to_owned(),
+            event_ts: asof - Duration::milliseconds(80),
+            observed_ts: asof,
+        };
+        let config = HotDecisionConfig {
+            restart_started_at: Some(restart_started_at),
+            ..HotDecisionConfig::default()
+        };
+
+        let states = HotDecisionBuilder::new(config).build_for_event(
+            &event,
+            &[contract],
+            &prices,
+            &books,
+            asof,
+        );
+
+        assert_eq!(states.len(), 1);
+        assert!(
+            states[0]
+                .data_quality_flags
+                .contains(&HotDecisionQualityFlag::MissingThreshold)
+        );
+        assert!(
+            !states[0]
+                .data_quality_flags
+                .contains(&HotDecisionQualityFlag::RestartWarmupBlocked)
         );
     }
 

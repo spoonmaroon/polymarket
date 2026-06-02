@@ -29,6 +29,7 @@ RUST_FLAG_MAP = {
 }
 REPLAY_BLOCKING_HOT_FLAGS = {
     "MissingThreshold",
+    "RestartWarmupBlocked",
     "MissingSettlementPrice",
     "MissingOrderbook",
 }
