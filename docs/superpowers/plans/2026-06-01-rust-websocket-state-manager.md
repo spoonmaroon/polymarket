@@ -251,7 +251,7 @@ cargo test -p polymarket-runtime-types -q
 
 Expected: all runtime type tests pass.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add rust/crates/polymarket-runtime-types/src/lib.rs rust/crates/polymarket-runtime-types/src/contract.rs rust/crates/polymarket-runtime-types/src/state.rs
@@ -348,7 +348,7 @@ cargo test -p polymarket-live-probe windows::tests -q
 
 Expected: scheduler tests pass.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add rust/crates/polymarket-live-probe/src/windows.rs rust/crates/polymarket-live-probe/src/main.rs
@@ -403,7 +403,7 @@ cargo test -p polymarket-live-probe polymarket::tests -q
 
 Expected: all Polymarket discovery tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add rust/crates/polymarket-live-probe/src/polymarket.rs
@@ -464,7 +464,7 @@ cargo test -p polymarket-live-probe prices::tests -q
 
 Expected: existing BTC tests and new ETH tests pass.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add rust/crates/polymarket-live-probe/src/prices.rs
@@ -537,7 +537,7 @@ cargo test -p polymarket-live-probe clob_ws::tests -q
 
 Expected: subscription and parser tests pass.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add rust/crates/polymarket-live-probe/src/clob_ws.rs rust/crates/polymarket-live-probe/src/main.rs
@@ -580,7 +580,7 @@ cargo test -p polymarket-live-probe book_state::tests -q
 
 Expected: book-state tests pass.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add rust/crates/polymarket-runtime-types/src/orderbook.rs rust/crates/polymarket-live-probe/src/book_state.rs rust/crates/polymarket-live-probe/src/main.rs
