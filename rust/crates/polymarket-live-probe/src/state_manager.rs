@@ -36,6 +36,7 @@ pub struct StateManagerRuntime {
     orderbook_streams: clob_ws::BestBidAskStreamManager,
     warmed: SharedWarmedContracts,
     token_ids: Vec<String>,
+    subscriptions: Vec<StateManagerSubscription>,
     last_refresh: DateTime<Utc>,
     chainlink_streams: prices::ChainlinkStreamManager,
     hot_decision_worker: Option<JoinHandle<Result<()>>>,
@@ -98,6 +99,7 @@ impl StateManagerRuntime {
             book_state,
             warmed,
             token_ids: Vec::new(),
+            subscriptions: Vec::new(),
             last_refresh: Utc::now(),
             chainlink_streams,
             hot_decision_worker,
@@ -136,12 +138,7 @@ impl StateManagerRuntime {
     }
 
     pub fn subscriptions(&self) -> Vec<StateManagerSubscription> {
-        let warmed = self
-            .warmed
-            .read()
-            .expect("warmed contracts lock poisoned")
-            .clone();
-        subscriptions_from_warmed_contracts(&warmed)
+        self.subscriptions.clone()
     }
 
     pub fn websocket_status(&self, now: DateTime<Utc>) -> Vec<WebSocketStatus> {
@@ -192,10 +189,12 @@ impl StateManagerRuntime {
             .collect::<Vec<_>>();
         token_ids.sort();
         token_ids.dedup();
+        let subscriptions = subscriptions_from_warmed_contracts(&warmed);
 
         *self.warmed.write().expect("warmed contracts lock poisoned") = warmed;
         self.orderbook_streams.update_tokens(&token_ids)?;
         self.token_ids = token_ids;
+        self.subscriptions = subscriptions;
 
         self.last_refresh = now;
         Ok(())
@@ -774,6 +773,7 @@ mod tests {
                 "BTC", start, "current",
             )])),
             token_ids: vec![],
+            subscriptions: vec![],
             last_refresh: observed,
             chainlink_streams: prices::ChainlinkStreamManager::inactive_for_tests(vec![
                 "btc/usd".to_owned(),
@@ -800,6 +800,37 @@ mod tests {
             "unexpected health flags: {:?}",
             snapshot.health_flags
         );
+    }
+
+    #[tokio::test]
+    async fn runtime_subscriptions_use_cached_refresh_rows() {
+        let start = 1_780_302_400;
+        let cached_warmed = vec![warmed("ETH", start, "cached-eth")];
+        let runtime = StateManagerRuntime {
+            config: config(),
+            latest_prices: crate::prices::LatestPrices::default(),
+            orderbook_streams: clob_ws::BestBidAskStreamManager::new(LiveBookState::default()),
+            book_state: LiveBookState::default(),
+            warmed: std::sync::Arc::new(std::sync::RwLock::new(vec![warmed(
+                "BTC",
+                start,
+                "stale-btc",
+            )])),
+            token_ids: vec!["stale-btc-up".to_owned(), "stale-btc-down".to_owned()],
+            subscriptions: subscriptions_from_warmed_contracts(&cached_warmed),
+            last_refresh: Utc.timestamp_opt(start, 0).unwrap(),
+            chainlink_streams: prices::ChainlinkStreamManager::inactive_for_tests(vec![
+                "btc/usd".to_owned(),
+            ]),
+            hot_decision_worker: None,
+            hot_decision_telemetry: None,
+        };
+
+        let subscriptions = runtime.subscriptions();
+
+        assert_eq!(subscriptions.len(), 2);
+        assert_eq!(subscriptions[0].asset, "ETH");
+        assert_eq!(subscriptions[0].token_id, "cached-eth-down");
     }
 
     #[test]
