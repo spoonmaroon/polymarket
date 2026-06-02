@@ -207,6 +207,7 @@ def run_rust_normalizer_loop(
                         include_state_snapshots=False,
                     )
 
+            raw_signature_changed = False
             if previous_raw_signature is None or reprocess_all:
                 result = _run_rust_normalizer_cycle_with_store(
                     raw_root=raw_root,
@@ -226,6 +227,7 @@ def run_rust_normalizer_loop(
                     previous=previous_raw_signature,
                     current=raw_signature,
                 )
+                raw_signature_changed = bool(changed_raw_signature)
                 status_changed = (
                     status_mtime_ns is not None
                     and status_mtime_ns != previous_status_mtime_ns
@@ -272,10 +274,11 @@ def run_rust_normalizer_loop(
                 previous_raw_signature = raw_signature
             else:
                 assert previous_raw_signature is not None
-                previous_raw_signature = _merge_raw_signatures(
-                    previous=previous_raw_signature,
-                    current=raw_signature,
-                )
+                if raw_signature_changed:
+                    previous_raw_signature = _merge_raw_signatures(
+                        previous=previous_raw_signature,
+                        current=raw_signature,
+                    )
             cycles_run += 1
             if max_cycles is not None and cycles_run >= max_cycles:
                 return
