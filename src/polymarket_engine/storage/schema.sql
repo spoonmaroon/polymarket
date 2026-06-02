@@ -189,6 +189,20 @@ CREATE TABLE IF NOT EXISTS features.decision_snapshots (
     created_at TIMESTAMPTZ NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS features.probability_outputs (
+    output_id VARCHAR PRIMARY KEY,
+    state_id VARCHAR NOT NULL,
+    asof_ts TIMESTAMPTZ NOT NULL,
+    model_version VARCHAR NOT NULL,
+    p_finish DOUBLE NOT NULL,
+    p_no_touch DOUBLE NOT NULL,
+    z_path DOUBLE NOT NULL,
+    seed BIGINT,
+    input_json VARCHAR NOT NULL,
+    output_json VARCHAR NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS validation.contract_labels (
     contract_id VARCHAR PRIMARY KEY,
     resolved_side VARCHAR NOT NULL,

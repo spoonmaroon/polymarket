@@ -12,11 +12,16 @@ import polars as pl
 from polymarket_engine.domain.contracts import ContractSpec
 from polymarket_engine.domain.contract_rules import NormalizedContractRule
 from polymarket_engine.domain.market_state import DecisionState, OrderBookObservation, PriceObservation
+from polymarket_engine.probability.schema import ProbabilityInput, ProbabilityOutput
 from polymarket_engine.storage.retention import RAW_HOT_RETENTION_DAYS, retention_manifest_class
 
 
 def _json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def _strict_json(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
 class DuckDbIngestStore:
@@ -417,6 +422,40 @@ class DuckDbIngestStore:
                 ],
             )
 
+    def insert_probability_output(
+        self,
+        *,
+        output_id: str,
+        probability_input: ProbabilityInput,
+        output: ProbabilityOutput,
+    ) -> None:
+        if output.state_id != probability_input.state_id:
+            raise ValueError("output state_id must match probability_input state_id")
+        if output.asof_ts != probability_input.asof_ts:
+            raise ValueError("output asof_ts must match probability_input asof_ts")
+        with duckdb.connect(str(self.db_path)) as conn:
+            conn.execute(
+                """
+                insert or replace into features.probability_outputs
+                (output_id, state_id, asof_ts, model_version, p_finish, p_no_touch,
+                 z_path, seed, input_json, output_json, created_at)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    output_id,
+                    output.state_id,
+                    output.asof_ts,
+                    output.model_version,
+                    output.p_finish,
+                    output.p_no_touch,
+                    output.z_path,
+                    output.seed,
+                    _strict_json(probability_input.to_json_dict()),
+                    _strict_json(output.to_json_dict()),
+                    datetime.now(timezone.utc),
+                ],
+            )
+
     def normalized_table_health(self) -> tuple[dict[str, object], ...]:
         checks = (
             ("core.contracts", "last_seen_ts"),
@@ -425,6 +464,7 @@ class DuckDbIngestStore:
             ("core.orderbook_snapshots", "observed_ts"),
             ("features.asof_state_inputs", "created_at"),
             ("features.decision_snapshots", "created_at"),
+            ("features.probability_outputs", "created_at"),
         )
         rows: list[dict[str, object]] = []
         with duckdb.connect(str(self.db_path)) as conn:

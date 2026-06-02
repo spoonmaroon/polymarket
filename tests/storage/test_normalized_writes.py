@@ -1,10 +1,12 @@
 from datetime import datetime, timezone
+import json
 from pathlib import Path
 
 import duckdb
 
 from polymarket_engine.domain.contracts import ContractSpec
 from polymarket_engine.domain.market_state import DecisionState, OrderBookObservation, PriceObservation
+from polymarket_engine.probability.schema import ProbabilityInput, ProbabilityOutput
 from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
 
 
@@ -176,6 +178,77 @@ def test_normalized_table_health_reports_counts_and_latest_writes(tmp_path: Path
     assert by_table["core.price_ticks"]["latest_ts"] == asof_ts.isoformat()
     assert by_table["core.orderbook_snapshots"]["rows"] == 1
     assert by_table["features.asof_state_inputs"]["rows"] == 0
+    assert by_table["features.probability_outputs"]["rows"] == 0
+
+
+def test_store_inserts_probability_output_with_json_artifacts(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.duckdb"
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    state = _state()
+    probability_input = ProbabilityInput.from_decision_state(state)
+    output = ProbabilityOutput(
+        state_id=state.state_id,
+        asof_ts=state.asof_ts,
+        p_finish=0.58,
+        p_no_touch=0.81,
+        z_path=probability_input.z_path,
+        model_version="offline-replay-v1",
+        seed=123,
+        diagnostics={"paths": 1000, "blocked": False},
+    )
+
+    store.insert_probability_output(
+        output_id="probability-output-1",
+        probability_input=probability_input,
+        output=output,
+    )
+
+    with duckdb.connect(str(db_path), read_only=True) as conn:
+        row = conn.execute(
+            """
+            select model_version, p_finish, p_no_touch, input_json, output_json
+            from features.probability_outputs
+            """
+        ).fetchone()
+
+    assert row is not None
+    model_version, p_finish, p_no_touch, input_json, output_json = row
+    assert model_version == "offline-replay-v1"
+    assert p_finish == 0.58
+    assert p_no_touch == 0.81
+    assert json.loads(input_json)["state_id"] == state.state_id
+    assert json.loads(input_json)["z_path"] == probability_input.z_path
+    assert json.loads(output_json)["diagnostics"]["paths"] == 1000
+
+
+def test_store_inserts_probability_output_with_negative_seed(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.duckdb"
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    state = _state()
+    probability_input = ProbabilityInput.from_decision_state(state)
+    output = ProbabilityOutput(
+        state_id=state.state_id,
+        asof_ts=state.asof_ts,
+        p_finish=0.58,
+        p_no_touch=0.81,
+        z_path=probability_input.z_path,
+        model_version="offline-replay-v1",
+        seed=-1,
+        diagnostics={},
+    )
+
+    store.insert_probability_output(
+        output_id="probability-output-negative-seed",
+        probability_input=probability_input,
+        output=output,
+    )
+
+    with duckdb.connect(str(db_path), read_only=True) as conn:
+        row = conn.execute("select seed from features.probability_outputs").fetchone()
+
+    assert row == (-1,)
 
 
 def test_register_ingest_file_records_retention_manifest(tmp_path: Path) -> None:
