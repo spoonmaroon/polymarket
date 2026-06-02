@@ -28,6 +28,20 @@ class ProbabilityInput:
     def from_decision_state(cls, state: DecisionState) -> ProbabilityInput:
         if state.data_quality_flags:
             raise ValueError(f"quality-blocked: {','.join(state.data_quality_flags)}")
+        _require_not_after_asof(state.threshold_event_ts, "threshold_event_ts", state.asof_ts)
+        _require_not_after_asof(
+            state.threshold_observed_ts,
+            "threshold_observed_ts",
+            state.asof_ts,
+        )
+        _require_not_after_asof(state.settlement_event_ts, "settlement_event_ts", state.asof_ts)
+        _require_not_after_asof(
+            state.settlement_observed_ts,
+            "settlement_observed_ts",
+            state.asof_ts,
+        )
+        _require_not_after_asof(state.book_event_ts, "book_event_ts", state.asof_ts)
+        _require_not_after_asof(state.book_observed_ts, "book_observed_ts", state.asof_ts)
         if state.sigma_tau is None or state.sigma_tau <= 0 or not math.isfinite(state.sigma_tau):
             raise ValueError("sigma_tau must be positive and finite")
         if state.executable_price is None:
@@ -66,8 +80,8 @@ class ProbabilityInput:
         _require_positive(self.threshold, "threshold")
         _require_positive(self.sigma_tau, "sigma_tau")
         _require_probability(self.executable_price, "executable_price")
-        _require_nonnegative(self.source_age_ms, "source_age_ms")
-        _require_nonnegative(self.book_age_ms, "book_age_ms")
+        _require_nonnegative_int(self.source_age_ms, "source_age_ms")
+        _require_nonnegative_int(self.book_age_ms, "book_age_ms")
         _require_finite(self.z_path, "z_path")
 
     def to_json_dict(self) -> dict[str, Any]:
@@ -94,6 +108,8 @@ class ProbabilityOutput:
             raise ValueError("model_version must be non-empty")
         if self.seed is not None and (isinstance(self.seed, bool) or not isinstance(self.seed, int)):
             raise ValueError("seed must be int or None")
+        if not isinstance(self.diagnostics, dict):
+            raise ValueError("diagnostics must be strict JSON object")
         try:
             _validate_strict_json(self.diagnostics)
             json.dumps(self.diagnostics, sort_keys=True, allow_nan=False)
@@ -105,28 +121,33 @@ class ProbabilityOutput:
 
 
 def _require_probability(value: float, field_name: str) -> None:
-    if not math.isfinite(value) or not 0 <= value <= 1:
+    if not _is_finite_number(value) or not 0 <= value <= 1:
         raise ValueError(f"{field_name} must be finite and between 0 and 1")
 
 
 def _require_supported(value: str, field_name: str, supported: set[str]) -> None:
-    if value not in supported:
+    if not isinstance(value, str) or value not in supported:
         raise ValueError(f"{field_name} must be one of {', '.join(sorted(supported))}")
 
 
 def _require_finite(value: float, field_name: str) -> None:
-    if not math.isfinite(value):
+    if not _is_finite_number(value):
         raise ValueError(f"{field_name} must be finite")
 
 
 def _require_positive(value: float, field_name: str) -> None:
-    if not math.isfinite(value) or value <= 0:
+    if not _is_finite_number(value) or value <= 0:
         raise ValueError(f"{field_name} must be positive and finite")
 
 
 def _require_nonnegative(value: float, field_name: str) -> None:
-    if not math.isfinite(value) or value < 0:
+    if not _is_finite_number(value) or value < 0:
         raise ValueError(f"{field_name} must be nonnegative and finite")
+
+
+def _require_nonnegative_int(value: int, field_name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"{field_name} must be a nonnegative integer")
 
 
 def _require_utc(value: datetime, field_name: str) -> None:
@@ -134,6 +155,15 @@ def _require_utc(value: datetime, field_name: str) -> None:
         raise ValueError(f"{field_name} must be timezone-aware")
     if value.utcoffset() != timezone.utc.utcoffset(value):
         raise ValueError(f"{field_name} must be normalized to UTC")
+
+
+def _require_not_after_asof(value: datetime | None, field_name: str, asof_ts: datetime) -> None:
+    if value is not None and value > asof_ts:
+        raise ValueError(f"{field_name} must not be after asof_ts")
+
+
+def _is_finite_number(value: object) -> bool:
+    return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value)
 
 
 def _validate_strict_json(value: Any) -> None:

@@ -1,7 +1,7 @@
 import math
 from dataclasses import replace
-from datetime import datetime, timezone
-from typing import Any
+from datetime import datetime, timedelta, timezone
+from typing import Any, cast
 
 import pytest
 
@@ -111,6 +111,30 @@ def test_probability_input_rejects_missing_sigma_tau() -> None:
         ProbabilityInput.from_decision_state(nonpositive)
 
 
+@pytest.mark.parametrize(
+    "field_name",
+    (
+        "threshold_event_ts",
+        "threshold_observed_ts",
+        "settlement_event_ts",
+        "settlement_observed_ts",
+        "book_event_ts",
+        "book_observed_ts",
+    ),
+)
+def test_probability_input_from_decision_state_rejects_future_timestamps(
+    field_name: str,
+) -> None:
+    state = _state()
+    future_state = replace(
+        state,
+        **cast(Any, {field_name: state.asof_ts + timedelta(milliseconds=1)}),
+    )
+
+    with pytest.raises(ValueError, match=field_name):
+        ProbabilityInput.from_decision_state(future_state)
+
+
 def test_probability_input_constructor_rejects_invalid_domain_values() -> None:
     base: dict[str, Any] = {
         "state_id": "state-1",
@@ -128,13 +152,20 @@ def test_probability_input_constructor_rejects_invalid_domain_values() -> None:
     }
 
     invalid_cases = (
+        ("seconds_left", True),
         ("seconds_left", -1.0),
+        ("settlement_price", True),
         ("settlement_price", 0.0),
         ("threshold", -1.0),
         ("sigma_tau", 0.0),
+        ("executable_price", True),
         ("executable_price", 1.01),
+        ("source_age_ms", True),
+        ("source_age_ms", 1.5),
         ("source_age_ms", -1),
+        ("book_age_ms", 1.5),
         ("book_age_ms", -1),
+        ("z_path", True),
     )
     for field_name, invalid_value in invalid_cases:
         with pytest.raises(ValueError, match=field_name):
@@ -195,14 +226,20 @@ def test_probability_output_rejects_invalid_probabilities() -> None:
 
     with pytest.raises(ValueError, match="p_finish"):
         ProbabilityOutput(**{**base, "p_finish": 1.01})
+    with pytest.raises(ValueError, match="p_finish"):
+        ProbabilityOutput(**{**base, "p_finish": True})
     with pytest.raises(ValueError, match="p_no_touch"):
         ProbabilityOutput(**{**base, "p_no_touch": math.nan})
     with pytest.raises(ValueError, match="z_path"):
         ProbabilityOutput(**{**base, "z_path": math.inf})
+    with pytest.raises(ValueError, match="z_path"):
+        ProbabilityOutput(**{**base, "z_path": True})
     with pytest.raises(ValueError, match="model_version"):
         ProbabilityOutput(**{**base, "model_version": ""})
     with pytest.raises(ValueError, match="diagnostics"):
         ProbabilityOutput(**{**base, "diagnostics": {"bad": object()}})
+    with pytest.raises(ValueError, match="diagnostics"):
+        ProbabilityOutput(**{**base, "diagnostics": []})
 
 
 def test_probability_output_rejects_nonstandard_diagnostic_floats() -> None:
