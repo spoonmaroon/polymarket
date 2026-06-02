@@ -1,6 +1,7 @@
 use anyhow::{Result, anyhow};
 use chrono::{Datelike, Timelike};
 use polymarket_runtime_types::HotDecisionState;
+use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
 use tokio::sync::mpsc;
@@ -16,18 +17,17 @@ impl HotDecisionJournal {
         Self { root }
     }
 
-    pub fn append(&self, state: &HotDecisionState) -> Result<PathBuf> {
-        let path = self.partition_path(state);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+    pub fn writer(&self) -> HotDecisionJournalWriter {
+        HotDecisionJournalWriter {
+            journal: self.clone(),
+            open_path: None,
+            file: None,
         }
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)?;
-        serde_json::to_writer(&mut file, state)?;
-        file.write_all(b"\n")?;
-        Ok(path)
+    }
+
+    #[allow(dead_code)]
+    pub fn append(&self, state: &HotDecisionState) -> Result<PathBuf> {
+        self.writer().append(state)
     }
 
     fn partition_path(&self, state: &HotDecisionState) -> PathBuf {
@@ -46,6 +46,38 @@ impl HotDecisionJournal {
     }
 }
 
+pub struct HotDecisionJournalWriter {
+    journal: HotDecisionJournal,
+    open_path: Option<PathBuf>,
+    file: Option<File>,
+}
+
+impl HotDecisionJournalWriter {
+    pub fn append(&mut self, state: &HotDecisionState) -> Result<PathBuf> {
+        let path = self.journal.partition_path(state);
+        if self.open_path.as_ref() != Some(&path) {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            self.file = Some(
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&path)?,
+            );
+            self.open_path = Some(path.clone());
+        }
+
+        let file = self
+            .file
+            .as_mut()
+            .expect("hot decision journal writer opened file");
+        serde_json::to_writer(&mut *file, state)?;
+        file.write_all(b"\n")?;
+        Ok(path)
+    }
+}
+
 #[derive(Clone)]
 pub struct HotDecisionSink {
     sender: mpsc::Sender<HotDecisionState>,
@@ -54,7 +86,7 @@ pub struct HotDecisionSink {
 impl HotDecisionSink {
     pub fn start(root: PathBuf, buffer_size: usize) -> (Self, JoinHandle<Result<()>>) {
         let (sender, mut receiver) = mpsc::channel(buffer_size.max(1));
-        let journal = HotDecisionJournal::new(root);
+        let mut journal = HotDecisionJournal::new(root).writer();
         let handle = tokio::spawn(async move {
             while let Some(state) = receiver.recv().await {
                 journal.append(&state)?;
@@ -103,6 +135,33 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
         assert_eq!(row["schema_version"], HOT_DECISION_STATE_SCHEMA_VERSION);
         assert_eq!(row["data_quality_flags"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn streaming_writer_reuses_current_partition_and_rolls_hours() {
+        let root = std::env::temp_dir().join(format!(
+            "polymarket-hot-decision-streaming-writer-{}-{}",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap()
+        ));
+        let journal = HotDecisionJournal::new(root);
+        let start = Utc.timestamp_opt(1_780_302_400, 0).unwrap();
+
+        let mut writer = journal.writer();
+        let first_path = writer.append(&sample_state(start)).unwrap();
+        let second_path = writer
+            .append(&sample_state(start + Duration::seconds(1)))
+            .unwrap();
+        let next_hour_path = writer
+            .append(&sample_state(start + Duration::seconds(3_600)))
+            .unwrap();
+
+        assert_eq!(first_path, second_path);
+        assert_ne!(first_path, next_hour_path);
+        let first_hour_lines = std::fs::read_to_string(first_path).unwrap();
+        assert_eq!(first_hour_lines.lines().count(), 2);
+        let next_hour_lines = std::fs::read_to_string(next_hour_path).unwrap();
+        assert_eq!(next_hour_lines.lines().count(), 1);
     }
 
     fn sample_state(start: chrono::DateTime<Utc>) -> polymarket_runtime_types::HotDecisionState {

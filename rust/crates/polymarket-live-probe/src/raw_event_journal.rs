@@ -37,6 +37,7 @@ impl RawEventJournal {
         }
     }
 
+    #[allow(dead_code)]
     pub fn append(&self, event: &RawEventRecord) -> Result<PathBuf> {
         self.writer().append(event)
     }

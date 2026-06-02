@@ -68,6 +68,7 @@ pub struct HotPathEventSink {
 }
 
 impl HotPathEventSink {
+    #[allow(dead_code)]
     pub fn channel(buffer_size: usize) -> (Self, mpsc::Receiver<HotPathEvent>) {
         Self::channel_with_telemetry(buffer_size, None)
     }

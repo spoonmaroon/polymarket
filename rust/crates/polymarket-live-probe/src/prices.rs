@@ -92,6 +92,7 @@ impl LatestPrices {
         ticks
     }
 
+    #[allow(dead_code)]
     pub async fn history_snapshot(&self) -> Vec<NormalizedPriceTick> {
         let inner = self.inner.read().expect("latest price lock poisoned");
         inner.history.clone()
@@ -119,6 +120,7 @@ impl LatestPrices {
             .collect()
     }
 
+    #[allow(dead_code)]
     pub async fn latest_at_or_before(
         &self,
         symbol: &str,
