@@ -35,6 +35,45 @@ pub enum ClobMarketEvent {
         event_ts: DateTime<Utc>,
         observed_ts: DateTime<Utc>,
     },
+    LastTradePrice {
+        contract_id: String,
+        token_id: String,
+        price: Decimal,
+        side: Option<String>,
+        size: Option<Decimal>,
+        fee_rate_bps: Option<Decimal>,
+        event_ts: DateTime<Utc>,
+        observed_ts: DateTime<Utc>,
+    },
+    TickSizeChange {
+        contract_id: String,
+        token_id: String,
+        old_tick_size: Decimal,
+        new_tick_size: Decimal,
+        event_ts: DateTime<Utc>,
+        observed_ts: DateTime<Utc>,
+    },
+    NewMarket {
+        market_id: String,
+        contract_id: String,
+        slug: String,
+        question: String,
+        token_ids: Vec<String>,
+        outcomes: Vec<String>,
+        event_ts: DateTime<Utc>,
+        observed_ts: DateTime<Utc>,
+    },
+    MarketResolved {
+        market_id: String,
+        contract_id: String,
+        slug: Option<String>,
+        token_ids: Vec<String>,
+        outcomes: Vec<String>,
+        winning_token_id: String,
+        winning_outcome: String,
+        event_ts: DateTime<Utc>,
+        observed_ts: DateTime<Utc>,
+    },
 }
 
 pub fn market_subscription_payload(token_ids: &[String]) -> Value {
@@ -125,7 +164,16 @@ pub fn parse_clob_market_events(
         .get("event_type")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    if !matches!(event_type, "book" | "best_bid_ask" | "price_change") {
+    if !matches!(
+        event_type,
+        "book"
+            | "best_bid_ask"
+            | "price_change"
+            | "last_trade_price"
+            | "tick_size_change"
+            | "new_market"
+            | "market_resolved"
+    ) {
         return Ok(vec![]);
     }
 
@@ -164,6 +212,55 @@ pub fn parse_clob_market_events(
                 .collect();
             Ok(events)
         }
+        WsMessage::LastTradePrice(last_trade) => Ok(vec![ClobMarketEvent::LastTradePrice {
+            contract_id: last_trade.market.to_string(),
+            token_id: last_trade.asset_id.to_string(),
+            price: last_trade.price,
+            side: last_trade
+                .side
+                .map(|side| format!("{side:?}").to_ascii_uppercase()),
+            size: last_trade.size,
+            fee_rate_bps: last_trade.fee_rate_bps,
+            event_ts: timestamp_millis(last_trade.timestamp)?,
+            observed_ts,
+        }]),
+        WsMessage::TickSizeChange(tick_size) => Ok(vec![ClobMarketEvent::TickSizeChange {
+            contract_id: tick_size.market.to_string(),
+            token_id: tick_size.asset_id.to_string(),
+            old_tick_size: tick_size.old_tick_size,
+            new_tick_size: tick_size.new_tick_size,
+            event_ts: timestamp_millis(tick_size.timestamp)?,
+            observed_ts,
+        }]),
+        WsMessage::NewMarket(new_market) => Ok(vec![ClobMarketEvent::NewMarket {
+            market_id: new_market.id,
+            contract_id: new_market.market.to_string(),
+            slug: new_market.slug,
+            question: new_market.question,
+            token_ids: new_market
+                .asset_ids
+                .into_iter()
+                .map(|asset_id| asset_id.to_string())
+                .collect(),
+            outcomes: new_market.outcomes,
+            event_ts: timestamp_millis(new_market.timestamp)?,
+            observed_ts,
+        }]),
+        WsMessage::MarketResolved(resolved) => Ok(vec![ClobMarketEvent::MarketResolved {
+            market_id: resolved.id,
+            contract_id: resolved.market.to_string(),
+            slug: resolved.slug,
+            token_ids: resolved
+                .asset_ids
+                .into_iter()
+                .map(|asset_id| asset_id.to_string())
+                .collect(),
+            outcomes: resolved.outcomes,
+            winning_token_id: resolved.winning_asset_id.to_string(),
+            winning_outcome: resolved.winning_outcome,
+            event_ts: timestamp_millis(resolved.timestamp)?,
+            observed_ts,
+        }]),
         _ => Ok(vec![]),
     }
 }
@@ -356,10 +453,182 @@ mod tests {
     }
 
     #[test]
-    fn unknown_event_type_is_ignored() {
+    fn parses_last_trade_price_event() {
+        let message = serde_json::json!({
+            "event_type": "last_trade_price",
+            "market": "0x0000000000000000000000000000000000000000000000000000000000000004",
+            "asset_id": "444",
+            "price": "0.456",
+            "side": "BUY",
+            "size": "219.217767",
+            "fee_rate_bps": "0",
+            "timestamp": "1780352939003"
+        });
+
+        let events = parse_clob_market_events(&message, observed_ts()).unwrap();
+
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            ClobMarketEvent::LastTradePrice {
+                contract_id,
+                token_id,
+                price,
+                side,
+                size,
+                fee_rate_bps,
+                event_ts,
+                observed_ts: event_observed_ts,
+            } => {
+                assert_eq!(
+                    contract_id,
+                    "0x0000000000000000000000000000000000000000000000000000000000000004"
+                );
+                assert_eq!(token_id, "444");
+                assert_eq!(*price, Decimal::from_str("0.456").unwrap());
+                assert_eq!(side.as_deref(), Some("BUY"));
+                assert_eq!(*size, Some(Decimal::from_str("219.217767").unwrap()));
+                assert_eq!(*fee_rate_bps, Some(Decimal::ZERO));
+                assert_eq!(event_ts.timestamp_millis(), 1780352939003);
+                assert_eq!(*event_observed_ts, observed_ts());
+            }
+            other => panic!("expected last-trade-price event, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_tick_size_change_event() {
+        let message = serde_json::json!({
+            "event_type": "tick_size_change",
+            "market": "0x0000000000000000000000000000000000000000000000000000000000000005",
+            "asset_id": "555",
+            "old_tick_size": "0.01",
+            "new_tick_size": "0.001",
+            "timestamp": "1780352939004"
+        });
+
+        let events = parse_clob_market_events(&message, observed_ts()).unwrap();
+
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            ClobMarketEvent::TickSizeChange {
+                contract_id,
+                token_id,
+                old_tick_size,
+                new_tick_size,
+                event_ts,
+                observed_ts: event_observed_ts,
+            } => {
+                assert_eq!(
+                    contract_id,
+                    "0x0000000000000000000000000000000000000000000000000000000000000005"
+                );
+                assert_eq!(token_id, "555");
+                assert_eq!(*old_tick_size, Decimal::new(1, 2));
+                assert_eq!(*new_tick_size, Decimal::new(1, 3));
+                assert_eq!(event_ts.timestamp_millis(), 1780352939004);
+                assert_eq!(*event_observed_ts, observed_ts());
+            }
+            other => panic!("expected tick-size-change event, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_new_market_event() {
         let message = serde_json::json!({
             "event_type": "new_market",
-            "market": "0x0000000000000000000000000000000000000000000000000000000000000004"
+            "id": "1031769",
+            "question": "BTC Up or Down - 5m",
+            "market": "0x0000000000000000000000000000000000000000000000000000000000000006",
+            "slug": "btc-updown-5m-1780352700",
+            "description": "Resolves using the listed BTC/USD source.",
+            "assets_ids": ["666", "667"],
+            "outcomes": ["Up", "Down"],
+            "timestamp": "1780352939005"
+        });
+
+        let events = parse_clob_market_events(&message, observed_ts()).unwrap();
+
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            ClobMarketEvent::NewMarket {
+                market_id,
+                contract_id,
+                slug,
+                question,
+                token_ids,
+                outcomes,
+                event_ts,
+                observed_ts: event_observed_ts,
+            } => {
+                assert_eq!(market_id, "1031769");
+                assert_eq!(
+                    contract_id,
+                    "0x0000000000000000000000000000000000000000000000000000000000000006"
+                );
+                assert_eq!(slug, "btc-updown-5m-1780352700");
+                assert_eq!(question, "BTC Up or Down - 5m");
+                assert_eq!(token_ids, &vec!["666".to_owned(), "667".to_owned()]);
+                assert_eq!(outcomes, &vec!["Up".to_owned(), "Down".to_owned()]);
+                assert_eq!(event_ts.timestamp_millis(), 1780352939005);
+                assert_eq!(*event_observed_ts, observed_ts());
+            }
+            other => panic!("expected new-market event, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_market_resolved_event() {
+        let message = serde_json::json!({
+            "event_type": "market_resolved",
+            "id": "1031770",
+            "question": "ETH Up or Down - 5m",
+            "market": "0x0000000000000000000000000000000000000000000000000000000000000007",
+            "slug": "eth-updown-5m-1780352700",
+            "description": "Resolves using the listed ETH/USD source.",
+            "assets_ids": ["777", "778"],
+            "outcomes": ["Up", "Down"],
+            "winning_asset_id": "777",
+            "winning_outcome": "Up",
+            "timestamp": "1780352939006"
+        });
+
+        let events = parse_clob_market_events(&message, observed_ts()).unwrap();
+
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            ClobMarketEvent::MarketResolved {
+                market_id,
+                contract_id,
+                slug,
+                token_ids,
+                outcomes,
+                winning_token_id,
+                winning_outcome,
+                event_ts,
+                observed_ts: event_observed_ts,
+            } => {
+                assert_eq!(market_id, "1031770");
+                assert_eq!(
+                    contract_id,
+                    "0x0000000000000000000000000000000000000000000000000000000000000007"
+                );
+                assert_eq!(slug.as_deref(), Some("eth-updown-5m-1780352700"));
+                assert_eq!(token_ids, &vec!["777".to_owned(), "778".to_owned()]);
+                assert_eq!(outcomes, &vec!["Up".to_owned(), "Down".to_owned()]);
+                assert_eq!(winning_token_id, "777");
+                assert_eq!(winning_outcome, "Up");
+                assert_eq!(event_ts.timestamp_millis(), 1780352939006);
+                assert_eq!(*event_observed_ts, observed_ts());
+            }
+            other => panic!("expected market-resolved event, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unknown_event_type_is_ignored() {
+        let message = serde_json::json!({
+            "event_type": "comment",
+            "market": "0x0000000000000000000000000000000000000000000000000000000000000008"
         });
 
         let events = parse_clob_market_events(&message, observed_ts()).unwrap();
