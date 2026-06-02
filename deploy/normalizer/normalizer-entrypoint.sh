@@ -18,8 +18,7 @@ mkdir -p "$(dirname "$DB_PATH")" "$LIVE_DIR"
 while true; do
   polymarket-engine normalize-rust-events \
     --raw-root "$RAW_DIR" \
-    --duckdb-path "$DB_PATH" \
-    --include-state-snapshots
+    --duckdb-path "$DB_PATH"
 
   if [ -f "$STATUS_PATH" ]; then
     polymarket-engine build-current-decision-states \

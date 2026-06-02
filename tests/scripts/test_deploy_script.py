@@ -118,6 +118,15 @@ def test_normalizer_sidecar_is_deployed_and_health_checked() -> None:
     assert "$DATA_DIR/live/normalized_health.json" in script
 
 
+def test_normalizer_hot_loop_omits_state_snapshot_backfill() -> None:
+    entrypoint = (
+        ROOT / "deploy" / "normalizer" / "normalizer-entrypoint.sh"
+    ).read_text(encoding="utf-8")
+
+    assert "polymarket-engine normalize-rust-events" in entrypoint
+    assert "--include-state-snapshots" not in entrypoint
+
+
 def test_deploy_script_requires_running_normalizer_before_success() -> None:
     script = (ROOT / "scripts" / "deploy.sh").read_text(encoding="utf-8")
 
