@@ -537,33 +537,50 @@ class DuckDbIngestStore:
             )
 
     def normalized_table_health(self) -> tuple[dict[str, object], ...]:
-        checks = (
-            ("core.contracts", "last_seen_ts"),
-            ("core.contract_rules", "updated_at"),
-            ("core.price_ticks", "observed_ts"),
-            ("core.orderbook_snapshots", "observed_ts"),
-            ("features.asof_state_inputs", "created_at"),
-            ("features.decision_snapshots", "created_at"),
-            ("features.probability_outputs", "created_at"),
-        )
-        rows: list[dict[str, object]] = []
         with self._connection() as conn:
-            for table_name, latest_column in checks:
-                row = conn.execute(
-                    f"select count(*) as rows, max({latest_column}) from {table_name}"
-                ).fetchone()
-                if row is None:
-                    count, latest_ts = 0, None
-                else:
-                    count, latest_ts = row
-                rows.append(
-                    {
-                        "table": table_name,
-                        "rows": int(count),
-                        "latest_ts": _isoformat_utc(latest_ts),
-                    }
-                )
-        return tuple(rows)
+            rows = conn.execute(
+                """
+                select table_name, rows, latest_ts
+                from (
+                    select 1 as sort_order, 'core.contracts' as table_name,
+                           count(*) as rows, max(last_seen_ts) as latest_ts
+                    from core.contracts
+                    union all
+                    select 2 as sort_order, 'core.contract_rules' as table_name,
+                           count(*) as rows, max(updated_at) as latest_ts
+                    from core.contract_rules
+                    union all
+                    select 3 as sort_order, 'core.price_ticks' as table_name,
+                           count(*) as rows, max(observed_ts) as latest_ts
+                    from core.price_ticks
+                    union all
+                    select 4 as sort_order, 'core.orderbook_snapshots' as table_name,
+                           count(*) as rows, max(observed_ts) as latest_ts
+                    from core.orderbook_snapshots
+                    union all
+                    select 5 as sort_order, 'features.asof_state_inputs' as table_name,
+                           count(*) as rows, max(created_at) as latest_ts
+                    from features.asof_state_inputs
+                    union all
+                    select 6 as sort_order, 'features.decision_snapshots' as table_name,
+                           count(*) as rows, max(created_at) as latest_ts
+                    from features.decision_snapshots
+                    union all
+                    select 7 as sort_order, 'features.probability_outputs' as table_name,
+                           count(*) as rows, max(created_at) as latest_ts
+                    from features.probability_outputs
+                ) as health_rows
+                order by sort_order
+                """
+            ).fetchall()
+        return tuple(
+            {
+                "table": row[0],
+                "rows": int(row[1]),
+                "latest_ts": _isoformat_utc(row[2]),
+            }
+            for row in rows
+        )
 
     def latest_price_tick(
         self,
