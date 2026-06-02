@@ -37,6 +37,7 @@ pub struct NormalizedOrderBook {
     pub ask_size_top: Option<Decimal>,
     pub bids: Vec<BookLevel>,
     pub asks: Vec<BookLevel>,
+    #[serde(skip_serializing, default)]
     pub depth_json: serde_json::Value,
 }
 

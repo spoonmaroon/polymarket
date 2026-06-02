@@ -460,6 +460,40 @@ mod tests {
     }
 
     #[test]
+    fn state_manager_report_omits_duplicate_orderbook_depth_json() {
+        let generated_base = Utc.timestamp_opt(1_780_302_400, 0).unwrap();
+        let snapshot = WarmStateSnapshot {
+            observed_ts: generated_base,
+            current: vec![],
+            next: vec![],
+            next_next: vec![],
+            chainlink_prices: vec![],
+            proxy_prices: vec![],
+            orderbooks: vec![sample_orderbook(
+                "token-1",
+                generated_base,
+                generated_base,
+            )],
+            freshness: vec![],
+            health_flags: vec![],
+        };
+
+        let report = build_state_manager_report(StateManagerReportInput {
+            elapsed_ms: 10,
+            snapshot,
+            subscriptions: vec![],
+            websocket_status: vec![],
+            hot_decision_telemetry: None,
+        });
+        let value = serde_json::to_value(&report).unwrap();
+        let orderbook = value["orderbooks"][0].as_object().unwrap();
+
+        assert!(orderbook.contains_key("bids"));
+        assert!(orderbook.contains_key("asks"));
+        assert!(!orderbook.contains_key("depth_json"));
+    }
+
+    #[test]
     fn state_manager_report_splits_orderbook_latency_by_window() {
         let generated_base = Utc.timestamp_opt(1_780_302_400, 0).unwrap();
         let current = sample_warmed_contract("BTC", 1_780_302_400);
