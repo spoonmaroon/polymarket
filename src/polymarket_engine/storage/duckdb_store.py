@@ -397,20 +397,47 @@ class DuckDbIngestStore:
     ) -> None:
         if not snapshots:
             return
+        venues: list[str] = []
+        contract_ids: list[str] = []
+        token_ids: list[str] = []
+        event_timestamps: list[datetime] = []
+        observed_timestamps: list[datetime] = []
+        best_bids: list[float | None] = []
+        best_asks: list[float | None] = []
+        bid_sizes_top: list[float | None] = []
+        ask_sizes_top: list[float | None] = []
+        spreads: list[float | None] = []
+        depth_json_values: list[str] = []
+        raw_file_ids: list[str | None] = []
+
+        for snapshot in snapshots:
+            venues.append(snapshot.venue)
+            contract_ids.append(snapshot.contract_id)
+            token_ids.append(snapshot.token_id)
+            event_timestamps.append(snapshot.event_ts)
+            observed_timestamps.append(snapshot.observed_ts)
+            best_bids.append(snapshot.best_bid)
+            best_asks.append(snapshot.best_ask)
+            bid_sizes_top.append(snapshot.bid_size_top)
+            ask_sizes_top.append(snapshot.ask_size_top)
+            spreads.append(snapshot.spread)
+            depth_json_values.append(snapshot.depth_json)
+            raw_file_ids.append(raw_file_id)
+
         frame = pl.DataFrame(
             {
-                "venue": [snapshot.venue for snapshot in snapshots],
-                "contract_id": [snapshot.contract_id for snapshot in snapshots],
-                "token_id": [snapshot.token_id for snapshot in snapshots],
-                "event_ts": [snapshot.event_ts for snapshot in snapshots],
-                "observed_ts": [snapshot.observed_ts for snapshot in snapshots],
-                "best_bid": [snapshot.best_bid for snapshot in snapshots],
-                "best_ask": [snapshot.best_ask for snapshot in snapshots],
-                "bid_size_top": [snapshot.bid_size_top for snapshot in snapshots],
-                "ask_size_top": [snapshot.ask_size_top for snapshot in snapshots],
-                "spread": [snapshot.spread for snapshot in snapshots],
-                "depth_json": [snapshot.depth_json for snapshot in snapshots],
-                "raw_file_id": [raw_file_id for _ in snapshots],
+                "venue": venues,
+                "contract_id": contract_ids,
+                "token_id": token_ids,
+                "event_ts": event_timestamps,
+                "observed_ts": observed_timestamps,
+                "best_bid": best_bids,
+                "best_ask": best_asks,
+                "bid_size_top": bid_sizes_top,
+                "ask_size_top": ask_sizes_top,
+                "spread": spreads,
+                "depth_json": depth_json_values,
+                "raw_file_id": raw_file_ids,
             }
         )
         with self._connection() as conn:
