@@ -195,11 +195,13 @@ impl BestBidAskStreamManager {
                             },
                         ) = (hot_event_sink.as_ref(), &event)
                         {
-                            sink.try_send(HotPathEvent::OrderBookTopOfBook {
+                            if let Err(error) = sink.try_send(HotPathEvent::OrderBookTopOfBook {
                                 token_id: token_id.clone(),
                                 event_ts: *event_ts,
                                 observed_ts: *observed_ts,
-                            })?;
+                            }) {
+                                tracing::warn!(error = %error, "dropped CLOB hot path event");
+                            }
                         }
                     } else {
                         tracing::warn!("received CLOB best_bid_ask for unseeded orderbook");

@@ -175,3 +175,28 @@ def test_verifier_accepts_next_next_assets(
 
     assert script.main() == 0
     assert "next_next=2" in capsys.readouterr().out
+
+
+def test_verifier_rejects_incomplete_hot_decision_telemetry() -> None:
+    script = _load_script()
+    payload = _report()
+    payload["hot_decision_telemetry"] = {
+        "states_built": 1,
+    }
+
+    with pytest.raises(SystemExit, match="hot_decision_telemetry missing states_persist_queued"):
+        script.validate(payload)
+
+
+def test_verifier_accepts_hot_decision_telemetry() -> None:
+    script = _load_script()
+    payload = _report()
+    payload["hot_decision_telemetry"] = {
+        "states_built": 2,
+        "states_persist_queued": 2,
+        "dropped_events": 0,
+        "last_state_age_ms": 3,
+        "last_observed_to_state_us": 700,
+    }
+
+    assert script.validate(payload) == []

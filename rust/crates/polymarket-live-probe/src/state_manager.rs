@@ -8,7 +8,10 @@ use std::time::Duration as StdDuration;
 use tokio::task::JoinHandle;
 
 use crate::decision_journal::HotDecisionSink;
-use crate::hot_decision::{HotDecisionBuilder, HotDecisionConfig, HotPathEvent, HotPathEventSink};
+use crate::hot_decision::{
+    HotDecisionBuilder, HotDecisionConfig, HotDecisionTelemetry, HotDecisionTelemetrySnapshot,
+    HotPathEvent, HotPathEventSink,
+};
 use crate::raw_event_journal::RawEventSink;
 use crate::report::{StateManagerSubscription, WebSocketStatus};
 use crate::{book_state::LiveBookState, clob_ws, polymarket, prices, windows};
@@ -36,6 +39,7 @@ pub struct StateManagerRuntime {
     last_refresh: DateTime<Utc>,
     chainlink_streams: prices::ChainlinkStreamManager,
     hot_decision_worker: Option<JoinHandle<Result<()>>>,
+    hot_decision_telemetry: Option<HotDecisionTelemetry>,
 }
 
 impl StateManagerRuntime {
@@ -58,7 +62,12 @@ impl StateManagerRuntime {
         let latest_prices = prices::LatestPrices::default();
         let book_state = LiveBookState::default();
         let warmed = Arc::new(RwLock::new(Vec::new()));
-        let (hot_event_sink, hot_event_receiver) = HotPathEventSink::channel(16_384);
+        let hot_decision_telemetry = decision_sink
+            .as_ref()
+            .map(|_| HotDecisionTelemetry::default());
+        let (hot_event_sink, hot_event_receiver) =
+            HotPathEventSink::channel_with_telemetry(16_384, hot_decision_telemetry.clone());
+        let telemetry_for_worker = hot_decision_telemetry.clone();
         let hot_decision_worker = decision_sink.map(|sink| {
             start_hot_decision_worker(
                 HotDecisionConfig::default(),
@@ -67,6 +76,7 @@ impl StateManagerRuntime {
                 warmed.clone(),
                 hot_event_receiver,
                 sink,
+                telemetry_for_worker.expect("hot decision telemetry missing for worker"),
             )
         });
         let hot_event_sink = hot_decision_worker.as_ref().map(|_| hot_event_sink);
@@ -90,6 +100,7 @@ impl StateManagerRuntime {
             last_refresh: Utc::now(),
             chainlink_streams,
             hot_decision_worker,
+            hot_decision_telemetry,
         };
         runtime.refresh_contracts().await?;
         Ok(runtime)
@@ -134,6 +145,12 @@ impl StateManagerRuntime {
             self.chainlink_streams.websocket_status(now),
             self.orderbook_streams.websocket_status(now),
         ]
+    }
+
+    pub fn hot_decision_telemetry(&self) -> Option<HotDecisionTelemetrySnapshot> {
+        self.hot_decision_telemetry
+            .as_ref()
+            .map(HotDecisionTelemetry::snapshot)
     }
 
     pub fn shutdown(&mut self) {
@@ -223,6 +240,7 @@ fn start_hot_decision_worker(
     warmed: SharedWarmedContracts,
     mut receiver: tokio::sync::mpsc::Receiver<HotPathEvent>,
     decision_sink: HotDecisionSink,
+    telemetry: HotDecisionTelemetry,
 ) -> JoinHandle<Result<()>> {
     tokio::spawn(async move {
         let builder = HotDecisionBuilder::new(config);
@@ -237,7 +255,13 @@ fn start_hot_decision_worker(
             for state in
                 builder.build_for_event(&event, &warmed_snapshot, &prices, &orderbooks, asof_ts)
             {
-                decision_sink.try_record(state)?;
+                telemetry.record_state_built(state.asof_ts, state.latency.observed_to_state_us);
+                if let Err(error) = decision_sink.try_record(state) {
+                    telemetry.record_dropped_event();
+                    tracing::warn!(error = %error, "dropped hot decision state before persistence");
+                } else {
+                    telemetry.record_state_persist_queued();
+                }
             }
         }
         Ok(())
@@ -626,6 +650,7 @@ mod tests {
                 "btc/usd".to_owned(),
             ]),
             hot_decision_worker: None,
+            hot_decision_telemetry: None,
         };
 
         let snapshot = runtime.snapshot(stale_caller_now).await.unwrap();

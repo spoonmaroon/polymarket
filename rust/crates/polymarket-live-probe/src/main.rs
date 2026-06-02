@@ -217,11 +217,13 @@ async fn run_state_manager(args: Args) -> Result<()> {
         let snapshot = runtime.snapshot(now).await?;
         let subscriptions = runtime.subscriptions();
         let websocket_status = runtime.websocket_status(chrono::Utc::now());
+        let hot_decision_telemetry = runtime.hot_decision_telemetry();
         let report = report::build_state_manager_report(report::StateManagerReportInput {
             elapsed_ms: timer.elapsed_ms(),
             snapshot,
             subscriptions,
             websocket_status,
+            hot_decision_telemetry,
         });
         report::write_state_manager_report(&args.out, &report)?;
         if let Some(journal) = &snapshot_journal {

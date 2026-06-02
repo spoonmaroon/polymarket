@@ -1,10 +1,11 @@
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use chrono::{DateTime, Utc};
 use polymarket_runtime_types::{
     ContractSide, HOT_DECISION_STATE_SCHEMA_VERSION, HotDecisionLatency, HotDecisionQualityFlag,
     HotDecisionState, HotDecisionTriggerKind, NormalizedOrderBook, NormalizedPriceTick,
     WarmedContract,
 };
+use std::sync::{Arc, RwLock};
 use std::time::Instant;
 use tokio::sync::mpsc;
 
@@ -63,17 +64,79 @@ impl HotPathEvent {
 #[derive(Debug, Clone)]
 pub struct HotPathEventSink {
     sender: mpsc::Sender<HotPathEvent>,
+    telemetry: Option<HotDecisionTelemetry>,
 }
 
 impl HotPathEventSink {
     pub fn channel(buffer_size: usize) -> (Self, mpsc::Receiver<HotPathEvent>) {
+        Self::channel_with_telemetry(buffer_size, None)
+    }
+
+    pub fn channel_with_telemetry(
+        buffer_size: usize,
+        telemetry: Option<HotDecisionTelemetry>,
+    ) -> (Self, mpsc::Receiver<HotPathEvent>) {
         let (sender, receiver) = mpsc::channel(buffer_size.max(1));
-        (Self { sender }, receiver)
+        (Self { sender, telemetry }, receiver)
     }
 
     pub fn try_send(&self, event: HotPathEvent) -> Result<()> {
-        self.sender.try_send(event)?;
-        Ok(())
+        self.sender.try_send(event).map_err(|error| {
+            if let Some(telemetry) = &self.telemetry {
+                telemetry.record_dropped_event();
+            }
+            anyhow!("hot path event queue unavailable: {error}")
+        })
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct HotDecisionTelemetrySnapshot {
+    pub states_built: u64,
+    pub states_persist_queued: u64,
+    pub dropped_events: u64,
+    pub last_state_age_ms: Option<i64>,
+    pub last_observed_to_state_us: Option<u128>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct HotDecisionTelemetry {
+    inner: Arc<RwLock<HotDecisionTelemetrySnapshot>>,
+}
+
+impl HotDecisionTelemetry {
+    pub fn record_state_built(&self, asof_ts: DateTime<Utc>, observed_to_state_us: u128) {
+        let mut inner = self
+            .inner
+            .write()
+            .expect("hot decision telemetry lock poisoned");
+        inner.states_built = inner.states_built.saturating_add(1);
+        inner.last_state_age_ms =
+            Some(Utc::now().signed_duration_since(asof_ts).num_milliseconds());
+        inner.last_observed_to_state_us = Some(observed_to_state_us);
+    }
+
+    pub fn record_state_persist_queued(&self) {
+        let mut inner = self
+            .inner
+            .write()
+            .expect("hot decision telemetry lock poisoned");
+        inner.states_persist_queued = inner.states_persist_queued.saturating_add(1);
+    }
+
+    pub fn record_dropped_event(&self) {
+        let mut inner = self
+            .inner
+            .write()
+            .expect("hot decision telemetry lock poisoned");
+        inner.dropped_events = inner.dropped_events.saturating_add(1);
+    }
+
+    pub fn snapshot(&self) -> HotDecisionTelemetrySnapshot {
+        self.inner
+            .read()
+            .expect("hot decision telemetry lock poisoned")
+            .clone()
     }
 }
 
@@ -410,5 +473,26 @@ mod channel_tests {
             receiver.recv().await.unwrap(),
             HotPathEvent::OrderBookTopOfBook { .. }
         ));
+    }
+}
+
+#[cfg(test)]
+mod telemetry_tests {
+    use super::*;
+
+    #[test]
+    fn hot_decision_telemetry_counts_states_and_drops() {
+        let telemetry = HotDecisionTelemetry::default();
+        let ts = Utc::now();
+
+        telemetry.record_state_built(ts, 900);
+        telemetry.record_state_persist_queued();
+        telemetry.record_dropped_event();
+
+        let snapshot = telemetry.snapshot();
+        assert_eq!(snapshot.states_built, 1);
+        assert_eq!(snapshot.states_persist_queued, 1);
+        assert_eq!(snapshot.dropped_events, 1);
+        assert_eq!(snapshot.last_observed_to_state_us, Some(900));
     }
 }

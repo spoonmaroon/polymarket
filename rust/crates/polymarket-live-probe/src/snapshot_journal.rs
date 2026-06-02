@@ -136,6 +136,7 @@ mod tests {
                 stream_error_count: 0,
                 last_event_age_ms: Some(10),
             }],
+            hot_decision_telemetry: None,
         });
         report.generated_at = ts;
         report

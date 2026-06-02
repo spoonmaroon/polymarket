@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::time::Instant;
 
+use crate::hot_decision::HotDecisionTelemetrySnapshot;
+
 pub const REPORT_SCHEMA_VERSION: &str = "rust-live-probe-v1";
 pub const STATE_MANAGER_REPORT_SCHEMA_VERSION: &str = "rust-live-probe-state-manager-v1";
 pub const STATE_MANAGER_REPORT_MODE: &str = "state-manager";
@@ -33,6 +35,7 @@ pub struct StateManagerReportInput {
     pub snapshot: WarmStateSnapshot,
     pub subscriptions: Vec<StateManagerSubscription>,
     pub websocket_status: Vec<WebSocketStatus>,
+    pub hot_decision_telemetry: Option<HotDecisionTelemetrySnapshot>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -73,6 +76,7 @@ pub struct StateManagerReport {
     pub subscriptions: Vec<StateManagerSubscription>,
     pub websocket_status: Vec<WebSocketStatus>,
     pub latency_marks: Vec<LatencyMark>,
+    pub hot_decision_telemetry: Option<HotDecisionTelemetrySnapshot>,
 }
 
 impl ProbeTimer {
@@ -132,6 +136,7 @@ pub fn build_state_manager_report(input: StateManagerReportInput) -> StateManage
         subscriptions: input.subscriptions,
         websocket_status: input.websocket_status,
         latency_marks,
+        hot_decision_telemetry: input.hot_decision_telemetry,
     }
 }
 
@@ -277,6 +282,7 @@ mod tests {
                 stream_error_count: 0,
                 last_event_age_ms: Some(25),
             }],
+            hot_decision_telemetry: None,
         });
         let value = serde_json::to_value(&report).unwrap();
 
@@ -359,6 +365,7 @@ mod tests {
             snapshot,
             subscriptions: vec![],
             websocket_status: vec![],
+            hot_decision_telemetry: None,
         });
         report.generated_at = generated_base;
         let by_name = report
@@ -393,11 +400,49 @@ mod tests {
             snapshot,
             subscriptions: vec![],
             websocket_status: vec![],
+            hot_decision_telemetry: None,
         });
 
         assert_eq!(
             report.health_flags,
             vec!["next_contract_not_warmed".to_owned()]
+        );
+    }
+
+    #[test]
+    fn state_manager_report_includes_hot_decision_telemetry_when_enabled() {
+        let snapshot = WarmStateSnapshot {
+            observed_ts: Utc.timestamp_opt(1_780_302_400, 0).unwrap(),
+            current: vec![],
+            next: vec![],
+            next_next: vec![],
+            chainlink_prices: vec![],
+            proxy_prices: vec![],
+            orderbooks: vec![],
+            freshness: vec![],
+            health_flags: vec![],
+        };
+
+        let report = build_state_manager_report(StateManagerReportInput {
+            elapsed_ms: 1,
+            snapshot,
+            subscriptions: vec![],
+            websocket_status: vec![],
+            hot_decision_telemetry: Some(HotDecisionTelemetrySnapshot {
+                states_built: 2,
+                states_persist_queued: 2,
+                dropped_events: 0,
+                last_state_age_ms: Some(3),
+                last_observed_to_state_us: Some(700),
+            }),
+        });
+
+        assert_eq!(
+            report
+                .hot_decision_telemetry
+                .unwrap()
+                .last_observed_to_state_us,
+            Some(700)
         );
     }
 

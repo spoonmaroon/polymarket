@@ -225,6 +225,30 @@ def validate_latency_marks(payload: dict[str, Any]) -> None:
         fail("latency_marks missing: " + ", ".join(missing))
 
 
+def validate_hot_decision_telemetry(payload: dict[str, Any]) -> None:
+    telemetry = payload.get("hot_decision_telemetry")
+    if telemetry is None:
+        return
+    telemetry = require_object(telemetry, "hot_decision_telemetry")
+    for key in (
+        "states_built",
+        "states_persist_queued",
+        "dropped_events",
+        "last_state_age_ms",
+        "last_observed_to_state_us",
+    ):
+        if key not in telemetry:
+            fail(f"hot_decision_telemetry missing {key}")
+    for key in ("states_built", "states_persist_queued", "dropped_events"):
+        require_non_negative_number(telemetry.get(key), f"hot_decision_telemetry.{key}")
+    for key in ("last_state_age_ms", "last_observed_to_state_us"):
+        value = telemetry.get(key)
+        if value is not None:
+            require_non_negative_number(value, f"hot_decision_telemetry.{key}")
+    if telemetry["states_built"] < telemetry["states_persist_queued"]:
+        fail("hot_decision_telemetry states_built is less than states_persist_queued")
+
+
 def validate(payload: dict[str, Any]) -> list[str]:
     if payload.get("schema_version") != STATE_MANAGER_SCHEMA_VERSION:
         fail(f'schema_version must be "{STATE_MANAGER_SCHEMA_VERSION}"')
@@ -239,6 +263,7 @@ def validate(payload: dict[str, Any]) -> list[str]:
     validate_optional_price_list(payload, "proxy_prices")
     validate_freshness(payload)
     validate_latency_marks(payload)
+    validate_hot_decision_telemetry(payload)
 
     orderbooks = require_list(payload, "orderbooks")
     orderbook_tokens = {
