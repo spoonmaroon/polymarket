@@ -174,6 +174,7 @@ impl HotDecisionBuilder {
         asof_ts: DateTime<Utc>,
     ) -> Vec<HotDecisionState> {
         let started = Instant::now();
+        let asof_ts = asof_ts.max(event.observed_ts());
         let mut states = Vec::new();
 
         for contract in warmed_contracts
@@ -397,6 +398,58 @@ mod tests {
             Vec::<HotDecisionQualityFlag>::new()
         );
         assert_eq!(states[0].latency.trigger_event_to_observed_ms, 80);
+    }
+
+    #[test]
+    fn orderbook_event_state_asof_includes_trigger_observation() {
+        let start = Utc.timestamp_opt(1_780_302_400, 0).unwrap();
+        let trigger_observed = start + Duration::seconds(12);
+        let early_worker_now = trigger_observed - Duration::microseconds(500);
+        let contract = WarmedContract::new(
+            ContractWindow::new("BTC", "5m", start, start + Duration::seconds(300)).unwrap(),
+            ContractToken::new("BTC", ContractSide::Up, "up-token"),
+            ContractToken::new("BTC", ContractSide::Down, "down-token"),
+        )
+        .unwrap();
+        let prices = vec![
+            price("BTC/USD", start, start, 70_000),
+            price(
+                "BTC/USD",
+                trigger_observed - Duration::seconds(1),
+                trigger_observed - Duration::milliseconds(200),
+                70_050,
+            ),
+        ];
+        let books = vec![book(
+            "up-token",
+            trigger_observed - Duration::milliseconds(80),
+            trigger_observed,
+            61,
+            64,
+        )];
+        let event = HotPathEvent::OrderBookTopOfBook {
+            token_id: "up-token".to_owned(),
+            event_ts: trigger_observed - Duration::milliseconds(80),
+            observed_ts: trigger_observed,
+        };
+
+        let states = HotDecisionBuilder::new(HotDecisionConfig::default()).build_for_event(
+            &event,
+            &[contract],
+            &prices,
+            &books,
+            early_worker_now,
+        );
+
+        assert_eq!(states.len(), 1);
+        assert_eq!(states[0].asof_ts, trigger_observed);
+        assert_eq!(states[0].best_bid, Some(Decimal::new(61, 2)));
+        assert_eq!(states[0].best_ask, Some(Decimal::new(64, 2)));
+        assert!(
+            !states[0]
+                .data_quality_flags
+                .contains(&HotDecisionQualityFlag::MissingOrderbook)
+        );
     }
 
     fn price(
