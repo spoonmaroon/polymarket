@@ -265,9 +265,9 @@ fn start_hot_decision_worker(
             let prices = latest_prices
                 .history_snapshot_for_assets(price_assets.iter().map(String::as_str))
                 .await;
-            let orderbooks = book_state
-                .snapshot_for_token_ids(warmed_token_ids(&warmed_snapshot))
-                .await;
+            let orderbook_token_ids =
+                hot_event_orderbook_token_ids(&event, &warmed_snapshot, asof_ts);
+            let orderbooks = book_state.snapshot_for_token_ids(orderbook_token_ids).await;
             for state in
                 builder.build_for_event(&event, &warmed_snapshot, &prices, &orderbooks, asof_ts)
             {
@@ -429,6 +429,42 @@ fn price_asset_from_symbol(symbol: &str) -> String {
         .unwrap_or(symbol)
         .trim()
         .to_ascii_uppercase()
+}
+
+fn hot_event_orderbook_token_ids<'a>(
+    event: &'a HotPathEvent,
+    warmed_contracts: &'a [WarmedContract],
+    asof_ts: DateTime<Utc>,
+) -> Vec<&'a str> {
+    let asof_ts = asof_ts.max(event.observed_ts());
+    match event {
+        HotPathEvent::ChainlinkPrice { symbol, .. } => {
+            let asset = price_asset_from_symbol(symbol);
+            warmed_contracts
+                .iter()
+                .filter(|contract| {
+                    contract.window.start_ts <= asof_ts && asof_ts < contract.window.end_ts
+                })
+                .filter(|contract| contract.window.asset.eq_ignore_ascii_case(&asset))
+                .flat_map(|contract| {
+                    [
+                        contract.up.token_id.as_str(),
+                        contract.down.token_id.as_str(),
+                    ]
+                })
+                .collect::<Vec<_>>()
+        }
+        HotPathEvent::OrderBookTopOfBook { token_id, .. } => warmed_contracts
+            .iter()
+            .filter(|contract| {
+                contract.window.start_ts <= asof_ts && asof_ts < contract.window.end_ts
+            })
+            .any(|contract| {
+                token_id == &contract.up.token_id || token_id == &contract.down.token_id
+            })
+            .then(|| vec![token_id.as_str()])
+            .unwrap_or_default(),
+    }
 }
 
 fn feed_freshness(
@@ -832,5 +868,52 @@ mod tests {
         assert_eq!(chainlink_assets, vec!["ETH"]);
         assert_eq!(orderbook_assets, vec!["BTC"]);
         assert!(unknown_assets.is_empty());
+    }
+
+    #[test]
+    fn hot_event_orderbook_token_ids_include_only_impacted_current_tokens() {
+        let start = 1_780_302_400;
+        let warmed = vec![
+            warmed("BTC", start, "btc-current"),
+            warmed("BTC", start + 300, "btc-next"),
+            warmed("ETH", start, "eth-current"),
+        ];
+        let ts = Utc.timestamp_opt(start + 10, 0).unwrap();
+
+        let chainlink_event = HotPathEvent::ChainlinkPrice {
+            symbol: "btc/usd".to_owned(),
+            event_ts: ts,
+            observed_ts: ts,
+        };
+        let orderbook_event = HotPathEvent::OrderBookTopOfBook {
+            token_id: "btc-current-up".to_owned(),
+            event_ts: ts,
+            observed_ts: ts,
+        };
+        let unknown_event = HotPathEvent::OrderBookTopOfBook {
+            token_id: "unknown-token".to_owned(),
+            event_ts: ts,
+            observed_ts: ts,
+        };
+
+        let chainlink_tokens = hot_event_orderbook_token_ids(&chainlink_event, &warmed, ts);
+        let orderbook_tokens = hot_event_orderbook_token_ids(&orderbook_event, &warmed, ts);
+        let unknown_tokens = hot_event_orderbook_token_ids(&unknown_event, &warmed, ts);
+
+        assert_eq!(chainlink_tokens, vec!["btc-current-up", "btc-current-down"]);
+        assert_eq!(orderbook_tokens, vec!["btc-current-up"]);
+        assert!(unknown_tokens.is_empty());
+
+        let rollover_ts = Utc.timestamp_opt(start + 300, 0).unwrap();
+        let early_worker_now = rollover_ts - Duration::milliseconds(1);
+        let rollover_event = HotPathEvent::OrderBookTopOfBook {
+            token_id: "btc-next-up".to_owned(),
+            event_ts: rollover_ts,
+            observed_ts: rollover_ts,
+        };
+        let observed_asof_tokens =
+            hot_event_orderbook_token_ids(&rollover_event, &warmed, early_worker_now);
+
+        assert_eq!(observed_asof_tokens, vec!["btc-next-up"]);
     }
 }
