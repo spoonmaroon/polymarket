@@ -14,6 +14,7 @@ from polymarket_engine.domain.market_state import DecisionState
 from polymarket_engine.domain.market_state import OrderBookObservation, PriceObservation
 from polymarket_engine.features import volatility as volatility_module
 from polymarket_engine.features.rust_decision_snapshots import (
+    CurrentDecisionStateReadCache,
     build_current_decision_state_snapshots,
 )
 from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
@@ -438,6 +439,58 @@ def test_current_decision_states_use_status_chainlink_prices_without_duckdb_look
         ("ETH", "DOWN", 2_000.0, 2_123.0),
         ("ETH", "UP", 2_000.0, 2_123.0),
     ]
+
+
+def test_current_decision_states_reuse_threshold_and_history_cache_across_status_only_builds(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "state.duckdb"
+    store = _CountingIngestStore(db_path)
+    store.apply_schema()
+    first_status_path = tmp_path / "status-first.json"
+    second_status_path = tmp_path / "status-second.json"
+    start_ts = datetime(2026, 6, 2, 6, 0, tzinfo=timezone.utc)
+    first_asof_ts = start_ts + timedelta(minutes=2)
+    second_asof_ts = first_asof_ts + timedelta(seconds=1)
+    _write_multi_asset_status_with_prices_and_orderbooks(
+        first_status_path,
+        start_ts=start_ts,
+        asof_ts=first_asof_ts,
+    )
+    _write_multi_asset_status_with_prices_and_orderbooks(
+        second_status_path,
+        start_ts=start_ts,
+        asof_ts=second_asof_ts,
+    )
+    for asset, base_price in (("BTC", 70_000.0), ("ETH", 2_000.0)):
+        store.insert_price_tick(
+            PriceObservation(
+                "polymarket_rtds_chainlink",
+                f"{asset}/USD",
+                start_ts,
+                start_ts,
+                base_price,
+            )
+        )
+    read_cache = CurrentDecisionStateReadCache()
+
+    first = build_current_decision_state_snapshots(
+        status_path=first_status_path,
+        store=store,
+        include_next=True,
+        read_cache=read_cache,
+    )
+    second = build_current_decision_state_snapshots(
+        status_path=second_status_path,
+        store=store,
+        include_next=True,
+        read_cache=read_cache,
+    )
+
+    assert first.states_written == 4
+    assert second.states_written == 4
+    assert store.latest_price_ticks_before_calls == 1
+    assert store.price_ticks_before_by_symbol_calls == 1
 
 
 def _write_status(path: Path, *, start_ts: datetime, asof_ts: datetime) -> None:

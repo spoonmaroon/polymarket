@@ -6,6 +6,7 @@ import time
 from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import duckdb
@@ -883,6 +884,58 @@ def test_sidecar_loop_rebuilds_state_when_status_changes_without_raw_rows(
     )
 
     assert build_calls == 2
+
+
+def test_sidecar_loop_reuses_state_read_cache_across_status_only_builds(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_root = tmp_path / "raw"
+    db_path = tmp_path / "state.duckdb"
+    status_path = tmp_path / "live" / "status.json"
+    health_path = tmp_path / "live" / "normalized_health.json"
+    start_ts = datetime(2026, 6, 2, 6, 0, tzinfo=timezone.utc)
+    asof_ts = start_ts + timedelta(minutes=2)
+    _write_raw_tree(raw_root=raw_root, start_ts=start_ts, asof_ts=asof_ts)
+    _write_status(status_path, start_ts=start_ts, asof_ts=asof_ts)
+    read_caches: list[object] = []
+
+    def counting_build(*args: Any, **kwargs: Any) -> Any:
+        read_caches.append(kwargs.get("read_cache"))
+        return SimpleNamespace(contracts_upserted=0, states_written=0, unavailable=())
+
+    def change_status(_: float) -> None:
+        _write_status(
+            status_path,
+            start_ts=start_ts,
+            asof_ts=asof_ts + timedelta(seconds=1),
+        )
+        next_mtime = time.time() + 1
+        os.utime(status_path, (next_mtime, next_mtime))
+
+    monkeypatch.setattr(
+        "polymarket_engine.ingestion.rust_normalizer_sidecar."
+        "build_current_decision_state_snapshots",
+        counting_build,
+    )
+    monkeypatch.setattr(
+        "polymarket_engine.ingestion.rust_normalizer_sidecar.time.sleep",
+        change_status,
+    )
+
+    run_rust_normalizer_loop(
+        raw_root=raw_root,
+        db_path=db_path,
+        status_path=status_path,
+        normalized_health_path=health_path,
+        interval_seconds=0.0,
+        include_next=False,
+        max_cycles=2,
+    )
+
+    assert len(read_caches) == 2
+    assert read_caches[0] is not None
+    assert read_caches[0] is read_caches[1]
 
 
 def test_sidecar_loop_writes_health_when_status_changes_without_raw_rows(

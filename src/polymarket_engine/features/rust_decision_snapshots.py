@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, cast
@@ -41,11 +41,28 @@ class CurrentDecisionStateSnapshotResult:
     unavailable: tuple[UnavailableDecisionState, ...]
 
 
+@dataclass
+class CurrentDecisionStateReadCache:
+    threshold_price_before: dict[
+        tuple[str, str, datetime],
+        PriceObservation | None,
+    ] = field(default_factory=dict)
+    price_history: dict[
+        tuple[str, str, int],
+        tuple[PriceObservation, ...],
+    ] = field(default_factory=dict)
+
+    def clear(self) -> None:
+        self.threshold_price_before.clear()
+        self.price_history.clear()
+
+
 def build_current_decision_state_snapshots(
     *,
     status_path: Path,
     store: DuckDbIngestStore,
     include_next: bool = False,
+    read_cache: CurrentDecisionStateReadCache | None = None,
 ) -> CurrentDecisionStateSnapshotResult:
     payload = _read_status(status_path)
     asof_ts = _parse_ts(payload["generated_at"])
@@ -58,7 +75,7 @@ def build_current_decision_state_snapshots(
         include_next=include_next,
     )
     state_contracts = tuple(contract for contract in contracts if contract.start_ts <= asof_ts)
-    read_store = _CachedStateReadStore(store)
+    read_store = _CachedStateReadStore(store, read_cache=read_cache)
     read_store.prime_threshold_prices(
         state_contracts,
         source_key=SETTLEMENT_SOURCE_KEY,
@@ -372,17 +389,17 @@ def _rule_hash(*, asset: Asset, interval: str, slug: str) -> str:
 
 
 class _CachedStateReadStore:
-    def __init__(self, store: DuckDbIngestStore) -> None:
+    def __init__(
+        self,
+        store: DuckDbIngestStore,
+        *,
+        read_cache: CurrentDecisionStateReadCache | None,
+    ) -> None:
         self._store = store
-        self._latest_price_before: dict[
-            tuple[str, str, datetime, datetime],
-            PriceObservation | None,
-        ] = {}
+        self._read_cache = (
+            CurrentDecisionStateReadCache() if read_cache is None else read_cache
+        )
         self._latest_price: dict[tuple[str, str, datetime], PriceObservation | None] = {}
-        self._price_history: dict[
-            tuple[str, str, datetime, int],
-            tuple[PriceObservation, ...],
-        ] = {}
         self._latest_orderbook: dict[
             tuple[str, str, datetime],
             OrderBookObservation | None,
@@ -396,15 +413,15 @@ class _CachedStateReadStore:
         event_ts_lte: datetime,
         observed_ts_lte: datetime,
     ) -> PriceObservation | None:
-        key = (source_key, symbol, event_ts_lte, observed_ts_lte)
-        if key not in self._latest_price_before:
-            self._latest_price_before[key] = self._store.latest_price_tick_before(
+        key = (source_key, symbol, event_ts_lte)
+        if key not in self._read_cache.threshold_price_before:
+            self._read_cache.threshold_price_before[key] = self._store.latest_price_tick_before(
                 source_key=source_key,
                 symbol=symbol,
                 event_ts_lte=event_ts_lte,
                 observed_ts_lte=observed_ts_lte,
             )
-        return self._latest_price_before[key]
+        return self._read_cache.threshold_price_before[key]
 
     def latest_price_ticks_before(
         self,
@@ -418,8 +435,8 @@ class _CachedStateReadStore:
         missing_symbols = [
             symbol
             for symbol in unique_symbols
-            if (source_key, symbol, event_ts_lte, observed_ts_lte)
-            not in self._latest_price_before
+            if (source_key, symbol, event_ts_lte)
+            not in self._read_cache.threshold_price_before
         ]
         if missing_symbols:
             ticks = self._store.latest_price_ticks_before(
@@ -429,15 +446,15 @@ class _CachedStateReadStore:
                 observed_ts_lte=observed_ts_lte,
             )
             for symbol in missing_symbols:
-                self._latest_price_before[
-                    (source_key, symbol, event_ts_lte, observed_ts_lte)
+                self._read_cache.threshold_price_before[
+                    (source_key, symbol, event_ts_lte)
                 ] = ticks.get(symbol)
         return {
             symbol: tick
             for symbol in unique_symbols
             if (
-                tick := self._latest_price_before[
-                    (source_key, symbol, event_ts_lte, observed_ts_lte)
+                tick := self._read_cache.threshold_price_before[
+                    (source_key, symbol, event_ts_lte)
                 ]
             )
             is not None
@@ -494,15 +511,15 @@ class _CachedStateReadStore:
         asof_ts: datetime,
         limit: int,
     ) -> tuple[PriceObservation, ...]:
-        key = (source_key, symbol, asof_ts, limit)
-        if key not in self._price_history:
-            self._price_history[key] = self._store.price_ticks_before(
+        key = (source_key, symbol, limit)
+        if key not in self._read_cache.price_history:
+            self._read_cache.price_history[key] = self._store.price_ticks_before(
                 source_key=source_key,
                 symbol=symbol,
                 asof_ts=asof_ts,
                 limit=limit,
             )
-        return self._price_history[key]
+        return self._read_cache.price_history[key]
 
     def price_ticks_before_by_symbol(
         self,
@@ -516,7 +533,7 @@ class _CachedStateReadStore:
         missing_symbols = [
             symbol
             for symbol in unique_symbols
-            if (source_key, symbol, asof_ts, limit) not in self._price_history
+            if (source_key, symbol, limit) not in self._read_cache.price_history
         ]
         if missing_symbols:
             histories = self._store.price_ticks_before_by_symbol(
@@ -526,15 +543,15 @@ class _CachedStateReadStore:
                 limit=limit,
             )
             for symbol in missing_symbols:
-                self._price_history[(source_key, symbol, asof_ts, limit)] = (
+                self._read_cache.price_history[(source_key, symbol, limit)] = (
                     histories.get(symbol, ())
                 )
         return {
             symbol: history
             for symbol in unique_symbols
             if (
-                history := self._price_history[
-                    (source_key, symbol, asof_ts, limit)
+                history := self._read_cache.price_history[
+                    (source_key, symbol, limit)
                 ]
             )
         }
