@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -486,17 +487,27 @@ def _run_idle_rust_normalizer_cycle_with_store(
     )
 
 
-def _normalizer_summary(results: tuple[RustEventNormalizeResult, ...]) -> dict[str, int]:
-    return {
-        "files": len(results),
-        "files_with_rows": sum(1 for result in results if result.rows_read > 0),
-        "files_skipped": sum(1 for result in results if result.rows_read == 0),
-        "bytes_read": sum(result.end_byte_offset - result.start_byte_offset for result in results),
-        "file_size_bytes": sum(result.file_size_bytes for result in results),
-        "rows_read": sum(result.rows_read for result in results),
-        "price_ticks_written": sum(result.price_ticks_written for result in results),
-        "orderbooks_written": sum(result.orderbooks_written for result in results),
+def _normalizer_summary(results: Iterable[RustEventNormalizeResult]) -> dict[str, int]:
+    summary = {
+        "files": 0,
+        "files_with_rows": 0,
+        "files_skipped": 0,
+        "bytes_read": 0,
+        "file_size_bytes": 0,
+        "rows_read": 0,
+        "price_ticks_written": 0,
+        "orderbooks_written": 0,
     }
+    for result in results:
+        summary["files"] += 1
+        summary["files_with_rows"] += int(result.rows_read > 0)
+        summary["files_skipped"] += int(result.rows_read == 0)
+        summary["bytes_read"] += result.end_byte_offset - result.start_byte_offset
+        summary["file_size_bytes"] += result.file_size_bytes
+        summary["rows_read"] += result.rows_read
+        summary["price_ticks_written"] += result.price_ticks_written
+        summary["orderbooks_written"] += result.orderbooks_written
+    return summary
 
 
 def _cached_checkpoint_result(

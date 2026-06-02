@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 import time
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,6 +13,7 @@ import duckdb
 import pytest
 
 from polymarket_engine.ingestion import rust_normalizer_sidecar
+from polymarket_engine.ingestion.rust_event_normalizer import RustEventNormalizeResult
 from polymarket_engine.ingestion.rust_normalizer_sidecar import (
     _cadence_sleep_seconds,
     run_rust_normalizer_cycle,
@@ -705,6 +706,61 @@ def test_changed_sidecar_cycle_skips_path_at_cached_checkpoint(
     assert result.bytes_read == 0
     assert result.rows_read == 0
     assert checkpoint_cache[changed_path] == changed_path.stat().st_size
+
+
+def test_normalizer_summary_scans_cycle_results_once() -> None:
+    rows = (
+        RustEventNormalizeResult(
+            path=Path("first.jsonl"),
+            file_id="sha256:first",
+            start_byte_offset=0,
+            end_byte_offset=10,
+            file_size_bytes=20,
+            rows_read=1,
+            price_ticks_written=1,
+            orderbooks_written=0,
+        ),
+        RustEventNormalizeResult(
+            path=Path("second.jsonl"),
+            file_id="sha256:second",
+            start_byte_offset=5,
+            end_byte_offset=5,
+            file_size_bytes=8,
+            rows_read=0,
+            price_ticks_written=0,
+            orderbooks_written=0,
+        ),
+    )
+
+    class SinglePassResults:
+        def __init__(self, items: Sequence[RustEventNormalizeResult]) -> None:
+            self._items = items
+            self.iterations = 0
+
+        def __len__(self) -> int:
+            return len(self._items)
+
+        def __iter__(self) -> Iterator[RustEventNormalizeResult]:
+            self.iterations += 1
+            if self.iterations > 1:
+                raise AssertionError("normalizer summary rescanned cycle results")
+            return iter(self._items)
+
+    results = SinglePassResults(rows)
+
+    summary = rust_normalizer_sidecar._normalizer_summary(results)
+
+    assert summary == {
+        "files": 2,
+        "files_with_rows": 1,
+        "files_skipped": 1,
+        "bytes_read": 10,
+        "file_size_bytes": 28,
+        "rows_read": 1,
+        "price_ticks_written": 1,
+        "orderbooks_written": 0,
+    }
+    assert results.iterations == 1
 
 
 def test_sidecar_loop_throttles_changed_cycle_normalized_health_writes(
