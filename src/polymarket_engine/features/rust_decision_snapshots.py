@@ -9,7 +9,13 @@ from pathlib import Path
 from typing import Any, cast
 
 from polymarket_engine.domain.contracts import Asset, ContractSide, ContractSpec
-from polymarket_engine.domain.market_state import DecisionState, OrderBookObservation, PriceObservation
+from polymarket_engine.domain.market_state import (
+    DecisionState,
+    OrderBookObservation,
+    PriceObservation,
+    VolatilitySnapshot,
+)
+from polymarket_engine.features import volatility as volatility_module
 from polymarket_engine.features.state_builder import DecisionStateUnavailable
 from polymarket_engine.features.state_replay import build_decision_state_from_store
 from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
@@ -17,6 +23,7 @@ from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
 
 SETTLEMENT_SOURCE_KEY = "polymarket_rtds_chainlink"
 LIVE_HEALTH_FRESHNESS_MS = 30_000
+VOLATILITY_LOOKBACK_LIMIT = 180
 
 
 @dataclass(frozen=True)
@@ -63,13 +70,21 @@ def build_current_decision_state_snapshots(
         contracts,
         source_key=SETTLEMENT_SOURCE_KEY,
         asof_ts=asof_ts,
-        limit=180,
+        limit=VOLATILITY_LOOKBACK_LIMIT,
     )
     read_store.prime_latest_orderbooks(contracts, asof_ts=asof_ts)
+    volatilities = _volatility_snapshots_for_contracts(
+        contracts,
+        read_store=read_store,
+        source_key=SETTLEMENT_SOURCE_KEY,
+        asof_ts=asof_ts,
+        lookback_limit=VOLATILITY_LOOKBACK_LIMIT,
+    )
     store.upsert_contract_specs(contracts)
     states: list[DecisionState] = []
     unavailable: list[UnavailableDecisionState] = []
     for contract in contracts:
+        volatility = volatilities.get((contract.settlement_symbol, contract.expiry_ts))
         try:
             state = build_decision_state_from_store(
                 store=cast(DuckDbIngestStore, read_store),
@@ -78,9 +93,9 @@ def build_current_decision_state_snapshots(
                 resolved_threshold_price=None,
                 settlement_source_key=SETTLEMENT_SOURCE_KEY,
                 proxy_source_keys=(),
-                volatility=None,
+                volatility=volatility,
                 volatility_source_key=SETTLEMENT_SOURCE_KEY,
-                volatility_lookback_limit=180,
+                volatility_lookback_limit=VOLATILITY_LOOKBACK_LIMIT,
                 stale_source_after_ms=LIVE_HEALTH_FRESHNESS_MS,
                 stale_book_after_ms=LIVE_HEALTH_FRESHNESS_MS,
             )
@@ -101,6 +116,36 @@ def build_current_decision_state_snapshots(
         states_written=len(states),
         unavailable=tuple(unavailable),
     )
+
+
+def _volatility_snapshots_for_contracts(
+    contracts: Sequence[ContractSpec],
+    *,
+    read_store: "_CachedStateReadStore",
+    source_key: str,
+    asof_ts: datetime,
+    lookback_limit: int,
+) -> dict[tuple[str, datetime], VolatilitySnapshot]:
+    snapshots: dict[tuple[str, datetime], VolatilitySnapshot] = {}
+    for contract in contracts:
+        if asof_ts < contract.start_ts:
+            continue
+        key = (contract.settlement_symbol, contract.expiry_ts)
+        if key in snapshots:
+            continue
+        price_history = read_store.price_ticks_before(
+            source_key=source_key,
+            symbol=contract.settlement_symbol,
+            asof_ts=asof_ts,
+            limit=lookback_limit,
+        )
+        snapshots[key] = volatility_module.build_volatility_snapshot(
+            prices=price_history,
+            asof_ts=asof_ts,
+            seconds_left=(contract.expiry_ts - asof_ts).total_seconds(),
+            symbol=contract.settlement_symbol,
+        )
+    return snapshots
 
 
 def _read_status(path: Path) -> dict[str, Any]:

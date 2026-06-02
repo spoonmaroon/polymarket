@@ -4,12 +4,15 @@ import json
 from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 import duckdb
+import pytest
 
 from polymarket_engine.domain.contracts import ContractSpec
 from polymarket_engine.domain.market_state import DecisionState
 from polymarket_engine.domain.market_state import OrderBookObservation, PriceObservation
+from polymarket_engine.features import volatility as volatility_module
 from polymarket_engine.features.rust_decision_snapshots import (
     build_current_decision_state_snapshots,
 )
@@ -170,7 +173,10 @@ def test_current_decision_states_use_live_health_freshness_thresholds(tmp_path: 
     assert all("stale_orderbook" not in row for row in flags)
 
 
-def test_current_decision_states_reuse_asset_level_store_reads(tmp_path: Path) -> None:
+def test_current_decision_states_reuse_asset_level_store_reads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     db_path = tmp_path / "state.duckdb"
     store = _CountingIngestStore(db_path)
     store.apply_schema()
@@ -217,6 +223,19 @@ def test_current_decision_states_reuse_asset_level_store_reads(tmp_path: Path) -
                         depth_json="{}",
                     )
                 )
+    real_build_volatility_snapshot = volatility_module.build_volatility_snapshot
+    volatility_snapshot_calls = 0
+
+    def counting_build_volatility_snapshot(*args: Any, **kwargs: Any) -> Any:
+        nonlocal volatility_snapshot_calls
+        volatility_snapshot_calls += 1
+        return real_build_volatility_snapshot(*args, **kwargs)
+
+    monkeypatch.setattr(
+        volatility_module,
+        "build_volatility_snapshot",
+        counting_build_volatility_snapshot,
+    )
 
     result = build_current_decision_state_snapshots(
         status_path=status_path,
@@ -239,6 +258,7 @@ def test_current_decision_states_reuse_asset_level_store_reads(tmp_path: Path) -
     assert store.upsert_contract_spec_calls == 0
     assert store.upsert_asof_state_inputs_calls == 1
     assert store.upsert_asof_state_input_calls == 0
+    assert volatility_snapshot_calls == 2
 
 
 def _write_status(path: Path, *, start_ts: datetime, asof_ts: datetime) -> None:
