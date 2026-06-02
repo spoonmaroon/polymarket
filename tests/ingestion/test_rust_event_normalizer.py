@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from io import BytesIO
 from pathlib import Path
-from typing import cast
+from typing import Sequence, cast
 
 import duckdb
 
@@ -297,6 +297,50 @@ def test_tree_normalizer_excludes_state_snapshots_by_default(tmp_path: Path) -> 
     ]
 
 
+def test_tree_normalizer_batches_raw_checkpoint_reads(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.duckdb"
+    store = _CountingCheckpointStore(db_path)
+    store.apply_schema()
+    raw_root = tmp_path / "raw"
+    _write_jsonl(
+        raw_root
+        / "polymarket_rtds_chainlink"
+        / "price_update"
+        / "date=2026-06-02"
+        / "hour=05"
+        / "events.jsonl",
+        _chainlink_row("BTC/USD", "2026-06-02T05:33:54Z", "2026-06-02T05:33:55Z", 70600.0),
+    )
+    _write_jsonl(
+        raw_root
+        / "polymarket_clob_market_ws"
+        / "best_bid_ask"
+        / "date=2026-06-02"
+        / "hour=05"
+        / "events.jsonl",
+        {
+            "source_key": "polymarket_clob_market_ws",
+            "stream_key": "best_bid_ask",
+            "symbol": "token-1",
+            "event_type": "best_bid_ask",
+            "event_ts": "2026-06-02T05:33:54.100Z",
+            "observed_ts": "2026-06-02T05:33:54.200Z",
+            "payload": {
+                "contract_id": "0xabc",
+                "token_id": "token-1",
+                "best_bid": "0.61",
+                "best_ask": "0.64",
+                "spread": "0.03",
+            },
+        },
+    )
+
+    normalize_rust_event_tree(raw_root=raw_root, store=store)
+
+    assert store.raw_file_checkpoints_calls == 1
+    assert store.raw_file_checkpoint_calls == 0
+
+
 def test_normalizer_only_reads_new_jsonl_bytes_on_second_pass(tmp_path: Path) -> None:
     db_path = tmp_path / "state.duckdb"
     store = DuckDbIngestStore(db_path)
@@ -525,3 +569,18 @@ class _CountingReader(_TrackingReader):
         chunk = super().readline(size)
         self.path.bytes_read += len(chunk)
         return chunk
+
+
+class _CountingCheckpointStore(DuckDbIngestStore):
+    def __init__(self, db_path: Path) -> None:
+        super().__init__(db_path)
+        self.raw_file_checkpoint_calls = 0
+        self.raw_file_checkpoints_calls = 0
+
+    def raw_file_checkpoint(self, path: Path) -> int | None:
+        self.raw_file_checkpoint_calls += 1
+        return super().raw_file_checkpoint(path)
+
+    def raw_file_checkpoints(self, paths: Sequence[Path]) -> dict[Path, int]:
+        self.raw_file_checkpoints_calls += 1
+        return super().raw_file_checkpoints(paths)

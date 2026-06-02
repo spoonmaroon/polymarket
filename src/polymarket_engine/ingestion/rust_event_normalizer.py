@@ -41,16 +41,25 @@ def normalize_rust_event_tree(
     include_state_snapshots: bool = False,
     reprocess_all: bool = False,
 ) -> tuple[RustEventNormalizeResult, ...]:
-    results: list[RustEventNormalizeResult] = []
+    paths: list[Path] = []
     streams = RUST_JSONL_STREAMS + (STATE_SNAPSHOT_STREAMS if include_state_snapshots else ())
     for source_key, stream_key in streams:
         stream_root = raw_root / source_key / stream_key
         if not stream_root.exists():
             continue
         for path in sorted(stream_root.rglob("*.jsonl")):
-            results.append(
-                normalize_rust_event_file(path=path, store=store, reprocess_all=reprocess_all)
-            )
+            paths.append(path)
+    checkpoints = {} if reprocess_all else store.raw_file_checkpoints(paths)
+    results = [
+        normalize_rust_event_file(
+            path=path,
+            store=store,
+            reprocess_all=reprocess_all,
+            checkpoint=checkpoints.get(path),
+            checkpoint_loaded=not reprocess_all,
+        )
+        for path in paths
+    ]
     return tuple(results)
 
 
@@ -59,9 +68,14 @@ def normalize_rust_event_file(
     path: Path,
     store: DuckDbIngestStore,
     reprocess_all: bool = False,
+    checkpoint: int | None = None,
+    checkpoint_loaded: bool = False,
 ) -> RustEventNormalizeResult:
     file_size = path.stat().st_size
-    checkpoint = None if reprocess_all else store.raw_file_checkpoint(path)
+    if reprocess_all:
+        checkpoint = None
+    elif not checkpoint_loaded:
+        checkpoint = store.raw_file_checkpoint(path)
     start_byte_offset = 0 if checkpoint is None else checkpoint
     if start_byte_offset > file_size:
         start_byte_offset = 0

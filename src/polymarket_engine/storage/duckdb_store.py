@@ -167,6 +167,26 @@ class DuckDbIngestStore:
             ).fetchone()
         return int(row[0]) if row is not None else None
 
+    def raw_file_checkpoints(self, paths: Sequence[Path]) -> dict[Path, int]:
+        path_by_value = {str(path): path for path in paths}
+        if not path_by_value:
+            return {}
+        paths_frame = pl.DataFrame({"path": list(path_by_value)})
+        with self._connection() as conn:
+            conn.register("raw_checkpoint_paths", paths_frame)
+            rows = conn.execute(
+                """
+                select checkpoints.path, checkpoints.byte_offset
+                from ops.raw_file_checkpoints as checkpoints
+                join raw_checkpoint_paths as paths using (path)
+                """
+            ).fetchall()
+        return {
+            path_by_value[str(row[0])]: int(row[1])
+            for row in rows
+            if str(row[0]) in path_by_value
+        }
+
     def upsert_raw_file_checkpoint(
         self,
         *,
