@@ -25,7 +25,22 @@ services:
       - ${POLYMARKET_DATA_DIR:-/home/spoon/polymarket-data}/live:/var/lib/polymarket/live
       - ${POLYMARKET_DATA_DIR:-/home/spoon/polymarket-data}/logs:/var/lib/polymarket/logs
     healthcheck:
-      test: ["CMD-SHELL", "test -s /var/lib/polymarket/live/status.json && find /var/lib/polymarket/live/status.json -mmin -1 | grep -q status.json"]
+      test:
+        [
+          "CMD",
+          "python3",
+          "/usr/local/bin/check_collector_status.py",
+          "--status-path",
+          "/var/lib/polymarket/live/status.json",
+          "--max-status-age-seconds",
+          "30",
+          "--max-price-age-ms",
+          "30000",
+          "--max-orderbook-age-ms",
+          "30000",
+          "--max-websocket-event-age-ms",
+          "30000",
+        ]
       interval: 30s
       timeout: 5s
       retries: 3
