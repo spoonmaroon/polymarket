@@ -53,15 +53,18 @@ if ! git merge --ff-only --quiet "$REMOTE"; then
   exit 1
 fi
 
-COMPOSE_ENV_ARGS=()
-if [ -f "$REPO/deploy/collector/.env" ]; then
-  COMPOSE_ENV_ARGS=(--env-file "$REPO/deploy/collector/.env")
-fi
+compose() {
+  if [ -f "$REPO/deploy/collector/.env" ]; then
+    docker compose --env-file "$REPO/deploy/collector/.env" "$@"
+  else
+    docker compose "$@"
+  fi
+}
 
 LOG "stopping legacy Python collector containers if present"
 docker rm -f polymarket-collector-collector-1 polymarket-python-collector-retired-retired-python-collector-1 >> "$LOG_FILE" 2>&1 || true
 
-if ! docker compose "${COMPOSE_ENV_ARGS[@]}" -f "$COMPOSE_FILE" up -d --build collector >> "$LOG_FILE" 2>&1; then
+if ! compose -f "$COMPOSE_FILE" up -d --build collector >> "$LOG_FILE" 2>&1; then
   LOG "docker compose failed"
   exit 1
 fi
@@ -80,5 +83,5 @@ for _ in $(seq 1 "$DEPLOY_SMOKE_ATTEMPTS"); do
 done
 
 LOG "collector smoke failed; leaving container logs in docker compose"
-docker compose "${COMPOSE_ENV_ARGS[@]}" -f "$COMPOSE_FILE" logs --tail=80 collector >> "$LOG_FILE" 2>&1 || true
+compose -f "$COMPOSE_FILE" logs --tail=80 collector >> "$LOG_FILE" 2>&1 || true
 exit 1
