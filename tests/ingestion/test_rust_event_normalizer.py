@@ -4,9 +4,10 @@ import json
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
-from typing import Sequence, cast
+from typing import Any, Sequence, cast
 
 import duckdb
+import pytest
 
 from polymarket_engine.domain.market_state import OrderBookObservation, PriceObservation
 from polymarket_engine.ingestion.rust_event_normalizer import (
@@ -515,6 +516,64 @@ def test_normalizer_skips_ingest_file_registration_for_duplicate_only_chunk(
     assert store.insert_price_ticks_calls == 0
     assert store.insert_orderbook_snapshots_calls == 0
     assert store.register_ingest_file_calls == 0
+
+
+def test_duplicate_top_of_book_rows_skip_depth_json_materialization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "state.duckdb"
+    store = _CountingCheckpointStore(db_path)
+    store.apply_schema()
+    raw_path = (
+        tmp_path
+        / "raw"
+        / "polymarket_clob_market_ws"
+        / "best_bid_ask"
+        / "date=2026-06-02"
+        / "hour=05"
+        / "events.jsonl"
+    )
+    row = _orderbook_row(
+        "token-1",
+        "2026-06-02T05:33:54Z",
+        "2026-06-02T05:33:55Z",
+        0.61,
+        0.64,
+    )
+    orderbook_state_cache: dict[tuple[str, str], tuple[object, ...]] = {}
+    _write_jsonl(raw_path, row)
+    first = normalize_rust_event_file(
+        path=raw_path,
+        store=store,
+        last_orderbook_state_by_token=orderbook_state_cache,
+    )
+    store.insert_orderbook_snapshots_calls = 0
+    _append_jsonl(raw_path, row)
+    json_dumps_calls = 0
+    real_json_dumps = json.dumps
+
+    def counting_json_dumps(*args: Any, **kwargs: Any) -> str:
+        nonlocal json_dumps_calls
+        json_dumps_calls += 1
+        return real_json_dumps(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "polymarket_engine.ingestion.rust_event_normalizer.json.dumps",
+        counting_json_dumps,
+    )
+
+    duplicate = normalize_rust_event_file(
+        path=raw_path,
+        store=store,
+        last_orderbook_state_by_token=orderbook_state_cache,
+    )
+
+    assert first.orderbooks_written == 1
+    assert duplicate.rows_read == 1
+    assert duplicate.orderbooks_written == 0
+    assert json_dumps_calls == 0
+    assert store.insert_orderbook_snapshots_calls == 0
 
 
 def test_normalizer_waits_for_complete_appended_jsonl_line(tmp_path: Path) -> None:

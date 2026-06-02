@@ -34,6 +34,20 @@ class RustEventNormalizeResult:
     orderbooks_written: int
 
 
+@dataclass(frozen=True)
+class _TopOfBookRow:
+    token_key: tuple[str, str]
+    state_key: tuple[object, ...]
+    contract_id: str
+    token_id: str
+    event_ts: datetime
+    observed_ts: datetime
+    best_bid: float | None
+    best_ask: float | None
+    spread: float | None
+    payload: dict[str, Any]
+
+
 def normalize_rust_event_tree(
     *,
     raw_root: Path,
@@ -137,6 +151,16 @@ def normalize_rust_event_file(
             price_ticks.append(tick)
             event_times.append(tick.event_ts)
             price_ticks_written += 1
+        top_of_book = _top_of_book_row_from_raw(row)
+        if top_of_book is not None:
+            if orderbook_state_cache.get(top_of_book.token_key) == top_of_book.state_key:
+                continue
+            orderbook_state_cache[top_of_book.token_key] = top_of_book.state_key
+            orderbook = _orderbook_from_top_of_book_row(top_of_book)
+            orderbooks.append(orderbook)
+            event_times.append(orderbook.event_ts)
+            orderbooks_written += 1
+            continue
         for book in _orderbooks_from_row(row):
             token_key = (book.venue, book.token_id)
             state_key = _orderbook_state_key(book)
@@ -308,10 +332,17 @@ def _price_tick_from_state_row(row: object) -> PriceObservation:
 def _orderbooks_from_row(row: dict[str, Any]) -> tuple[OrderBookObservation, ...]:
     if row.get("schema_version") == STATE_MANAGER_SCHEMA_VERSION:
         return tuple(_orderbook_from_state_row(book) for book in row.get("orderbooks", []))
+    top_of_book = _top_of_book_row_from_raw(row)
+    if top_of_book is None:
+        return ()
+    return (_orderbook_from_top_of_book_row(top_of_book),)
+
+
+def _top_of_book_row_from_raw(row: dict[str, Any]) -> _TopOfBookRow | None:
     if row.get("source_key") != "polymarket_clob_market_ws":
-        return ()
+        return None
     if row.get("stream_key") != "best_bid_ask":
-        return ()
+        return None
     payload = _payload(row)
     best_bid = _optional_probability_float(payload.get("best_bid"), "best_bid")
     best_ask = _optional_probability_float(payload.get("best_ask"), "best_ask")
@@ -321,31 +352,58 @@ def _orderbooks_from_row(row: dict[str, Any]) -> tuple[OrderBookObservation, ...
         _optional_probability_float(payload.get("spread"), "spread"),
     )
     token_id = str(payload.get("token_id") or row.get("symbol"))
-    return (
-        OrderBookObservation(
-            venue="polymarket",
-            contract_id=str(payload["contract_id"]),
-            token_id=token_id,
-            event_ts=_parse_ts(row["event_ts"]),
-            observed_ts=_parse_ts(row["observed_ts"]),
-            best_bid=best_bid,
-            best_ask=best_ask,
-            bid_size_top=None,
-            ask_size_top=None,
-            spread=spread,
-            depth_json=json.dumps(
-                {
-                    "source_key": "polymarket_clob_market_ws",
-                    "stream_key": "best_bid_ask",
-                    "top_of_book": {
-                        "best_bid": _json_scalar(payload.get("best_bid")),
-                        "best_ask": _json_scalar(payload.get("best_ask")),
-                        "spread": _json_scalar(payload.get("spread")),
-                    },
+    contract_id = str(payload["contract_id"])
+    event_ts = _parse_ts(row["event_ts"])
+    observed_ts = _parse_ts(row["observed_ts"])
+    return _TopOfBookRow(
+        token_key=("polymarket", token_id),
+        state_key=(
+            "top_of_book",
+            "polymarket",
+            contract_id,
+            token_id,
+            event_ts,
+            best_bid,
+            best_ask,
+            None,
+            None,
+            spread,
+        ),
+        contract_id=contract_id,
+        token_id=token_id,
+        event_ts=event_ts,
+        observed_ts=observed_ts,
+        best_bid=best_bid,
+        best_ask=best_ask,
+        spread=spread,
+        payload=payload,
+    )
+
+
+def _orderbook_from_top_of_book_row(row: _TopOfBookRow) -> OrderBookObservation:
+    return OrderBookObservation(
+        venue="polymarket",
+        contract_id=row.contract_id,
+        token_id=row.token_id,
+        event_ts=row.event_ts,
+        observed_ts=row.observed_ts,
+        best_bid=row.best_bid,
+        best_ask=row.best_ask,
+        bid_size_top=None,
+        ask_size_top=None,
+        spread=row.spread,
+        depth_json=json.dumps(
+            {
+                "source_key": "polymarket_clob_market_ws",
+                "stream_key": "best_bid_ask",
+                "top_of_book": {
+                    "best_bid": _json_scalar(row.payload.get("best_bid")),
+                    "best_ask": _json_scalar(row.payload.get("best_ask")),
+                    "spread": _json_scalar(row.payload.get("spread")),
                 },
-                sort_keys=True,
-                separators=(",", ":"),
-            ),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
         ),
     )
 
