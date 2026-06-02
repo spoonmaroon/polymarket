@@ -98,6 +98,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Also build states for the next warmed contract window.",
     )
 
+    verify_hot_replay = subparsers.add_parser("verify-hot-decision-replay")
+    verify_hot_replay.add_argument("--raw-root", type=Path, required=True)
+    verify_hot_replay.add_argument("--duckdb-path", type=Path, required=True)
+    verify_hot_replay.add_argument("--limit", type=int, default=40)
+    verify_hot_replay.add_argument("--scan-limit", type=int, default=1000)
+    verify_hot_replay.add_argument("--report-out", type=Path, default=None)
+
     return parser.parse_args(argv)
 
 
@@ -113,6 +120,8 @@ async def run_collect_command(argv: list[str] | None = None) -> int:
         return _run_write_normalized_health(args)
     if args.command == "build-current-decision-states":
         return _run_build_current_decision_states(args)
+    if args.command == "verify-hot-decision-replay":
+        return _run_verify_hot_decision_replay(args)
     if args.command != "collect":
         return 2
     raise SystemExit(RETIRED_COLLECTOR_MESSAGE)
@@ -189,6 +198,58 @@ def _run_build_current_decision_states(args: argparse.Namespace) -> int:
         )
     )
     return 0
+
+
+def _run_verify_hot_decision_replay(args: argparse.Namespace) -> int:
+    from polymarket_engine.features.hot_decision_replay import (
+        recent_hot_decision_rows,
+        replay_ready_hot_decision_rows,
+        verify_hot_decision_rows,
+    )
+    from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
+
+    store = DuckDbIngestStore(args.duckdb_path)
+    scanned_rows = recent_hot_decision_rows(args.raw_root, limit=args.scan_limit)
+    selection = replay_ready_hot_decision_rows(
+        rows=scanned_rows,
+        store=store,
+        limit=args.limit,
+    )
+    result = verify_hot_decision_rows(rows=selection.rows, store=store)
+    payload = {
+        "ok": result.ok and result.rows_checked > 0,
+        "rows_scanned": selection.rows_scanned,
+        "rows_checked": result.rows_checked,
+        "rows_skipped_not_replay_ready": selection.rows_skipped_not_replay_ready,
+        "mismatch_count": len(result.mismatches),
+        "price_observed_watermark": _isoformat_optional(selection.price_observed_watermark),
+        "orderbook_observed_watermark": _isoformat_optional(selection.orderbook_observed_watermark),
+        "mismatches": [
+            {
+                "state_id": mismatch.state_id,
+                "field": mismatch.field,
+                "hot_value": mismatch.hot_value,
+                "replay_value": mismatch.replay_value,
+            }
+            for mismatch in result.mismatches
+        ],
+    }
+    if args.report_out is not None:
+        args.report_out.parent.mkdir(parents=True, exist_ok=True)
+        args.report_out.write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    print(json.dumps(payload, sort_keys=True))
+    return 0 if payload["ok"] else 1
+
+
+def _isoformat_optional(value: object) -> str | None:
+    if value is None:
+        return None
+    if hasattr(value, "isoformat"):
+        return str(value.isoformat())
+    return str(value)
 
 
 def _install_shutdown_signal_handlers(

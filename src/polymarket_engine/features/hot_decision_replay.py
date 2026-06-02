@@ -4,10 +4,12 @@ import json
 from collections import deque
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, cast
+
+import duckdb
 
 from polymarket_engine.domain.contracts import Asset, ContractSide, ContractSpec
 from polymarket_engine.features.state_builder import DecisionStateUnavailable
@@ -59,6 +61,15 @@ class HotDecisionReplayResult:
         return not self.mismatches
 
 
+@dataclass(frozen=True)
+class HotDecisionReplaySelection:
+    rows: tuple[dict[str, Any], ...]
+    rows_scanned: int
+    rows_skipped_not_replay_ready: int
+    price_observed_watermark: datetime | None
+    orderbook_observed_watermark: datetime | None
+
+
 def recent_hot_decision_rows(raw_root: Path, *, limit: int) -> tuple[dict[str, Any], ...]:
     if limit <= 0:
         raise ValueError("limit must be positive")
@@ -75,6 +86,34 @@ def recent_hot_decision_rows(raw_root: Path, *, limit: int) -> tuple[dict[str, A
     return tuple(rows)
 
 
+def replay_ready_hot_decision_rows(
+    *,
+    rows: Sequence[dict[str, Any]],
+    store: DuckDbIngestStore,
+    limit: int,
+) -> HotDecisionReplaySelection:
+    if limit <= 0:
+        raise ValueError("limit must be positive")
+    price_watermark, orderbook_watermark = _duckdb_observed_watermarks(store)
+    eligible = tuple(
+        row
+        for row in rows
+        if _is_replay_ready(
+            row,
+            price_observed_watermark=price_watermark,
+            orderbook_observed_watermark=orderbook_watermark,
+        )
+    )
+    selected = eligible[-limit:]
+    return HotDecisionReplaySelection(
+        rows=selected,
+        rows_scanned=len(rows),
+        rows_skipped_not_replay_ready=len(rows) - len(eligible),
+        price_observed_watermark=price_watermark,
+        orderbook_observed_watermark=orderbook_watermark,
+    )
+
+
 def verify_hot_decision_rows(
     *,
     rows: Sequence[dict[str, Any]],
@@ -86,6 +125,49 @@ def verify_hot_decision_rows(
         for row in rows
     )
     return HotDecisionReplayResult(rows_checked=len(rows), comparisons=comparisons)
+
+
+def _duckdb_observed_watermarks(store: DuckDbIngestStore) -> tuple[datetime | None, datetime | None]:
+    with duckdb.connect(str(store.db_path), read_only=True) as conn:
+        price_row = conn.execute("select max(observed_ts)::VARCHAR from core.price_ticks").fetchone()
+        orderbook_row = conn.execute(
+            "select max(observed_ts)::VARCHAR from core.orderbook_snapshots"
+        ).fetchone()
+    return _optional_parse_ts(price_row[0] if price_row else None), _optional_parse_ts(
+        orderbook_row[0] if orderbook_row else None
+    )
+
+
+def _is_replay_ready(
+    row: dict[str, Any],
+    *,
+    price_observed_watermark: datetime | None,
+    orderbook_observed_watermark: datetime | None,
+) -> bool:
+    source_observed_ts = _observed_ts_from_age(row, "source_age_ms")
+    if source_observed_ts is None or price_observed_watermark is None:
+        return False
+    if source_observed_ts > price_observed_watermark:
+        return False
+
+    if _has_hot_orderbook(row):
+        book_observed_ts = _observed_ts_from_age(row, "book_age_ms")
+        if book_observed_ts is None or orderbook_observed_watermark is None:
+            return False
+        if book_observed_ts > orderbook_observed_watermark:
+            return False
+    return True
+
+
+def _observed_ts_from_age(row: dict[str, Any], age_field: str) -> datetime | None:
+    age_value = row.get(age_field)
+    if age_value is None:
+        return None
+    return _parse_ts(row["asof_ts"]) - timedelta(milliseconds=int(str(age_value)))
+
+
+def _has_hot_orderbook(row: dict[str, Any]) -> bool:
+    return any(row.get(field) is not None for field in ("best_bid", "best_ask", "spread", "book_age_ms"))
 
 
 def _compare_hot_decision_row(
@@ -340,3 +422,9 @@ def _parse_ts(value: object) -> datetime:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def _optional_parse_ts(value: object) -> datetime | None:
+    if value is None:
+        return None
+    return _parse_ts(value)

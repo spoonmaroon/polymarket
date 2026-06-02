@@ -53,6 +53,43 @@ The synthetic replay test writes Rust-shaped raw Chainlink and CLOB JSONL,
 normalizes those raw rows into DuckDB, and compares a hot decision snapshot
 against replay at the same `asof_ts`.
 
+## Verifier Command
+
+The proof is now available as a reusable CLI command:
+
+```bash
+uv run polymarket-engine verify-hot-decision-replay \
+  --raw-root /home/spoon/polymarket-data/raw \
+  --duckdb-path /home/spoon/polymarket-data/db/polymarket.duckdb \
+  --limit 40 \
+  --scan-limit 1000 \
+  --report-out /home/spoon/polymarket-data/live/hot_decision_replay_report.json
+```
+
+The command scans recent Rust hot decision JSONL rows, filters out rows whose
+inferred Chainlink/order-book observed timestamps are newer than the normalized
+DuckDB watermarks, replays the eligible rows from DuckDB, and writes a compact
+JSON report with `rows_scanned`, `rows_checked`,
+`rows_skipped_not_replay_ready`, `mismatch_count`, and detailed mismatches.
+
+Local verification:
+
+```bash
+uv run pytest -q tests/features/test_hot_decision_replay_verifier.py tests/features/test_state_builder.py tests/test_cli.py
+uv run ruff check .
+uv run mypy src tests
+uv run pytest -q
+```
+
+Result:
+
+```text
+27 passed
+All checks passed!
+Success: no issues found in 81 source files
+267 passed, 1 warning
+```
+
 ## Spoon Snapshot Proof
 
 Method:

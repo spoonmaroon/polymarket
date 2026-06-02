@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from signal import SIGTERM, Signals
 from typing import Any
@@ -8,6 +9,7 @@ import pytest
 
 from polymarket_engine import cli
 from polymarket_engine.cli import parse_args
+from polymarket_engine.ingestion.rust_event_normalizer import normalize_rust_event_tree
 from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
 
 
@@ -160,6 +162,31 @@ def test_parse_build_current_decision_states_args() -> None:
     assert args.duckdb_path == Path("data/db/polymarket.duckdb")
     assert args.status_path == Path("data/live/status.json")
     assert args.include_next is True
+
+
+def test_parse_verify_hot_decision_replay_args() -> None:
+    args = parse_args(
+        [
+            "verify-hot-decision-replay",
+            "--raw-root",
+            "data/raw",
+            "--duckdb-path",
+            "data/db/polymarket.duckdb",
+            "--limit",
+            "10",
+            "--scan-limit",
+            "200",
+            "--report-out",
+            "reports/hot-replay.json",
+        ]
+    )
+
+    assert args.command == "verify-hot-decision-replay"
+    assert args.raw_root == Path("data/raw")
+    assert args.duckdb_path == Path("data/db/polymarket.duckdb")
+    assert args.limit == 10
+    assert args.scan_limit == 200
+    assert args.report_out == Path("reports/hot-replay.json")
 
 
 @pytest.mark.anyio
@@ -316,6 +343,111 @@ async def test_run_build_current_decision_states_command(
 
 
 @pytest.mark.anyio
+async def test_run_verify_hot_decision_replay_command_writes_report(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    db_path = tmp_path / "state.duckdb"
+    raw_root = tmp_path / "raw"
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    start_ts = datetime(2026, 6, 2, 8, 10, tzinfo=timezone.utc)
+    asof_ts = start_ts + timedelta(seconds=72, milliseconds=500)
+    token_id = "up-token"
+    _write_jsonl(
+        raw_root
+        / "polymarket_rtds_chainlink"
+        / "price_update"
+        / "date=2026-06-02"
+        / "hour=08"
+        / "events.jsonl",
+        [
+            {
+                "source_key": "polymarket_rtds_chainlink",
+                "stream_key": "price_update",
+                "symbol": "BTC/USD",
+                "event_ts": start_ts.isoformat(),
+                "observed_ts": (start_ts + timedelta(milliseconds=100)).isoformat(),
+                "payload": {"value": "70000.0"},
+            },
+            {
+                "source_key": "polymarket_rtds_chainlink",
+                "stream_key": "price_update",
+                "symbol": "BTC/USD",
+                "event_ts": (asof_ts - timedelta(seconds=2)).isoformat(),
+                "observed_ts": (asof_ts - timedelta(seconds=1)).isoformat(),
+                "payload": {"value": "70050.0"},
+            },
+        ],
+    )
+    _write_jsonl(
+        raw_root
+        / "polymarket_clob_market_ws"
+        / "best_bid_ask"
+        / "date=2026-06-02"
+        / "hour=08"
+        / "events.jsonl",
+        [
+            {
+                "source_key": "polymarket_clob_market_ws",
+                "stream_key": "best_bid_ask",
+                "symbol": token_id,
+                "event_ts": (asof_ts - timedelta(seconds=3)).isoformat(),
+                "observed_ts": (asof_ts - timedelta(milliseconds=500)).isoformat(),
+                "payload": {
+                    "contract_id": "0xcondition",
+                    "token_id": token_id,
+                    "best_bid": "0.61",
+                    "best_ask": "0.64",
+                    "spread": "0.03",
+                },
+            }
+        ],
+    )
+    _write_jsonl(
+        raw_root
+        / "polymarket_decision_state"
+        / "hot_state"
+        / "date=2026-06-02"
+        / "hour=08"
+        / "decision-state.jsonl",
+        [
+            _hot_decision_row(start_ts, asof_ts),
+            _hot_decision_row(start_ts, asof_ts + timedelta(minutes=2)),
+        ],
+    )
+    normalize_rust_event_tree(raw_root=raw_root, store=store)
+    report_path = tmp_path / "reports" / "hot-replay.json"
+
+    result = await cli.run_collect_command(
+        [
+            "verify-hot-decision-replay",
+            "--raw-root",
+            str(raw_root),
+            "--duckdb-path",
+            str(db_path),
+            "--limit",
+            "1",
+            "--scan-limit",
+            "5",
+            "--report-out",
+            str(report_path),
+        ]
+    )
+
+    assert result == 0
+    stdout_payload = json.loads(capsys.readouterr().out)
+    file_payload = json.loads(report_path.read_text(encoding="utf-8"))
+    assert stdout_payload == file_payload
+    assert file_payload["ok"] is True
+    assert file_payload["rows_scanned"] == 2
+    assert file_payload["rows_checked"] == 1
+    assert file_payload["rows_skipped_not_replay_ready"] == 1
+    assert file_payload["mismatch_count"] == 0
+    assert file_payload["mismatches"] == []
+
+
+@pytest.mark.anyio
 async def test_run_collect_command_rejects_retired_python_collector(tmp_path: Path) -> None:
     with pytest.raises(SystemExit, match="Python live collection is retired"):
         await cli.run_collect_command(
@@ -368,3 +500,51 @@ def test_shutdown_signal_handler_cancels_collector_task() -> None:
 async def test_run_collect_command_rejects_retired_collector_even_with_forever() -> None:
     with pytest.raises(SystemExit, match="Python live collection is retired"):
         await cli.run_collect_command(["collect", "--assets", "BTC,ETH", "--forever"])
+
+
+def _hot_decision_row(start_ts: datetime, asof_ts: datetime) -> dict[str, object]:
+    return {
+        "schema_version": "rust-hot-decision-state-v1",
+        "state_id": f"btc-updown-5m-{int(start_ts.timestamp())}:UP:{asof_ts.isoformat()}",
+        "trigger_kind": "OrderBookTopOfBook",
+        "trigger_symbol": None,
+        "trigger_token_id": "up-token",
+        "asof_ts": asof_ts.isoformat(),
+        "contract": {
+            "window": {
+                "asset": "BTC",
+                "interval": "5m",
+                "start_ts": start_ts.isoformat(),
+                "end_ts": (start_ts + timedelta(minutes=5)).isoformat(),
+            },
+            "up": {"asset": "BTC", "side": "Up", "token_id": "up-token"},
+            "down": {"asset": "BTC", "side": "Down", "token_id": "down-token"},
+        },
+        "side": "Up",
+        "token_id": "up-token",
+        "threshold_price": "70000.0",
+        "threshold_event_ts": start_ts.isoformat(),
+        "settlement_price": "70050.0",
+        "settlement_event_ts": (asof_ts - timedelta(seconds=2)).isoformat(),
+        "best_bid": "0.61",
+        "best_ask": "0.64",
+        "executable_price": "0.64",
+        "spread": "0.03",
+        "source_age_ms": 1000,
+        "book_age_ms": 500,
+        "data_quality_flags": [],
+        "latency": {
+            "trigger_event_to_observed_ms": 2500,
+            "observed_to_state_us": 100,
+            "state_to_persist_us": None,
+            "total_event_to_persist_ms": None,
+        },
+    }
+
+
+def _write_jsonl(path: Path, rows: list[dict[str, object]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "".join(f"{json.dumps(row, sort_keys=True)}\n" for row in rows),
+        encoding="utf-8",
+    )
