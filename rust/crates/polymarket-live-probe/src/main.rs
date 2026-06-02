@@ -11,6 +11,7 @@ mod clob_ws;
 mod polymarket;
 mod prices;
 mod report;
+mod snapshot_journal;
 mod state_manager;
 mod windows;
 
@@ -46,6 +47,8 @@ struct Args {
     max_chainlink_cache_age_ms: u64,
     #[arg(long)]
     chainlink_cache_path: Option<PathBuf>,
+    #[arg(long)]
+    state_snapshot_dir: Option<PathBuf>,
     #[arg(long, default_value = "reports/live_probe/latest.json")]
     out: PathBuf,
 }
@@ -182,6 +185,10 @@ async fn run_state_manager(args: Args) -> Result<()> {
     let mut timer = report::ProbeTimer::start();
     timer.mark("start");
     let mut runtime = state_manager::StateManagerRuntime::start(config).await?;
+    let snapshot_journal = args
+        .state_snapshot_dir
+        .clone()
+        .map(snapshot_journal::StateSnapshotJournal::new);
     let interval = Duration::from_millis(args.status_interval_ms);
     let deadline = if args.forever {
         None
@@ -202,6 +209,10 @@ async fn run_state_manager(args: Args) -> Result<()> {
             websocket_status,
         });
         report::write_state_manager_report(&args.out, &report)?;
+        if let Some(journal) = &snapshot_journal {
+            let path = journal.append(&report)?;
+            info!(path = %path.display(), "appended rust state manager snapshot");
+        }
         timer.mark("state_report_written");
         info!(
             path = %args.out.display(),

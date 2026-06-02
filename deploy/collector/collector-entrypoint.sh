@@ -4,6 +4,7 @@ set -eu
 RAW_DIR="${POLYMARKET_RAW_DIR:-/var/lib/polymarket/raw}"
 LIVE_DIR="${POLYMARKET_LIVE_DIR:-/var/lib/polymarket/live}"
 STATUS_PATH="${POLYMARKET_STATUS_PATH:-$LIVE_DIR/status.json}"
+STATE_SNAPSHOT_DIR="${POLYMARKET_STATE_SNAPSHOT_DIR:-$RAW_DIR/polymarket_state_manager/state_snapshot}"
 
 if [ ! -f "$RAW_DIR/.polymarket_archive_root" ]; then
   echo "missing archive sentinel: $RAW_DIR/.polymarket_archive_root" >&2
@@ -33,4 +34,5 @@ exec /usr/local/bin/polymarket-live-probe \
   --stale-chainlink-after-ms "$STALE_CHAINLINK_AFTER_MS" \
   --stale-orderbook-after-ms "$STALE_ORDERBOOK_AFTER_MS" \
   --rest-backup-interval-ms "$REST_BACKUP_INTERVAL_MS" \
+  --state-snapshot-dir "$STATE_SNAPSHOT_DIR" \
   --out "$STATUS_PATH"

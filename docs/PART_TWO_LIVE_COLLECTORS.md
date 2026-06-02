@@ -42,6 +42,7 @@ polymarket-live-probe \
   --interval 5m \
   --prewarm-windows 2 \
   --forever \
+  --state-snapshot-dir /var/lib/polymarket/raw/polymarket_state_manager/state_snapshot \
   --out /var/lib/polymarket/live/status.json
 ```
 
@@ -58,11 +59,14 @@ The Rust state-manager status file records:
 - Source/order-book freshness rows.
 - WebSocket connection status for Chainlink and CLOB streams.
 - Health flags that force the checker to fail closed.
+- Append-only UTC-hour state snapshots under
+  `/var/lib/polymarket/raw/polymarket_state_manager/state_snapshot`.
 
-Current caveat: the Rust state-manager writes the atomic status file but does
-not yet persist every raw event into Parquet or normalized DuckDB tables. That
-durable persistence step remains required before long-run research labels and
-probability backtests can rely on the Rust runtime as the sole data source.
+Current caveat: the Rust state-manager now persists replayable state snapshots,
+but it still does not persist every raw WebSocket event into Parquet or
+normalized DuckDB tables. That full raw-event persistence step remains required
+before long-run research labels and probability backtests can rely on the Rust
+runtime as the sole data source.
 
 ## Source Rules
 
@@ -75,7 +79,7 @@ probability backtests can rely on the Rust runtime as the sole data source.
 - A historical proxy row that exactly matches the same timestamped Chainlink value may be kept as validation evidence. It must not become an additional realized-volatility observation, because that would double-count one move.
 - Binance.com is disabled by default on this machine because it returned `HTTP 451`.
 - Every source event must preserve both source timestamp and local receive timestamp.
-- Raw writes are crash-durable: `.parquet.tmp` files are atomically published and orphaned temporary files are cleaned at startup.
+- The active Rust runtime writes append-only state snapshots. Full raw Parquet event persistence remains a required follow-up before replay/backtest work.
 - WebSocket outages are handled with capped reconnect backoff; other sources continue running when one feed disconnects.
 - RTDS subscribes to all Chainlink crypto symbols and filters locally to configured assets, because filtered multi-symbol subscriptions can omit live ETH updates. It also subscribes to per-symbol RTDS Binance proxy filters for the configured assets.
 
@@ -85,7 +89,7 @@ Part Two does not trade, does not build model probabilities, and does not place 
 
 ## Retention Policy
 
-Raw event data should be retained hot for 90 days once Rust persistence is added. Hot raw data should include Polymarket market snapshots, CLOB market WebSocket events, REST order-book backup snapshots, RTDS Chainlink price updates, proxy price updates, source errors, and raw collector payloads.
+State snapshots should be retained hot for 90 days with the rest of raw data. Full raw event data should also be retained hot for 90 days once Rust event persistence is added. Hot raw data should include Polymarket market snapshots, CLOB market WebSocket events, REST order-book backup snapshots, RTDS Chainlink price updates, proxy price updates, source errors, and raw collector payloads.
 
 After 90 days, raw events should be compacted into replay-safe research tables before deletion is enabled. The compact layer should preserve 1-second price bars, 1-second top-of-book rows, source freshness, contract windows, rule hashes, decision states, and final labels. Automatic deletion remains disabled until replay tests prove compacted tables reproduce the same as-of state for sampled contracts.
 

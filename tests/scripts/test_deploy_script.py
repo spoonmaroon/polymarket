@@ -26,3 +26,17 @@ def test_collector_container_healthcheck_uses_status_validator() -> None:
     assert "--max-orderbook-age-ms" in compose
     assert "--max-websocket-event-age-ms" in compose
     assert "30000" in compose
+
+
+def test_collector_entrypoint_enables_state_snapshot_journal() -> None:
+    compose = (ROOT / "deploy" / "collector" / "docker-compose.yml").read_text(
+        encoding="utf-8"
+    )
+    entrypoint = (
+        ROOT / "deploy" / "collector" / "collector-entrypoint.sh"
+    ).read_text(encoding="utf-8")
+
+    assert "POLYMARKET_STATE_SNAPSHOT_DIR" in compose
+    assert "STATE_SNAPSHOT_DIR=" in entrypoint
+    assert "--state-snapshot-dir" in entrypoint
+    assert '"$STATE_SNAPSHOT_DIR"' in entrypoint

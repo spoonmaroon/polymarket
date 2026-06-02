@@ -11,6 +11,9 @@ def test_part_two_docs_describe_active_5m_rust_state_manager() -> None:
     assert "BTC/ETH 5m current, next, and next-next windows" in text
     assert "--mode state-manager" in text
     assert "--interval 5m" in text
+    assert "--state-snapshot-dir" in text
+    assert "persists replayable state snapshots" in text
+    assert "still does not persist every raw WebSocket event" in text
     assert "--intervals 5m,15m" not in text
 
 
