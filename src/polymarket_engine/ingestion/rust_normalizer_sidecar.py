@@ -11,10 +11,19 @@ from polymarket_engine.features.rust_decision_snapshots import (
 )
 from polymarket_engine.health.normalized_status import write_normalized_health_status
 from polymarket_engine.ingestion.rust_event_normalizer import (
+    RUST_JSONL_STREAMS,
+    STATE_SNAPSHOT_STREAMS,
     RustEventNormalizeResult,
     normalize_rust_event_tree,
 )
 from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
+
+
+@dataclass(frozen=True)
+class RawTreeFileSignature:
+    path: Path
+    size_bytes: int
+    mtime_ns: int
 
 
 @dataclass(frozen=True)
@@ -165,23 +174,47 @@ def run_rust_normalizer_loop(
         store.apply_schema()
         cycles_run = 0
         previous_status_mtime_ns: int | None = None
+        previous_raw_signature: tuple[RawTreeFileSignature, ...] | None = None
         while True:
             cycle_started = time.monotonic()
             status_mtime_ns = _file_mtime_ns(status_path)
-            result = _run_rust_normalizer_cycle_with_store(
+            raw_signature = _raw_tree_signature(
                 raw_root=raw_root,
-                store=store,
-                status_path=status_path,
-                normalized_health_path=normalized_health_path,
-                include_next=include_next,
-                reprocess_all=reprocess_all,
-                apply_schema=False,
-                previous_status_mtime_ns=previous_status_mtime_ns,
-                status_mtime_ns=status_mtime_ns,
-                force_state_build=cycles_run == 0,
+                include_state_snapshots=False,
             )
+            raw_tree_idle = (
+                not reprocess_all
+                and cycles_run > 0
+                and raw_signature == previous_raw_signature
+            )
+            if raw_tree_idle:
+                result = _run_idle_rust_normalizer_cycle_with_store(
+                    raw_signature=raw_signature,
+                    store=store,
+                    status_path=status_path,
+                    normalized_health_path=normalized_health_path,
+                    include_next=include_next,
+                    reprocess_all=reprocess_all,
+                    previous_status_mtime_ns=previous_status_mtime_ns,
+                    status_mtime_ns=status_mtime_ns,
+                    force_state_build=cycles_run == 0,
+                )
+            else:
+                result = _run_rust_normalizer_cycle_with_store(
+                    raw_root=raw_root,
+                    store=store,
+                    status_path=status_path,
+                    normalized_health_path=normalized_health_path,
+                    include_next=include_next,
+                    reprocess_all=reprocess_all,
+                    apply_schema=False,
+                    previous_status_mtime_ns=previous_status_mtime_ns,
+                    status_mtime_ns=status_mtime_ns,
+                    force_state_build=cycles_run == 0,
+                )
             print(_cycle_log_line(result), flush=True)
             previous_status_mtime_ns = status_mtime_ns
+            previous_raw_signature = raw_signature
             cycles_run += 1
             if max_cycles is not None and cycles_run >= max_cycles:
                 return
@@ -192,6 +225,57 @@ def run_rust_normalizer_loop(
                     now=time.monotonic(),
                 )
             )
+
+
+def _run_idle_rust_normalizer_cycle_with_store(
+    *,
+    raw_signature: tuple[RawTreeFileSignature, ...],
+    store: DuckDbIngestStore,
+    status_path: Path,
+    normalized_health_path: Path,
+    include_next: bool,
+    reprocess_all: bool,
+    previous_status_mtime_ns: int | None = None,
+    status_mtime_ns: int | None = None,
+    force_state_build: bool = False,
+) -> RustNormalizerCycleResult:
+    cycle_started = time.perf_counter()
+    if status_mtime_ns is None:
+        status_mtime_ns = _file_mtime_ns(status_path)
+    build_state = status_mtime_ns is not None and (
+        force_state_build
+        or reprocess_all
+        or status_mtime_ns != previous_status_mtime_ns
+    )
+
+    contracts_upserted = 0
+    states_written = 0
+    unavailable: tuple[UnavailableDecisionState, ...] = ()
+    if build_state:
+        state_result = build_current_decision_state_snapshots(
+            status_path=status_path,
+            store=store,
+            include_next=include_next,
+        )
+        contracts_upserted = state_result.contracts_upserted
+        states_written = state_result.states_written
+        unavailable = state_result.unavailable
+    state_at = time.perf_counter()
+
+    write_normalized_health_status(store=store, out_path=normalized_health_path)
+    health_at = time.perf_counter()
+
+    return RustNormalizerCycleResult(
+        **_idle_normalizer_summary(raw_signature),
+        contracts_upserted=contracts_upserted,
+        states_written=states_written,
+        state_skipped=status_mtime_ns is not None and not build_state,
+        unavailable=unavailable,
+        elapsed_ms=_elapsed_ms(cycle_started, health_at),
+        normalize_ms=0,
+        state_ms=_elapsed_ms(cycle_started, state_at),
+        health_ms=_elapsed_ms(state_at, health_at),
+    )
 
 
 def _normalizer_summary(results: tuple[RustEventNormalizeResult, ...]) -> dict[str, int]:
@@ -205,6 +289,46 @@ def _normalizer_summary(results: tuple[RustEventNormalizeResult, ...]) -> dict[s
         "price_ticks_written": sum(result.price_ticks_written for result in results),
         "orderbooks_written": sum(result.orderbooks_written for result in results),
     }
+
+
+def _idle_normalizer_summary(
+    raw_signature: tuple[RawTreeFileSignature, ...],
+) -> dict[str, int]:
+    return {
+        "files": len(raw_signature),
+        "files_with_rows": 0,
+        "files_skipped": len(raw_signature),
+        "bytes_read": 0,
+        "file_size_bytes": sum(row.size_bytes for row in raw_signature),
+        "rows_read": 0,
+        "price_ticks_written": 0,
+        "orderbooks_written": 0,
+    }
+
+
+def _raw_tree_signature(
+    *,
+    raw_root: Path,
+    include_state_snapshots: bool,
+) -> tuple[RawTreeFileSignature, ...]:
+    streams = RUST_JSONL_STREAMS + (STATE_SNAPSHOT_STREAMS if include_state_snapshots else ())
+    rows: list[RawTreeFileSignature] = []
+    for source_key, stream_key in streams:
+        stream_root = raw_root / source_key / stream_key
+        if not stream_root.exists():
+            continue
+        for path in sorted(stream_root.rglob("*.jsonl")):
+            if not path.is_file():
+                continue
+            stat = path.stat()
+            rows.append(
+                RawTreeFileSignature(
+                    path=path,
+                    size_bytes=stat.st_size,
+                    mtime_ns=stat.st_mtime_ns,
+                )
+            )
+    return tuple(rows)
 
 
 def _elapsed_ms(start: float, end: float) -> int:
