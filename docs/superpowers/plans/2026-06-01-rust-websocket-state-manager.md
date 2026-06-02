@@ -477,7 +477,7 @@ git commit -m "Stream Chainlink BTC and ETH prices"
 - Create: `rust/crates/polymarket-live-probe/src/clob_ws.rs`
 - Modify: `rust/crates/polymarket-live-probe/src/main.rs`
 
-- [ ] **Step 1: Write subscription payload test**
+- [x] **Step 1: Write subscription payload test**
 
 Test that token IDs `111` and `222` produce:
 
@@ -487,7 +487,7 @@ Test that token IDs `111` and `222` produce:
 
 Use the exact field name expected by Polymarket market channel docs.
 
-- [ ] **Step 2: Write parser tests**
+- [x] **Step 2: Write parser tests**
 
 Add JSON fixtures for:
 
@@ -497,7 +497,7 @@ Add JSON fixtures for:
 
 Each test should assert token ID, best bid, best ask, spread, and observed timestamp behavior.
 
-- [ ] **Step 3: Implement subscription builder**
+- [x] **Step 3: Implement subscription builder**
 
 Add:
 
@@ -507,7 +507,7 @@ pub fn market_subscription_payload(token_ids: &[String]) -> serde_json::Value
 
 Sort and deduplicate token IDs before building the payload so reconnects are deterministic.
 
-- [ ] **Step 4: Implement event parser**
+- [x] **Step 4: Implement event parser**
 
 Add:
 
@@ -521,7 +521,7 @@ pub enum ClobMarketEvent {
 
 Parse only known events. Unknown events return `Ok(None)` so new venue messages do not crash the runtime.
 
-- [ ] **Step 5: Wire module**
+- [x] **Step 5: Wire module**
 
 Add to `main.rs`:
 
@@ -529,7 +529,7 @@ Add to `main.rs`:
 mod clob_ws;
 ```
 
-- [ ] **Step 6: Run tests**
+- [x] **Step 6: Run tests**
 
 ```bash
 cargo test -p polymarket-live-probe clob_ws::tests -q
