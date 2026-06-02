@@ -85,3 +85,20 @@ def test_collector_defaults_to_three_prewarm_windows() -> None:
     assert "POLYMARKET_PREWARM_WINDOWS=3" in env_example
     assert "POLYMARKET_PREWARM_WINDOWS:-3" in compose
     assert 'PREWARM_WINDOWS="${POLYMARKET_PREWARM_WINDOWS:-3}"' in entrypoint
+
+
+def test_normalizer_sidecar_is_deployed_and_health_checked() -> None:
+    compose = (ROOT / "deploy" / "collector" / "docker-compose.yml").read_text(
+        encoding="utf-8"
+    )
+    script = (ROOT / "scripts" / "deploy.sh").read_text(encoding="utf-8")
+
+    assert "normalizer:" in compose
+    assert "deploy/normalizer/Dockerfile" in compose
+    assert "NORMALIZER_INTERVAL_SECONDS" in compose
+    assert "polymarket-engine" in compose
+    assert "--normalized-health-path" in compose
+    assert "/var/lib/polymarket/live/normalized_health.json" in compose
+    assert "up -d --build collector normalizer" in script
+    assert "--normalized-health-path" in script
+    assert "$DATA_DIR/live/normalized_health.json" in script

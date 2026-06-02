@@ -38,7 +38,9 @@ if [ "$LOCAL" = "$REMOTE" ] && [ "$DEPLOYED_SHA" = "$REMOTE" ] && [ "${DEPLOY_FO
     --max-orderbook-age-ms 30000 \
     --max-websocket-event-age-ms 30000 \
     --raw-root "$DATA_DIR/raw" \
-    --max-raw-event-age-ms 30000 >> "$LOG_FILE" 2>&1; then
+    --max-raw-event-age-ms 30000 \
+    --normalized-health-path "$DATA_DIR/live/normalized_health.json" \
+    --max-normalized-health-age-ms 30000 >> "$LOG_FILE" 2>&1; then
     exit 0
   fi
   LOG "target commit already checked out but collector is unhealthy; redeploying"
@@ -70,7 +72,7 @@ compose() {
 LOG "stopping legacy Python collector containers if present"
 docker rm -f polymarket-collector-collector-1 polymarket-python-collector-retired-retired-python-collector-1 >> "$LOG_FILE" 2>&1 || true
 
-if ! compose -f "$COMPOSE_FILE" up -d --build collector >> "$LOG_FILE" 2>&1; then
+if ! compose -f "$COMPOSE_FILE" up -d --build collector normalizer >> "$LOG_FILE" 2>&1; then
   LOG "docker compose failed"
   exit 1
 fi
@@ -83,7 +85,9 @@ for _ in $(seq 1 "$DEPLOY_SMOKE_ATTEMPTS"); do
     --max-orderbook-age-ms 30000 \
     --max-websocket-event-age-ms 30000 \
     --raw-root "$DATA_DIR/raw" \
-    --max-raw-event-age-ms 30000 >> "$LOG_FILE" 2>&1; then
+    --max-raw-event-age-ms 30000 \
+    --normalized-health-path "$DATA_DIR/live/normalized_health.json" \
+    --max-normalized-health-age-ms 30000 >> "$LOG_FILE" 2>&1; then
     echo "$REMOTE" > "$DEPLOYED_MARKER"
     LOG "deploy OK $REMOTE"
     exit 0
@@ -92,5 +96,5 @@ for _ in $(seq 1 "$DEPLOY_SMOKE_ATTEMPTS"); do
 done
 
 LOG "collector smoke failed; leaving container logs in docker compose"
-compose -f "$COMPOSE_FILE" logs --tail=80 collector >> "$LOG_FILE" 2>&1 || true
+compose -f "$COMPOSE_FILE" logs --tail=80 collector normalizer >> "$LOG_FILE" 2>&1 || true
 exit 1

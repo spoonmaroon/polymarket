@@ -1,0 +1,36 @@
+#!/usr/bin/env sh
+set -eu
+
+RAW_DIR="${POLYMARKET_RAW_DIR:-/var/lib/polymarket/raw}"
+DB_PATH="${POLYMARKET_DUCKDB_PATH:-/var/lib/polymarket/db/polymarket.duckdb}"
+LIVE_DIR="${POLYMARKET_LIVE_DIR:-/var/lib/polymarket/live}"
+STATUS_PATH="${POLYMARKET_STATUS_PATH:-$LIVE_DIR/status.json}"
+NORMALIZED_HEALTH_PATH="${POLYMARKET_NORMALIZED_HEALTH_PATH:-$LIVE_DIR/normalized_health.json}"
+INTERVAL_SECONDS="${POLYMARKET_NORMALIZER_INTERVAL_SECONDS:-5}"
+
+if [ ! -f "$RAW_DIR/.polymarket_archive_root" ]; then
+  echo "missing archive sentinel: $RAW_DIR/.polymarket_archive_root" >&2
+  exit 66
+fi
+
+mkdir -p "$(dirname "$DB_PATH")" "$LIVE_DIR"
+
+while true; do
+  polymarket-engine normalize-rust-events \
+    --raw-root "$RAW_DIR" \
+    --duckdb-path "$DB_PATH" \
+    --include-state-snapshots
+
+  if [ -f "$STATUS_PATH" ]; then
+    polymarket-engine build-current-decision-states \
+      --duckdb-path "$DB_PATH" \
+      --status-path "$STATUS_PATH" \
+      --include-next
+  fi
+
+  polymarket-engine write-normalized-health \
+    --duckdb-path "$DB_PATH" \
+    --out "$NORMALIZED_HEALTH_PATH"
+
+  sleep "$INTERVAL_SECONDS"
+done

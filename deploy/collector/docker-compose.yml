@@ -47,6 +47,10 @@ services:
           "/var/lib/polymarket/raw",
           "--max-raw-event-age-ms",
           "30000",
+          "--normalized-health-path",
+          "/var/lib/polymarket/live/normalized_health.json",
+          "--max-normalized-health-age-ms",
+          "30000",
         ]
       interval: 30s
       timeout: 5s
@@ -54,3 +58,38 @@ services:
       start_period: 20s
     tmpfs:
       - /tmp
+
+  normalizer:
+    build:
+      context: ../..
+      dockerfile: deploy/normalizer/Dockerfile
+    image: polymarket-normalizer:latest
+    restart: unless-stopped
+    user: "${POLYMARKET_UID:-1000}:${POLYMARKET_GID:-1000}"
+    depends_on:
+      - collector
+    environment:
+      TZ: ${POLYMARKET_DISPLAY_TZ:-America/Chicago}
+      POLYMARKET_RAW_DIR: /var/lib/polymarket/raw
+      POLYMARKET_DUCKDB_PATH: /var/lib/polymarket/db/polymarket.duckdb
+      POLYMARKET_LIVE_DIR: /var/lib/polymarket/live
+      POLYMARKET_STATUS_PATH: /var/lib/polymarket/live/status.json
+      POLYMARKET_NORMALIZED_HEALTH_PATH: /var/lib/polymarket/live/normalized_health.json
+      POLYMARKET_NORMALIZER_INTERVAL_SECONDS: ${POLYMARKET_NORMALIZER_INTERVAL_SECONDS:-5}
+    volumes:
+      - ${POLYMARKET_DATA_DIR:-/home/spoon/polymarket-data}/raw:/var/lib/polymarket/raw
+      - ${POLYMARKET_DATA_DIR:-/home/spoon/polymarket-data}/db:/var/lib/polymarket/db
+      - ${POLYMARKET_DATA_DIR:-/home/spoon/polymarket-data}/live:/var/lib/polymarket/live
+      - ${POLYMARKET_DATA_DIR:-/home/spoon/polymarket-data}/logs:/var/lib/polymarket/logs
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "sh",
+          "-c",
+          "command -v polymarket-engine >/dev/null && python -c \"import json, os, time; p='/var/lib/polymarket/live/normalized_health.json'; payload=json.load(open(p)); assert payload['schema_version']=='polymarket-normalized-health-v1'; assert time.time()-os.stat(p).st_mtime < 30\"",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
