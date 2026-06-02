@@ -57,6 +57,30 @@ def test_collector_entrypoint_enables_state_snapshot_journal() -> None:
     assert '"$STATE_SNAPSHOT_DIR"' in entrypoint
 
 
+def test_collector_fast_status_keeps_one_second_snapshot_journal() -> None:
+    env_example = (ROOT / "deploy" / "collector" / ".env.example").read_text(
+        encoding="utf-8"
+    )
+    compose = (ROOT / "deploy" / "collector" / "docker-compose.yml").read_text(
+        encoding="utf-8"
+    )
+    entrypoint = (
+        ROOT / "deploy" / "collector" / "collector-entrypoint.sh"
+    ).read_text(encoding="utf-8")
+
+    assert "POLYMARKET_STATUS_INTERVAL_MS=250" in env_example
+    assert "POLYMARKET_STATUS_INTERVAL_MS:-250" in compose
+    assert 'STATUS_INTERVAL_MS="${POLYMARKET_STATUS_INTERVAL_MS:-250}"' in entrypoint
+    assert "POLYMARKET_STATE_SNAPSHOT_INTERVAL_MS=1000" in env_example
+    assert "POLYMARKET_STATE_SNAPSHOT_INTERVAL_MS:-1000" in compose
+    assert (
+        'STATE_SNAPSHOT_INTERVAL_MS="${POLYMARKET_STATE_SNAPSHOT_INTERVAL_MS:-1000}"'
+        in entrypoint
+    )
+    assert "--state-snapshot-interval-ms" in entrypoint
+    assert '"$STATE_SNAPSHOT_INTERVAL_MS"' in entrypoint
+
+
 def test_collector_entrypoint_enables_raw_event_journal() -> None:
     compose = (ROOT / "deploy" / "collector" / "docker-compose.yml").read_text(
         encoding="utf-8"

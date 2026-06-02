@@ -53,6 +53,8 @@ struct Args {
     chainlink_cache_path: Option<PathBuf>,
     #[arg(long)]
     state_snapshot_dir: Option<PathBuf>,
+    #[arg(long, default_value_t = 1_000)]
+    state_snapshot_interval_ms: u64,
     #[arg(long)]
     raw_event_dir: Option<PathBuf>,
     #[arg(long, default_value_t = 16_384)]
@@ -227,6 +229,7 @@ async fn run_state_manager(args: Args) -> Result<()> {
         .state_snapshot_dir
         .clone()
         .map(snapshot_journal::StateSnapshotJournal::new);
+    let mut last_state_snapshot_elapsed_ms: Option<u128> = None;
     let interval = Duration::from_millis(args.status_interval_ms);
     let deadline = if args.forever {
         None
@@ -241,8 +244,9 @@ async fn run_state_manager(args: Args) -> Result<()> {
         let subscriptions = runtime.subscriptions();
         let websocket_status = runtime.websocket_status(chrono::Utc::now());
         let hot_decision_telemetry = runtime.hot_decision_telemetry();
+        let elapsed_ms = timer.elapsed_ms();
         let report = report::build_state_manager_report(report::StateManagerReportInput {
-            elapsed_ms: timer.elapsed_ms(),
+            elapsed_ms,
             snapshot,
             subscriptions,
             websocket_status,
@@ -250,8 +254,15 @@ async fn run_state_manager(args: Args) -> Result<()> {
         });
         report::write_state_manager_report(&args.out, &report)?;
         if let Some(journal) = &snapshot_journal {
-            let path = journal.append(&report)?;
-            info!(path = %path.display(), "appended rust state manager snapshot");
+            if state_snapshot_due(
+                elapsed_ms,
+                last_state_snapshot_elapsed_ms,
+                args.state_snapshot_interval_ms,
+            ) {
+                let path = journal.append(&report)?;
+                last_state_snapshot_elapsed_ms = Some(elapsed_ms);
+                info!(path = %path.display(), "appended rust state manager snapshot");
+            }
         }
         timer.mark("state_report_written");
         info!(
@@ -307,9 +318,20 @@ fn parse_assets(raw: &str) -> Vec<String> {
         .collect::<Vec<_>>()
 }
 
+fn state_snapshot_due(
+    elapsed_ms: u128,
+    last_snapshot_elapsed_ms: Option<u128>,
+    interval_ms: u64,
+) -> bool {
+    let Some(last_snapshot_elapsed_ms) = last_snapshot_elapsed_ms else {
+        return true;
+    };
+    elapsed_ms.saturating_sub(last_snapshot_elapsed_ms) >= u128::from(interval_ms)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::Args;
+    use super::{Args, state_snapshot_due};
     use clap::Parser;
     use std::path::PathBuf;
 
@@ -342,6 +364,29 @@ mod tests {
             Some(PathBuf::from("/tmp/decision-states"))
         );
         assert_eq!(args.decision_event_buffer_size, 4096);
+    }
+
+    #[test]
+    fn parses_state_snapshot_interval_cli_options() {
+        let default_args = Args::parse_from(["polymarket-live-probe"]);
+        assert_eq!(default_args.state_snapshot_interval_ms, 1_000);
+
+        let args = Args::parse_from([
+            "polymarket-live-probe",
+            "--state-snapshot-interval-ms",
+            "2000",
+        ]);
+
+        assert_eq!(args.state_snapshot_interval_ms, 2_000);
+    }
+
+    #[test]
+    fn state_snapshot_due_keeps_journal_slower_than_status_loop() {
+        assert!(state_snapshot_due(0, None, 1_000));
+        assert!(!state_snapshot_due(250, Some(0), 1_000));
+        assert!(!state_snapshot_due(999, Some(0), 1_000));
+        assert!(state_snapshot_due(1_000, Some(0), 1_000));
+        assert!(state_snapshot_due(1_250, Some(250), 1_000));
     }
 
     #[test]
