@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import duckdb
+import polars as pl
 
 from polymarket_engine.domain.contracts import ContractSpec
 from polymarket_engine.domain.contract_rules import NormalizedContractRule
@@ -183,27 +184,28 @@ class DuckDbIngestStore:
     ) -> None:
         if not ticks:
             return
+        frame = pl.DataFrame(
+            {
+                "source_key": [tick.source_key for tick in ticks],
+                "symbol": [tick.symbol for tick in ticks],
+                "event_ts": [tick.event_ts for tick in ticks],
+                "observed_ts": [tick.observed_ts for tick in ticks],
+                "price": [tick.price for tick in ticks],
+                "bid": [tick.bid for tick in ticks],
+                "ask": [tick.ask for tick in ticks],
+                "sequence": [tick.sequence for tick in ticks],
+                "raw_file_id": [raw_file_id for _ in ticks],
+            }
+        )
         with duckdb.connect(str(self.db_path)) as conn:
-            conn.executemany(
+            conn.register("price_tick_rows", frame)
+            conn.execute(
                 """
                 insert or replace into core.price_ticks
                 (source_key, symbol, event_ts, observed_ts, price, bid, ask, sequence, raw_file_id)
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    [
-                        tick.source_key,
-                        tick.symbol,
-                        tick.event_ts,
-                        tick.observed_ts,
-                        tick.price,
-                        tick.bid,
-                        tick.ask,
-                        tick.sequence,
-                        raw_file_id,
-                    ]
-                    for tick in ticks
-                ],
+                select source_key, symbol, event_ts, observed_ts, price, bid, ask, sequence, raw_file_id
+                from price_tick_rows
+                """
             )
 
     def insert_orderbook_snapshot(
@@ -220,31 +222,33 @@ class DuckDbIngestStore:
     ) -> None:
         if not snapshots:
             return
+        frame = pl.DataFrame(
+            {
+                "venue": [snapshot.venue for snapshot in snapshots],
+                "contract_id": [snapshot.contract_id for snapshot in snapshots],
+                "token_id": [snapshot.token_id for snapshot in snapshots],
+                "event_ts": [snapshot.event_ts for snapshot in snapshots],
+                "observed_ts": [snapshot.observed_ts for snapshot in snapshots],
+                "best_bid": [snapshot.best_bid for snapshot in snapshots],
+                "best_ask": [snapshot.best_ask for snapshot in snapshots],
+                "bid_size_top": [snapshot.bid_size_top for snapshot in snapshots],
+                "ask_size_top": [snapshot.ask_size_top for snapshot in snapshots],
+                "spread": [snapshot.spread for snapshot in snapshots],
+                "depth_json": [snapshot.depth_json for snapshot in snapshots],
+                "raw_file_id": [raw_file_id for _ in snapshots],
+            }
+        )
         with duckdb.connect(str(self.db_path)) as conn:
-            conn.executemany(
+            conn.register("orderbook_snapshot_rows", frame)
+            conn.execute(
                 """
                 insert or replace into core.orderbook_snapshots
                 (venue, contract_id, token_id, event_ts, observed_ts, best_bid, best_ask,
                  bid_size_top, ask_size_top, spread, depth_json, raw_file_id)
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    [
-                        snapshot.venue,
-                        snapshot.contract_id,
-                        snapshot.token_id,
-                        snapshot.event_ts,
-                        snapshot.observed_ts,
-                        snapshot.best_bid,
-                        snapshot.best_ask,
-                        snapshot.bid_size_top,
-                        snapshot.ask_size_top,
-                        snapshot.spread,
-                        snapshot.depth_json,
-                        raw_file_id,
-                    ]
-                    for snapshot in snapshots
-                ],
+                select venue, contract_id, token_id, event_ts, observed_ts, best_bid, best_ask,
+                       bid_size_top, ask_size_top, spread, depth_json, raw_file_id
+                from orderbook_snapshot_rows
+                """
             )
 
     def upsert_asof_state_input(self, state: DecisionState) -> None:
