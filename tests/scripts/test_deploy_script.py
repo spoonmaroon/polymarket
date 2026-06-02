@@ -69,3 +69,19 @@ def test_collector_entrypoint_enables_raw_event_journal() -> None:
     assert "RAW_EVENT_DIR=" in entrypoint
     assert "--raw-event-dir" in entrypoint
     assert '"$RAW_EVENT_DIR"' in entrypoint
+
+
+def test_collector_defaults_to_three_prewarm_windows() -> None:
+    env_example = (ROOT / "deploy" / "collector" / ".env.example").read_text(
+        encoding="utf-8"
+    )
+    compose = (ROOT / "deploy" / "collector" / "docker-compose.yml").read_text(
+        encoding="utf-8"
+    )
+    entrypoint = (
+        ROOT / "deploy" / "collector" / "collector-entrypoint.sh"
+    ).read_text(encoding="utf-8")
+
+    assert "POLYMARKET_PREWARM_WINDOWS=3" in env_example
+    assert "POLYMARKET_PREWARM_WINDOWS:-3" in compose
+    assert 'PREWARM_WINDOWS="${POLYMARKET_PREWARM_WINDOWS:-3}"' in entrypoint
