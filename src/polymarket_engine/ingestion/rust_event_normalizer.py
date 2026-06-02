@@ -163,14 +163,15 @@ def normalize_rust_event_file(
             event_times.append(tick.event_ts)
             price_ticks_written += 1
             continue
-        for tick in _price_ticks_from_row(row):
-            symbol_key = (tick.source_key, tick.symbol)
-            state_key = _price_state_key(tick)
-            if price_state_cache.get(symbol_key) != state_key:
-                price_state_cache[symbol_key] = state_key
-                price_ticks.append(tick)
-                event_times.append(tick.event_ts)
-                price_ticks_written += 1
+        if row.get("schema_version") == STATE_MANAGER_SCHEMA_VERSION:
+            for tick in _price_ticks_from_row(row):
+                symbol_key = (tick.source_key, tick.symbol)
+                state_key = _price_state_key(tick)
+                if price_state_cache.get(symbol_key) != state_key:
+                    price_state_cache[symbol_key] = state_key
+                    price_ticks.append(tick)
+                    event_times.append(tick.event_ts)
+                    price_ticks_written += 1
         _append_orderbooks_from_row(
             row=row,
             orderbook_state_cache=orderbook_state_cache,

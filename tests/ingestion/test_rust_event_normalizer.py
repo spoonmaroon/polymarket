@@ -633,6 +633,57 @@ def test_duplicate_top_of_book_rows_skip_depth_json_materialization(
     assert store.insert_orderbook_snapshots_calls == 0
 
 
+def test_clob_rows_probe_price_tick_parser_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "state.duckdb"
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    raw_path = (
+        tmp_path
+        / "raw"
+        / "polymarket_clob_market_ws"
+        / "best_bid_ask"
+        / "date=2026-06-02"
+        / "hour=05"
+        / "events.jsonl"
+    )
+    _write_jsonl(
+        raw_path,
+        _orderbook_row(
+            "token-1",
+            "2026-06-02T05:33:54Z",
+            "2026-06-02T05:33:55Z",
+            0.61,
+            0.64,
+        ),
+    )
+    real_price_tick_row_from_raw = getattr(
+        __import__(
+            "polymarket_engine.ingestion.rust_event_normalizer",
+            fromlist=["_price_tick_row_from_raw"],
+        ),
+        "_price_tick_row_from_raw",
+    )
+    price_probe_calls = 0
+
+    def counting_price_tick_row_from_raw(*args: Any, **kwargs: Any) -> Any:
+        nonlocal price_probe_calls
+        price_probe_calls += 1
+        return real_price_tick_row_from_raw(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "polymarket_engine.ingestion.rust_event_normalizer._price_tick_row_from_raw",
+        counting_price_tick_row_from_raw,
+    )
+
+    result = normalize_rust_event_file(path=raw_path, store=store)
+
+    assert result.orderbooks_written == 1
+    assert price_probe_calls == 1
+
+
 def test_normalizer_waits_for_complete_appended_jsonl_line(tmp_path: Path) -> None:
     db_path = tmp_path / "state.duckdb"
     store = DuckDbIngestStore(db_path)
