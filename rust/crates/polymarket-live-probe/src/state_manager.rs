@@ -271,12 +271,21 @@ fn start_hot_decision_worker(
             for state in
                 builder.build_for_event(&event, &warmed_snapshot, &prices, &orderbooks, asof_ts)
             {
-                telemetry.record_state_built(state.asof_ts, state.latency.observed_to_state_us);
+                let state_asof_ts = state.asof_ts;
+                let observed_to_state_us = state.latency.observed_to_state_us;
                 if let Err(error) = decision_sink.try_record(state) {
-                    telemetry.record_dropped_event();
+                    telemetry.record_state_persist_result(
+                        state_asof_ts,
+                        observed_to_state_us,
+                        false,
+                    );
                     tracing::warn!(error = %error, "dropped hot decision state before persistence");
                 } else {
-                    telemetry.record_state_persist_queued();
+                    telemetry.record_state_persist_result(
+                        state_asof_ts,
+                        observed_to_state_us,
+                        true,
+                    );
                 }
             }
         }

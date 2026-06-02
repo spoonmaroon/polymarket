@@ -125,6 +125,27 @@ impl HotDecisionTelemetry {
         inner.states_persist_queued = inner.states_persist_queued.saturating_add(1);
     }
 
+    pub fn record_state_persist_result(
+        &self,
+        asof_ts: DateTime<Utc>,
+        observed_to_state_us: u128,
+        persist_queued: bool,
+    ) {
+        let mut inner = self
+            .inner
+            .write()
+            .expect("hot decision telemetry lock poisoned");
+        inner.states_built = inner.states_built.saturating_add(1);
+        inner.last_state_age_ms =
+            Some(Utc::now().signed_duration_since(asof_ts).num_milliseconds());
+        inner.last_observed_to_state_us = Some(observed_to_state_us);
+        if persist_queued {
+            inner.states_persist_queued = inner.states_persist_queued.saturating_add(1);
+        } else {
+            inner.dropped_events = inner.dropped_events.saturating_add(1);
+        }
+    }
+
     pub fn record_dropped_event(&self) {
         let mut inner = self
             .inner
@@ -668,6 +689,21 @@ mod telemetry_tests {
 
         let snapshot = telemetry.snapshot();
         assert_eq!(snapshot.states_built, 1);
+        assert_eq!(snapshot.states_persist_queued, 1);
+        assert_eq!(snapshot.dropped_events, 1);
+        assert_eq!(snapshot.last_observed_to_state_us, Some(900));
+    }
+
+    #[test]
+    fn hot_decision_telemetry_records_persist_result_with_one_call() {
+        let telemetry = HotDecisionTelemetry::default();
+        let ts = Utc::now();
+
+        telemetry.record_state_persist_result(ts, 700, true);
+        telemetry.record_state_persist_result(ts, 900, false);
+
+        let snapshot = telemetry.snapshot();
+        assert_eq!(snapshot.states_built, 2);
         assert_eq!(snapshot.states_persist_queued, 1);
         assert_eq!(snapshot.dropped_events, 1);
         assert_eq!(snapshot.last_observed_to_state_us, Some(900));
