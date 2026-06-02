@@ -315,7 +315,7 @@ def _iter_jsonl(
                 raw_line_handler(raw_line)
             if not raw_line.endswith(b"\n"):
                 break
-            if not raw_line.strip():
+            if raw_line[0] <= 32 and not raw_line.strip():
                 continue
             value = json.loads(raw_line)
             if not isinstance(value, dict):

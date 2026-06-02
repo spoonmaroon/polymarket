@@ -1188,6 +1188,14 @@ def test_jsonl_iterator_loads_raw_bytes_without_text_decode(
     assert seen_input_types == [bytes]
 
 
+def test_jsonl_iterator_skips_whitespace_only_lines() -> None:
+    raw_path = _FakeBinaryPath(b'{"source_key":"one"}\n  \t\r\n{"source_key":"two"}\n')
+
+    rows = tuple(_iter_jsonl(cast(Path, raw_path)))
+
+    assert rows == ({"source_key": "one"}, {"source_key": "two"})
+
+
 def test_complete_jsonl_byte_limit_does_not_scan_complete_tail() -> None:
     raw_bytes = (b'{"source_key":"one"}\n' * 10_000)
     path = _FakeBinaryPath(raw_bytes)
