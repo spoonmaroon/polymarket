@@ -32,6 +32,8 @@ def main() -> int:
     parser.add_argument("--max-websocket-event-age-ms", type=int, default=10_000)
     parser.add_argument("--raw-root", type=Path)
     parser.add_argument("--max-raw-event-age-ms", type=int, default=30_000)
+    parser.add_argument("--normalized-health-path", type=Path)
+    parser.add_argument("--max-normalized-health-age-ms", type=int, default=30_000)
     args = parser.parse_args()
 
     payload = json.loads(args.status_path.read_text(encoding="utf-8"))
@@ -65,6 +67,11 @@ def main() -> int:
             _reject_stale_raw_websocket_journals(
                 args.raw_root,
                 max_raw_event_age_ms=args.max_raw_event_age_ms,
+            )
+        if args.normalized_health_path is not None:
+            _reject_stale_normalized_health(
+                args.normalized_health_path,
+                max_normalized_health_age_ms=args.max_normalized_health_age_ms,
             )
     else:
         _reject_bad_freshness_rows(payload.get("source_freshness", []), label="source_freshness")
@@ -256,6 +263,58 @@ def _newest_raw_journal(root: Path) -> Path | None:
     if not files:
         return None
     return max(files, key=lambda path: path.stat().st_mtime)
+
+
+def _reject_stale_normalized_health(
+    path: Path,
+    *,
+    max_normalized_health_age_ms: int,
+) -> None:
+    if not path.exists():
+        raise SystemExit(f"normalized health missing: path={path}")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if payload.get("schema_version") != "polymarket-normalized-health-v1":
+        raise SystemExit("normalized health has unexpected schema_version")
+    now = datetime.now(timezone.utc)
+    generated_at = _parse_timestamp(payload.get("generated_at"))
+    generated_age_ms = int(
+        (now - generated_at.astimezone(timezone.utc)).total_seconds() * 1000
+    )
+    file_age_ms = int((time.time() - path.stat().st_mtime) * 1000)
+    if generated_age_ms > max_normalized_health_age_ms:
+        raise SystemExit(f"normalized health stale: generated_age_ms={generated_age_ms}")
+    if file_age_ms > max_normalized_health_age_ms:
+        raise SystemExit(f"normalized health stale: file_age_ms={file_age_ms}")
+
+    required_tables = {
+        "core.price_ticks",
+        "core.orderbook_snapshots",
+        "features.asof_state_inputs",
+    }
+    rows = payload.get("tables")
+    if not isinstance(rows, list):
+        raise SystemExit("normalized health tables must be a list")
+    by_table = {
+        str(row.get("table")): row
+        for row in rows
+        if isinstance(row, dict) and row.get("table") is not None
+    }
+    missing = sorted(required_tables - set(by_table))
+    if missing:
+        raise SystemExit("normalized health missing tables: " + ", ".join(missing))
+    for table in sorted(required_tables):
+        row = by_table[table]
+        latest_ts = row.get("latest_ts")
+        if latest_ts is None:
+            raise SystemExit(f"normalized health missing latest_ts: table={table}")
+        latest = _parse_timestamp(latest_ts)
+        latest_age_ms = int(
+            (now - latest.astimezone(timezone.utc)).total_seconds() * 1000
+        )
+        if latest_age_ms > max_normalized_health_age_ms:
+            raise SystemExit(
+                f"normalized health stale: table={table} latest_age_ms={latest_age_ms}"
+            )
 
 
 if __name__ == "__main__":

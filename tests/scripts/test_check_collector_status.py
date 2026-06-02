@@ -113,6 +113,46 @@ def _write_raw_event_journal(root: Path, relative: str, *, mtime_age_seconds: fl
     os.utime(path, (mtime, mtime))
 
 
+def _write_normalized_health(
+    path: Path,
+    *,
+    mtime_age_seconds: float,
+    latest_age_seconds: float,
+) -> None:
+    now = datetime.now(timezone.utc)
+    latest = now.timestamp() - latest_age_seconds
+    latest_iso = datetime.fromtimestamp(latest, timezone.utc).isoformat()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "polymarket-normalized-health-v1",
+                "generated_at": latest_iso,
+                "tables": [
+                    {
+                        "table": "core.price_ticks",
+                        "rows": 1,
+                        "latest_ts": latest_iso,
+                    },
+                    {
+                        "table": "core.orderbook_snapshots",
+                        "rows": 1,
+                        "latest_ts": latest_iso,
+                    },
+                    {
+                        "table": "features.asof_state_inputs",
+                        "rows": 1,
+                        "latest_ts": latest_iso,
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    mtime = time.time() - mtime_age_seconds
+    os.utime(path, (mtime, mtime))
+
+
 def test_status_check_rejects_stale_source_freshness(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -383,6 +423,91 @@ def test_state_manager_status_accepts_fresh_raw_websocket_journals(
             "--raw-root",
             str(raw_root),
             "--max-raw-event-age-ms",
+            "10000",
+        ],
+    )
+
+    assert script.main() == 0
+
+
+def test_state_manager_status_rejects_stale_normalized_health_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = _load_script()
+    status_path = tmp_path / "status.json"
+    raw_root = tmp_path / "raw"
+    normalized_health_path = tmp_path / "live" / "normalized_health.json"
+    status_path.write_text(json.dumps(_fresh_state_manager_status()), encoding="utf-8")
+    _write_raw_event_journal(
+        raw_root,
+        "polymarket_rtds_chainlink/price_update",
+        mtime_age_seconds=0.0,
+    )
+    _write_raw_event_journal(
+        raw_root,
+        "polymarket_clob_market_ws/best_bid_ask",
+        mtime_age_seconds=0.0,
+    )
+    _write_normalized_health(
+        normalized_health_path,
+        mtime_age_seconds=60.0,
+        latest_age_seconds=60.0,
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "check_collector_status.py",
+            "--status-path",
+            str(status_path),
+            "--raw-root",
+            str(raw_root),
+            "--normalized-health-path",
+            str(normalized_health_path),
+            "--max-normalized-health-age-ms",
+            "10000",
+        ],
+    )
+
+    with pytest.raises(SystemExit, match="normalized health stale"):
+        script.main()
+
+
+def test_state_manager_status_accepts_fresh_normalized_health_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = _load_script()
+    status_path = tmp_path / "status.json"
+    raw_root = tmp_path / "raw"
+    normalized_health_path = tmp_path / "live" / "normalized_health.json"
+    status_path.write_text(json.dumps(_fresh_state_manager_status()), encoding="utf-8")
+    _write_raw_event_journal(
+        raw_root,
+        "polymarket_rtds_chainlink/price_update",
+        mtime_age_seconds=0.0,
+    )
+    _write_raw_event_journal(
+        raw_root,
+        "polymarket_clob_market_ws/best_bid_ask",
+        mtime_age_seconds=0.0,
+    )
+    _write_normalized_health(
+        normalized_health_path,
+        mtime_age_seconds=0.0,
+        latest_age_seconds=0.0,
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "check_collector_status.py",
+            "--status-path",
+            str(status_path),
+            "--raw-root",
+            str(raw_root),
+            "--normalized-health-path",
+            str(normalized_health_path),
+            "--max-normalized-health-age-ms",
             "10000",
         ],
     )
