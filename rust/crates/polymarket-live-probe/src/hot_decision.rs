@@ -206,10 +206,12 @@ impl HotDecisionBuilder {
             .filter(|contract| is_current_window(contract, asof_ts))
         {
             let price_context = contract_price_context(chainlink_history, contract, asof_ts);
-            for (side, token_id) in impacted_tokens(event, contract) {
+            for impacted in impacted_token_slots(event, contract).into_iter().flatten() {
+                let side = impacted.side;
+                let token_id = impacted.token_id;
                 let threshold = price_context.threshold;
                 let settlement = price_context.settlement;
-                let book = latest_orderbook_at_or_before(orderbooks, &token_id, asof_ts);
+                let book = latest_orderbook_at_or_before(orderbooks, token_id, asof_ts);
                 let mut flags = Vec::new();
 
                 if threshold.is_none() {
@@ -255,7 +257,7 @@ impl HotDecisionBuilder {
                     asof_ts,
                     contract: contract.clone(),
                     side,
-                    token_id,
+                    token_id: token_id.to_owned(),
                     threshold_price: threshold.map(|tick| tick.price),
                     threshold_event_ts: threshold.map(|tick| tick.event_ts),
                     settlement_price: settlement.map(|tick| tick.price),
@@ -279,6 +281,12 @@ impl HotDecisionBuilder {
 
         states
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ImpactedToken<'a> {
+    side: ContractSide,
+    token_id: &'a str,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -308,25 +316,46 @@ fn contract_price_context<'a>(
     }
 }
 
-fn impacted_tokens(event: &HotPathEvent, contract: &WarmedContract) -> Vec<(ContractSide, String)> {
+fn impacted_token_slots<'a>(
+    event: &HotPathEvent,
+    contract: &'a WarmedContract,
+) -> [Option<ImpactedToken<'a>>; 2] {
     match event {
         HotPathEvent::ChainlinkPrice { symbol, .. } => {
             if symbol_matches_asset(symbol, &contract.window.asset) {
-                vec![
-                    (ContractSide::Up, contract.up.token_id.clone()),
-                    (ContractSide::Down, contract.down.token_id.clone()),
+                [
+                    Some(ImpactedToken {
+                        side: ContractSide::Up,
+                        token_id: contract.up.token_id.as_str(),
+                    }),
+                    Some(ImpactedToken {
+                        side: ContractSide::Down,
+                        token_id: contract.down.token_id.as_str(),
+                    }),
                 ]
             } else {
-                vec![]
+                [None, None]
             }
         }
         HotPathEvent::OrderBookTopOfBook { token_id, .. } => {
             if token_id == &contract.up.token_id {
-                vec![(ContractSide::Up, contract.up.token_id.clone())]
+                [
+                    Some(ImpactedToken {
+                        side: ContractSide::Up,
+                        token_id: contract.up.token_id.as_str(),
+                    }),
+                    None,
+                ]
             } else if token_id == &contract.down.token_id {
-                vec![(ContractSide::Down, contract.down.token_id.clone())]
+                [
+                    Some(ImpactedToken {
+                        side: ContractSide::Down,
+                        token_id: contract.down.token_id.as_str(),
+                    }),
+                    None,
+                ]
             } else {
-                vec![]
+                [None, None]
             }
         }
     }
@@ -643,6 +672,56 @@ mod tests {
         );
     }
 
+    #[test]
+    fn impacted_token_slots_cover_chainlink_orderbook_and_unknown_events() {
+        let start = Utc.timestamp_opt(1_780_302_400, 0).unwrap();
+        let contract = WarmedContract::new(
+            ContractWindow::new("BTC", "5m", start, start + Duration::seconds(300)).unwrap(),
+            ContractToken::new("BTC", ContractSide::Up, "up-token"),
+            ContractToken::new("BTC", ContractSide::Down, "down-token"),
+        )
+        .unwrap();
+        let ts = start + Duration::seconds(12);
+
+        let chainlink_slots = impacted_token_slots(
+            &HotPathEvent::ChainlinkPrice {
+                symbol: "btc/usd".to_owned(),
+                event_ts: ts,
+                observed_ts: ts,
+            },
+            &contract,
+        );
+        let orderbook_slots = impacted_token_slots(
+            &HotPathEvent::OrderBookTopOfBook {
+                token_id: "down-token".to_owned(),
+                event_ts: ts,
+                observed_ts: ts,
+            },
+            &contract,
+        );
+        let unknown_slots = impacted_token_slots(
+            &HotPathEvent::OrderBookTopOfBook {
+                token_id: "unknown-token".to_owned(),
+                event_ts: ts,
+                observed_ts: ts,
+            },
+            &contract,
+        );
+
+        assert_eq!(
+            slot_pairs(chainlink_slots),
+            vec![
+                (ContractSide::Up, "up-token"),
+                (ContractSide::Down, "down-token")
+            ]
+        );
+        assert_eq!(
+            slot_pairs(orderbook_slots),
+            vec![(ContractSide::Down, "down-token")]
+        );
+        assert!(slot_pairs(unknown_slots).is_empty());
+    }
+
     fn price(
         symbol: &str,
         event_ts: DateTime<Utc>,
@@ -684,6 +763,14 @@ mod tests {
                 size: Decimal::new(11, 0),
             }],
         )
+    }
+
+    fn slot_pairs(slots: [Option<ImpactedToken<'_>>; 2]) -> Vec<(ContractSide, &str)> {
+        slots
+            .into_iter()
+            .flatten()
+            .map(|token| (token.side, token.token_id))
+            .collect()
     }
 }
 
