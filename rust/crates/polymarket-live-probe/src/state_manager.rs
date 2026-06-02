@@ -5,6 +5,7 @@ use polymarket_runtime_types::{
 };
 use std::time::Duration as StdDuration;
 
+use crate::raw_event_journal::RawEventSink;
 use crate::report::{StateManagerSubscription, WebSocketStatus};
 use crate::{book_state::LiveBookState, clob_ws, polymarket, prices, windows};
 
@@ -32,16 +33,27 @@ pub struct StateManagerRuntime {
 
 impl StateManagerRuntime {
     pub async fn start(config: StateManagerConfig) -> Result<Self> {
+        Self::start_with_raw_events(config, None).await
+    }
+
+    pub async fn start_with_raw_events(
+        config: StateManagerConfig,
+        raw_event_sink: Option<RawEventSink>,
+    ) -> Result<Self> {
         let latest_prices = prices::LatestPrices::default();
         let book_state = LiveBookState::default();
-        let chainlink_streams = prices::ChainlinkStreamManager::start(
+        let chainlink_streams = prices::ChainlinkStreamManager::start_with_raw_events(
             chainlink_symbols_for_assets(&config.assets),
             latest_prices.clone(),
+            raw_event_sink.clone(),
         );
         let mut runtime = Self {
             config,
             latest_prices,
-            orderbook_streams: clob_ws::BestBidAskStreamManager::new(book_state.clone()),
+            orderbook_streams: clob_ws::BestBidAskStreamManager::new_with_raw_events(
+                book_state.clone(),
+                raw_event_sink,
+            ),
             book_state,
             warmed: Vec::new(),
             token_ids: Vec::new(),

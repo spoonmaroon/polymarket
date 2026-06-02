@@ -10,6 +10,7 @@ mod book_state;
 mod clob_ws;
 mod polymarket;
 mod prices;
+mod raw_event_journal;
 mod report;
 mod snapshot_journal;
 mod state_manager;
@@ -49,6 +50,10 @@ struct Args {
     chainlink_cache_path: Option<PathBuf>,
     #[arg(long)]
     state_snapshot_dir: Option<PathBuf>,
+    #[arg(long)]
+    raw_event_dir: Option<PathBuf>,
+    #[arg(long, default_value_t = 16_384)]
+    raw_event_buffer_size: usize,
     #[arg(long, default_value = "reports/live_probe/latest.json")]
     out: PathBuf,
 }
@@ -182,9 +187,17 @@ async fn run_state_manager(args: Args) -> Result<()> {
         stale_orderbook_after_ms: args.stale_orderbook_after_ms,
         rest_backup_interval_ms: args.rest_backup_interval_ms,
     };
+    let raw_event_writer = args
+        .raw_event_dir
+        .clone()
+        .map(|dir| raw_event_journal::RawEventSink::start(dir, args.raw_event_buffer_size));
+    let raw_event_sink = raw_event_writer
+        .as_ref()
+        .map(|(sink, _handle)| sink.clone());
     let mut timer = report::ProbeTimer::start();
     timer.mark("start");
-    let mut runtime = state_manager::StateManagerRuntime::start(config).await?;
+    let mut runtime =
+        state_manager::StateManagerRuntime::start_with_raw_events(config, raw_event_sink).await?;
     let snapshot_journal = args
         .state_snapshot_dir
         .clone()
@@ -228,6 +241,13 @@ async fn run_state_manager(args: Args) -> Result<()> {
     }
 
     runtime.shutdown();
+    drop(runtime);
+    if let Some((sink, handle)) = raw_event_writer {
+        drop(sink);
+        handle
+            .await
+            .map_err(|error| anyhow!("raw event journal task failed: {error}"))??;
+    }
     Ok(())
 }
 
@@ -236,6 +256,27 @@ fn parse_assets(raw: &str) -> Vec<String> {
         .map(|asset| asset.trim().to_uppercase())
         .filter(|asset| !asset.is_empty())
         .collect::<Vec<_>>()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Args;
+    use clap::Parser;
+    use std::path::PathBuf;
+
+    #[test]
+    fn parses_raw_event_journal_cli_options() {
+        let args = Args::parse_from([
+            "polymarket-live-probe",
+            "--raw-event-dir",
+            "/tmp/raw-events",
+            "--raw-event-buffer-size",
+            "8192",
+        ]);
+
+        assert_eq!(args.raw_event_dir, Some(PathBuf::from("/tmp/raw-events")));
+        assert_eq!(args.raw_event_buffer_size, 8192);
+    }
 }
 
 async fn with_timeout<T, F>(label: &str, timeout_seconds: u64, future: F) -> Result<T>

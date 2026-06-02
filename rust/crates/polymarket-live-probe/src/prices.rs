@@ -15,6 +15,7 @@ use std::time::Duration;
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
+use crate::raw_event_journal::{RawEventRecord, RawEventSink};
 use crate::report::WebSocketStatus;
 
 pub const KRAKEN_TICKER_URL: &str = "https://api.kraken.com/0/public/Ticker";
@@ -80,7 +81,16 @@ pub struct ChainlinkStreamManager {
 }
 
 impl ChainlinkStreamManager {
+    #[allow(dead_code)]
     pub fn start(symbols: Vec<String>, latest: LatestPrices) -> Self {
+        Self::start_with_raw_events(symbols, latest, None)
+    }
+
+    pub fn start_with_raw_events(
+        symbols: Vec<String>,
+        latest: LatestPrices,
+        raw_event_sink: Option<RawEventSink>,
+    ) -> Self {
         let client = RtdsClient::default();
         let symbols = chainlink_stream_symbols(symbols);
         let telemetry = Arc::new(RwLock::new(ChainlinkWebSocketTelemetry::default()));
@@ -89,6 +99,7 @@ impl ChainlinkStreamManager {
             symbols.clone(),
             latest,
             telemetry.clone(),
+            raw_event_sink,
         ))];
         let connection_monitor_task = tokio::spawn(monitor_chainlink_connection_state(
             client.clone(),
@@ -250,6 +261,7 @@ pub async fn run_chainlink_stream(symbols: Vec<String>, latest: LatestPrices) ->
         chainlink_stream_symbols(symbols),
         latest,
         Arc::new(RwLock::new(ChainlinkWebSocketTelemetry::default())),
+        None,
     )
     .await
 }
@@ -261,6 +273,7 @@ async fn run_chainlink_symbol_stream(symbol: String, latest: LatestPrices) -> Re
         vec![symbol],
         latest,
         Arc::new(RwLock::new(ChainlinkWebSocketTelemetry::default())),
+        None,
     )
     .await
 }
@@ -270,6 +283,7 @@ async fn run_chainlink_symbols_stream_with_client(
     symbols: Vec<String>,
     latest: LatestPrices,
     telemetry: Arc<RwLock<ChainlinkWebSocketTelemetry>>,
+    raw_event_sink: Option<RawEventSink>,
 ) -> Result<()> {
     let symbols = chainlink_stream_symbols(symbols);
     let stream = client.subscribe_raw(Subscription::chainlink_prices(None))?;
@@ -286,8 +300,14 @@ async fn run_chainlink_symbols_stream_with_client(
         let observed_ts = Utc::now();
         let mut updated = false;
         for symbol in &symbols {
-            updated |= update_latest_from_chainlink_message(&latest, &message, symbol, observed_ts)
-                .await?;
+            if let Some(tick) =
+                update_latest_from_chainlink_message(&latest, &message, symbol, observed_ts).await?
+            {
+                if let Some(sink) = &raw_event_sink {
+                    sink.try_record(chainlink_raw_event_record_from_tick(&message, &tick))?;
+                }
+                updated = true;
+            }
         }
         if updated {
             record_chainlink_event(&telemetry, observed_ts);
@@ -382,23 +402,42 @@ async fn update_latest_from_chainlink_message(
     message: &RtdsMessage,
     requested_symbol: &str,
     observed_ts: DateTime<Utc>,
-) -> Result<bool> {
+) -> Result<Option<NormalizedPriceTick>> {
     if let Some(tick) =
         chainlink_snapshot_tick_from_message(message, requested_symbol, observed_ts)?
     {
-        latest.update(tick).await;
-        return Ok(true);
+        latest.update(tick.clone()).await;
+        return Ok(Some(tick));
     }
 
     if let Some(price) = message.as_chainlink_price()
         && price.symbol.eq_ignore_ascii_case(requested_symbol)
     {
         let tick = chainlink_update_tick(&price.symbol, price.timestamp, price.value, observed_ts)?;
-        latest.update(tick).await;
-        return Ok(true);
+        latest.update(tick.clone()).await;
+        return Ok(Some(tick));
     }
 
-    Ok(false)
+    Ok(None)
+}
+
+#[allow(dead_code)]
+fn chainlink_raw_event_record_from_tick(
+    message: &RtdsMessage,
+    tick: &NormalizedPriceTick,
+) -> RawEventRecord {
+    RawEventRecord {
+        source_key: "polymarket_rtds_chainlink".to_owned(),
+        stream_key: "price_update".to_owned(),
+        symbol: tick.symbol.clone(),
+        event_type: "chainlink_price".to_owned(),
+        event_ts: tick.event_ts,
+        observed_ts: tick.observed_ts,
+        payload: serde_json::json!({
+            "topic": message.topic,
+            "payload": message.payload.clone(),
+        }),
+    }
 }
 
 fn chainlink_update_tick(
@@ -709,15 +748,58 @@ mod tests {
         .unwrap();
         let latest = LatestPrices::default();
 
-        let updated = update_latest_from_chainlink_message(&latest, &message, "btc/usd", observed)
+        let tick = update_latest_from_chainlink_message(&latest, &message, "btc/usd", observed)
             .await
+            .unwrap()
             .unwrap();
 
-        assert!(updated);
+        assert_eq!(tick.source_key, "polymarket_rtds_chainlink");
+        assert_eq!(tick.symbol, "BTC/USD");
+        assert_eq!(tick.event_ts.timestamp_millis(), 1780352939000_i64);
+        assert_eq!(tick.observed_ts, observed);
+        assert_eq!(tick.price.to_string(), "71210.25");
         assert_eq!(
             latest.get("BTC/USD").await.unwrap().price.to_string(),
             "71210.25"
         );
+    }
+
+    #[tokio::test]
+    async fn converts_chainlink_price_update_to_raw_event_record() {
+        let observed = "2026-06-01T20:00:01Z".parse::<DateTime<Utc>>().unwrap();
+        let message: RtdsMessage = serde_json::from_value(serde_json::json!({
+            "topic": "crypto_prices_chainlink",
+            "type": "price_update",
+            "timestamp": 1780352939000_i64,
+            "payload": {
+                "symbol": "eth/usd",
+                "timestamp": 1780352939000_i64,
+                "value": "1991.50"
+            }
+        }))
+        .unwrap();
+        let tick = update_latest_from_chainlink_message(
+            &LatestPrices::default(),
+            &message,
+            "eth/usd",
+            observed,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        let record = chainlink_raw_event_record_from_tick(&message, &tick);
+
+        assert_eq!(record.source_key, "polymarket_rtds_chainlink");
+        assert_eq!(record.stream_key, "price_update");
+        assert_eq!(record.symbol, "ETH/USD");
+        assert_eq!(record.event_type, "chainlink_price");
+        assert_eq!(record.event_ts.timestamp_millis(), 1780352939000_i64);
+        assert_eq!(record.observed_ts, observed);
+        assert_eq!(record.payload["topic"], "crypto_prices_chainlink");
+        assert_eq!(record.payload["payload"]["symbol"], "eth/usd");
+        assert_eq!(record.payload["payload"]["timestamp"], 1780352939000_i64);
+        assert_eq!(record.payload["payload"]["value"], "1991.50");
     }
 
     #[test]

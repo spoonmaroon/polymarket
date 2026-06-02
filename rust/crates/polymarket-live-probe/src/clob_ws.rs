@@ -16,6 +16,7 @@ use std::time::Duration;
 use tokio::task::JoinHandle;
 
 use crate::book_state::LiveBookState;
+use crate::raw_event_journal::{RawEventRecord, RawEventSink};
 use crate::report::WebSocketStatus;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -107,10 +108,18 @@ pub struct BestBidAskStreamManager {
     token_streams: BTreeMap<String, BestBidAskTokenStream>,
     telemetry: Arc<RwLock<WebSocketTelemetry>>,
     connection_monitor_task: JoinHandle<()>,
+    raw_event_sink: Option<RawEventSink>,
 }
 
 impl BestBidAskStreamManager {
     pub fn new(book_state: LiveBookState) -> Self {
+        Self::new_with_raw_events(book_state, None)
+    }
+
+    pub fn new_with_raw_events(
+        book_state: LiveBookState,
+        raw_event_sink: Option<RawEventSink>,
+    ) -> Self {
         let client = ClobWsClient::default();
         let telemetry = Arc::new(RwLock::new(WebSocketTelemetry::default()));
         Self {
@@ -122,6 +131,7 @@ impl BestBidAskStreamManager {
             book_state,
             token_streams: BTreeMap::new(),
             telemetry,
+            raw_event_sink,
         }
     }
 
@@ -147,6 +157,7 @@ impl BestBidAskStreamManager {
             let stream = self.client.subscribe_best_bid_ask(vec![asset_id])?;
             let book_state = self.book_state.clone();
             let telemetry = self.telemetry.clone();
+            let raw_event_sink = self.raw_event_sink.clone();
             let token_label = token_id.clone();
             let task = tokio::spawn(async move {
                 let mut stream = Box::pin(stream);
@@ -160,8 +171,14 @@ impl BestBidAskStreamManager {
                     };
                     let observed_ts = Utc::now();
                     record_market_event(&telemetry, observed_ts);
-                    let applied =
-                        apply_best_bid_ask_update(update, &book_state, observed_ts).await?;
+                    let event = top_of_book_event_from_best_bid_ask(update, observed_ts)?;
+                    if let (Some(sink), Some(record)) = (
+                        raw_event_sink.as_ref(),
+                        raw_event_record_from_clob_market_event(&event),
+                    ) {
+                        sink.try_record(record)?;
+                    }
+                    let applied = apply_clob_market_event(&event, &book_state).await?;
                     if !applied {
                         tracing::warn!("received CLOB best_bid_ask for unseeded orderbook");
                     }
@@ -337,7 +354,15 @@ pub async fn apply_best_bid_ask_update(
     book_state: &LiveBookState,
     observed_ts: DateTime<Utc>,
 ) -> Result<bool> {
-    match top_of_book_event_from_best_bid_ask(update, observed_ts)? {
+    let event = top_of_book_event_from_best_bid_ask(update, observed_ts)?;
+    apply_clob_market_event(&event, book_state).await
+}
+
+pub async fn apply_clob_market_event(
+    event: &ClobMarketEvent,
+    book_state: &LiveBookState,
+) -> Result<bool> {
+    match event {
         ClobMarketEvent::TopOfBook {
             token_id,
             best_bid,
@@ -348,7 +373,14 @@ pub async fn apply_best_bid_ask_update(
             ..
         } => {
             book_state
-                .apply_top_of_book(&token_id, best_bid, best_ask, spread, event_ts, observed_ts)
+                .apply_top_of_book(
+                    token_id,
+                    *best_bid,
+                    *best_ask,
+                    *spread,
+                    *event_ts,
+                    *observed_ts,
+                )
                 .await
         }
         _ => Ok(false),
@@ -477,6 +509,35 @@ pub fn top_of_book_event_from_best_bid_ask(
         event_ts: timestamp_millis(update.timestamp)?,
         observed_ts,
     })
+}
+
+pub fn raw_event_record_from_clob_market_event(event: &ClobMarketEvent) -> Option<RawEventRecord> {
+    match event {
+        ClobMarketEvent::TopOfBook {
+            contract_id,
+            token_id,
+            best_bid,
+            best_ask,
+            spread,
+            event_ts,
+            observed_ts,
+        } => Some(RawEventRecord {
+            source_key: "polymarket_clob_market_ws".to_owned(),
+            stream_key: "best_bid_ask".to_owned(),
+            symbol: token_id.clone(),
+            event_type: "best_bid_ask".to_owned(),
+            event_ts: *event_ts,
+            observed_ts: *observed_ts,
+            payload: serde_json::json!({
+                "contract_id": contract_id,
+                "token_id": token_id,
+                "best_bid": best_bid.to_string(),
+                "best_ask": best_ask.to_string(),
+                "spread": spread.to_string()
+            }),
+        }),
+        _ => None,
+    }
 }
 
 fn normalized_book(
@@ -866,6 +927,43 @@ mod tests {
             }
             other => panic!("expected top-of-book event, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn top_of_book_event_becomes_clob_best_bid_ask_raw_event_record() {
+        let message = serde_json::json!({
+            "event_type": "best_bid_ask",
+            "market": "0x0000000000000000000000000000000000000000000000000000000000000002",
+            "asset_id": "222",
+            "best_bid": "0.73",
+            "best_ask": "0.77",
+            "spread": "0.04",
+            "timestamp": "1780352939001"
+        });
+        let update = match serde_json::from_value::<WsMessage>(message).unwrap() {
+            WsMessage::BestBidAsk(update) => update,
+            _ => panic!("expected BestBidAsk"),
+        };
+        let event = top_of_book_event_from_best_bid_ask(update, observed_ts()).unwrap();
+
+        let record = raw_event_record_from_clob_market_event(&event).unwrap();
+
+        assert_eq!(record.source_key, "polymarket_clob_market_ws");
+        assert_eq!(record.stream_key, "best_bid_ask");
+        assert_eq!(record.symbol, "222");
+        assert_eq!(record.event_type, "best_bid_ask");
+        assert_eq!(record.event_ts.timestamp_millis(), 1780352939001);
+        assert_eq!(record.observed_ts, observed_ts());
+        assert_eq!(
+            record.payload,
+            serde_json::json!({
+                "contract_id": "0x0000000000000000000000000000000000000000000000000000000000000002",
+                "token_id": "222",
+                "best_bid": "0.73",
+                "best_ask": "0.77",
+                "spread": "0.04"
+            })
+        );
     }
 
     #[test]

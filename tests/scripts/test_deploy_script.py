@@ -40,3 +40,17 @@ def test_collector_entrypoint_enables_state_snapshot_journal() -> None:
     assert "STATE_SNAPSHOT_DIR=" in entrypoint
     assert "--state-snapshot-dir" in entrypoint
     assert '"$STATE_SNAPSHOT_DIR"' in entrypoint
+
+
+def test_collector_entrypoint_enables_raw_event_journal() -> None:
+    compose = (ROOT / "deploy" / "collector" / "docker-compose.yml").read_text(
+        encoding="utf-8"
+    )
+    entrypoint = (
+        ROOT / "deploy" / "collector" / "collector-entrypoint.sh"
+    ).read_text(encoding="utf-8")
+
+    assert "POLYMARKET_RAW_EVENT_DIR" in compose
+    assert "RAW_EVENT_DIR=" in entrypoint
+    assert "--raw-event-dir" in entrypoint
+    assert '"$RAW_EVENT_DIR"' in entrypoint

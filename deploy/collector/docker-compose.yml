@@ -20,6 +20,8 @@ services:
       POLYMARKET_REST_BACKUP_INTERVAL_MS: ${POLYMARKET_REST_BACKUP_INTERVAL_MS:-15000}
       POLYMARKET_STATUS_PATH: /var/lib/polymarket/live/status.json
       POLYMARKET_STATE_SNAPSHOT_DIR: /var/lib/polymarket/raw/polymarket_state_manager/state_snapshot
+      POLYMARKET_RAW_EVENT_DIR: /var/lib/polymarket/raw
+      POLYMARKET_RAW_EVENT_BUFFER_SIZE: ${POLYMARKET_RAW_EVENT_BUFFER_SIZE:-16384}
     volumes:
       - ${POLYMARKET_DATA_DIR:-/home/spoon/polymarket-data}/raw:/var/lib/polymarket/raw
       - ${POLYMARKET_DATA_DIR:-/home/spoon/polymarket-data}/db:/var/lib/polymarket/db
