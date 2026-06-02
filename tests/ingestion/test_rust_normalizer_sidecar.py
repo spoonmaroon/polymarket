@@ -506,6 +506,69 @@ def test_changed_sidecar_cycle_batches_raw_checkpoint_reads(tmp_path: Path) -> N
     assert store.raw_file_checkpoint_calls == 0
 
 
+def test_changed_sidecar_cycle_reuses_cached_raw_checkpoints(tmp_path: Path) -> None:
+    raw_root = tmp_path / "raw"
+    db_path = tmp_path / "state.duckdb"
+    status_path = tmp_path / "live" / "status.json"
+    health_path = tmp_path / "live" / "normalized_health.json"
+    start_ts = datetime(2026, 6, 2, 6, 0, tzinfo=timezone.utc)
+    asof_ts = start_ts + timedelta(minutes=2)
+    _write_raw_tree(raw_root=raw_root, start_ts=start_ts, asof_ts=asof_ts)
+    _write_status(status_path, start_ts=start_ts, asof_ts=asof_ts)
+    changed_path = (
+        raw_root
+        / "polymarket_clob_market_ws"
+        / "best_bid_ask"
+        / "date=2026-06-02"
+        / "hour=06"
+        / "events.jsonl"
+    )
+    store = _CountingCheckpointStore(db_path)
+    store.apply_schema()
+    checkpoint_cache: dict[Path, int] = {}
+
+    first_signature = rust_normalizer_sidecar._raw_tree_signature(
+        raw_root=raw_root,
+        include_state_snapshots=False,
+    )
+    first = rust_normalizer_sidecar._run_changed_rust_normalizer_cycle_with_store(
+        changed_raw_signature=first_signature,
+        store=store,
+        status_path=status_path,
+        normalized_health_path=health_path,
+        include_next=False,
+        checkpoint_cache=checkpoint_cache,
+    )
+    with changed_path.open("a", encoding="utf-8") as handle:
+        handle.write(
+            json.dumps(
+                _orderbook_row(
+                    "up-token",
+                    asof_ts + timedelta(seconds=1),
+                    asof_ts + timedelta(seconds=1),
+                    0.62,
+                    0.65,
+                ),
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+    second_signature = (rust_normalizer_sidecar._raw_file_signature(changed_path),)
+    second = rust_normalizer_sidecar._run_changed_rust_normalizer_cycle_with_store(
+        changed_raw_signature=second_signature,
+        store=store,
+        status_path=status_path,
+        normalized_health_path=health_path,
+        include_next=False,
+        checkpoint_cache=checkpoint_cache,
+    )
+
+    assert first.rows_read == 4
+    assert second.rows_read == 1
+    assert store.raw_file_checkpoints_calls == 1
+    assert store.raw_file_checkpoint_calls == 0
+
+
 def test_sidecar_loop_throttles_changed_cycle_normalized_health_writes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

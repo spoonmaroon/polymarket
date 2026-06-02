@@ -184,6 +184,7 @@ def run_rust_normalizer_loop(
         cycles_run = 0
         previous_status_mtime_ns: int | None = None
         previous_raw_signature: tuple[RawTreeFileSignature, ...] | None = None
+        raw_checkpoint_cache: dict[Path, int] = {}
         last_health_write_monotonic: float | None = None
         while True:
             cycle_started = time.monotonic()
@@ -231,6 +232,7 @@ def run_rust_normalizer_loop(
                         previous_status_mtime_ns=previous_status_mtime_ns,
                         status_mtime_ns=status_mtime_ns,
                         write_health=True,
+                        checkpoint_cache=raw_checkpoint_cache,
                     )
                 else:
                     result = _run_rust_normalizer_cycle_with_store(
@@ -270,6 +272,7 @@ def run_rust_normalizer_loop(
                         previous_status_mtime_ns=previous_status_mtime_ns,
                         status_mtime_ns=status_mtime_ns,
                         write_health=write_health,
+                        checkpoint_cache=raw_checkpoint_cache,
                     )
                     if not result.health_skipped:
                         last_health_write_monotonic = cycle_started
@@ -325,9 +328,21 @@ def _run_changed_rust_normalizer_cycle_with_store(
     previous_status_mtime_ns: int | None = None,
     status_mtime_ns: int | None = None,
     write_health: bool = True,
+    checkpoint_cache: dict[Path, int] | None = None,
 ) -> RustNormalizerCycleResult:
     cycle_started = time.perf_counter()
-    checkpoints = store.raw_file_checkpoints(tuple(row.path for row in changed_raw_signature))
+    changed_paths = tuple(row.path for row in changed_raw_signature)
+    if checkpoint_cache is None:
+        checkpoints = store.raw_file_checkpoints(changed_paths)
+    else:
+        checkpoints = {
+            path: checkpoint_cache[path]
+            for path in changed_paths
+            if path in checkpoint_cache
+        }
+        missing_paths = tuple(path for path in changed_paths if path not in checkpoints)
+        if missing_paths:
+            checkpoints.update(store.raw_file_checkpoints(missing_paths))
     results = tuple(
         normalize_rust_event_file(
             path=row.path,
@@ -338,6 +353,9 @@ def _run_changed_rust_normalizer_cycle_with_store(
         )
         for row in changed_raw_signature
     )
+    if checkpoint_cache is not None:
+        for result in results:
+            checkpoint_cache[result.path] = result.end_byte_offset
     normalized_at = time.perf_counter()
 
     summary = _normalizer_summary(results)
