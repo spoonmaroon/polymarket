@@ -117,12 +117,12 @@ def build_decision_state(
         list(proxy_price_values.values()),
     )
 
-    source_event_age_ms = _age_ms(asof_ts, settlement_price.event_ts)
+    source_age_ms = _age_ms(asof_ts, settlement_price.observed_ts)
     source_observed_lag_ms = _age_ms(settlement_price.observed_ts, settlement_price.event_ts)
-    book_age_ms = None if book is None else _age_ms(asof_ts, book.event_ts)
+    book_age_ms = None if book is None else _age_ms(asof_ts, book.observed_ts)
     book_observed_lag_ms = None if book is None else _age_ms(book.observed_ts, book.event_ts)
     flags = _flags(
-        source_age_ms=source_event_age_ms,
+        source_age_ms=source_age_ms,
         book_age_ms=book_age_ms,
         has_book=book is not None,
         has_complete_book=book is not None and book.best_bid is not None and book.best_ask is not None,
@@ -157,7 +157,7 @@ def build_decision_state(
         book_event_ts=None if book is None else book.event_ts,
         book_observed_ts=None if book is None else book.observed_ts,
         quote_age_ms=book_age_ms,
-        source_age_ms=source_event_age_ms,
+        source_age_ms=source_age_ms,
         source_observed_lag_ms=source_observed_lag_ms,
         book_age_ms=book_age_ms,
         book_observed_lag_ms=book_observed_lag_ms,

@@ -166,7 +166,7 @@ def test_build_decision_state_uses_latest_price_and_book_at_or_before_asof() -> 
 
     assert state.settlement_price == 104_000.0
     assert state.best_ask == 0.64
-    assert state.source_age_ms == 2000
+    assert state.source_age_ms == 1000
     assert state.source_observed_lag_ms == 1000
     assert state.book_age_ms == 1000
 
