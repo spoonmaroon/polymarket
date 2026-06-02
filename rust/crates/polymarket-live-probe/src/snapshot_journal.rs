@@ -2,7 +2,7 @@ use crate::report::StateManagerReport;
 use anyhow::Result;
 use chrono::{Datelike, Timelike};
 use std::fs::File;
-use std::io::Write;
+use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 
 #[derive(Clone)]
@@ -44,22 +44,23 @@ impl StateSnapshotJournal {
 pub struct StateSnapshotJournalWriter {
     journal: StateSnapshotJournal,
     open_path: Option<PathBuf>,
-    file: Option<File>,
+    file: Option<BufWriter<File>>,
 }
 
 impl StateSnapshotJournalWriter {
     pub fn append(&mut self, report: &StateManagerReport) -> Result<PathBuf> {
         let path = self.partition_path(report);
         if self.open_path.as_ref() != Some(&path) {
+            self.flush()?;
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            self.file = Some(
+            let file =
                 std::fs::OpenOptions::new()
                     .create(true)
                     .append(true)
-                    .open(&path)?,
-            );
+                    .open(&path)?;
+            self.file = Some(BufWriter::new(file));
             self.open_path = Some(path.clone());
         }
 
@@ -67,14 +68,30 @@ impl StateSnapshotJournalWriter {
             .file
             .as_mut()
             .expect("state snapshot journal writer opened file");
-        serde_json::to_writer(&mut *file, report)?;
-        file.write_all(b"\n")?;
+        write_state_snapshot_jsonl_line(file, report)?;
+        self.flush()?;
         Ok(path)
     }
 
     fn partition_path(&self, report: &StateManagerReport) -> PathBuf {
         self.journal.partition_path(report)
     }
+
+    fn flush(&mut self) -> Result<()> {
+        if let Some(file) = &mut self.file {
+            file.flush()?;
+        }
+        Ok(())
+    }
+}
+
+fn write_state_snapshot_jsonl_line<W: Write>(
+    writer: &mut W,
+    report: &StateManagerReport,
+) -> Result<()> {
+    serde_json::to_writer(&mut *writer, report)?;
+    writer.write_all(b"\n")?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -83,11 +100,12 @@ mod tests {
         StateManagerReportInput, StateManagerSubscription, WebSocketStatus,
         build_state_manager_report,
     };
-    use crate::snapshot_journal::StateSnapshotJournal;
+    use crate::snapshot_journal::{StateSnapshotJournal, write_state_snapshot_jsonl_line};
     use chrono::{TimeZone, Utc};
     use polymarket_runtime_types::{
         ContractSide, ContractToken, ContractWindow, WarmStateSnapshot, WarmedContract,
     };
+    use std::io::{BufWriter, Write};
 
     #[test]
     fn appends_state_reports_to_utc_hour_partition() {
@@ -147,6 +165,23 @@ mod tests {
         assert_eq!(next_hour_lines.lines().count(), 1);
     }
 
+    #[test]
+    fn state_snapshot_jsonl_line_is_buffered_until_flush() {
+        let mut inner = CountingWriter::default();
+        {
+            let mut writer = BufWriter::new(&mut inner);
+            write_state_snapshot_jsonl_line(&mut writer, &sample_report(1_780_302_400)).unwrap();
+            writer.flush().unwrap();
+        }
+
+        assert_eq!(inner.write_calls, 1);
+        let raw = String::from_utf8(inner.bytes).unwrap();
+        assert!(raw.ends_with('\n'));
+        let row: serde_json::Value = serde_json::from_str(raw.trim_end()).unwrap();
+        assert_eq!(row["schema_version"], "rust-live-probe-state-manager-v1");
+        assert_eq!(row["mode"], "state-manager");
+    }
+
     fn sample_report(epoch: i64) -> crate::report::StateManagerReport {
         let ts = Utc.timestamp_opt(epoch, 0).unwrap();
         let window =
@@ -204,5 +239,23 @@ mod tests {
             std::fs::remove_dir_all(&root).unwrap();
         }
         root
+    }
+
+    #[derive(Default)]
+    struct CountingWriter {
+        bytes: Vec<u8>,
+        write_calls: usize,
+    }
+
+    impl Write for CountingWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.write_calls += 1;
+            self.bytes.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
     }
 }
