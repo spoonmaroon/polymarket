@@ -53,7 +53,7 @@ struct Args {
     chainlink_cache_path: Option<PathBuf>,
     #[arg(long)]
     state_snapshot_dir: Option<PathBuf>,
-    #[arg(long, default_value_t = 1_000)]
+    #[arg(long, default_value_t = 5_000)]
     state_snapshot_interval_ms: u64,
     #[arg(long)]
     raw_event_dir: Option<PathBuf>,
@@ -369,7 +369,7 @@ mod tests {
     #[test]
     fn parses_state_snapshot_interval_cli_options() {
         let default_args = Args::parse_from(["polymarket-live-probe"]);
-        assert_eq!(default_args.state_snapshot_interval_ms, 1_000);
+        assert_eq!(default_args.state_snapshot_interval_ms, 5_000);
 
         let args = Args::parse_from([
             "polymarket-live-probe",
@@ -381,12 +381,12 @@ mod tests {
     }
 
     #[test]
-    fn state_snapshot_due_keeps_journal_slower_than_status_loop() {
-        assert!(state_snapshot_due(0, None, 1_000));
-        assert!(!state_snapshot_due(250, Some(0), 1_000));
-        assert!(!state_snapshot_due(999, Some(0), 1_000));
-        assert!(state_snapshot_due(1_000, Some(0), 1_000));
-        assert!(state_snapshot_due(1_250, Some(250), 1_000));
+    fn state_snapshot_due_keeps_journal_slower_than_fast_status_loop() {
+        assert!(state_snapshot_due(0, None, 5_000));
+        assert!(!state_snapshot_due(250, Some(0), 5_000));
+        assert!(!state_snapshot_due(4_999, Some(0), 5_000));
+        assert!(state_snapshot_due(5_000, Some(0), 5_000));
+        assert!(state_snapshot_due(5_250, Some(250), 5_000));
     }
 
     #[test]

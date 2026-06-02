@@ -43,6 +43,8 @@ polymarket-live-probe \
   --interval 5m \
   --prewarm-windows 3 \
   --forever \
+  --status-interval-ms 250 \
+  --state-snapshot-interval-ms 5000 \
   --state-snapshot-dir /var/lib/polymarket/raw/polymarket_state_manager/state_snapshot \
   --decision-snapshot-dir /var/lib/polymarket/raw \
   --out /var/lib/polymarket/live/status.json
@@ -88,7 +90,8 @@ from the raw journals.
 
 By default, `normalize-rust-events` reads direct Chainlink/CLOB WebSocket event
 journals. Use `--include-state-snapshots` only for recovery/audit backfills,
-because state snapshots repeat the latest known price/book state every second.
+because state snapshots repeat the latest known price/book state on the slower
+audit cadence rather than the fast status cadence.
 Use `polymarket-engine build-current-decision-states` after normalization to
 write exact current as-of `DecisionState` snapshots into DuckDB. That
 `DecisionState` snapshot is the live pre-probability boundary: future decisions
