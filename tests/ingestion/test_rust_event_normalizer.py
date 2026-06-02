@@ -170,6 +170,60 @@ def test_normalizes_clob_spread_from_bid_ask_when_payload_spread_is_stale(tmp_pa
     assert json.loads(row[1])["top_of_book"]["spread"] == "0.02"
 
 
+def test_normalizer_collapses_consecutive_duplicate_chainlink_state(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.duckdb"
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    raw_path = (
+        tmp_path
+        / "raw"
+        / "polymarket_rtds_chainlink"
+        / "price_update"
+        / "date=2026-06-02"
+        / "hour=05"
+        / "events.jsonl"
+    )
+    _write_jsonl(
+        raw_path,
+        _chainlink_row("BTC/USD", "2026-06-02T05:33:54Z", "2026-06-02T05:33:55Z", 70600.0),
+        _chainlink_row("BTC/USD", "2026-06-02T05:33:54Z", "2026-06-02T05:33:56Z", 70600.0),
+    )
+
+    result = normalize_rust_event_file(path=raw_path, store=store)
+
+    assert result.rows_read == 2
+    assert result.price_ticks_written == 1
+    with duckdb.connect(str(db_path), read_only=True) as conn:
+        assert conn.execute("select count(*) from core.price_ticks").fetchone() == (1,)
+
+
+def test_normalizer_collapses_consecutive_duplicate_top_of_book_state(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.duckdb"
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    raw_path = (
+        tmp_path
+        / "raw"
+        / "polymarket_clob_market_ws"
+        / "best_bid_ask"
+        / "date=2026-06-02"
+        / "hour=05"
+        / "events.jsonl"
+    )
+    _write_jsonl(
+        raw_path,
+        _orderbook_row("token-1", "2026-06-02T05:33:54.100Z", "2026-06-02T05:33:54.200Z", 0.61, 0.64),
+        _orderbook_row("token-1", "2026-06-02T05:33:54.100Z", "2026-06-02T05:33:54.300Z", 0.61, 0.64),
+    )
+
+    result = normalize_rust_event_file(path=raw_path, store=store)
+
+    assert result.rows_read == 2
+    assert result.orderbooks_written == 1
+    with duckdb.connect(str(db_path), read_only=True) as conn:
+        assert conn.execute("select count(*) from core.orderbook_snapshots").fetchone() == (1,)
+
+
 def test_normalizes_state_manager_snapshot_into_prices_and_orderbooks(tmp_path: Path) -> None:
     db_path = tmp_path / "state.duckdb"
     store = DuckDbIngestStore(db_path)
@@ -521,6 +575,30 @@ def _chainlink_row(symbol: str, event_ts: str, observed_ts: str, value: float) -
                 "timestamp": 1,
                 "value": value,
             },
+        },
+    }
+
+
+def _orderbook_row(
+    token_id: str,
+    event_ts: str,
+    observed_ts: str,
+    best_bid: float,
+    best_ask: float,
+) -> dict[str, object]:
+    return {
+        "source_key": "polymarket_clob_market_ws",
+        "stream_key": "best_bid_ask",
+        "symbol": token_id,
+        "event_type": "best_bid_ask",
+        "event_ts": event_ts,
+        "observed_ts": observed_ts,
+        "payload": {
+            "contract_id": "0xabc",
+            "token_id": token_id,
+            "best_bid": str(best_bid),
+            "best_ask": str(best_ask),
+            "spread": str(round(best_ask - best_bid, 10)),
         },
     }
 

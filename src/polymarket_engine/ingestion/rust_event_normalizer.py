@@ -109,6 +109,8 @@ def normalize_rust_event_file(
     event_times: list[datetime] = []
     price_ticks: list[PriceObservation] = []
     orderbooks: list[OrderBookObservation] = []
+    last_price_state_by_symbol: dict[tuple[str, str], tuple[object, ...]] = {}
+    last_orderbook_state_by_token: dict[tuple[str, str], tuple[object, ...]] = {}
     source_key, stream_key = _source_stream_from_path(path)
 
     for row in _iter_jsonl(
@@ -119,10 +121,20 @@ def normalize_rust_event_file(
     ):
         rows_read += 1
         for tick in _price_ticks_from_row(row):
+            symbol_key = (tick.source_key, tick.symbol)
+            state_key = _price_state_key(tick)
+            if last_price_state_by_symbol.get(symbol_key) == state_key:
+                continue
+            last_price_state_by_symbol[symbol_key] = state_key
             price_ticks.append(tick)
             event_times.append(tick.event_ts)
             price_ticks_written += 1
         for book in _orderbooks_from_row(row):
+            token_key = (book.venue, book.token_id)
+            state_key = _orderbook_state_key(book)
+            if last_orderbook_state_by_token.get(token_key) == state_key:
+                continue
+            last_orderbook_state_by_token[token_key] = state_key
             orderbooks.append(book)
             event_times.append(book.event_ts)
             orderbooks_written += 1
@@ -168,6 +180,33 @@ def normalize_rust_event_file(
         rows_read=rows_read,
         price_ticks_written=price_ticks_written,
         orderbooks_written=orderbooks_written,
+    )
+
+
+def _price_state_key(tick: PriceObservation) -> tuple[object, ...]:
+    return (
+        tick.source_key,
+        tick.symbol,
+        tick.event_ts,
+        tick.price,
+        tick.bid,
+        tick.ask,
+        tick.sequence,
+    )
+
+
+def _orderbook_state_key(book: OrderBookObservation) -> tuple[object, ...]:
+    return (
+        book.venue,
+        book.contract_id,
+        book.token_id,
+        book.event_ts,
+        book.best_bid,
+        book.best_ask,
+        book.bid_size_top,
+        book.ask_size_top,
+        book.spread,
+        book.depth_json,
     )
 
 
