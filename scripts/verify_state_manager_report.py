@@ -235,7 +235,7 @@ def validate(payload: dict[str, Any]) -> list[str]:
 
     validate_contracts(require_list(payload, "current"), "current", require_assets=True)
     validate_contracts(require_list(payload, "next"), "next", require_assets=True)
-    validate_contracts(require_list(payload, "next_next"), "next_next", require_assets=False)
+    validate_contracts(require_list(payload, "next_next"), "next_next", require_assets=True)
     validate_optional_price_list(payload, "proxy_prices")
     validate_freshness(payload)
     validate_latency_marks(payload)
@@ -303,6 +303,7 @@ def main() -> int:
         "mode=state-manager",
         f"current={len(payload['current'])}",
         f"next={len(payload['next'])}",
+        f"next_next={len(payload['next_next'])}",
         f"orderbooks={len(payload['orderbooks'])}",
         f"subscriptions={len(payload['subscriptions'])}",
         f"websocket_status={len(payload['websocket_status'])}",

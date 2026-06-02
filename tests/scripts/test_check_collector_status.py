@@ -58,6 +58,7 @@ def _fresh_state_manager_status() -> dict[str, object]:
         "generated_at": now,
         "current": [{}, {}],
         "next": [{}, {}],
+        "next_next": [{}, {}],
         "chainlink_prices": [
             {
                 "source_key": "polymarket_rtds_chainlink",
@@ -281,6 +282,27 @@ def test_state_manager_status_rejects_bad_websocket_health(
     )
 
     with pytest.raises(SystemExit, match=expected):
+        script.main()
+
+
+def test_state_manager_status_rejects_missing_next_next_contracts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = _load_script()
+    status = _fresh_state_manager_status()
+    status["next_next"] = []
+    status_path = tmp_path / "status.json"
+    status_path.write_text(json.dumps(status), encoding="utf-8")
+    monkeypatch.setattr(
+        "sys.argv",
+        ["check_collector_status.py", "--status-path", str(status_path)],
+    )
+
+    with pytest.raises(
+        SystemExit,
+        match="state-manager missing next_next BTC/ETH contracts",
+    ):
         script.main()
 
 

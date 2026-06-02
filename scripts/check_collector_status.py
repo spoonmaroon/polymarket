@@ -154,6 +154,8 @@ def _reject_state_manager_payload(
         raise SystemExit("state-manager missing current BTC/ETH contracts")
     if len(payload.get("next", [])) < 2:
         raise SystemExit("state-manager missing next BTC/ETH contracts")
+    if len(payload.get("next_next", [])) < 2:
+        raise SystemExit("state-manager missing next_next BTC/ETH contracts")
     _reject_bad_websocket_status(
         payload.get("websocket_status", []),
         max_event_age_ms=max_websocket_event_age_ms,
