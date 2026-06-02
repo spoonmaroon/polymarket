@@ -12,8 +12,9 @@ def test_part_two_docs_describe_active_5m_rust_state_manager() -> None:
     assert "--mode state-manager" in text
     assert "--interval 5m" in text
     assert "--state-snapshot-dir" in text
-    assert "persists replayable state snapshots" in text
-    assert "still does not persist every raw WebSocket event" in text
+    assert "append-only raw WebSocket journals and state" in text
+    assert "polymarket-engine normalize-rust-events" in text
+    assert "write-normalized-health" in text
     assert "--intervals 5m,15m" not in text
 
 
@@ -24,3 +25,5 @@ def test_readme_points_to_state_manager_not_legacy_collector() -> None:
     assert "--mode state-manager" in text
     assert "--interval 5m" in text
     assert "legacy Python collector is retired" in text
+    assert "normalize-rust-events" in text
+    assert "write-normalized-health" in text

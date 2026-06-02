@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import signal
 from collections.abc import Callable
 from contextlib import suppress
@@ -68,6 +69,26 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     monitor.add_argument("--refresh", type=float, default=1.0)
     monitor.add_argument("--limit", type=int, default=8)
 
+    normalize = subparsers.add_parser("normalize-rust-events")
+    normalize_source = normalize.add_mutually_exclusive_group(required=True)
+    normalize_source.add_argument("--raw-root", type=Path)
+    normalize_source.add_argument("--file", type=Path)
+    normalize.add_argument("--duckdb-path", type=Path, required=True)
+    normalize.add_argument(
+        "--skip-apply-schema",
+        action="store_true",
+        help="Do not apply the DuckDB schema before normalizing.",
+    )
+    normalize.add_argument(
+        "--include-state-snapshots",
+        action="store_true",
+        help="Also normalize repeated state-manager snapshot rows.",
+    )
+
+    normalized_health = subparsers.add_parser("write-normalized-health")
+    normalized_health.add_argument("--duckdb-path", type=Path, required=True)
+    normalized_health.add_argument("--out", type=Path, required=True)
+
     return parser.parse_args(argv)
 
 
@@ -77,9 +98,53 @@ async def run_collect_command(argv: list[str] | None = None) -> int:
         from polymarket_engine.monitor import run_monitor
 
         return await run_monitor(args.duckdb_path, args.refresh, args.limit, args.status_path)
+    if args.command == "normalize-rust-events":
+        return _run_normalize_rust_events(args)
+    if args.command == "write-normalized-health":
+        return _run_write_normalized_health(args)
     if args.command != "collect":
         return 2
     raise SystemExit(RETIRED_COLLECTOR_MESSAGE)
+
+
+def _run_normalize_rust_events(args: argparse.Namespace) -> int:
+    from polymarket_engine.ingestion.rust_event_normalizer import (
+        RustEventNormalizeResult,
+        normalize_rust_event_file,
+        normalize_rust_event_tree,
+    )
+    from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
+
+    store = DuckDbIngestStore(args.duckdb_path)
+    if not args.skip_apply_schema:
+        store.apply_schema()
+    results: tuple[RustEventNormalizeResult, ...]
+    if args.file is not None:
+        results = (normalize_rust_event_file(path=args.file, store=store),)
+    else:
+        results = normalize_rust_event_tree(
+            raw_root=args.raw_root,
+            store=store,
+            include_state_snapshots=args.include_state_snapshots,
+        )
+    summary = {
+        "files": len(results),
+        "rows_read": sum(result.rows_read for result in results),
+        "price_ticks_written": sum(result.price_ticks_written for result in results),
+        "orderbooks_written": sum(result.orderbooks_written for result in results),
+    }
+    print(json.dumps(summary, sort_keys=True))
+    return 0
+
+
+def _run_write_normalized_health(args: argparse.Namespace) -> int:
+    from polymarket_engine.health.normalized_status import write_normalized_health_status
+    from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
+
+    store = DuckDbIngestStore(args.duckdb_path)
+    status = write_normalized_health_status(store=store, out_path=args.out)
+    print(json.dumps(status, sort_keys=True))
+    return 0
 
 
 def _install_shutdown_signal_handlers(

@@ -7,6 +7,10 @@ It is intentionally scoped to BTC/ETH 5m current, next, and next-next windows
 until the warm-state path and durable persistence are stable.
 
 Persistent data lives outside the repo at `/home/spoon/polymarket-data`.
+The Rust collector writes raw WebSocket journals and state snapshots under
+`/home/spoon/polymarket-data/raw`; DuckDB replay/research tables live under
+`/home/spoon/polymarket-data/db` and are populated separately by the raw Rust
+event normalizer.
 
 ## Time Policy
 
@@ -47,6 +51,32 @@ POLYMARKET_DEPLOY_REF=origin/main DEPLOY_FORCE=1 /home/spoon/polymarket/scripts/
 ## Retention
 
 Raw data remains hot for 90 days. Do not enable deletion until compact replay tests prove 1-second compacted research tables reproduce the same as-of state for sampled contracts.
+
+## Normalize Rust Raw Journals
+
+Run this after raw journals exist or after a deliberate fresh-slate reset:
+
+```bash
+cd /home/spoon/polymarket
+uv run polymarket-engine normalize-rust-events \
+  --raw-root /home/spoon/polymarket-data/raw \
+  --duckdb-path /home/spoon/polymarket-data/db/polymarket.duckdb
+```
+
+This writes normalized Chainlink price ticks, Polymarket top-of-book rows, and
+ingest manifests from the Rust raw journals. It is the replay bridge; it does
+not start the retired Python collector and it does not place orders.
+Direct WebSocket journals are normalized by default. Add
+`--include-state-snapshots` only for an explicit state-snapshot audit or
+recovery backfill.
+
+Then write normalized table health:
+
+```bash
+uv run polymarket-engine write-normalized-health \
+  --duckdb-path /home/spoon/polymarket-data/db/polymarket.duckdb \
+  --out /home/spoon/polymarket-data/live/normalized_health.json
+```
 
 ## Manual Health Checks
 

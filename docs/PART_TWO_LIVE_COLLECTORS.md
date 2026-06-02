@@ -59,14 +59,24 @@ The Rust state-manager status file records:
 - Source/order-book freshness rows.
 - WebSocket connection status for Chainlink and CLOB streams.
 - Health flags that force the checker to fail closed.
+- Append-only raw Chainlink RTDS and Polymarket CLOB WebSocket journals under
+  `/var/lib/polymarket/raw/polymarket_rtds_chainlink/price_update` and
+  `/var/lib/polymarket/raw/polymarket_clob_market_ws/best_bid_ask`.
 - Append-only UTC-hour state snapshots under
   `/var/lib/polymarket/raw/polymarket_state_manager/state_snapshot`.
 
-Current caveat: the Rust state-manager now persists replayable state snapshots,
-but it still does not persist every raw WebSocket event into Parquet or
-normalized DuckDB tables. That full raw-event persistence step remains required
-before long-run research labels and probability backtests can rely on the Rust
-runtime as the sole data source.
+Durable boundary: the Rust state-manager owns hot read-only collection and
+append-only raw journals. DuckDB owns normalized replay/research tables. Use
+`polymarket-engine normalize-rust-events` to convert Rust raw journals into
+`core.price_ticks`, `core.orderbook_snapshots`, and ingest manifests. Probability
+work remains blocked until normalized replay rows are current and reproducible
+from the raw journals.
+
+By default, `normalize-rust-events` reads direct Chainlink/CLOB WebSocket event
+journals. Use `--include-state-snapshots` only for recovery/audit backfills,
+because state snapshots repeat the latest known price/book state every second.
+Use `polymarket-engine write-normalized-health` to publish a separate
+`normalized_health.json` file with DuckDB table counts and latest timestamps.
 
 ## Source Rules
 
@@ -79,7 +89,10 @@ runtime as the sole data source.
 - A historical proxy row that exactly matches the same timestamped Chainlink value may be kept as validation evidence. It must not become an additional realized-volatility observation, because that would double-count one move.
 - Binance.com is disabled by default on this machine because it returned `HTTP 451`.
 - Every source event must preserve both source timestamp and local receive timestamp.
-- The active Rust runtime writes append-only state snapshots. Full raw Parquet event persistence remains a required follow-up before replay/backtest work.
+- The active Rust runtime writes append-only raw WebSocket journals and state
+  snapshots. Normalized DuckDB replay rows are produced by
+  `polymarket-engine normalize-rust-events`; do not restart the retired Python
+  collector to fill those tables.
 - WebSocket outages are handled with capped reconnect backoff; other sources continue running when one feed disconnects.
 - RTDS subscribes to all Chainlink crypto symbols and filters locally to configured assets, because filtered multi-symbol subscriptions can omit live ETH updates. It also subscribes to per-symbol RTDS Binance proxy filters for the configured assets.
 
@@ -89,7 +102,11 @@ Part Two does not trade, does not build model probabilities, and does not place 
 
 ## Retention Policy
 
-State snapshots should be retained hot for 90 days with the rest of raw data. Full raw event data should also be retained hot for 90 days once Rust event persistence is added. Hot raw data should include Polymarket market snapshots, CLOB market WebSocket events, REST order-book backup snapshots, RTDS Chainlink price updates, proxy price updates, source errors, and raw collector payloads.
+State snapshots and raw WebSocket event journals should be retained hot for 90
+days with the rest of raw data. Hot raw data should include Polymarket market
+snapshots, CLOB market WebSocket events, REST order-book backup snapshots, RTDS
+Chainlink price updates, proxy price updates, source errors, and raw collector
+payloads.
 
 After 90 days, raw events should be compacted into replay-safe research tables before deletion is enabled. The compact layer should preserve 1-second price bars, 1-second top-of-book rows, source freshness, contract windows, rule hashes, decision states, and final labels. Automatic deletion remains disabled until replay tests prove compacted tables reproduce the same as-of state for sampled contracts.
 

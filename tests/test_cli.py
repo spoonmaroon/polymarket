@@ -1,11 +1,14 @@
+import json
 from pathlib import Path
 from signal import SIGTERM, Signals
 from typing import Any
 
+import duckdb
 import pytest
 
 from polymarket_engine import cli
 from polymarket_engine.cli import parse_args
+from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
 
 
 def test_parse_collect_args() -> None:
@@ -104,6 +107,133 @@ def test_parse_monitor_args() -> None:
     assert args.duckdb_path == Path("data/db/polymarket.duckdb")
     assert args.status_path == Path("data/live/status.json")
     assert args.refresh == 1.0
+
+
+def test_parse_normalize_rust_events_args() -> None:
+    args = parse_args(
+        [
+            "normalize-rust-events",
+            "--raw-root",
+            "data/raw",
+            "--duckdb-path",
+            "data/db/polymarket.duckdb",
+        ]
+    )
+
+    assert args.command == "normalize-rust-events"
+    assert args.raw_root == Path("data/raw")
+    assert args.file is None
+    assert args.duckdb_path == Path("data/db/polymarket.duckdb")
+    assert args.skip_apply_schema is False
+    assert args.include_state_snapshots is False
+
+
+def test_parse_write_normalized_health_args() -> None:
+    args = parse_args(
+        [
+            "write-normalized-health",
+            "--duckdb-path",
+            "data/db/polymarket.duckdb",
+            "--out",
+            "data/live/normalized_health.json",
+        ]
+    )
+
+    assert args.command == "write-normalized-health"
+    assert args.duckdb_path == Path("data/db/polymarket.duckdb")
+    assert args.out == Path("data/live/normalized_health.json")
+
+
+@pytest.mark.anyio
+async def test_run_normalize_rust_events_command_writes_duckdb(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    raw_path = (
+        tmp_path
+        / "raw"
+        / "polymarket_rtds_chainlink"
+        / "price_update"
+        / "date=2026-06-02"
+        / "hour=05"
+        / "events.jsonl"
+    )
+    raw_path.parent.mkdir(parents=True)
+    raw_path.write_text(
+        json.dumps(
+            {
+                "source_key": "polymarket_rtds_chainlink",
+                "stream_key": "price_update",
+                "symbol": "BTC/USD",
+                "event_type": "chainlink_price",
+                "event_ts": "2026-06-02T05:33:54Z",
+                "observed_ts": "2026-06-02T05:33:55.239695967Z",
+                "payload": {
+                    "topic": "crypto_prices_chainlink",
+                    "payload": {
+                        "symbol": "btc/usd",
+                        "timestamp": 1_780_378_434_000,
+                        "value": "70600.137545",
+                    },
+                },
+            },
+            separators=(",", ":"),
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    db_path = tmp_path / "state.duckdb"
+
+    result = await cli.run_collect_command(
+        [
+            "normalize-rust-events",
+            "--raw-root",
+            str(tmp_path / "raw"),
+            "--duckdb-path",
+            str(db_path),
+        ]
+    )
+
+    assert result == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "files": 1,
+        "orderbooks_written": 0,
+        "price_ticks_written": 1,
+        "rows_read": 1,
+    }
+    with duckdb.connect(str(db_path), read_only=True) as conn:
+        assert conn.execute("select count(*) from core.price_ticks").fetchone() == (1,)
+
+
+@pytest.mark.anyio
+async def test_run_write_normalized_health_command_writes_status(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    db_path = tmp_path / "state.duckdb"
+    DuckDbIngestStore(db_path).apply_schema()
+    out_path = tmp_path / "live" / "normalized_health.json"
+
+    result = await cli.run_collect_command(
+        [
+            "write-normalized-health",
+            "--duckdb-path",
+            str(db_path),
+            "--out",
+            str(out_path),
+        ]
+    )
+
+    assert result == 0
+    stdout_payload = json.loads(capsys.readouterr().out)
+    file_payload = json.loads(out_path.read_text(encoding="utf-8"))
+    assert stdout_payload == file_payload
+    assert file_payload["schema_version"] == "polymarket-normalized-health-v1"
+    assert {row["table"] for row in file_payload["tables"]} >= {
+        "core.price_ticks",
+        "core.orderbook_snapshots",
+        "features.asof_state_inputs",
+    }
 
 
 @pytest.mark.anyio
