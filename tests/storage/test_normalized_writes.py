@@ -249,6 +249,43 @@ def test_store_context_reuses_one_duckdb_connection(
     assert connect_count == 1
 
 
+def test_store_skips_duplicate_contract_spec_batch_in_one_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "state.duckdb"
+    DuckDbIngestStore(db_path).apply_schema()
+    duckdb_module = getattr(duckdb_store, "duckdb")
+    real_connect = duckdb_module.connect
+    execute_count = 0
+
+    class _CountingConnection:
+        def __init__(self, conn: duckdb.DuckDBPyConnection) -> None:
+            self._conn = conn
+
+        def execute(self, *args: Any, **kwargs: Any) -> duckdb.DuckDBPyConnection:
+            nonlocal execute_count
+            execute_count += 1
+            return self._conn.execute(*args, **kwargs)
+
+        def register(self, *args: Any, **kwargs: Any) -> duckdb.DuckDBPyConnection:
+            return self._conn.register(*args, **kwargs)
+
+        def close(self) -> None:
+            self._conn.close()
+
+    def counting_connect(*args: Any, **kwargs: Any) -> _CountingConnection:
+        return _CountingConnection(cast(duckdb.DuckDBPyConnection, real_connect(*args, **kwargs)))
+
+    monkeypatch.setattr(duckdb_module, "connect", counting_connect)
+
+    with DuckDbIngestStore(db_path) as store:
+        store.upsert_contract_specs((_contract(),))
+        store.upsert_contract_specs((_contract(),))
+
+    assert execute_count == 2
+
+
 def test_normalized_table_health_uses_one_duckdb_query(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

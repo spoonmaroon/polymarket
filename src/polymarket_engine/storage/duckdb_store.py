@@ -26,10 +26,39 @@ def _strict_json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
+def _contract_specs_signature(contracts: Sequence[ContractSpec]) -> tuple[tuple[object, ...], ...]:
+    rows = tuple(
+        (
+            contract.contract_id,
+            contract.venue,
+            contract.market_id,
+            contract.condition_id,
+            contract.slug,
+            contract.asset,
+            contract.side,
+            contract.token_id,
+            contract.threshold_type,
+            contract.threshold_price,
+            contract.comparison_operator,
+            contract.start_ts,
+            contract.expiry_ts,
+            contract.settlement_source_name,
+            contract.settlement_source_url,
+            contract.settlement_symbol,
+            contract.rule_text,
+            contract.rule_hash,
+            contract.parser_version,
+        )
+        for contract in contracts
+    )
+    return tuple(sorted(rows, key=lambda row: (str(row[0]), repr(row))))
+
+
 class DuckDbIngestStore:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
         self._conn: duckdb.DuckDBPyConnection | None = None
+        self._last_contract_specs_signature: tuple[tuple[object, ...], ...] | None = None
 
     def __enter__(self) -> DuckDbIngestStore:
         if self._conn is None:
@@ -60,6 +89,7 @@ class DuckDbIngestStore:
         with self._connection() as conn:
             _drop_incompatible_tables(conn)
             conn.sql(schema_path.read_text())
+        self._last_contract_specs_signature = None
 
     def register_ingest_file(
         self,
@@ -214,6 +244,9 @@ class DuckDbIngestStore:
     def upsert_contract_specs(self, contracts: Sequence[ContractSpec]) -> None:
         if not contracts:
             return
+        signature = _contract_specs_signature(contracts)
+        if signature == self._last_contract_specs_signature:
+            return
         now = datetime.now(timezone.utc)
         ids_frame = pl.DataFrame({"contract_id": [contract.contract_id for contract in contracts]})
         with self._connection() as conn:
@@ -276,6 +309,7 @@ class DuckDbIngestStore:
                 from contract_spec_rows
                 """,
             )
+        self._last_contract_specs_signature = signature
 
     def insert_price_tick(self, tick: PriceObservation, raw_file_id: str | None = None) -> None:
         self.insert_price_ticks((tick,), raw_file_id=raw_file_id)
