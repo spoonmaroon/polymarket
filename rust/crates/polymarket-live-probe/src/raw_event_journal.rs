@@ -80,11 +80,10 @@ impl RawEventJournalWriter {
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            let file =
-                std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&path)?;
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)?;
             self.file = Some(BufWriter::new(file));
             self.open_path = Some(path.clone());
         }
@@ -111,10 +110,8 @@ fn write_raw_event_jsonl_line<W: Write>(writer: &mut W, event: &RawEventRecord) 
     Ok(())
 }
 
-fn write_raw_event_jsonl_batch<W: Write>(
-    writer: &mut W,
-    events: &[RawEventRecord],
-) -> Result<()> {
+#[cfg(test)]
+fn write_raw_event_jsonl_batch<W: Write>(writer: &mut W, events: &[RawEventRecord]) -> Result<()> {
     for event in events {
         write_raw_event_jsonl_line(writer, event)?;
     }
@@ -288,8 +285,14 @@ mod tests {
         let raw = String::from_utf8(inner.bytes).unwrap();
         let rows = raw.lines().collect::<Vec<_>>();
         assert_eq!(rows.len(), 2);
-        assert_eq!(serde_json::from_str::<serde_json::Value>(rows[0]).unwrap()["symbol"], "token-1");
-        assert_eq!(serde_json::from_str::<serde_json::Value>(rows[1]).unwrap()["symbol"], "token-2");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(rows[0]).unwrap()["symbol"],
+            "token-1"
+        );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(rows[1]).unwrap()["symbol"],
+            "token-2"
+        );
     }
 
     #[tokio::test]

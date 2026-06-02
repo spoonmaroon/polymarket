@@ -184,8 +184,8 @@ impl BestBidAskStreamManager {
                         sink.try_record(record)?;
                     }
                     let outcome = apply_clob_market_event(&event, &book_state).await?;
-                    if outcome.is_updated() {
-                        if let (
+                    if outcome.is_updated()
+                        && let (
                             Some(sink),
                             ClobMarketEvent::TopOfBook {
                                 token_id,
@@ -194,15 +194,13 @@ impl BestBidAskStreamManager {
                                 ..
                             },
                         ) = (hot_event_sink.as_ref(), &event)
-                        {
-                            if let Err(error) = sink.try_send(HotPathEvent::OrderBookTopOfBook {
-                                token_id: token_id.clone(),
-                                event_ts: *event_ts,
-                                observed_ts: *observed_ts,
-                            }) {
-                                tracing::warn!(error = %error, "dropped CLOB hot path event");
-                            }
-                        }
+                        && let Err(error) = sink.try_send(HotPathEvent::OrderBookTopOfBook {
+                            token_id: token_id.clone(),
+                            event_ts: *event_ts,
+                            observed_ts: *observed_ts,
+                        })
+                    {
+                        tracing::warn!(error = %error, "dropped CLOB hot path event");
                     } else if outcome.is_missing_book() {
                         tracing::warn!("received CLOB best_bid_ask for unseeded orderbook");
                     }

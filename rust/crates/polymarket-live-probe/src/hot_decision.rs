@@ -106,6 +106,7 @@ pub struct HotDecisionTelemetry {
 }
 
 impl HotDecisionTelemetry {
+    #[cfg(test)]
     pub fn record_state_built(&self, asof_ts: DateTime<Utc>, observed_to_state_us: u128) {
         let mut inner = self
             .inner
@@ -117,6 +118,7 @@ impl HotDecisionTelemetry {
         inner.last_observed_to_state_us = Some(observed_to_state_us);
     }
 
+    #[cfg(test)]
     pub fn record_state_persist_queued(&self) {
         let mut inner = self
             .inner
@@ -244,10 +246,10 @@ impl HotDecisionBuilder {
                 }
 
                 let book_age_ms = book.map(|book| age_ms(asof_ts, book.observed_ts));
-                if let Some(book) = book {
-                    if book.best_bid.is_none() || book.best_ask.is_none() {
-                        flags.push(HotDecisionQualityFlag::IncompleteOrderbook);
-                    }
+                if let Some(book) = book
+                    && (book.best_bid.is_none() || book.best_ask.is_none())
+                {
+                    flags.push(HotDecisionQualityFlag::IncompleteOrderbook);
                 }
                 if book_age_ms.is_some_and(|age| age > self.config.stale_orderbook_after_ms) {
                     flags.push(HotDecisionQualityFlag::StaleOrderbook);

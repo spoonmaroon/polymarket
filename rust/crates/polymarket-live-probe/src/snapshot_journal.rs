@@ -23,6 +23,7 @@ impl StateSnapshotJournal {
         }
     }
 
+    #[cfg(test)]
     pub fn append(&self, report: &StateManagerReport) -> Result<PathBuf> {
         self.writer().append(report)
     }
@@ -55,11 +56,10 @@ impl StateSnapshotJournalWriter {
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            let file =
-                std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&path)?;
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)?;
             self.file = Some(BufWriter::new(file));
             self.open_path = Some(path.clone());
         }

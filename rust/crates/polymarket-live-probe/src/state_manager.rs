@@ -244,10 +244,7 @@ impl StateManagerRuntime {
     }
 
     fn needs_contract_refresh(&self, now: DateTime<Utc>) -> bool {
-        let warmed = self
-            .warmed
-            .read()
-            .expect("warmed contracts lock poisoned");
+        let warmed = self.warmed.read().expect("warmed contracts lock poisoned");
         if warmed.is_empty() {
             return true;
         }
@@ -449,6 +446,7 @@ pub fn subscriptions_from_warmed_contracts(
     subscriptions
 }
 
+#[cfg(test)]
 fn warmed_token_ids(warmed_contracts: &[WarmedContract]) -> impl Iterator<Item = &str> {
     warmed_contracts.iter().flat_map(|contract| {
         [
@@ -510,16 +508,21 @@ fn hot_event_orderbook_token_ids<'a>(
                 })
                 .collect::<Vec<_>>()
         }
-        HotPathEvent::OrderBookTopOfBook { token_id, .. } => warmed_contracts
-            .iter()
-            .filter(|contract| {
-                contract.window.start_ts <= asof_ts && asof_ts < contract.window.end_ts
-            })
-            .any(|contract| {
-                token_id == &contract.up.token_id || token_id == &contract.down.token_id
-            })
-            .then(|| vec![token_id.as_str()])
-            .unwrap_or_default(),
+        HotPathEvent::OrderBookTopOfBook { token_id, .. } => {
+            let token_is_current = warmed_contracts
+                .iter()
+                .filter(|contract| {
+                    contract.window.start_ts <= asof_ts && asof_ts < contract.window.end_ts
+                })
+                .any(|contract| {
+                    token_id == &contract.up.token_id || token_id == &contract.down.token_id
+                });
+            if token_is_current {
+                vec![token_id.as_str()]
+            } else {
+                Vec::new()
+            }
+        }
     }
 }
 
@@ -660,7 +663,10 @@ fn orderbook_token_id_set(orderbooks: &[NormalizedOrderBook]) -> HashSet<&str> {
 }
 
 fn contract_token_ids(contract: &WarmedContract) -> [&str; 2] {
-    [contract.up.token_id.as_str(), contract.down.token_id.as_str()]
+    [
+        contract.up.token_id.as_str(),
+        contract.down.token_id.as_str(),
+    ]
 }
 
 fn record_missing_orderbook_scan() {
@@ -979,20 +985,10 @@ mod tests {
         let start = observed.timestamp() - 60;
         let book_state = LiveBookState::default();
         book_state
-            .upsert_book(book(
-                "BTC",
-                "UP",
-                "current-up",
-                observed.timestamp_millis(),
-            ))
+            .upsert_book(book("BTC", "UP", "current-up", observed.timestamp_millis()))
             .await;
         book_state
-            .upsert_book(book(
-                "ETH",
-                "UP",
-                "cached-up",
-                observed.timestamp_millis(),
-            ))
+            .upsert_book(book("ETH", "UP", "cached-up", observed.timestamp_millis()))
             .await;
         let runtime = StateManagerRuntime {
             config: config(),

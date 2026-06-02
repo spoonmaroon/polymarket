@@ -211,12 +211,8 @@ async fn run_state_manager(args: Args) -> Result<()> {
     let decision_writer = args
         .decision_snapshot_dir
         .clone()
-        .map(|dir| {
-            decision_journal::HotDecisionSink::start(dir, args.decision_event_buffer_size)
-        });
-    let decision_sink = decision_writer
-        .as_ref()
-        .map(|(sink, _handle)| sink.clone());
+        .map(|dir| decision_journal::HotDecisionSink::start(dir, args.decision_event_buffer_size));
+    let decision_sink = decision_writer.as_ref().map(|(sink, _handle)| sink.clone());
     let mut timer = report::ProbeTimer::start();
     timer.mark("start");
     let mut runtime = state_manager::StateManagerRuntime::start_with_raw_events_and_hot_decisions(
@@ -253,16 +249,16 @@ async fn run_state_manager(args: Args) -> Result<()> {
             hot_decision_telemetry,
         });
         report::write_state_manager_report(&args.out, &report)?;
-        if let Some(journal) = &mut snapshot_journal {
-            if state_snapshot_due(
+        if let Some(journal) = &mut snapshot_journal
+            && state_snapshot_due(
                 elapsed_ms,
                 last_state_snapshot_elapsed_ms,
                 args.state_snapshot_interval_ms,
-            ) {
-                let path = journal.append(&report)?;
-                last_state_snapshot_elapsed_ms = Some(elapsed_ms);
-                info!(path = %path.display(), "appended rust state manager snapshot");
-            }
+            )
+        {
+            let path = journal.append(&report)?;
+            last_state_snapshot_elapsed_ms = Some(elapsed_ms);
+            info!(path = %path.display(), "appended rust state manager snapshot");
         }
         timer.mark("state_report_written");
         info!(
@@ -327,6 +323,15 @@ fn state_snapshot_due(
         return true;
     };
     elapsed_ms.saturating_sub(last_snapshot_elapsed_ms) >= u128::from(interval_ms)
+}
+
+async fn with_timeout<T, F>(label: &str, timeout_seconds: u64, future: F) -> Result<T>
+where
+    F: Future<Output = Result<T>>,
+{
+    timeout(Duration::from_secs(timeout_seconds), future)
+        .await
+        .map_err(|_| anyhow!("{label} timed out after {timeout_seconds} seconds"))?
 }
 
 #[cfg(test)]
@@ -402,19 +407,7 @@ mod tests {
         ]);
 
         assert_eq!(args.mode, "latency-probe");
-        assert_eq!(
-            args.order_latency_probe_url,
-            "http://127.0.0.1:8080/health"
-        );
+        assert_eq!(args.order_latency_probe_url, "http://127.0.0.1:8080/health");
         assert_eq!(args.order_latency_probe_iterations, 3);
     }
-}
-
-async fn with_timeout<T, F>(label: &str, timeout_seconds: u64, future: F) -> Result<T>
-where
-    F: Future<Output = Result<T>>,
-{
-    timeout(Duration::from_secs(timeout_seconds), future)
-        .await
-        .map_err(|_| anyhow!("{label} timed out after {timeout_seconds} seconds"))?
 }
