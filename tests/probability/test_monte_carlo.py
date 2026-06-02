@@ -42,7 +42,7 @@ def test_score_paths_counts_terminal_and_no_touch_wins_for_explicit_up_paths() -
     assert output.p_no_touch == pytest.approx(0.5)
     assert output.model_version == "mc-fixture"
     assert output.seed == 7
-    assert output.diagnostics == {"path_count": 2, "model": "explicit_paths"}
+    assert output.diagnostics == {"path_count": 2, "steps": 2, "model": "explicit_paths"}
 
 
 def test_run_seeded_monte_carlo_is_deterministic_for_same_seed() -> None:

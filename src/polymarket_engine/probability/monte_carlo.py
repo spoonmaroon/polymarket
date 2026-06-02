@@ -20,6 +20,7 @@ def score_paths(
     path_rows = _validate_paths(paths)
     counts = _score_validated_paths(probability_input, path_rows)
     path_count = len(path_rows)
+    steps = len(path_rows[0]) - 1
     return ProbabilityOutput(
         state_id=probability_input.state_id,
         asof_ts=probability_input.asof_ts,
@@ -28,7 +29,7 @@ def score_paths(
         z_path=probability_input.z_path,
         model_version=model_version,
         seed=seed,
-        diagnostics={"path_count": path_count, "model": "explicit_paths"},
+        diagnostics={"path_count": path_count, "steps": steps, "model": "explicit_paths"},
     )
 
 
