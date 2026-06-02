@@ -6,6 +6,7 @@ use std::time::Duration;
 use tokio::time::timeout;
 use tracing::info;
 
+mod book_state;
 mod clob_ws;
 mod polymarket;
 mod prices;

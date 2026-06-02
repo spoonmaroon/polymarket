@@ -551,7 +551,7 @@ git commit -m "Parse CLOB market websocket events"
 - Create: `rust/crates/polymarket-live-probe/src/book_state.rs`
 - Modify: `rust/crates/polymarket-live-probe/src/main.rs`
 
-- [ ] **Step 1: Write book-state tests**
+- [x] **Step 1: Write book-state tests**
 
 Test that:
 
@@ -559,7 +559,7 @@ Test that:
 - `best_bid_ask` updates top of book without losing token metadata;
 - stale book age produces `stale_orderbook` health.
 
-- [ ] **Step 2: Implement `LiveBookState`**
+- [x] **Step 2: Implement `LiveBookState`**
 
 Create:
 
@@ -572,7 +572,7 @@ pub struct LiveBookState {
 
 Expose `upsert_book`, `apply_top_of_book`, `snapshot`, and `freshness`.
 
-- [ ] **Step 3: Run tests**
+- [x] **Step 3: Run tests**
 
 ```bash
 cargo test -p polymarket-live-probe book_state::tests -q
