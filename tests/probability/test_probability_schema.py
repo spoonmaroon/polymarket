@@ -141,6 +141,46 @@ def test_probability_input_constructor_rejects_invalid_domain_values() -> None:
             ProbabilityInput(**{**base, field_name: invalid_value})
 
 
+def test_probability_input_constructor_rejects_unsupported_side() -> None:
+    base: dict[str, Any] = {
+        "state_id": "state-1",
+        "asof_ts": datetime(2026, 5, 31, 20, 3, tzinfo=timezone.utc),
+        "asset": "BTC",
+        "side": "SIDEWAYS",
+        "seconds_left": 120.0,
+        "settlement_price": 104_000.0,
+        "threshold": 103_950.0,
+        "sigma_tau": 0.002,
+        "executable_price": 0.64,
+        "source_age_ms": 1000,
+        "book_age_ms": 1000,
+        "z_path": 0.24,
+    }
+
+    with pytest.raises(ValueError, match="side"):
+        ProbabilityInput(**base)
+
+
+def test_probability_input_constructor_rejects_unsupported_asset() -> None:
+    base: dict[str, Any] = {
+        "state_id": "state-1",
+        "asof_ts": datetime(2026, 5, 31, 20, 3, tzinfo=timezone.utc),
+        "asset": "DOGE",
+        "side": "UP",
+        "seconds_left": 120.0,
+        "settlement_price": 104_000.0,
+        "threshold": 103_950.0,
+        "sigma_tau": 0.002,
+        "executable_price": 0.64,
+        "source_age_ms": 1000,
+        "book_age_ms": 1000,
+        "z_path": 0.24,
+    }
+
+    with pytest.raises(ValueError, match="asset"):
+        ProbabilityInput(**base)
+
+
 def test_probability_output_rejects_invalid_probabilities() -> None:
     base: dict[str, Any] = {
         "state_id": "state-1",

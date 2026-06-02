@@ -59,6 +59,8 @@ class ProbabilityInput:
 
     def __post_init__(self) -> None:
         _require_utc(self.asof_ts, "asof_ts")
+        _require_supported(self.asset, "asset", {"BTC", "ETH"})
+        _require_supported(self.side, "side", {"UP", "DOWN"})
         _require_nonnegative(self.seconds_left, "seconds_left")
         _require_positive(self.settlement_price, "settlement_price")
         _require_positive(self.threshold, "threshold")
@@ -105,6 +107,11 @@ class ProbabilityOutput:
 def _require_probability(value: float, field_name: str) -> None:
     if not math.isfinite(value) or not 0 <= value <= 1:
         raise ValueError(f"{field_name} must be finite and between 0 and 1")
+
+
+def _require_supported(value: str, field_name: str, supported: set[str]) -> None:
+    if value not in supported:
+        raise ValueError(f"{field_name} must be one of {', '.join(sorted(supported))}")
 
 
 def _require_finite(value: float, field_name: str) -> None:
