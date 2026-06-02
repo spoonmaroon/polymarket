@@ -35,12 +35,20 @@ pub struct StateManagerRuntime {
     book_state: LiveBookState,
     orderbook_streams: clob_ws::BestBidAskStreamManager,
     warmed: SharedWarmedContracts,
+    market_tokens: Vec<polymarket::MarketToken>,
     token_ids: Vec<String>,
     subscriptions: Vec<StateManagerSubscription>,
     last_refresh: DateTime<Utc>,
     chainlink_streams: prices::ChainlinkStreamManager,
     hot_decision_worker: Option<JoinHandle<Result<()>>>,
     hot_decision_telemetry: Option<HotDecisionTelemetry>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RefreshAction {
+    None,
+    RestBackup,
+    ContractRefresh,
 }
 
 impl StateManagerRuntime {
@@ -98,6 +106,7 @@ impl StateManagerRuntime {
             ),
             book_state,
             warmed,
+            market_tokens: Vec::new(),
             token_ids: Vec::new(),
             subscriptions: Vec::new(),
             last_refresh: Utc::now(),
@@ -110,8 +119,10 @@ impl StateManagerRuntime {
     }
 
     pub async fn maybe_refresh(&mut self, now: DateTime<Utc>) -> Result<()> {
-        if self.needs_contract_refresh(now) || self.needs_rest_backup(now) {
-            self.refresh_contracts().await?;
+        match self.refresh_action(now) {
+            RefreshAction::ContractRefresh => self.refresh_contracts().await?,
+            RefreshAction::RestBackup => self.refresh_rest_backup(now).await?,
+            RefreshAction::None => {}
         }
         Ok(())
     }
@@ -193,11 +204,34 @@ impl StateManagerRuntime {
 
         *self.warmed.write().expect("warmed contracts lock poisoned") = warmed;
         self.orderbook_streams.update_tokens(&token_ids)?;
+        self.market_tokens = tokens;
         self.token_ids = token_ids;
         self.subscriptions = subscriptions;
 
         self.last_refresh = now;
         Ok(())
+    }
+
+    async fn refresh_rest_backup(&mut self, now: DateTime<Utc>) -> Result<()> {
+        if self.market_tokens.is_empty() {
+            self.refresh_contracts().await?;
+            return Ok(());
+        }
+        for book in polymarket::fetch_orderbooks(&self.market_tokens).await? {
+            self.book_state.upsert_book(book).await;
+        }
+        self.last_refresh = now;
+        Ok(())
+    }
+
+    fn refresh_action(&self, now: DateTime<Utc>) -> RefreshAction {
+        if self.needs_contract_refresh(now) {
+            RefreshAction::ContractRefresh
+        } else if self.needs_rest_backup(now) {
+            RefreshAction::RestBackup
+        } else {
+            RefreshAction::None
+        }
     }
 
     fn needs_contract_refresh(&self, now: DateTime<Utc>) -> bool {
@@ -772,6 +806,7 @@ mod tests {
             warmed: std::sync::Arc::new(std::sync::RwLock::new(vec![warmed(
                 "BTC", start, "current",
             )])),
+            market_tokens: vec![],
             token_ids: vec![],
             subscriptions: vec![],
             last_refresh: observed,
@@ -816,6 +851,7 @@ mod tests {
                 start,
                 "stale-btc",
             )])),
+            market_tokens: vec![],
             token_ids: vec!["stale-btc-up".to_owned(), "stale-btc-down".to_owned()],
             subscriptions: subscriptions_from_warmed_contracts(&cached_warmed),
             last_refresh: Utc.timestamp_opt(start, 0).unwrap(),
@@ -862,6 +898,7 @@ mod tests {
             warmed: std::sync::Arc::new(std::sync::RwLock::new(vec![warmed(
                 "BTC", start, "current",
             )])),
+            market_tokens: vec![],
             token_ids: vec!["cached-up".to_owned()],
             subscriptions: vec![],
             last_refresh: observed,
@@ -876,6 +913,33 @@ mod tests {
 
         assert_eq!(snapshot.orderbooks.len(), 1);
         assert_eq!(snapshot.orderbooks[0].token_id, "cached-up");
+    }
+
+    #[tokio::test]
+    async fn runtime_rest_backup_action_uses_cached_tokens_without_contract_refresh() {
+        let start = 1_780_302_400;
+        let now = Utc.timestamp_opt(start + 60, 0).unwrap();
+        let runtime = StateManagerRuntime {
+            config: config(),
+            latest_prices: crate::prices::LatestPrices::default(),
+            orderbook_streams: clob_ws::BestBidAskStreamManager::new(LiveBookState::default()),
+            book_state: LiveBookState::default(),
+            warmed: std::sync::Arc::new(std::sync::RwLock::new(vec![
+                warmed("BTC", start, "current"),
+                warmed("BTC", start + 300, "next"),
+            ])),
+            market_tokens: vec![],
+            token_ids: vec!["current-up".to_owned(), "current-down".to_owned()],
+            subscriptions: vec![],
+            last_refresh: now - Duration::seconds(16),
+            chainlink_streams: prices::ChainlinkStreamManager::inactive_for_tests(vec![
+                "btc/usd".to_owned(),
+            ]),
+            hot_decision_worker: None,
+            hot_decision_telemetry: None,
+        };
+
+        assert_eq!(runtime.refresh_action(now), RefreshAction::RestBackup);
     }
 
     #[test]
