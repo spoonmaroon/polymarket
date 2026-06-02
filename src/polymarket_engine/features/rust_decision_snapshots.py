@@ -50,6 +50,7 @@ def build_current_decision_state_snapshots(
     payload = _read_status(status_path)
     asof_ts = _parse_ts(payload["generated_at"])
     token_metadata = _token_metadata(payload.get("orderbooks", []))
+    status_prices = _prices_from_status(_price_rows_from_status(payload))
     status_orderbooks = _orderbooks_from_status(payload.get("orderbooks", []))
     contracts = _contracts_from_status(
         payload,
@@ -60,6 +61,11 @@ def build_current_decision_state_snapshots(
     read_store = _CachedStateReadStore(store)
     read_store.prime_threshold_prices(
         state_contracts,
+        source_key=SETTLEMENT_SOURCE_KEY,
+        asof_ts=asof_ts,
+    )
+    read_store.seed_latest_prices(
+        status_prices,
         source_key=SETTLEMENT_SOURCE_KEY,
         asof_ts=asof_ts,
     )
@@ -274,6 +280,40 @@ def _orderbooks_from_status(rows: object) -> tuple[OrderBookObservation, ...]:
     return tuple(orderbooks)
 
 
+def _price_rows_from_status(payload: dict[str, Any]) -> tuple[object, ...]:
+    rows: list[object] = []
+    for key in ("chainlink_prices", "prices"):
+        value = payload.get(key, [])
+        if isinstance(value, list):
+            rows.extend(value)
+    return tuple(rows)
+
+
+def _prices_from_status(rows: Sequence[object]) -> tuple[PriceObservation, ...]:
+    prices: list[PriceObservation] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if "event_ts" not in row or "observed_ts" not in row or "price" not in row:
+            continue
+        source_key = row.get("source_key")
+        symbol = row.get("symbol")
+        if not isinstance(source_key, str) or not source_key:
+            continue
+        if not isinstance(symbol, str) or not symbol:
+            continue
+        prices.append(
+            PriceObservation(
+                source_key=source_key,
+                symbol=symbol,
+                event_ts=_parse_ts(row["event_ts"]),
+                observed_ts=_parse_ts(row["observed_ts"]),
+                price=_required_float(row["price"], "price"),
+            )
+        )
+    return tuple(prices)
+
+
 def _mapping(value: object, name: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError(f"{name} must be an object")
@@ -303,6 +343,13 @@ def _optional_float(value: object) -> float | None:
     if isinstance(value, str | int | float):
         return float(value)
     raise ValueError(f"status numeric field must be string or number, got {type(value).__name__}")
+
+
+def _required_float(value: object, field_name: str) -> float:
+    parsed = _optional_float(value)
+    if parsed is None:
+        raise ValueError(f"status numeric field {field_name} is required")
+    return parsed
 
 
 def _slug(asset: Asset, interval: str, start_ts: datetime) -> str:
@@ -524,6 +571,26 @@ class _CachedStateReadStore:
                 current.observed_ts,
             ):
                 self._latest_orderbook[key] = book
+
+    def seed_latest_prices(
+        self,
+        prices: Sequence[PriceObservation],
+        *,
+        source_key: str,
+        asof_ts: datetime,
+    ) -> None:
+        for price in prices:
+            if price.source_key != source_key:
+                continue
+            if price.event_ts > asof_ts or price.observed_ts > asof_ts:
+                continue
+            key = (price.source_key, price.symbol, asof_ts)
+            current = self._latest_price.get(key)
+            if current is None or (price.event_ts, price.observed_ts) > (
+                current.event_ts,
+                current.observed_ts,
+            ):
+                self._latest_price[key] = price
 
     def prime_threshold_prices(
         self,
