@@ -77,13 +77,13 @@ from the raw journals.
 By default, `normalize-rust-events` reads direct Chainlink/CLOB WebSocket event
 journals. Use `--include-state-snapshots` only for recovery/audit backfills,
 because state snapshots repeat the latest known price/book state every second.
-Use `polymarket-engine write-normalized-health` to publish a separate
-`normalized_health.json` file with DuckDB table counts and latest timestamps.
 Use `polymarket-engine build-current-decision-states` after normalization to
 write exact current as-of `DecisionState` snapshots into DuckDB. That
 `DecisionState` snapshot is the live pre-probability boundary: future decisions
 should persist this exact state first, while raw Chainlink/CLOB event journals
-remain the replay/audit trail.
+remain the replay/audit trail. Use `polymarket-engine write-normalized-health`
+after snapshot building to publish `normalized_health.json` with final DuckDB
+table counts and latest timestamps.
 
 ## Source Rules
 

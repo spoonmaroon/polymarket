@@ -79,20 +79,20 @@ uv run polymarket-engine normalize-rust-events \
   --duckdb-path data/db/polymarket.duckdb
 ```
 
-Write normalized DuckDB table health for operators:
-
-```bash
-uv run polymarket-engine write-normalized-health \
-  --duckdb-path data/db/polymarket.duckdb \
-  --out data/live/normalized_health.json
-```
-
 Build current as-of `DecisionState` snapshots from normalized rows:
 
 ```bash
 uv run polymarket-engine build-current-decision-states \
   --duckdb-path data/db/polymarket.duckdb \
   --status-path data/live/status.json
+```
+
+Write normalized DuckDB table health for operators after snapshot building:
+
+```bash
+uv run polymarket-engine write-normalized-health \
+  --duckdb-path data/db/polymarket.duckdb \
+  --out data/live/normalized_health.json
 ```
 
 ## Read First

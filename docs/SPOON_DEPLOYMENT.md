@@ -70,20 +70,20 @@ Direct WebSocket journals are normalized by default. Add
 `--include-state-snapshots` only for an explicit state-snapshot audit or
 recovery backfill.
 
-Then write normalized table health:
-
-```bash
-uv run polymarket-engine write-normalized-health \
-  --duckdb-path /home/spoon/polymarket-data/db/polymarket.duckdb \
-  --out /home/spoon/polymarket-data/live/normalized_health.json
-```
-
 Then snapshot current as-of decision state:
 
 ```bash
 uv run polymarket-engine build-current-decision-states \
   --duckdb-path /home/spoon/polymarket-data/db/polymarket.duckdb \
   --status-path /home/spoon/polymarket-data/live/status.json
+```
+
+Then write normalized table health after snapshot building:
+
+```bash
+uv run polymarket-engine write-normalized-health \
+  --duckdb-path /home/spoon/polymarket-data/db/polymarket.duckdb \
+  --out /home/spoon/polymarket-data/live/normalized_health.json
 ```
 
 Durability decision: persist exact `DecisionState` snapshots as the pre-
