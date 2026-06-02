@@ -59,11 +59,12 @@ impl StateManagerRuntime {
         Ok(())
     }
 
-    pub async fn snapshot(&self, now: DateTime<Utc>) -> Result<WarmStateSnapshot> {
+    pub async fn snapshot(&self, _now: DateTime<Utc>) -> Result<WarmStateSnapshot> {
         let chainlink_prices = self.latest_prices.snapshot().await;
         let orderbooks = orderbooks_for_warmed(self.book_state.snapshot().await, &self.warmed);
+        let snapshot_now = Utc::now();
         build_snapshot_from_warmed(
-            now,
+            snapshot_now,
             &self.config,
             &self.warmed,
             chainlink_prices,
@@ -502,6 +503,58 @@ mod tests {
             snapshot
                 .health_flags
                 .contains(&"next_contract_not_warmed:BTC".to_owned())
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_snapshot_grades_freshness_at_state_capture_time() {
+        let observed = Utc::now();
+        let stale_caller_now = observed - Duration::seconds(5);
+        let start = observed.timestamp() - 60;
+        let latest_prices = crate::prices::LatestPrices::default();
+        latest_prices
+            .update(chainlink("BTC", observed.timestamp_millis()))
+            .await;
+        let book_state = LiveBookState::default();
+        book_state
+            .upsert_book(book("BTC", "UP", "current-up", observed.timestamp_millis()))
+            .await;
+        book_state
+            .upsert_book(book(
+                "BTC",
+                "DOWN",
+                "current-down",
+                observed.timestamp_millis(),
+            ))
+            .await;
+        let runtime = StateManagerRuntime {
+            config: config(),
+            latest_prices,
+            book_state,
+            warmed: vec![warmed("BTC", start, "current")],
+            token_ids: vec![],
+            last_refresh: observed,
+            orderbook_task: None,
+            chainlink_task: tokio::spawn(async { Ok(()) }),
+        };
+
+        let snapshot = runtime.snapshot(stale_caller_now).await.unwrap();
+
+        assert!(
+            !snapshot
+                .health_flags
+                .iter()
+                .any(|flag| flag.starts_with("chainlink_price_stale:")),
+            "unexpected health flags: {:?}",
+            snapshot.health_flags
+        );
+        assert!(
+            !snapshot
+                .health_flags
+                .iter()
+                .any(|flag| flag.starts_with("orderbook_stale:")),
+            "unexpected health flags: {:?}",
+            snapshot.health_flags
         );
     }
 
