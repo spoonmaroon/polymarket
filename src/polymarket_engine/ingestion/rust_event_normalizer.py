@@ -5,6 +5,7 @@ import json
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from json.encoder import encode_basestring_ascii
 from pathlib import Path
 from typing import Any
 
@@ -460,19 +461,19 @@ def _orderbook_from_top_of_book_row(row: _TopOfBookRow) -> OrderBookObservation:
         bid_size_top=None,
         ask_size_top=None,
         spread=row.spread,
-        depth_json=json.dumps(
-            {
-                "source_key": "polymarket_clob_market_ws",
-                "stream_key": "best_bid_ask",
-                "top_of_book": {
-                    "best_bid": _json_scalar(row.payload.get("best_bid")),
-                    "best_ask": _json_scalar(row.payload.get("best_ask")),
-                    "spread": _json_scalar(row.payload.get("spread")),
-                },
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        ),
+        depth_json=_top_of_book_depth_json(row.payload),
+    )
+
+
+def _top_of_book_depth_json(payload: dict[str, Any]) -> str:
+    return (
+        '{"source_key":"polymarket_clob_market_ws",'
+        '"stream_key":"best_bid_ask",'
+        '"top_of_book":{'
+        f'"best_ask":{_json_scalar_literal(payload.get("best_ask"))},'
+        f'"best_bid":{_json_scalar_literal(payload.get("best_bid"))},'
+        f'"spread":{_json_scalar_literal(payload.get("spread"))}'
+        "}}"
     )
 
 
@@ -639,11 +640,23 @@ def _optional_nonnegative_float(value: object, field_name: str) -> float | None:
     return _nonnegative_float(value, field_name)
 
 
-def _json_scalar(value: object) -> object:
+def _json_scalar_literal(value: object) -> str:
     if value is None:
-        return None
-    if isinstance(value, (str, int, float)):
-        return value
+        return "null"
+    if isinstance(value, str):
+        return encode_basestring_ascii(value)
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        if value != value:
+            return "NaN"
+        if value == float("inf"):
+            return "Infinity"
+        if value == float("-inf"):
+            return "-Infinity"
+        return repr(value)
     return str(value)
 
 

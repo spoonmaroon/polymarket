@@ -130,6 +130,63 @@ def test_normalizes_clob_best_bid_ask_raw_event_into_orderbooks(tmp_path: Path) 
     assert row[7] == result.file_id
 
 
+def test_top_of_book_depth_json_materializes_without_json_dumps(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "state.duckdb"
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    raw_path = (
+        tmp_path
+        / "raw"
+        / "polymarket_clob_market_ws"
+        / "best_bid_ask"
+        / "date=2026-06-02"
+        / "hour=05"
+        / "events.jsonl"
+    )
+    _write_jsonl(
+        raw_path,
+        _orderbook_row(
+            "token-1",
+            "2026-06-02T05:33:54Z",
+            "2026-06-02T05:33:55Z",
+            0.61,
+            0.64,
+        ),
+    )
+    json_dumps_calls = 0
+    real_json_dumps = json.dumps
+
+    def counting_json_dumps(*args: Any, **kwargs: Any) -> str:
+        nonlocal json_dumps_calls
+        json_dumps_calls += 1
+        return real_json_dumps(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "polymarket_engine.ingestion.rust_event_normalizer.json.dumps",
+        counting_json_dumps,
+    )
+
+    result = normalize_rust_event_file(path=raw_path, store=store)
+
+    assert result.orderbooks_written == 1
+    assert json_dumps_calls == 0
+    with duckdb.connect(str(db_path), read_only=True) as conn:
+        row = conn.execute("select depth_json from core.orderbook_snapshots").fetchone()
+    assert row is not None
+    assert json.loads(row[0]) == {
+        "source_key": "polymarket_clob_market_ws",
+        "stream_key": "best_bid_ask",
+        "top_of_book": {
+            "best_ask": "0.64",
+            "best_bid": "0.61",
+            "spread": "0.03",
+        },
+    }
+
+
 def test_normalizes_clob_spread_from_bid_ask_when_payload_spread_is_stale(tmp_path: Path) -> None:
     db_path = tmp_path / "state.duckdb"
     store = DuckDbIngestStore(db_path)
