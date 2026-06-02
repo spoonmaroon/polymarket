@@ -257,10 +257,10 @@ fn start_hot_decision_worker(
         let builder = HotDecisionBuilder::new(config);
         while let Some(event) = receiver.recv().await {
             let asof_ts = Utc::now();
-            let warmed_snapshot = warmed
-                .read()
-                .expect("warmed contracts lock poisoned")
-                .clone();
+            let warmed_snapshot = {
+                let warmed = warmed.read().expect("warmed contracts lock poisoned");
+                hot_event_warmed_contracts(&event, &warmed, asof_ts)
+            };
             let price_assets = hot_event_price_assets(&event, &warmed_snapshot);
             let prices = latest_prices
                 .history_snapshot_for_assets(price_assets.iter().map(String::as_str))
@@ -445,7 +445,7 @@ fn hot_event_orderbook_token_ids<'a>(
     warmed_contracts: &'a [WarmedContract],
     asof_ts: DateTime<Utc>,
 ) -> Vec<&'a str> {
-    let asof_ts = asof_ts.max(event.observed_ts());
+    let asof_ts = hot_event_asof_ts(event, asof_ts);
     match event {
         HotPathEvent::ChainlinkPrice { symbol, .. } => {
             let asset = price_asset_from_symbol(symbol);
@@ -474,6 +474,41 @@ fn hot_event_orderbook_token_ids<'a>(
             .then(|| vec![token_id.as_str()])
             .unwrap_or_default(),
     }
+}
+
+fn hot_event_warmed_contracts(
+    event: &HotPathEvent,
+    warmed_contracts: &[WarmedContract],
+    asof_ts: DateTime<Utc>,
+) -> Vec<WarmedContract> {
+    let asof_ts = hot_event_asof_ts(event, asof_ts);
+    match event {
+        HotPathEvent::ChainlinkPrice { symbol, .. } => {
+            let asset = price_asset_from_symbol(symbol);
+            warmed_contracts
+                .iter()
+                .filter(|contract| {
+                    contract.window.start_ts <= asof_ts && asof_ts < contract.window.end_ts
+                })
+                .filter(|contract| contract.window.asset.eq_ignore_ascii_case(&asset))
+                .cloned()
+                .collect()
+        }
+        HotPathEvent::OrderBookTopOfBook { token_id, .. } => warmed_contracts
+            .iter()
+            .filter(|contract| {
+                contract.window.start_ts <= asof_ts && asof_ts < contract.window.end_ts
+            })
+            .filter(|contract| {
+                token_id == &contract.up.token_id || token_id == &contract.down.token_id
+            })
+            .cloned()
+            .collect(),
+    }
+}
+
+fn hot_event_asof_ts(event: &HotPathEvent, asof_ts: DateTime<Utc>) -> DateTime<Utc> {
+    asof_ts.max(event.observed_ts())
 }
 
 fn feed_freshness(
@@ -924,5 +959,54 @@ mod tests {
             hot_event_orderbook_token_ids(&rollover_event, &warmed, early_worker_now);
 
         assert_eq!(observed_asof_tokens, vec!["btc-next-up"]);
+    }
+
+    #[test]
+    fn hot_event_warmed_contracts_include_only_impacted_current_contracts() {
+        let start = 1_780_302_400;
+        let warmed = vec![
+            warmed("BTC", start, "btc-current"),
+            warmed("BTC", start + 300, "btc-next"),
+            warmed("ETH", start, "eth-current"),
+        ];
+        let ts = Utc.timestamp_opt(start + 10, 0).unwrap();
+        let chainlink_event = HotPathEvent::ChainlinkPrice {
+            symbol: "btc/usd".to_owned(),
+            event_ts: ts,
+            observed_ts: ts,
+        };
+        let orderbook_event = HotPathEvent::OrderBookTopOfBook {
+            token_id: "btc-current-up".to_owned(),
+            event_ts: ts,
+            observed_ts: ts,
+        };
+        let unknown_event = HotPathEvent::OrderBookTopOfBook {
+            token_id: "unknown-token".to_owned(),
+            event_ts: ts,
+            observed_ts: ts,
+        };
+
+        let chainlink_contracts = hot_event_warmed_contracts(&chainlink_event, &warmed, ts);
+        let orderbook_contracts = hot_event_warmed_contracts(&orderbook_event, &warmed, ts);
+        let unknown_contracts = hot_event_warmed_contracts(&unknown_event, &warmed, ts);
+
+        assert_eq!(chainlink_contracts.len(), 1);
+        assert_eq!(chainlink_contracts[0].up.token_id, "btc-current-up");
+        assert_eq!(orderbook_contracts.len(), 1);
+        assert_eq!(orderbook_contracts[0].up.token_id, "btc-current-up");
+        assert!(unknown_contracts.is_empty());
+
+        let rollover_ts = Utc.timestamp_opt(start + 300, 0).unwrap();
+        let early_worker_now = rollover_ts - Duration::milliseconds(1);
+        let rollover_event = HotPathEvent::OrderBookTopOfBook {
+            token_id: "btc-next-up".to_owned(),
+            event_ts: rollover_ts,
+            observed_ts: rollover_ts,
+        };
+        let observed_asof_contracts =
+            hot_event_warmed_contracts(&rollover_event, &warmed, early_worker_now);
+
+        assert_eq!(observed_asof_contracts.len(), 1);
+        assert_eq!(observed_asof_contracts[0].up.token_id, "btc-next-up");
     }
 }
