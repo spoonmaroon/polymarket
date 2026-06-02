@@ -2,6 +2,7 @@ use anyhow::{Result, anyhow, bail};
 use chrono::{DateTime, Duration, Utc};
 use polymarket_runtime_types::ContractWindow;
 
+#[allow(dead_code)]
 pub fn schedule_windows(
     now: DateTime<Utc>,
     assets: &[&str],

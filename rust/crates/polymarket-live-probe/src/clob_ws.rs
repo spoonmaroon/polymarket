@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use anyhow::{Result, anyhow};
 use chrono::{DateTime, TimeZone, Utc};
 use polymarket_client_sdk_v2::clob::ws::WsMessage;
@@ -7,7 +9,7 @@ use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClobMarketEvent {
-    Book(NormalizedOrderBook),
+    Book(Box<NormalizedOrderBook>),
     TopOfBook {
         contract_id: String,
         token_id: String,
@@ -61,10 +63,10 @@ pub fn parse_clob_market_events(
 
     let ws_message: WsMessage = serde_json::from_value(message.clone())?;
     match ws_message {
-        WsMessage::Book(book) => Ok(vec![ClobMarketEvent::Book(normalized_book(
+        WsMessage::Book(book) => Ok(vec![ClobMarketEvent::Book(Box::new(normalized_book(
             book,
             observed_ts,
-        )?)]),
+        )?))]),
         WsMessage::BestBidAsk(top) => Ok(vec![ClobMarketEvent::TopOfBook {
             contract_id: top.market.to_string(),
             token_id: top.asset_id.to_string(),

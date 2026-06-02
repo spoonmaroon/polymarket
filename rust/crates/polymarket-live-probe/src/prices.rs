@@ -45,12 +45,14 @@ impl LatestPrices {
         inner.insert(key, tick);
     }
 
+    #[allow(dead_code)]
     pub async fn get(&self, symbol: &str) -> Option<NormalizedPriceTick> {
         let key = normalize_price_symbol(symbol);
         let inner = self.inner.read().expect("latest price lock poisoned");
         inner.get(&key).cloned()
     }
 
+    #[allow(dead_code)]
     pub async fn snapshot(&self) -> Vec<NormalizedPriceTick> {
         let inner = self.inner.read().expect("latest price lock poisoned");
         let mut ticks = inner.values().cloned().collect::<Vec<_>>();
@@ -199,6 +201,7 @@ pub fn compare_btc_sources(
     PriceDisagreement::calculate("BTC", chainlink, kraken)
 }
 
+#[allow(dead_code)]
 pub fn chainlink_freshness(
     ticks: &[NormalizedPriceTick],
     now: DateTime<Utc>,
