@@ -68,9 +68,11 @@ uv run polymarket-engine verify-hot-decision-replay \
 
 The command scans recent Rust hot decision JSONL rows, filters out rows whose
 inferred Chainlink/order-book observed timestamps are newer than the normalized
-DuckDB watermarks, replays the eligible rows from DuckDB, and writes a compact
-JSON report with `rows_scanned`, `rows_checked`,
-`rows_skipped_not_replay_ready`, `mismatch_count`, and detailed mismatches.
+DuckDB watermarks, skips structurally blocked hot states carrying
+`MissingThreshold`, `MissingSettlementPrice`, or `MissingOrderbook`, replays the
+eligible rows from DuckDB, and writes a compact JSON report with
+`rows_scanned`, `rows_checked`, `rows_skipped_not_replay_ready`,
+`rows_skipped_quality_blocked`, `mismatch_count`, and detailed mismatches.
 
 Local verification:
 
@@ -116,9 +118,62 @@ Important note: copying only the main DuckDB file while active writes are in
 flight can produce a stale local copy. The proof must either run directly on
 Spoon or filter by the copied DB watermarks.
 
+## Spoon Command Proof
+
+After deployment to Spoon, the verifier command was run directly against
+`/home/spoon/polymarket-data/raw` and
+`/home/spoon/polymarket-data/db/polymarket.duckdb`.
+
+Deployed commit:
+
+```text
+cffae606312c68aecf90122dcf9914d6e40e1fed
+```
+
+Command:
+
+```bash
+uv run polymarket-engine verify-hot-decision-replay \
+  --raw-root /home/spoon/polymarket-data/raw \
+  --duckdb-path /home/spoon/polymarket-data/db/polymarket.duckdb \
+  --limit 40 \
+  --scan-limit 5000 \
+  --report-out /home/spoon/polymarket-data/live/hot_decision_replay_report.json
+```
+
+Result:
+
+```json
+{
+  "ok": true,
+  "rows_scanned": 5000,
+  "rows_checked": 40,
+  "rows_skipped_not_replay_ready": 451,
+  "rows_skipped_quality_blocked": 2204,
+  "mismatch_count": 0,
+  "price_observed_watermark": "2026-06-02T08:56:23.253620+00:00",
+  "orderbook_observed_watermark": "2026-06-02T08:56:25.748309+00:00"
+}
+```
+
+Two live issues were found and fixed before this passed:
+
+1. The normalizer sidecar was re-normalizing repeated state snapshots on every
+   hot loop. It now normalizes direct Rust Chainlink/CLOB journals only.
+2. Rust hot decisions could stamp `asof_ts` slightly before the triggering
+   WebSocket event's observed timestamp. The builder now clamps hot-state
+   `asof_ts` to at least the trigger observed timestamp.
+
+Rows skipped as quality-blocked are not decision-ready hot states. Most were
+current-window rows produced immediately after deploy/restart before the Rust
+process had recovered the window threshold in memory. Those rows remain useful
+as block evidence, but they are not part of replay-equivalence proof for
+decision-ready states.
+
 ## Remaining Gate
 
-This proves the current raw-to-normalized replay path for sampled hot decision
-inputs. It does not start probability, Monte Carlo, XGBoost, paper trading, or
-execution. Those remain blocked until this verifier is deployed or run routinely
-on Spoon after normalizer cycles.
+This proves the current raw-to-normalized replay path for sampled
+decision-ready hot decision inputs on Spoon. It does not start probability,
+Monte Carlo, XGBoost, paper trading, or execution. Those remain blocked until
+this verifier is run routinely on Spoon after normalizer cycles and restart
+semantics are kept explicit in reports.
