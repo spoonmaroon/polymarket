@@ -49,6 +49,11 @@ def build_current_decision_state_snapshots(
         include_next=include_next,
     )
     read_store = _CachedStateReadStore(store)
+    read_store.prime_threshold_prices(
+        contracts,
+        source_key=SETTLEMENT_SOURCE_KEY,
+        asof_ts=asof_ts,
+    )
     read_store.prime_latest_prices(
         contracts,
         source_key=SETTLEMENT_SOURCE_KEY,
@@ -252,6 +257,43 @@ class _CachedStateReadStore:
             )
         return self._latest_price_before[key]
 
+    def latest_price_ticks_before(
+        self,
+        *,
+        source_key: str,
+        symbols: Sequence[str],
+        event_ts_lte: datetime,
+        observed_ts_lte: datetime,
+    ) -> dict[str, PriceObservation]:
+        unique_symbols = tuple(dict.fromkeys(symbols))
+        missing_symbols = [
+            symbol
+            for symbol in unique_symbols
+            if (source_key, symbol, event_ts_lte, observed_ts_lte)
+            not in self._latest_price_before
+        ]
+        if missing_symbols:
+            ticks = self._store.latest_price_ticks_before(
+                source_key=source_key,
+                symbols=missing_symbols,
+                event_ts_lte=event_ts_lte,
+                observed_ts_lte=observed_ts_lte,
+            )
+            for symbol in missing_symbols:
+                self._latest_price_before[
+                    (source_key, symbol, event_ts_lte, observed_ts_lte)
+                ] = ticks.get(symbol)
+        return {
+            symbol: tick
+            for symbol in unique_symbols
+            if (
+                tick := self._latest_price_before[
+                    (source_key, symbol, event_ts_lte, observed_ts_lte)
+                ]
+            )
+            is not None
+        }
+
     def latest_price_tick(
         self,
         *,
@@ -328,6 +370,28 @@ class _CachedStateReadStore:
                 asof_ts=asof_ts,
             )
         return self._latest_orderbook[key]
+
+    def prime_threshold_prices(
+        self,
+        contracts: Sequence[ContractSpec],
+        *,
+        source_key: str,
+        asof_ts: datetime,
+    ) -> None:
+        symbols_by_start_ts: dict[datetime, list[str]] = {}
+        for contract in contracts:
+            if contract.threshold_type != "start_price" or asof_ts < contract.start_ts:
+                continue
+            symbols_by_start_ts.setdefault(contract.start_ts, []).append(
+                contract.settlement_symbol
+            )
+        for start_ts, symbols in symbols_by_start_ts.items():
+            self.latest_price_ticks_before(
+                source_key=source_key,
+                symbols=symbols,
+                event_ts_lte=start_ts,
+                observed_ts_lte=asof_ts,
+            )
 
     def prime_latest_prices(
         self,

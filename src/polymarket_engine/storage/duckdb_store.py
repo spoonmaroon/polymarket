@@ -643,6 +643,54 @@ class DuckDbIngestStore:
             for row in rows
         }
 
+    def latest_price_ticks_before(
+        self,
+        *,
+        source_key: str,
+        symbols: Sequence[str],
+        event_ts_lte: datetime,
+        observed_ts_lte: datetime,
+    ) -> dict[str, PriceObservation]:
+        unique_symbols = tuple(dict.fromkeys(symbols))
+        if not unique_symbols:
+            return {}
+        symbol_frame = pl.DataFrame({"symbol": list(unique_symbols)})
+        with self._connection() as conn:
+            conn.register("latest_price_before_symbols", symbol_frame)
+            rows = conn.execute(
+                """
+                select source_key, symbol, event_ts::VARCHAR, observed_ts::VARCHAR,
+                       price, bid, ask, sequence
+                from (
+                    select ticks.*,
+                           row_number() over (
+                               partition by ticks.symbol
+                               order by ticks.event_ts desc, ticks.observed_ts desc
+                           ) as row_number
+                    from core.price_ticks as ticks
+                    join latest_price_before_symbols as symbols using (symbol)
+                    where ticks.source_key = ?
+                      and ticks.event_ts <= ?
+                      and ticks.observed_ts <= ?
+                ) as ranked_ticks
+                where row_number = 1
+                """,
+                [source_key, event_ts_lte, observed_ts_lte],
+            ).fetchall()
+        return {
+            row[1]: PriceObservation(
+                source_key=row[0],
+                symbol=row[1],
+                event_ts=_parse_duckdb_timestamptz(row[2]),
+                observed_ts=_parse_duckdb_timestamptz(row[3]),
+                price=row[4],
+                bid=row[5],
+                ask=row[6],
+                sequence=row[7],
+            )
+            for row in rows
+        }
+
     def latest_price_tick_before(
         self,
         *,
