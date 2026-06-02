@@ -498,6 +498,8 @@ def test_normalizer_skips_ingest_file_registration_for_duplicate_only_chunk(
         store=store,
         last_orderbook_state_by_token=orderbook_state_cache,
     )
+    store.insert_price_ticks_calls = 0
+    store.insert_orderbook_snapshots_calls = 0
     store.register_ingest_file_calls = 0
     _append_jsonl(raw_path, row)
 
@@ -510,6 +512,8 @@ def test_normalizer_skips_ingest_file_registration_for_duplicate_only_chunk(
     assert first.orderbooks_written == 1
     assert second.rows_read == 1
     assert second.orderbooks_written == 0
+    assert store.insert_price_ticks_calls == 0
+    assert store.insert_orderbook_snapshots_calls == 0
     assert store.register_ingest_file_calls == 0
 
 

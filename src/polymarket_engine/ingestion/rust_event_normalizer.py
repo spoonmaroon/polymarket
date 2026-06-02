@@ -148,8 +148,10 @@ def normalize_rust_event_file(
             orderbooks_written += 1
 
     file_id = _file_id_from_hasher(file_id_hasher)
-    store.insert_price_ticks(price_ticks, raw_file_id=file_id)
-    store.insert_orderbook_snapshots(orderbooks, raw_file_id=file_id)
+    if price_ticks:
+        store.insert_price_ticks(price_ticks, raw_file_id=file_id)
+    if orderbooks:
+        store.insert_orderbook_snapshots(orderbooks, raw_file_id=file_id)
 
     if end_byte_offset > start_byte_offset:
         store.upsert_raw_file_checkpoint(
