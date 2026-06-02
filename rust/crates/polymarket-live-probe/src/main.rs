@@ -10,6 +10,7 @@ mod book_state;
 mod clob_ws;
 mod decision_journal;
 mod hot_decision;
+mod order_latency_probe;
 mod polymarket;
 mod prices;
 mod raw_event_journal;
@@ -60,6 +61,10 @@ struct Args {
     decision_snapshot_dir: Option<PathBuf>,
     #[arg(long, default_value_t = 16_384)]
     decision_event_buffer_size: usize,
+    #[arg(long, default_value = "https://clob-v2.polymarket.com")]
+    order_latency_probe_url: String,
+    #[arg(long, default_value_t = 10)]
+    order_latency_probe_iterations: usize,
     #[arg(long, default_value = "reports/live_probe/latest.json")]
     out: PathBuf,
 }
@@ -72,6 +77,7 @@ async fn main() -> Result<()> {
     match args.mode.as_str() {
         "probe" => run_probe(args).await,
         "state-manager" => run_state_manager(args).await,
+        "latency-probe" => run_latency_probe(args).await,
         other => Err(anyhow!("unsupported mode: {other}")),
     }
 }
@@ -278,6 +284,22 @@ async fn run_state_manager(args: Args) -> Result<()> {
     Ok(())
 }
 
+async fn run_latency_probe(args: Args) -> Result<()> {
+    let result = order_latency_probe::run_order_latency_probe(
+        &args.order_latency_probe_url,
+        args.order_latency_probe_iterations,
+    )
+    .await?;
+    report::write_order_latency_probe_report(&args.out, &result)?;
+    info!(
+        path = %args.out.display(),
+        p50_http_round_trip_ms = ?result.p50_http_round_trip_ms(),
+        p95_http_round_trip_ms = ?result.p95_http_round_trip_ms(),
+        "wrote no-auth order latency probe report"
+    );
+    Ok(())
+}
+
 fn parse_assets(raw: &str) -> Vec<String> {
     raw.split(',')
         .map(|asset| asset.trim().to_uppercase())
@@ -320,6 +342,26 @@ mod tests {
             Some(PathBuf::from("/tmp/decision-states"))
         );
         assert_eq!(args.decision_event_buffer_size, 4096);
+    }
+
+    #[test]
+    fn parses_order_latency_probe_cli_options() {
+        let args = Args::parse_from([
+            "polymarket-live-probe",
+            "--mode",
+            "latency-probe",
+            "--order-latency-probe-url",
+            "http://127.0.0.1:8080/health",
+            "--order-latency-probe-iterations",
+            "3",
+        ]);
+
+        assert_eq!(args.mode, "latency-probe");
+        assert_eq!(
+            args.order_latency_probe_url,
+            "http://127.0.0.1:8080/health"
+        );
+        assert_eq!(args.order_latency_probe_iterations, 3);
     }
 }
 

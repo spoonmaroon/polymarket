@@ -201,6 +201,13 @@ pub fn write_state_manager_report(path: &Path, report: &StateManagerReport) -> R
     write_json_report(path, report)
 }
 
+pub fn write_order_latency_probe_report(
+    path: &Path,
+    report: &crate::order_latency_probe::OrderLatencyProbeResult,
+) -> Result<()> {
+    write_json_report(path, report)
+}
+
 fn write_json_report<T: Serialize>(path: &Path, report: &T) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
