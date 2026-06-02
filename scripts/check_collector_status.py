@@ -22,6 +22,7 @@ def main() -> int:
     parser.add_argument("--max-status-age-seconds", type=float, default=20.0)
     parser.add_argument("--max-price-age-ms", type=int, default=10_000)
     parser.add_argument("--max-orderbook-age-ms", type=int, default=10_000)
+    parser.add_argument("--max-websocket-event-age-ms", type=int, default=10_000)
     args = parser.parse_args()
 
     payload = json.loads(args.status_path.read_text(encoding="utf-8"))
@@ -47,7 +48,10 @@ def main() -> int:
     if book_age_ms > args.max_orderbook_age_ms:
         raise SystemExit(f"orderbook rows stale: age_ms={book_age_ms}")
     if payload.get("mode") == "state-manager":
-        _reject_state_manager_payload(payload)
+        _reject_state_manager_payload(
+            payload,
+            max_websocket_event_age_ms=args.max_websocket_event_age_ms,
+        )
     else:
         _reject_bad_freshness_rows(payload.get("source_freshness", []), label="source_freshness")
         _reject_bad_freshness_rows(
@@ -114,7 +118,11 @@ def _reject_required_source_errors(
             raise SystemExit(f"required source error: source={source_key} error={error}")
 
 
-def _reject_state_manager_payload(payload: dict) -> None:
+def _reject_state_manager_payload(
+    payload: dict,
+    *,
+    max_websocket_event_age_ms: int,
+) -> None:
     if payload.get("schema_version") != "rust-live-probe-state-manager-v1":
         raise SystemExit("state-manager status has unexpected schema_version")
     symbols = {
@@ -132,13 +140,16 @@ def _reject_state_manager_payload(payload: dict) -> None:
         raise SystemExit("state-manager missing current BTC/ETH contracts")
     if len(payload.get("next", [])) < 2:
         raise SystemExit("state-manager missing next BTC/ETH contracts")
-    _reject_bad_websocket_status(payload.get("websocket_status", []))
+    _reject_bad_websocket_status(
+        payload.get("websocket_status", []),
+        max_event_age_ms=max_websocket_event_age_ms,
+    )
     health_flags = payload.get("health_flags", [])
     if health_flags:
         raise SystemExit("state-manager health flags present: " + ", ".join(health_flags))
 
 
-def _reject_bad_websocket_status(rows: object) -> None:
+def _reject_bad_websocket_status(rows: object, *, max_event_age_ms: int) -> None:
     if not isinstance(rows, list) or not rows:
         raise SystemExit("state-manager missing websocket_status rows")
     required = {"polymarket_rtds_chainlink", "polymarket_clob_market_ws"}
@@ -155,6 +166,10 @@ def _reject_bad_websocket_status(rows: object) -> None:
             raise SystemExit(f"websocket_status[{idx}] missing channel")
         if not connection_state:
             raise SystemExit(f"websocket_status[{idx}] missing connection_state")
+        if not connection_state.startswith("Connected"):
+            raise SystemExit(
+                f"websocket_status[{idx}] not connected: source={source_key} state={connection_state}"
+            )
         seen.add(source_key)
         for key in (
             "reconnect_count",
@@ -166,12 +181,36 @@ def _reject_bad_websocket_status(rows: object) -> None:
             value = row.get(key)
             if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
                 raise SystemExit(f"websocket_status[{idx}].{key} must be non-negative")
+        if row["subscription_count"] <= 0:
+            raise SystemExit(
+                f"websocket_status[{idx}].subscription_count must be positive"
+            )
+        if row["active_token_count"] <= 0:
+            raise SystemExit(
+                f"websocket_status[{idx}].active_token_count must be positive"
+            )
+        if row["ended_stream_count"] > 0:
+            raise SystemExit(
+                f"websocket_status[{idx}] has ended streams: source={source_key} count={row['ended_stream_count']}"
+            )
+        if row["stream_error_count"] > 0:
+            raise SystemExit(
+                f"websocket_status[{idx}] has stream errors: source={source_key} count={row['stream_error_count']}"
+            )
         age_ms = row.get("last_event_age_ms")
+        if age_ms is None:
+            raise SystemExit(
+                f"websocket_status[{idx}].last_event_age_ms must be present"
+            )
         if age_ms is not None and (
             isinstance(age_ms, bool) or not isinstance(age_ms, (int, float)) or age_ms < 0
         ):
             raise SystemExit(
                 f"websocket_status[{idx}].last_event_age_ms must be non-negative or null"
+            )
+        if age_ms > max_event_age_ms:
+            raise SystemExit(
+                f"websocket_status[{idx}] event stale: source={source_key} age_ms={age_ms}"
             )
     missing = required - seen
     if missing:

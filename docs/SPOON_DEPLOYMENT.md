@@ -24,7 +24,7 @@ cp deploy/collector/.env.example deploy/collector/.env
 sed -i "s/^POLYMARKET_UID=.*/POLYMARKET_UID=$(id -u)/" deploy/collector/.env
 sed -i "s/^POLYMARKET_GID=.*/POLYMARKET_GID=$(id -g)/" deploy/collector/.env
 docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml up -d --build collector
-python3 scripts/check_collector_status.py --status-path /home/spoon/polymarket-data/live/status.json --max-status-age-seconds 30 --max-price-age-ms 30000 --max-orderbook-age-ms 30000
+python3 scripts/check_collector_status.py --status-path /home/spoon/polymarket-data/live/status.json --max-status-age-seconds 30 --max-price-age-ms 30000 --max-orderbook-age-ms 30000 --max-websocket-event-age-ms 30000
 ```
 
 ## Auto Deploy
@@ -53,7 +53,7 @@ Raw data remains hot for 90 days. Do not enable deletion until compact replay te
 ```bash
 docker compose -f /home/spoon/polymarket/deploy/collector/docker-compose.yml ps
 docker compose -f /home/spoon/polymarket/deploy/collector/docker-compose.yml logs --tail=100 collector
-python3 /home/spoon/polymarket/scripts/check_collector_status.py --status-path /home/spoon/polymarket-data/live/status.json --max-status-age-seconds 30 --max-price-age-ms 30000 --max-orderbook-age-ms 30000
+python3 /home/spoon/polymarket/scripts/check_collector_status.py --status-path /home/spoon/polymarket-data/live/status.json --max-status-age-seconds 30 --max-price-age-ms 30000 --max-orderbook-age-ms 30000 --max-websocket-event-age-ms 30000
 python3 /home/spoon/polymarket/scripts/verify_state_manager_report.py /home/spoon/polymarket-data/live/status.json
 du -sh /home/spoon/polymarket-data/*
 ```

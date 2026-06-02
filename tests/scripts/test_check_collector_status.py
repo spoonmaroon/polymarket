@@ -48,6 +48,60 @@ def _fresh_status() -> dict[str, object]:
     }
 
 
+def _fresh_state_manager_status() -> dict[str, object]:
+    now = datetime.now(timezone.utc).isoformat()
+    return {
+        "schema_version": "rust-live-probe-state-manager-v1",
+        "mode": "state-manager",
+        "generated_at": now,
+        "current": [{}, {}],
+        "next": [{}, {}],
+        "chainlink_prices": [
+            {
+                "source_key": "polymarket_rtds_chainlink",
+                "symbol": "BTC/USD",
+                "observed_ts": now,
+            },
+            {
+                "source_key": "polymarket_rtds_chainlink",
+                "symbol": "ETH/USD",
+                "observed_ts": now,
+            },
+        ],
+        "orderbooks": [
+            {"token_id": "btc-up", "observed_ts": now},
+            {"token_id": "btc-down", "observed_ts": now},
+            {"token_id": "eth-up", "observed_ts": now},
+            {"token_id": "eth-down", "observed_ts": now},
+        ],
+        "websocket_status": [
+            {
+                "source_key": "polymarket_rtds_chainlink",
+                "channel": "crypto_prices_chainlink",
+                "connection_state": "Connected { since: Instant { tv_sec: 1, tv_nsec: 0 } }",
+                "reconnect_count": 0,
+                "subscription_count": 1,
+                "active_token_count": 2,
+                "ended_stream_count": 0,
+                "stream_error_count": 0,
+                "last_event_age_ms": 100,
+            },
+            {
+                "source_key": "polymarket_clob_market_ws",
+                "channel": "market",
+                "connection_state": "Connected { since: Instant { tv_sec: 1, tv_nsec: 0 } }",
+                "reconnect_count": 0,
+                "subscription_count": 8,
+                "active_token_count": 8,
+                "ended_stream_count": 0,
+                "stream_error_count": 0,
+                "last_event_age_ms": 100,
+            },
+        ],
+        "health_flags": [],
+    }
+
+
 def test_status_check_rejects_stale_source_freshness(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -177,6 +231,56 @@ def test_status_check_allows_stale_optional_proxy_freshness(
     ]
     status_path = tmp_path / "status.json"
     status_path.write_text(json.dumps(status), encoding="utf-8")
+    monkeypatch.setattr(
+        "sys.argv",
+        ["check_collector_status.py", "--status-path", str(status_path)],
+    )
+
+    assert script.main() == 0
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expected"),
+    [
+        ("connection_state", "Disconnected", "not connected"),
+        ("ended_stream_count", 1, "ended streams"),
+        ("stream_error_count", 1, "stream errors"),
+        ("subscription_count", 0, "subscription_count"),
+        ("active_token_count", 0, "active_token_count"),
+        ("last_event_age_ms", 60_000, "event stale"),
+    ],
+)
+def test_state_manager_status_rejects_bad_websocket_health(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    value: object,
+    expected: str,
+) -> None:
+    script = _load_script()
+    status = _fresh_state_manager_status()
+    websocket_status = status["websocket_status"]
+    assert isinstance(websocket_status, list)
+    assert isinstance(websocket_status[0], dict)
+    websocket_status[0][field] = value
+    status_path = tmp_path / "status.json"
+    status_path.write_text(json.dumps(status), encoding="utf-8")
+    monkeypatch.setattr(
+        "sys.argv",
+        ["check_collector_status.py", "--status-path", str(status_path)],
+    )
+
+    with pytest.raises(SystemExit, match=expected):
+        script.main()
+
+
+def test_state_manager_status_accepts_healthy_websocket_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = _load_script()
+    status_path = tmp_path / "status.json"
+    status_path.write_text(json.dumps(_fresh_state_manager_status()), encoding="utf-8")
     monkeypatch.setattr(
         "sys.argv",
         ["check_collector_status.py", "--status-path", str(status_path)],

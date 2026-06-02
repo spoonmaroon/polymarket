@@ -34,7 +34,8 @@ if [ "$LOCAL" = "$REMOTE" ] && [ "${DEPLOY_FORCE:-0}" != "1" ]; then
     --status-path "$STATUS_PATH" \
     --max-status-age-seconds 30 \
     --max-price-age-ms 30000 \
-    --max-orderbook-age-ms 30000 >> "$LOG_FILE" 2>&1; then
+    --max-orderbook-age-ms 30000 \
+    --max-websocket-event-age-ms 30000 >> "$LOG_FILE" 2>&1; then
     exit 0
   fi
   LOG "target commit already checked out but collector is unhealthy; redeploying"
@@ -74,7 +75,8 @@ for _ in $(seq 1 "$DEPLOY_SMOKE_ATTEMPTS"); do
     --status-path "$STATUS_PATH" \
     --max-status-age-seconds 30 \
     --max-price-age-ms 30000 \
-    --max-orderbook-age-ms 30000 >> "$LOG_FILE" 2>&1; then
+    --max-orderbook-age-ms 30000 \
+    --max-websocket-event-age-ms 30000 >> "$LOG_FILE" 2>&1; then
     echo "$REMOTE" > "$DEPLOYED_MARKER"
     LOG "deploy OK $REMOTE"
     exit 0
