@@ -2,10 +2,12 @@ use anyhow::{Result, anyhow};
 use chrono::{Datelike, Timelike};
 use polymarket_runtime_types::HotDecisionState;
 use std::fs::File;
-use std::io::Write;
+use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+
+const HOT_DECISION_SINK_BATCH_LIMIT: usize = 1024;
 
 #[derive(Clone)]
 pub struct HotDecisionJournal {
@@ -49,22 +51,29 @@ impl HotDecisionJournal {
 pub struct HotDecisionJournalWriter {
     journal: HotDecisionJournal,
     open_path: Option<PathBuf>,
-    file: Option<File>,
+    file: Option<BufWriter<File>>,
 }
 
 impl HotDecisionJournalWriter {
     pub fn append(&mut self, state: &HotDecisionState) -> Result<PathBuf> {
+        let path = self.append_buffered(state)?;
+        self.flush()?;
+        Ok(path)
+    }
+
+    fn append_buffered(&mut self, state: &HotDecisionState) -> Result<PathBuf> {
         let path = self.journal.partition_path(state);
         if self.open_path.as_ref() != Some(&path) {
+            self.flush()?;
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            self.file = Some(
+            let file =
                 std::fs::OpenOptions::new()
                     .create(true)
                     .append(true)
-                    .open(&path)?,
-            );
+                    .open(&path)?;
+            self.file = Some(BufWriter::new(file));
             self.open_path = Some(path.clone());
         }
 
@@ -72,10 +81,36 @@ impl HotDecisionJournalWriter {
             .file
             .as_mut()
             .expect("hot decision journal writer opened file");
-        serde_json::to_writer(&mut *file, state)?;
-        file.write_all(b"\n")?;
+        write_hot_decision_jsonl_line(file, state)?;
         Ok(path)
     }
+
+    fn flush(&mut self) -> Result<()> {
+        if let Some(file) = &mut self.file {
+            file.flush()?;
+        }
+        Ok(())
+    }
+}
+
+fn write_hot_decision_jsonl_line<W: Write>(
+    writer: &mut W,
+    state: &HotDecisionState,
+) -> Result<()> {
+    serde_json::to_writer(&mut *writer, state)?;
+    writer.write_all(b"\n")?;
+    Ok(())
+}
+
+fn write_hot_decision_jsonl_batch<W: Write>(
+    writer: &mut W,
+    states: &[HotDecisionState],
+) -> Result<()> {
+    for state in states {
+        write_hot_decision_jsonl_line(writer, state)?;
+    }
+    writer.flush()?;
+    Ok(())
 }
 
 #[derive(Clone)]
@@ -89,8 +124,18 @@ impl HotDecisionSink {
         let mut journal = HotDecisionJournal::new(root).writer();
         let handle = tokio::spawn(async move {
             while let Some(state) = receiver.recv().await {
-                journal.append(&state)?;
+                journal.append_buffered(&state)?;
+                let mut drained = 1;
+                while drained < HOT_DECISION_SINK_BATCH_LIMIT {
+                    let Ok(state) = receiver.try_recv() else {
+                        break;
+                    };
+                    journal.append_buffered(&state)?;
+                    drained += 1;
+                }
+                journal.flush()?;
             }
+            journal.flush()?;
             Ok(())
         });
         (Self { sender }, handle)
@@ -107,6 +152,7 @@ impl HotDecisionSink {
 mod tests {
     use super::*;
     use chrono::{Duration, TimeZone, Utc};
+    use std::io::{BufWriter, Write};
     use polymarket_runtime_types::{
         ContractSide, ContractToken, ContractWindow, HOT_DECISION_STATE_SCHEMA_VERSION,
         HotDecisionLatency, HotDecisionQualityFlag, HotDecisionTriggerKind, WarmedContract,
@@ -164,6 +210,32 @@ mod tests {
         assert_eq!(next_hour_lines.lines().count(), 1);
     }
 
+    #[test]
+    fn hot_decision_jsonl_batch_flushes_multiple_rows_once() {
+        let start = Utc.timestamp_opt(1_780_302_400, 0).unwrap();
+        let first = sample_state(start);
+        let mut second = sample_state(start + Duration::seconds(1));
+        second.state_id = "state-2".to_owned();
+        let mut inner = CountingWriter::default();
+        {
+            let mut writer = BufWriter::new(&mut inner);
+            write_hot_decision_jsonl_batch(&mut writer, &[first, second]).unwrap();
+        }
+
+        assert_eq!(inner.write_calls, 1);
+        let raw = String::from_utf8(inner.bytes).unwrap();
+        let rows = raw.lines().collect::<Vec<_>>();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(rows[0]).unwrap()["state_id"],
+            "state-1"
+        );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(rows[1]).unwrap()["state_id"],
+            "state-2"
+        );
+    }
+
     fn sample_state(start: chrono::DateTime<Utc>) -> polymarket_runtime_types::HotDecisionState {
         let contract = WarmedContract::new(
             ContractWindow::new("BTC", "5m", start, start + Duration::seconds(300)).unwrap(),
@@ -198,6 +270,24 @@ mod tests {
                 state_to_persist_us: None,
                 total_event_to_persist_ms: None,
             },
+        }
+    }
+
+    #[derive(Default)]
+    struct CountingWriter {
+        bytes: Vec<u8>,
+        write_calls: usize,
+    }
+
+    impl Write for CountingWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.write_calls += 1;
+            self.bytes.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
         }
     }
 }
