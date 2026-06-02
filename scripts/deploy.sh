@@ -12,6 +12,7 @@ LOCK_DIR="/tmp/polymarket-deploy.lock.d"
 LOG_FILE="$REPO/logs/deploy.log"
 DEPLOYED_MARKER="$HOME/.polymarket/last-deployed-sha"
 DEPLOY_SMOKE_ATTEMPTS="${DEPLOY_SMOKE_ATTEMPTS:-90}"
+NORMALIZER_SIDECAR_COMMAND="run-rust-normalizer-sidecar"
 LOG() { echo "[$(date -Iseconds)] $*" | tee -a "$LOG_FILE"; }
 
 mkdir -p "$REPO/logs" "$DATA_DIR/raw" "$DATA_DIR/db" "$DATA_DIR/live" "$DATA_DIR/logs" "$(dirname "$DEPLOYED_MARKER")"
@@ -36,6 +37,12 @@ compose() {
 normalizer_running() {
   compose -f "$COMPOSE_FILE" ps --services --status running normalizer 2>> "$LOG_FILE" \
     | grep -qx normalizer
+}
+
+normalizer_uses_sidecar() {
+  compose -f "$COMPOSE_FILE" exec -T normalizer sh -c \
+    'command="$1"; ps -eo args | grep "$command" | grep -v grep' \
+    sh "$NORMALIZER_SIDECAR_COMMAND" >> "$LOG_FILE" 2>&1
 }
 
 collector_prewarm_windows() {
@@ -69,7 +76,7 @@ LOCAL="$(git rev-parse HEAD)"
 REMOTE="$(git rev-parse "$DEPLOY_REF")"
 DEPLOYED_SHA="$(cat "$DEPLOYED_MARKER" 2>/dev/null || true)"
 if [ "$LOCAL" = "$REMOTE" ] && [ "$DEPLOYED_SHA" = "$REMOTE" ] && [ "${DEPLOY_FORCE:-0}" != "1" ]; then
-  if normalizer_running && python3 "$REPO/scripts/check_collector_status.py" \
+  if normalizer_running && normalizer_uses_sidecar && python3 "$REPO/scripts/check_collector_status.py" \
     --status-path "$STATUS_PATH" \
     --max-status-age-seconds 30 \
     --max-price-age-ms 30000 \
@@ -109,7 +116,7 @@ if ! compose -f "$COMPOSE_FILE" up -d --build collector normalizer >> "$LOG_FILE
 fi
 
 for _ in $(seq 1 "$DEPLOY_SMOKE_ATTEMPTS"); do
-  if normalizer_running && python3 "$REPO/scripts/check_collector_status.py" \
+  if normalizer_running && normalizer_uses_sidecar && python3 "$REPO/scripts/check_collector_status.py" \
     --status-path "$STATUS_PATH" \
     --max-status-age-seconds 30 \
     --max-price-age-ms 30000 \

@@ -173,4 +173,12 @@ def test_deploy_script_requires_running_normalizer_before_success() -> None:
 
     assert "normalizer_running()" in script
     assert "ps --services --status running normalizer" in script
-    assert "normalizer_running && python3" in script
+    assert "normalizer_running && normalizer_uses_sidecar && python3" in script
+
+
+def test_deploy_script_rejects_old_normalize_rust_events_normalizer() -> None:
+    script = (ROOT / "scripts" / "deploy.sh").read_text(encoding="utf-8")
+
+    assert "normalizer_uses_sidecar()" in script
+    assert "run-rust-normalizer-sidecar" in script
+    assert "normalizer_running && normalizer_uses_sidecar && python3" in script
