@@ -518,6 +518,63 @@ def test_normalizer_skips_ingest_file_registration_for_duplicate_only_chunk(
     assert store.register_ingest_file_calls == 0
 
 
+def test_duplicate_chainlink_rows_skip_price_observation_materialization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "state.duckdb"
+    store = _CountingCheckpointStore(db_path)
+    store.apply_schema()
+    raw_path = (
+        tmp_path
+        / "raw"
+        / "polymarket_rtds_chainlink"
+        / "price_update"
+        / "date=2026-06-02"
+        / "hour=05"
+        / "events.jsonl"
+    )
+    row = _chainlink_row(
+        "BTC/USD",
+        "2026-06-02T05:33:54Z",
+        "2026-06-02T05:33:55Z",
+        70600.0,
+    )
+    price_state_cache: dict[tuple[str, str], tuple[object, ...]] = {}
+    _write_jsonl(raw_path, row)
+    first = normalize_rust_event_file(
+        path=raw_path,
+        store=store,
+        last_price_state_by_symbol=price_state_cache,
+    )
+    store.insert_price_ticks_calls = 0
+    _append_jsonl(raw_path, row)
+    price_observation_calls = 0
+    real_price_observation = PriceObservation
+
+    def counting_price_observation(*args: Any, **kwargs: Any) -> PriceObservation:
+        nonlocal price_observation_calls
+        price_observation_calls += 1
+        return real_price_observation(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "polymarket_engine.ingestion.rust_event_normalizer.PriceObservation",
+        counting_price_observation,
+    )
+
+    duplicate = normalize_rust_event_file(
+        path=raw_path,
+        store=store,
+        last_price_state_by_symbol=price_state_cache,
+    )
+
+    assert first.price_ticks_written == 1
+    assert duplicate.rows_read == 1
+    assert duplicate.price_ticks_written == 0
+    assert price_observation_calls == 0
+    assert store.insert_price_ticks_calls == 0
+
+
 def test_duplicate_top_of_book_rows_skip_depth_json_materialization(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

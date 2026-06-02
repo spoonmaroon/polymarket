@@ -48,6 +48,17 @@ class _TopOfBookRow:
     payload: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class _PriceTickRow:
+    symbol_key: tuple[str, str]
+    state_key: tuple[object, ...]
+    source_key: str
+    symbol: str
+    event_ts: datetime
+    observed_ts: datetime
+    price: float
+
+
 def normalize_rust_event_tree(
     *,
     raw_root: Path,
@@ -142,34 +153,31 @@ def normalize_rust_event_file(
         raw_line_handler=file_id_hasher.update,
     ):
         rows_read += 1
-        for tick in _price_ticks_from_row(row):
-            symbol_key = (tick.source_key, tick.symbol)
-            state_key = _price_state_key(tick)
-            if price_state_cache.get(symbol_key) == state_key:
+        price_tick = _price_tick_row_from_raw(row)
+        if price_tick is not None:
+            if price_state_cache.get(price_tick.symbol_key) == price_tick.state_key:
                 continue
-            price_state_cache[symbol_key] = state_key
+            price_state_cache[price_tick.symbol_key] = price_tick.state_key
+            tick = _price_observation_from_price_tick_row(price_tick)
             price_ticks.append(tick)
             event_times.append(tick.event_ts)
             price_ticks_written += 1
-        top_of_book = _top_of_book_row_from_raw(row)
-        if top_of_book is not None:
-            if orderbook_state_cache.get(top_of_book.token_key) == top_of_book.state_key:
-                continue
-            orderbook_state_cache[top_of_book.token_key] = top_of_book.state_key
-            orderbook = _orderbook_from_top_of_book_row(top_of_book)
-            orderbooks.append(orderbook)
-            event_times.append(orderbook.event_ts)
-            orderbooks_written += 1
             continue
-        for book in _orderbooks_from_row(row):
-            token_key = (book.venue, book.token_id)
-            state_key = _orderbook_state_key(book)
-            if orderbook_state_cache.get(token_key) == state_key:
-                continue
-            orderbook_state_cache[token_key] = state_key
-            orderbooks.append(book)
-            event_times.append(book.event_ts)
-            orderbooks_written += 1
+        for tick in _price_ticks_from_row(row):
+            symbol_key = (tick.source_key, tick.symbol)
+            state_key = _price_state_key(tick)
+            if price_state_cache.get(symbol_key) != state_key:
+                price_state_cache[symbol_key] = state_key
+                price_ticks.append(tick)
+                event_times.append(tick.event_ts)
+                price_ticks_written += 1
+        _append_orderbooks_from_row(
+            row=row,
+            orderbook_state_cache=orderbook_state_cache,
+            orderbooks=orderbooks,
+            event_times=event_times,
+        )
+        orderbooks_written = len(orderbooks)
 
     file_id = _file_id_from_hasher(file_id_hasher)
     if price_ticks:
@@ -301,19 +309,40 @@ def _complete_jsonl_byte_limit(path: Path, start_byte_offset: int, file_size: in
 def _price_ticks_from_row(row: dict[str, Any]) -> tuple[PriceObservation, ...]:
     if row.get("schema_version") == STATE_MANAGER_SCHEMA_VERSION:
         return tuple(_price_tick_from_state_row(price) for price in row.get("chainlink_prices", []))
+    price_tick = _price_tick_row_from_raw(row)
+    if price_tick is None:
+        return ()
+    return (_price_observation_from_price_tick_row(price_tick),)
+
+
+def _price_tick_row_from_raw(row: dict[str, Any]) -> _PriceTickRow | None:
     if row.get("source_key") != "polymarket_rtds_chainlink":
-        return ()
+        return None
     if row.get("stream_key") != "price_update":
-        return ()
+        return None
     price = _chainlink_price_from_payload(row)
-    return (
-        PriceObservation(
-            source_key="polymarket_rtds_chainlink",
-            symbol=str(row["symbol"]).upper(),
-            event_ts=_parse_ts(row["event_ts"]),
-            observed_ts=_parse_ts(row["observed_ts"]),
-            price=price,
-        ),
+    source_key = "polymarket_rtds_chainlink"
+    symbol = str(row["symbol"]).upper()
+    event_ts = _parse_ts(row["event_ts"])
+    observed_ts = _parse_ts(row["observed_ts"])
+    return _PriceTickRow(
+        symbol_key=(source_key, symbol),
+        state_key=(source_key, symbol, event_ts, price, None, None, None),
+        source_key=source_key,
+        symbol=symbol,
+        event_ts=event_ts,
+        observed_ts=observed_ts,
+        price=price,
+    )
+
+
+def _price_observation_from_price_tick_row(row: _PriceTickRow) -> PriceObservation:
+    return PriceObservation(
+        source_key=row.source_key,
+        symbol=row.symbol,
+        event_ts=row.event_ts,
+        observed_ts=row.observed_ts,
+        price=row.price,
     )
 
 
@@ -336,6 +365,30 @@ def _orderbooks_from_row(row: dict[str, Any]) -> tuple[OrderBookObservation, ...
     if top_of_book is None:
         return ()
     return (_orderbook_from_top_of_book_row(top_of_book),)
+
+
+def _append_orderbooks_from_row(
+    *,
+    row: dict[str, Any],
+    orderbook_state_cache: dict[tuple[str, str], tuple[object, ...]],
+    orderbooks: list[OrderBookObservation],
+    event_times: list[datetime],
+) -> None:
+    top_of_book = _top_of_book_row_from_raw(row)
+    if top_of_book is not None:
+        if orderbook_state_cache.get(top_of_book.token_key) != top_of_book.state_key:
+            orderbook_state_cache[top_of_book.token_key] = top_of_book.state_key
+            orderbook = _orderbook_from_top_of_book_row(top_of_book)
+            orderbooks.append(orderbook)
+            event_times.append(orderbook.event_ts)
+        return
+    for book in _orderbooks_from_row(row):
+        token_key = (book.venue, book.token_id)
+        state_key = _orderbook_state_key(book)
+        if orderbook_state_cache.get(token_key) != state_key:
+            orderbook_state_cache[token_key] = state_key
+            orderbooks.append(book)
+            event_times.append(book.event_ts)
 
 
 def _top_of_book_row_from_raw(row: dict[str, Any]) -> _TopOfBookRow | None:
