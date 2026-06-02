@@ -1,6 +1,6 @@
 use anyhow::{Result, anyhow};
 use chrono::{DateTime, TimeZone, Utc};
-use futures::{StreamExt as _, future::try_join_all};
+use futures::StreamExt as _;
 use polymarket_client_sdk_v2::rtds::{Client as RtdsClient, RtdsMessage, Subscription};
 use polymarket_runtime_types::{FeedFreshness, NormalizedPriceTick, PriceDisagreement};
 use rust_decimal::Decimal;
@@ -12,7 +12,10 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
+use tokio::task::JoinHandle;
 use tokio::time::timeout;
+
+use crate::report::WebSocketStatus;
 
 pub const KRAKEN_TICKER_URL: &str = "https://api.kraken.com/0/public/Ticker";
 
@@ -58,6 +61,92 @@ impl LatestPrices {
         let mut ticks = inner.values().cloned().collect::<Vec<_>>();
         ticks.sort_by(|left, right| left.symbol.cmp(&right.symbol));
         ticks
+    }
+}
+
+#[derive(Debug, Default)]
+struct ChainlinkWebSocketTelemetry {
+    reconnect_count: u64,
+    last_event_observed_ts: Option<DateTime<Utc>>,
+    stream_error_count: u64,
+}
+
+pub struct ChainlinkStreamManager {
+    client: RtdsClient,
+    symbols: Vec<String>,
+    tasks: Vec<JoinHandle<Result<()>>>,
+    telemetry: Arc<RwLock<ChainlinkWebSocketTelemetry>>,
+    connection_monitor_task: JoinHandle<()>,
+}
+
+impl ChainlinkStreamManager {
+    pub fn start(symbols: Vec<String>, latest: LatestPrices) -> Self {
+        let client = RtdsClient::default();
+        let symbols = chainlink_stream_symbols(symbols);
+        let telemetry = Arc::new(RwLock::new(ChainlinkWebSocketTelemetry::default()));
+        let tasks = vec![tokio::spawn(run_chainlink_symbols_stream_with_client(
+            client.clone(),
+            symbols.clone(),
+            latest,
+            telemetry.clone(),
+        ))];
+        let connection_monitor_task = tokio::spawn(monitor_chainlink_connection_state(
+            client.clone(),
+            telemetry.clone(),
+        ));
+
+        Self {
+            client,
+            symbols,
+            tasks,
+            telemetry,
+            connection_monitor_task,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn inactive_for_tests(symbols: Vec<String>) -> Self {
+        let client = RtdsClient::default();
+        let telemetry = Arc::new(RwLock::new(ChainlinkWebSocketTelemetry::default()));
+        let connection_monitor_task = tokio::spawn(monitor_chainlink_connection_state(
+            client.clone(),
+            telemetry.clone(),
+        ));
+
+        Self {
+            client,
+            symbols: chainlink_stream_symbols(symbols),
+            tasks: vec![],
+            telemetry,
+            connection_monitor_task,
+        }
+    }
+
+    pub fn websocket_status(&self, now: DateTime<Utc>) -> WebSocketStatus {
+        let telemetry = self.telemetry.read().expect("RTDS telemetry poisoned");
+        let last_event_age_ms = telemetry
+            .last_event_observed_ts
+            .map(|observed_ts| now.signed_duration_since(observed_ts).num_milliseconds());
+        let ended_stream_count = self.tasks.iter().filter(|task| task.is_finished()).count();
+
+        WebSocketStatus {
+            source_key: "polymarket_rtds_chainlink".to_owned(),
+            channel: "crypto_prices_chainlink".to_owned(),
+            connection_state: format!("{:?}", self.client.connection_state()),
+            reconnect_count: telemetry.reconnect_count,
+            subscription_count: self.client.subscription_count(),
+            active_token_count: self.symbols.len(),
+            ended_stream_count,
+            stream_error_count: telemetry.stream_error_count,
+            last_event_age_ms,
+        }
+    }
+
+    pub fn shutdown(&mut self) {
+        for task in std::mem::take(&mut self.tasks) {
+            task.abort();
+        }
+        self.connection_monitor_task.abort();
     }
 }
 
@@ -156,26 +245,89 @@ pub async fn fetch_chainlink_btc_usd_cached(
 
 #[allow(dead_code)]
 pub async fn run_chainlink_stream(symbols: Vec<String>, latest: LatestPrices) -> Result<()> {
-    let streams = chainlink_stream_symbols(symbols)
-        .into_iter()
-        .map(|symbol| run_chainlink_symbol_stream(symbol, latest.clone()));
-    try_join_all(streams).await?;
-    Ok(())
+    run_chainlink_symbols_stream_with_client(
+        RtdsClient::default(),
+        chainlink_stream_symbols(symbols),
+        latest,
+        Arc::new(RwLock::new(ChainlinkWebSocketTelemetry::default())),
+    )
+    .await
 }
 
 #[allow(dead_code)]
 async fn run_chainlink_symbol_stream(symbol: String, latest: LatestPrices) -> Result<()> {
-    let client = RtdsClient::default();
-    let stream = client.subscribe_raw(Subscription::chainlink_prices(Some(symbol.clone())))?;
+    run_chainlink_symbols_stream_with_client(
+        RtdsClient::default(),
+        vec![symbol],
+        latest,
+        Arc::new(RwLock::new(ChainlinkWebSocketTelemetry::default())),
+    )
+    .await
+}
+
+async fn run_chainlink_symbols_stream_with_client(
+    client: RtdsClient,
+    symbols: Vec<String>,
+    latest: LatestPrices,
+    telemetry: Arc<RwLock<ChainlinkWebSocketTelemetry>>,
+) -> Result<()> {
+    let symbols = chainlink_stream_symbols(symbols);
+    let stream = client.subscribe_raw(Subscription::chainlink_prices(None))?;
     let mut stream = Box::pin(stream);
 
     while let Some(message_result) = stream.next().await {
-        let message = message_result?;
+        let message = match message_result {
+            Ok(message) => message,
+            Err(error) => {
+                record_chainlink_stream_error(&telemetry);
+                return Err(error.into());
+            }
+        };
         let observed_ts = Utc::now();
-        update_latest_from_chainlink_message(&latest, &message, &symbol, observed_ts).await?;
+        let mut updated = false;
+        for symbol in &symbols {
+            updated |= update_latest_from_chainlink_message(&latest, &message, symbol, observed_ts)
+                .await?;
+        }
+        if updated {
+            record_chainlink_event(&telemetry, observed_ts);
+        }
     }
 
-    Err(anyhow!("Chainlink RTDS stream ended for {symbol}"))
+    record_chainlink_stream_error(&telemetry);
+    Err(anyhow!(
+        "Chainlink RTDS stream ended for {}",
+        symbols.join(",")
+    ))
+}
+
+async fn monitor_chainlink_connection_state(
+    client: RtdsClient,
+    telemetry: Arc<RwLock<ChainlinkWebSocketTelemetry>>,
+) {
+    let mut was_connected = false;
+    loop {
+        let connected = client.connection_state().is_connected();
+        if was_connected && !connected {
+            let mut telemetry = telemetry.write().expect("RTDS telemetry poisoned");
+            telemetry.reconnect_count = telemetry.reconnect_count.saturating_add(1);
+        }
+        was_connected = connected;
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+fn record_chainlink_event(
+    telemetry: &Arc<RwLock<ChainlinkWebSocketTelemetry>>,
+    observed_ts: DateTime<Utc>,
+) {
+    let mut telemetry = telemetry.write().expect("RTDS telemetry poisoned");
+    telemetry.last_event_observed_ts = Some(observed_ts);
+}
+
+fn record_chainlink_stream_error(telemetry: &Arc<RwLock<ChainlinkWebSocketTelemetry>>) {
+    let mut telemetry = telemetry.write().expect("RTDS telemetry poisoned");
+    telemetry.stream_error_count = telemetry.stream_error_count.saturating_add(1);
 }
 
 fn chainlink_stream_symbols(symbols: Vec<String>) -> Vec<String> {
@@ -291,6 +443,9 @@ fn chainlink_snapshot_tick_from_payload(
         .get("symbol")
         .and_then(Value::as_str)
         .unwrap_or(requested_symbol);
+    if !symbol.eq_ignore_ascii_case(requested_symbol) {
+        return Ok(None);
+    }
     let latest = points
         .iter()
         .filter_map(snapshot_point)
@@ -469,6 +624,29 @@ mod tests {
         assert_eq!(tick.symbol, "ETH/USD");
         assert_eq!(tick.event_ts.timestamp_millis(), 1780352939000_i64);
         assert_eq!(tick.price.to_string(), "1991.50");
+    }
+
+    #[test]
+    fn ignores_chainlink_snapshot_for_different_requested_symbol() {
+        let observed = "2026-06-01T20:00:01Z".parse::<DateTime<Utc>>().unwrap();
+        let message: RtdsMessage = serde_json::from_value(serde_json::json!({
+            "topic": "crypto_prices_chainlink",
+            "type": "snapshot",
+            "timestamp": 1780352939000_i64,
+            "payload": {
+                "symbol": "btc/usd",
+                "data": [
+                    {"timestamp": 1780352939000_i64, "value": "71210.25"}
+                ]
+            }
+        }))
+        .unwrap();
+
+        assert!(
+            chainlink_snapshot_tick_from_message(&message, "eth/usd", observed)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]

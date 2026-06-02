@@ -3,14 +3,20 @@
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, TimeZone, Utc};
 use futures::StreamExt as _;
+use polymarket_client_sdk_v2::clob::ws::subscription::ChannelType;
 use polymarket_client_sdk_v2::clob::ws::{BestBidAsk, Client as ClobWsClient, WsMessage};
 use polymarket_client_sdk_v2::types::U256;
 use polymarket_runtime_types::{BookLevel, NormalizedOrderBook, OrderBookMeta};
 use rust_decimal::Decimal;
 use serde_json::Value;
+use std::collections::{BTreeMap, BTreeSet};
 use std::str::FromStr;
+use std::sync::{Arc, RwLock};
+use std::time::Duration;
+use tokio::task::JoinHandle;
 
 use crate::book_state::LiveBookState;
+use crate::report::WebSocketStatus;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClobMarketEvent {
@@ -76,6 +82,194 @@ pub enum ClobMarketEvent {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BestBidAskSubscriptionDelta {
+    pub desired: Vec<String>,
+    pub to_subscribe: Vec<String>,
+    pub to_unsubscribe: Vec<String>,
+}
+
+struct BestBidAskTokenStream {
+    asset_id: U256,
+    task: JoinHandle<Result<()>>,
+}
+
+#[derive(Debug, Default)]
+struct WebSocketTelemetry {
+    reconnect_count: u64,
+    last_event_observed_ts: Option<DateTime<Utc>>,
+    stream_error_count: u64,
+}
+
+pub struct BestBidAskStreamManager {
+    client: ClobWsClient,
+    book_state: LiveBookState,
+    token_streams: BTreeMap<String, BestBidAskTokenStream>,
+    telemetry: Arc<RwLock<WebSocketTelemetry>>,
+    connection_monitor_task: JoinHandle<()>,
+}
+
+impl BestBidAskStreamManager {
+    pub fn new(book_state: LiveBookState) -> Self {
+        let client = ClobWsClient::default();
+        let telemetry = Arc::new(RwLock::new(WebSocketTelemetry::default()));
+        Self {
+            connection_monitor_task: tokio::spawn(monitor_market_connection_state(
+                client.clone(),
+                telemetry.clone(),
+            )),
+            client,
+            book_state,
+            token_streams: BTreeMap::new(),
+            telemetry,
+        }
+    }
+
+    pub fn active_token_ids(&self) -> BTreeSet<String> {
+        self.token_streams.keys().cloned().collect()
+    }
+
+    pub fn update_tokens(&mut self, token_ids: &[String]) -> Result<BestBidAskSubscriptionDelta> {
+        self.prune_finished_streams();
+        let current = self.active_token_ids();
+        let delta = plan_best_bid_ask_subscriptions(&current, token_ids)?;
+
+        for token_id in &delta.to_unsubscribe {
+            if let Some(token_stream) = self.token_streams.remove(token_id) {
+                self.client
+                    .unsubscribe_orderbook(&[token_stream.asset_id])?;
+                token_stream.task.abort();
+            }
+        }
+
+        for token_id in &delta.to_subscribe {
+            let asset_id = parse_asset_id(token_id)?;
+            let stream = self.client.subscribe_best_bid_ask(vec![asset_id])?;
+            let book_state = self.book_state.clone();
+            let telemetry = self.telemetry.clone();
+            let token_label = token_id.clone();
+            let task = tokio::spawn(async move {
+                let mut stream = Box::pin(stream);
+                while let Some(update_result) = stream.next().await {
+                    let update = match update_result {
+                        Ok(update) => update,
+                        Err(error) => {
+                            record_market_stream_error(&telemetry);
+                            return Err(error.into());
+                        }
+                    };
+                    let observed_ts = Utc::now();
+                    record_market_event(&telemetry, observed_ts);
+                    let applied =
+                        apply_best_bid_ask_update(update, &book_state, observed_ts).await?;
+                    if !applied {
+                        tracing::warn!("received CLOB best_bid_ask for unseeded orderbook");
+                    }
+                }
+
+                record_market_stream_error(&telemetry);
+                Err(anyhow!("CLOB best_bid_ask stream ended for {token_label}"))
+            });
+            self.token_streams
+                .insert(token_id.clone(), BestBidAskTokenStream { asset_id, task });
+        }
+
+        Ok(delta)
+    }
+
+    pub fn websocket_status(&self, now: DateTime<Utc>) -> WebSocketStatus {
+        let telemetry = self.telemetry.read().expect("websocket telemetry poisoned");
+        let last_event_age_ms = telemetry
+            .last_event_observed_ts
+            .map(|observed_ts| now.signed_duration_since(observed_ts).num_milliseconds());
+        let ended_stream_count = self
+            .token_streams
+            .values()
+            .filter(|stream| stream.task.is_finished())
+            .count();
+        WebSocketStatus {
+            source_key: "polymarket_clob_market_ws".to_owned(),
+            channel: "market".to_owned(),
+            connection_state: format!("{:?}", self.client.connection_state(ChannelType::Market)),
+            reconnect_count: telemetry.reconnect_count,
+            subscription_count: self.client.subscription_count(),
+            active_token_count: self.token_streams.len(),
+            ended_stream_count,
+            stream_error_count: telemetry.stream_error_count,
+            last_event_age_ms,
+        }
+    }
+
+    pub fn shutdown(&mut self) {
+        for (_, token_stream) in std::mem::take(&mut self.token_streams) {
+            token_stream.task.abort();
+        }
+        self.connection_monitor_task.abort();
+    }
+
+    fn prune_finished_streams(&mut self) {
+        let finished = self
+            .token_streams
+            .iter()
+            .filter(|(_, token_stream)| token_stream.task.is_finished())
+            .map(|(token_id, _)| token_id.clone())
+            .collect::<Vec<_>>();
+        for token_id in finished {
+            if let Some(token_stream) = self.token_streams.remove(&token_id) {
+                let _ = self.client.unsubscribe_orderbook(&[token_stream.asset_id]);
+                token_stream.task.abort();
+            }
+        }
+    }
+}
+
+async fn monitor_market_connection_state(
+    client: ClobWsClient,
+    telemetry: Arc<RwLock<WebSocketTelemetry>>,
+) {
+    let mut was_connected = false;
+    loop {
+        let connected = client.connection_state(ChannelType::Market).is_connected();
+        if was_connected && !connected {
+            let mut telemetry = telemetry.write().expect("websocket telemetry poisoned");
+            telemetry.reconnect_count = telemetry.reconnect_count.saturating_add(1);
+        }
+        was_connected = connected;
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+fn record_market_event(telemetry: &Arc<RwLock<WebSocketTelemetry>>, observed_ts: DateTime<Utc>) {
+    let mut telemetry = telemetry.write().expect("websocket telemetry poisoned");
+    telemetry.last_event_observed_ts = Some(observed_ts);
+}
+
+fn record_market_stream_error(telemetry: &Arc<RwLock<WebSocketTelemetry>>) {
+    let mut telemetry = telemetry.write().expect("websocket telemetry poisoned");
+    telemetry.stream_error_count = telemetry.stream_error_count.saturating_add(1);
+}
+
+pub fn plan_best_bid_ask_subscriptions(
+    current: &BTreeSet<String>,
+    desired: &[String],
+) -> Result<BestBidAskSubscriptionDelta> {
+    let mut desired_set = BTreeSet::new();
+    for token_id in desired {
+        let token_id = token_id.trim();
+        if token_id.is_empty() {
+            continue;
+        }
+        parse_asset_id(token_id)?;
+        desired_set.insert(token_id.to_owned());
+    }
+
+    Ok(BestBidAskSubscriptionDelta {
+        desired: desired_set.iter().cloned().collect(),
+        to_subscribe: desired_set.difference(current).cloned().collect(),
+        to_unsubscribe: current.difference(&desired_set).cloned().collect(),
+    })
+}
+
 pub fn market_subscription_payload(token_ids: &[String]) -> Value {
     let mut token_ids = token_ids
         .iter()
@@ -106,6 +300,11 @@ pub fn parse_asset_ids_for_subscription(token_ids: &[String]) -> Result<Vec<U256
     asset_ids.sort();
     asset_ids.dedup();
     Ok(asset_ids)
+}
+
+fn parse_asset_id(token_id: &str) -> Result<U256> {
+    U256::from_str(token_id)
+        .with_context(|| format!("invalid CLOB asset id for websocket: {token_id}"))
 }
 
 pub async fn run_best_bid_ask_stream(
@@ -689,5 +888,22 @@ mod tests {
             .expect_err("invalid asset id should fail");
 
         assert!(error.to_string().contains("invalid CLOB asset id"));
+    }
+
+    #[test]
+    fn plans_subscription_delta_without_reconnecting_existing_tokens() {
+        let current = ["222".to_owned(), "333".to_owned()].into_iter().collect();
+        let desired = vec![
+            "333".to_owned(),
+            "111".to_owned(),
+            "333".to_owned(),
+            "444".to_owned(),
+        ];
+
+        let delta = plan_best_bid_ask_subscriptions(&current, &desired).unwrap();
+
+        assert_eq!(delta.desired, vec!["111", "333", "444"]);
+        assert_eq!(delta.to_subscribe, vec!["111", "444"]);
+        assert_eq!(delta.to_unsubscribe, vec!["222"]);
     }
 }

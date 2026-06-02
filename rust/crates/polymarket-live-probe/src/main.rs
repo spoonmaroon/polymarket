@@ -194,10 +194,12 @@ async fn run_state_manager(args: Args) -> Result<()> {
         runtime.maybe_refresh(now).await?;
         let snapshot = runtime.snapshot(now).await?;
         let subscriptions = runtime.subscriptions();
+        let websocket_status = runtime.websocket_status(chrono::Utc::now());
         let report = report::build_state_manager_report(report::StateManagerReportInput {
             elapsed_ms: timer.elapsed_ms(),
             snapshot,
             subscriptions,
+            websocket_status,
         });
         report::write_state_manager_report(&args.out, &report)?;
         timer.mark("state_report_written");

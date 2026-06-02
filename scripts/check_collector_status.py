@@ -132,9 +132,53 @@ def _reject_state_manager_payload(payload: dict) -> None:
         raise SystemExit("state-manager missing current BTC/ETH contracts")
     if len(payload.get("next", [])) < 2:
         raise SystemExit("state-manager missing next BTC/ETH contracts")
+    _reject_bad_websocket_status(payload.get("websocket_status", []))
     health_flags = payload.get("health_flags", [])
     if health_flags:
         raise SystemExit("state-manager health flags present: " + ", ".join(health_flags))
+
+
+def _reject_bad_websocket_status(rows: object) -> None:
+    if not isinstance(rows, list) or not rows:
+        raise SystemExit("state-manager missing websocket_status rows")
+    required = {"polymarket_rtds_chainlink", "polymarket_clob_market_ws"}
+    seen: set[str] = set()
+    for idx, row in enumerate(rows):
+        if not isinstance(row, dict):
+            raise SystemExit(f"websocket_status[{idx}] must be an object")
+        source_key = str(row.get("source_key", "")).strip()
+        channel = str(row.get("channel", "")).strip()
+        connection_state = str(row.get("connection_state", "")).strip()
+        if not source_key:
+            raise SystemExit(f"websocket_status[{idx}] missing source_key")
+        if not channel:
+            raise SystemExit(f"websocket_status[{idx}] missing channel")
+        if not connection_state:
+            raise SystemExit(f"websocket_status[{idx}] missing connection_state")
+        seen.add(source_key)
+        for key in (
+            "reconnect_count",
+            "subscription_count",
+            "active_token_count",
+            "ended_stream_count",
+            "stream_error_count",
+        ):
+            value = row.get(key)
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+                raise SystemExit(f"websocket_status[{idx}].{key} must be non-negative")
+        age_ms = row.get("last_event_age_ms")
+        if age_ms is not None and (
+            isinstance(age_ms, bool) or not isinstance(age_ms, (int, float)) or age_ms < 0
+        ):
+            raise SystemExit(
+                f"websocket_status[{idx}].last_event_age_ms must be non-negative or null"
+            )
+    missing = required - seen
+    if missing:
+        raise SystemExit(
+            "state-manager missing websocket_status sources: "
+            + ", ".join(sorted(missing))
+        )
 
 
 if __name__ == "__main__":

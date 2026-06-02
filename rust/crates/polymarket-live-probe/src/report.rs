@@ -32,6 +32,7 @@ pub struct StateManagerReportInput {
     pub elapsed_ms: u128,
     pub snapshot: WarmStateSnapshot,
     pub subscriptions: Vec<StateManagerSubscription>,
+    pub websocket_status: Vec<WebSocketStatus>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,6 +41,19 @@ pub struct StateManagerSubscription {
     pub channel: String,
     pub asset: String,
     pub token_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WebSocketStatus {
+    pub source_key: String,
+    pub channel: String,
+    pub connection_state: String,
+    pub reconnect_count: u64,
+    pub subscription_count: usize,
+    pub active_token_count: usize,
+    pub ended_stream_count: usize,
+    pub stream_error_count: u64,
+    pub last_event_age_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -57,6 +71,7 @@ pub struct StateManagerReport {
     pub freshness: Vec<FeedFreshness>,
     pub health_flags: Vec<String>,
     pub subscriptions: Vec<StateManagerSubscription>,
+    pub websocket_status: Vec<WebSocketStatus>,
 }
 
 impl ProbeTimer {
@@ -113,6 +128,7 @@ pub fn build_state_manager_report(input: StateManagerReportInput) -> StateManage
         freshness: input.snapshot.freshness,
         health_flags: input.snapshot.health_flags,
         subscriptions: input.subscriptions,
+        websocket_status: input.websocket_status,
     }
 }
 
@@ -193,6 +209,17 @@ mod tests {
                 asset: "BTC".to_owned(),
                 token_id: current.up.token_id.clone(),
             }],
+            websocket_status: vec![WebSocketStatus {
+                source_key: "polymarket_clob_market_ws".to_owned(),
+                channel: "market".to_owned(),
+                connection_state: "Connected".to_owned(),
+                reconnect_count: 2,
+                subscription_count: 8,
+                active_token_count: 8,
+                ended_stream_count: 0,
+                stream_error_count: 0,
+                last_event_age_ms: Some(25),
+            }],
         });
         let value = serde_json::to_value(&report).unwrap();
 
@@ -212,6 +239,16 @@ mod tests {
             value["subscriptions"][0]["source_key"],
             "polymarket_clob_market_ws"
         );
+        assert_eq!(
+            value["websocket_status"][0]["connection_state"],
+            "Connected"
+        );
+        assert_eq!(value["websocket_status"][0]["reconnect_count"], 2);
+        assert_eq!(value["websocket_status"][0]["subscription_count"], 8);
+        assert_eq!(value["websocket_status"][0]["active_token_count"], 8);
+        assert_eq!(value["websocket_status"][0]["ended_stream_count"], 0);
+        assert_eq!(value["websocket_status"][0]["stream_error_count"], 0);
+        assert_eq!(value["websocket_status"][0]["last_event_age_ms"], 25);
     }
 
     #[test]
@@ -233,6 +270,7 @@ mod tests {
             elapsed_ms: 42,
             snapshot,
             subscriptions: vec![],
+            websocket_status: vec![],
         });
 
         assert_eq!(

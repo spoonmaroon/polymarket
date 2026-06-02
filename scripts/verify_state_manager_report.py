@@ -181,6 +181,28 @@ def validate_subscriptions(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return subscriptions
 
 
+def validate_websocket_status(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = require_list(payload, "websocket_status")
+    statuses: list[dict[str, Any]] = []
+    for idx, row in enumerate(rows):
+        status = require_object(row, f"websocket_status[{idx}]")
+        for key in ("source_key", "channel", "connection_state"):
+            require_non_empty_string(status.get(key), f"websocket_status[{idx}].{key}")
+        for key in (
+            "reconnect_count",
+            "subscription_count",
+            "active_token_count",
+            "ended_stream_count",
+            "stream_error_count",
+        ):
+            require_non_negative_number(status.get(key), f"websocket_status[{idx}].{key}")
+        age_ms = status.get("last_event_age_ms")
+        if age_ms is not None:
+            require_non_negative_number(age_ms, f"websocket_status[{idx}].last_event_age_ms")
+        statuses.append(status)
+    return statuses
+
+
 def validate(payload: dict[str, Any]) -> list[str]:
     if payload.get("schema_version") != STATE_MANAGER_SCHEMA_VERSION:
         fail(f'schema_version must be "{STATE_MANAGER_SCHEMA_VERSION}"')
@@ -200,6 +222,19 @@ def validate(payload: dict[str, Any]) -> list[str]:
         validate_orderbook(row, f"orderbooks[{idx}]") for idx, row in enumerate(orderbooks)
     }
     subscriptions = validate_subscriptions(payload)
+    websocket_status = validate_websocket_status(payload)
+    status_sources = {
+        str(status["source_key"])
+        for status in websocket_status
+    }
+    missing_status_sources = sorted(
+        {"polymarket_rtds_chainlink", "polymarket_clob_market_ws"} - status_sources
+    )
+    if missing_status_sources:
+        fail(
+            "missing websocket_status sources: "
+            + ", ".join(missing_status_sources)
+        )
     if subscriptions and len(orderbooks) < 4:
         fail(f"expected at least 4 orderbooks, found {len(orderbooks)}")
     if subscriptions:
@@ -247,6 +282,7 @@ def main() -> int:
         f"next={len(payload['next'])}",
         f"orderbooks={len(payload['orderbooks'])}",
         f"subscriptions={len(payload['subscriptions'])}",
+        f"websocket_status={len(payload['websocket_status'])}",
         f"health_flags={len(health_flags)}",
     )
     if health_flags:

@@ -4,9 +4,8 @@ use polymarket_runtime_types::{
     FeedFreshness, NormalizedOrderBook, NormalizedPriceTick, WarmStateSnapshot, WarmedContract,
 };
 use std::time::Duration as StdDuration;
-use tokio::task::JoinHandle;
 
-use crate::report::StateManagerSubscription;
+use crate::report::{StateManagerSubscription, WebSocketStatus};
 use crate::{book_state::LiveBookState, clob_ws, polymarket, prices, windows};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,29 +23,30 @@ pub struct StateManagerRuntime {
     config: StateManagerConfig,
     latest_prices: prices::LatestPrices,
     book_state: LiveBookState,
+    orderbook_streams: clob_ws::BestBidAskStreamManager,
     warmed: Vec<WarmedContract>,
     token_ids: Vec<String>,
     last_refresh: DateTime<Utc>,
-    orderbook_task: Option<JoinHandle<Result<()>>>,
-    chainlink_task: JoinHandle<Result<()>>,
+    chainlink_streams: prices::ChainlinkStreamManager,
 }
 
 impl StateManagerRuntime {
     pub async fn start(config: StateManagerConfig) -> Result<Self> {
         let latest_prices = prices::LatestPrices::default();
-        let chainlink_task = tokio::spawn(prices::run_chainlink_stream(
+        let book_state = LiveBookState::default();
+        let chainlink_streams = prices::ChainlinkStreamManager::start(
             chainlink_symbols_for_assets(&config.assets),
             latest_prices.clone(),
-        ));
+        );
         let mut runtime = Self {
             config,
             latest_prices,
-            book_state: LiveBookState::default(),
+            orderbook_streams: clob_ws::BestBidAskStreamManager::new(book_state.clone()),
+            book_state,
             warmed: Vec::new(),
             token_ids: Vec::new(),
             last_refresh: Utc::now(),
-            orderbook_task: None,
-            chainlink_task,
+            chainlink_streams,
         };
         runtime.refresh_contracts().await?;
         Ok(runtime)
@@ -76,11 +76,16 @@ impl StateManagerRuntime {
         subscriptions_from_warmed_contracts(&self.warmed)
     }
 
+    pub fn websocket_status(&self, now: DateTime<Utc>) -> Vec<WebSocketStatus> {
+        vec![
+            self.chainlink_streams.websocket_status(now),
+            self.orderbook_streams.websocket_status(now),
+        ]
+    }
+
     pub fn shutdown(&mut self) {
-        if let Some(task) = self.orderbook_task.take() {
-            task.abort();
-        }
-        self.chainlink_task.abort();
+        self.chainlink_streams.shutdown();
+        self.orderbook_streams.shutdown();
     }
 
     async fn refresh_contracts(&mut self) -> Result<()> {
@@ -111,16 +116,8 @@ impl StateManagerRuntime {
         token_ids.sort();
         token_ids.dedup();
 
-        if token_ids != self.token_ids {
-            if let Some(task) = self.orderbook_task.take() {
-                task.abort();
-            }
-            self.orderbook_task = Some(tokio::spawn(clob_ws::run_best_bid_ask_stream(
-                token_ids.clone(),
-                self.book_state.clone(),
-            )));
-            self.token_ids = token_ids;
-        }
+        self.orderbook_streams.update_tokens(&token_ids)?;
+        self.token_ids = token_ids;
 
         self.warmed = warmed;
         self.last_refresh = now;
@@ -530,12 +527,14 @@ mod tests {
         let runtime = StateManagerRuntime {
             config: config(),
             latest_prices,
+            orderbook_streams: clob_ws::BestBidAskStreamManager::new(book_state.clone()),
             book_state,
             warmed: vec![warmed("BTC", start, "current")],
             token_ids: vec![],
             last_refresh: observed,
-            orderbook_task: None,
-            chainlink_task: tokio::spawn(async { Ok(()) }),
+            chainlink_streams: prices::ChainlinkStreamManager::inactive_for_tests(vec![
+                "btc/usd".to_owned(),
+            ]),
         };
 
         let snapshot = runtime.snapshot(stale_caller_now).await.unwrap();
