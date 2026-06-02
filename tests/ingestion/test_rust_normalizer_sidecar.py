@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, cast
@@ -8,6 +10,7 @@ from typing import Any, cast
 import duckdb
 import pytest
 
+from polymarket_engine.ingestion import rust_normalizer_sidecar
 from polymarket_engine.ingestion.rust_normalizer_sidecar import (
     _cadence_sleep_seconds,
     run_rust_normalizer_cycle,
@@ -129,6 +132,107 @@ def test_sidecar_loop_reuses_process_and_sleeps_between_cycles(
     assert _log_values(lines[1])["rows_read"] == "0"
     assert len(sleeps) == 1
     assert 0.0 < sleeps[0] <= 1.25
+
+
+def test_sidecar_loop_skips_state_build_when_raw_and_status_are_idle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_root = tmp_path / "raw"
+    db_path = tmp_path / "state.duckdb"
+    status_path = tmp_path / "live" / "status.json"
+    health_path = tmp_path / "live" / "normalized_health.json"
+    start_ts = datetime(2026, 6, 2, 6, 0, tzinfo=timezone.utc)
+    asof_ts = start_ts + timedelta(minutes=2)
+    _write_raw_tree(raw_root=raw_root, start_ts=start_ts, asof_ts=asof_ts)
+    _write_status(status_path, start_ts=start_ts, asof_ts=asof_ts)
+    monkeypatch.setattr(
+        "polymarket_engine.ingestion.rust_normalizer_sidecar.time.sleep",
+        lambda _: None,
+    )
+    real_build = getattr(
+        rust_normalizer_sidecar,
+        "build_current_decision_state_snapshots",
+    )
+    build_calls = 0
+
+    def counting_build(*args: Any, **kwargs: Any) -> Any:
+        nonlocal build_calls
+        build_calls += 1
+        return real_build(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "polymarket_engine.ingestion.rust_normalizer_sidecar."
+        "build_current_decision_state_snapshots",
+        counting_build,
+    )
+
+    run_rust_normalizer_loop(
+        raw_root=raw_root,
+        db_path=db_path,
+        status_path=status_path,
+        normalized_health_path=health_path,
+        interval_seconds=0.0,
+        include_next=False,
+        max_cycles=2,
+    )
+
+    assert build_calls == 1
+
+
+def test_sidecar_loop_rebuilds_state_when_status_changes_without_raw_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_root = tmp_path / "raw"
+    db_path = tmp_path / "state.duckdb"
+    status_path = tmp_path / "live" / "status.json"
+    health_path = tmp_path / "live" / "normalized_health.json"
+    start_ts = datetime(2026, 6, 2, 6, 0, tzinfo=timezone.utc)
+    asof_ts = start_ts + timedelta(minutes=2)
+    _write_raw_tree(raw_root=raw_root, start_ts=start_ts, asof_ts=asof_ts)
+    _write_status(status_path, start_ts=start_ts, asof_ts=asof_ts)
+    real_build = getattr(
+        rust_normalizer_sidecar,
+        "build_current_decision_state_snapshots",
+    )
+    build_calls = 0
+
+    def counting_build(*args: Any, **kwargs: Any) -> Any:
+        nonlocal build_calls
+        build_calls += 1
+        return real_build(*args, **kwargs)
+
+    def change_status(_: float) -> None:
+        _write_status(
+            status_path,
+            start_ts=start_ts,
+            asof_ts=asof_ts + timedelta(seconds=1),
+        )
+        next_mtime = time.time() + 1
+        os.utime(status_path, (next_mtime, next_mtime))
+
+    monkeypatch.setattr(
+        "polymarket_engine.ingestion.rust_normalizer_sidecar."
+        "build_current_decision_state_snapshots",
+        counting_build,
+    )
+    monkeypatch.setattr(
+        "polymarket_engine.ingestion.rust_normalizer_sidecar.time.sleep",
+        change_status,
+    )
+
+    run_rust_normalizer_loop(
+        raw_root=raw_root,
+        db_path=db_path,
+        status_path=status_path,
+        normalized_health_path=health_path,
+        interval_seconds=0.0,
+        include_next=False,
+        max_cycles=2,
+    )
+
+    assert build_calls == 2
 
 
 def test_sidecar_loop_reuses_one_duckdb_connection_across_cycles(

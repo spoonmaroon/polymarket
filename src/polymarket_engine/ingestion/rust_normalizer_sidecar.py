@@ -29,6 +29,7 @@ class RustNormalizerCycleResult:
     orderbooks_written: int
     contracts_upserted: int
     states_written: int
+    state_skipped: bool
     unavailable: tuple[UnavailableDecisionState, ...]
     elapsed_ms: int
     normalize_ms: int
@@ -47,6 +48,7 @@ class RustNormalizerCycleResult:
             "orderbooks_written": self.orderbooks_written,
             "contracts_upserted": self.contracts_upserted,
             "states_written": self.states_written,
+            "state_skipped": self.state_skipped,
             "unavailable": [
                 {
                     "contract_id": row.contract_id,
@@ -93,6 +95,9 @@ def _run_rust_normalizer_cycle_with_store(
     include_next: bool,
     reprocess_all: bool,
     apply_schema: bool,
+    previous_status_mtime_ns: int | None = None,
+    status_mtime_ns: int | None = None,
+    force_state_build: bool = True,
 ) -> RustNormalizerCycleResult:
     cycle_started = time.perf_counter()
     if apply_schema:
@@ -105,10 +110,20 @@ def _run_rust_normalizer_cycle_with_store(
     )
     normalized_at = time.perf_counter()
 
+    summary = _normalizer_summary(results)
+    if status_mtime_ns is None:
+        status_mtime_ns = _file_mtime_ns(status_path)
+    build_state = status_mtime_ns is not None and (
+        force_state_build
+        or reprocess_all
+        or summary["rows_read"] > 0
+        or status_mtime_ns != previous_status_mtime_ns
+    )
+
     contracts_upserted = 0
     states_written = 0
     unavailable: tuple[UnavailableDecisionState, ...] = ()
-    if status_path.exists():
+    if build_state:
         state_result = build_current_decision_state_snapshots(
             status_path=status_path,
             store=store,
@@ -123,9 +138,10 @@ def _run_rust_normalizer_cycle_with_store(
     health_at = time.perf_counter()
 
     return RustNormalizerCycleResult(
-        **_normalizer_summary(results),
+        **summary,
         contracts_upserted=contracts_upserted,
         states_written=states_written,
+        state_skipped=status_mtime_ns is not None and not build_state,
         unavailable=unavailable,
         elapsed_ms=_elapsed_ms(cycle_started, health_at),
         normalize_ms=_elapsed_ms(cycle_started, normalized_at),
@@ -148,8 +164,10 @@ def run_rust_normalizer_loop(
     with DuckDbIngestStore(db_path) as store:
         store.apply_schema()
         cycles_run = 0
+        previous_status_mtime_ns: int | None = None
         while True:
             cycle_started = time.monotonic()
+            status_mtime_ns = _file_mtime_ns(status_path)
             result = _run_rust_normalizer_cycle_with_store(
                 raw_root=raw_root,
                 store=store,
@@ -158,8 +176,12 @@ def run_rust_normalizer_loop(
                 include_next=include_next,
                 reprocess_all=reprocess_all,
                 apply_schema=False,
+                previous_status_mtime_ns=previous_status_mtime_ns,
+                status_mtime_ns=status_mtime_ns,
+                force_state_build=cycles_run == 0,
             )
             print(_cycle_log_line(result), flush=True)
+            previous_status_mtime_ns = status_mtime_ns
             cycles_run += 1
             if max_cycles is not None and cycles_run >= max_cycles:
                 return
@@ -189,6 +211,13 @@ def _elapsed_ms(start: float, end: float) -> int:
     return max(0, int(round((end - start) * 1000)))
 
 
+def _file_mtime_ns(path: Path) -> int | None:
+    try:
+        return path.stat().st_mtime_ns
+    except FileNotFoundError:
+        return None
+
+
 def _cadence_sleep_seconds(
     *,
     cycle_started: float,
@@ -207,5 +236,6 @@ def _cycle_log_line(result: RustNormalizerCycleResult) -> str:
         f"health_ms={result.health_ms} "
         f"files={result.files} "
         f"rows_read={result.rows_read} "
-        f"bytes_read={result.bytes_read}"
+        f"bytes_read={result.bytes_read} "
+        f"state_skipped={str(result.state_skipped).lower()}"
     )
