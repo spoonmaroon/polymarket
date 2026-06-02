@@ -516,8 +516,7 @@ def render_monitor(snapshot: MonitorSnapshot) -> str:
         for row in snapshot.orderbook_freshness:
             state = "STALE" if row.get("stale") else "OK"
             lines.append(
-                f"  {row.get('asset', ''):<3} {row.get('side', ''):<4} "
-                f"{str(row.get('contract_id', '')):<14} {state:<5} "
+                f"  {_orderbook_freshness_label(row):<36} {state:<5} "
                 f"age_ms={_fmt_int(row.get('age_ms')):<8}"
             )
     else:
@@ -613,3 +612,16 @@ def _short_token(value: object) -> str:
     if len(text) <= 14:
         return text
     return f"{text[:10]}..."
+
+
+def _orderbook_freshness_label(row: dict[str, Any]) -> str:
+    asset = str(row.get("asset") or "")
+    side = str(row.get("side") or "")
+    contract_id = str(row.get("contract_id") or "")
+    if asset or side or contract_id:
+        return f"{asset} {side} {contract_id}".strip()
+    source_key = str(row.get("source_key") or "")
+    symbol = str(row.get("symbol") or "")
+    if source_key and symbol:
+        return f"{source_key}:{symbol}"
+    return symbol or source_key

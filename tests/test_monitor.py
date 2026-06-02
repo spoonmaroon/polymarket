@@ -246,6 +246,7 @@ def test_monitor_snapshot_reads_rust_state_manager_status(tmp_path: Path) -> Non
     assert "ETH/USD" in output
     assert "70120.6180" in output
     assert "1984.4559" in output
+    assert "polymarket_rust_sdk:btc-up" in output
     assert "Hot Decisions" in output
     assert "states_built=4890" in output
 
