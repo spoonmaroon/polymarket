@@ -6,6 +6,7 @@ from pathlib import Path
 import duckdb
 
 from polymarket_engine.ingestion.rust_event_normalizer import (
+    _iter_jsonl,
     normalize_rust_event_file,
     normalize_rust_event_tree,
 )
@@ -290,6 +291,17 @@ def test_tree_normalizer_excludes_state_snapshots_by_default(tmp_path: Path) -> 
         "events.jsonl",
         "state-manager.jsonl",
     ]
+
+
+def test_jsonl_iterator_stops_at_initial_byte_limit(tmp_path: Path) -> None:
+    raw_path = tmp_path / "events.jsonl"
+    first_line = json.dumps({"source_key": "one"}, separators=(",", ":")) + "\n"
+    second_line = json.dumps({"source_key": "two"}, separators=(",", ":")) + "\n"
+    raw_path.write_text(first_line + second_line, encoding="utf-8")
+
+    rows = tuple(_iter_jsonl(raw_path, byte_limit=len(first_line.encode("utf-8"))))
+
+    assert rows == ({"source_key": "one"},)
 
 
 def _write_jsonl(path: Path, *rows: object) -> None:

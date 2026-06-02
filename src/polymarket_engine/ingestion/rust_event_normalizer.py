@@ -53,7 +53,8 @@ def normalize_rust_event_file(
     path: Path,
     store: DuckDbIngestStore,
 ) -> RustEventNormalizeResult:
-    file_id = _file_id(path)
+    read_limit = path.stat().st_size
+    file_id = _file_id(path, byte_limit=read_limit)
     rows_read = 0
     price_ticks_written = 0
     orderbooks_written = 0
@@ -62,7 +63,7 @@ def normalize_rust_event_file(
     orderbooks: list[OrderBookObservation] = []
     source_key, stream_key = _source_stream_from_path(path)
 
-    for row in _iter_jsonl(path):
+    for row in _iter_jsonl(path, byte_limit=read_limit):
         rows_read += 1
         for tick in _price_ticks_from_row(row):
             price_ticks.append(tick)
@@ -101,9 +102,17 @@ def normalize_rust_event_file(
     )
 
 
-def _iter_jsonl(path: Path) -> Iterator[dict[str, Any]]:
-    with path.open(encoding="utf-8") as handle:
-        for line_number, line in enumerate(handle, start=1):
+def _iter_jsonl(path: Path, byte_limit: int | None = None) -> Iterator[dict[str, Any]]:
+    with path.open("rb") as handle:
+        bytes_read = 0
+        for line_number, raw_line in enumerate(handle, start=1):
+            if byte_limit is not None:
+                if bytes_read >= byte_limit:
+                    break
+                if bytes_read + len(raw_line) > byte_limit:
+                    break
+            bytes_read += len(raw_line)
+            line = raw_line.decode("utf-8")
             if not line.strip():
                 continue
             value = json.loads(line)
@@ -337,8 +346,23 @@ def _json_scalar(value: object) -> object:
     return str(value)
 
 
-def _file_id(path: Path) -> str:
-    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+def _file_id(path: Path, byte_limit: int | None = None) -> str:
+    hasher = hashlib.sha256()
+    bytes_read = 0
+    with path.open("rb") as handle:
+        while True:
+            chunk_size = 1024 * 1024
+            if byte_limit is not None:
+                remaining = byte_limit - bytes_read
+                if remaining <= 0:
+                    break
+                chunk_size = min(chunk_size, remaining)
+            chunk = handle.read(chunk_size)
+            if not chunk:
+                break
+            bytes_read += len(chunk)
+            hasher.update(chunk)
+    digest = hasher.hexdigest()
     return f"sha256:{digest}"
 
 
