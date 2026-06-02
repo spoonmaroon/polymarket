@@ -205,19 +205,10 @@ impl HotDecisionBuilder {
             .iter()
             .filter(|contract| is_current_window(contract, asof_ts))
         {
+            let price_context = contract_price_context(chainlink_history, contract, asof_ts);
             for (side, token_id) in impacted_tokens(event, contract) {
-                let threshold = latest_price_at_or_before(
-                    chainlink_history,
-                    &contract.window.asset,
-                    contract.window.start_ts,
-                    asof_ts,
-                );
-                let settlement = latest_price_at_or_before(
-                    chainlink_history,
-                    &contract.window.asset,
-                    asof_ts,
-                    asof_ts,
-                );
+                let threshold = price_context.threshold;
+                let settlement = price_context.settlement;
                 let book = latest_orderbook_at_or_before(orderbooks, &token_id, asof_ts);
                 let mut flags = Vec::new();
 
@@ -287,6 +278,33 @@ impl HotDecisionBuilder {
         }
 
         states
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ContractPriceContext<'a> {
+    threshold: Option<&'a NormalizedPriceTick>,
+    settlement: Option<&'a NormalizedPriceTick>,
+}
+
+fn contract_price_context<'a>(
+    chainlink_history: &'a [NormalizedPriceTick],
+    contract: &WarmedContract,
+    asof_ts: DateTime<Utc>,
+) -> ContractPriceContext<'a> {
+    ContractPriceContext {
+        threshold: latest_price_at_or_before(
+            chainlink_history,
+            &contract.window.asset,
+            contract.window.start_ts,
+            asof_ts,
+        ),
+        settlement: latest_price_at_or_before(
+            chainlink_history,
+            &contract.window.asset,
+            asof_ts,
+            asof_ts,
+        ),
     }
 }
 
@@ -594,6 +612,34 @@ mod tests {
             !states[0]
                 .data_quality_flags
                 .contains(&HotDecisionQualityFlag::RestartWarmupBlocked)
+        );
+    }
+
+    #[test]
+    fn contract_price_context_reuses_threshold_and_settlement_for_both_sides() {
+        let start = Utc.timestamp_opt(1_780_302_400, 0).unwrap();
+        let asof = start + Duration::seconds(12);
+        let contract = WarmedContract::new(
+            ContractWindow::new("BTC", "5m", start, start + Duration::seconds(300)).unwrap(),
+            ContractToken::new("BTC", ContractSide::Up, "up-token"),
+            ContractToken::new("BTC", ContractSide::Down, "down-token"),
+        )
+        .unwrap();
+        let prices = vec![
+            price("BTC/USD", start, start, 70_000),
+            price("ETH/USD", asof, asof, 3_000),
+            price("BTC/USD", asof - Duration::seconds(1), asof, 70_050),
+        ];
+
+        let context = contract_price_context(&prices, &contract, asof);
+
+        assert_eq!(
+            context.threshold.map(|tick| tick.price),
+            Some(Decimal::new(70_000, 0))
+        );
+        assert_eq!(
+            context.settlement.map(|tick| tick.price),
+            Some(Decimal::new(70_050, 0))
         );
     }
 
