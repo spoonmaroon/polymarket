@@ -174,6 +174,44 @@ def test_normalizes_clob_spread_from_bid_ask_when_payload_spread_is_stale(tmp_pa
     assert json.loads(row[1])["top_of_book"]["spread"] == "0.02"
 
 
+def test_normalizes_clob_without_parsing_unused_payload_spread(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.duckdb"
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    raw_path = (
+        tmp_path
+        / "raw"
+        / "polymarket_clob_market_ws"
+        / "best_bid_ask"
+        / "date=2026-06-02"
+        / "hour=05"
+        / "events.jsonl"
+    )
+    row = _orderbook_row(
+        "token-1",
+        "2026-06-02T05:33:54.100Z",
+        "2026-06-02T05:33:54.200Z",
+        0.61,
+        0.64,
+    )
+    cast(dict[str, object], row["payload"])["spread"] = "stale-unparseable"
+    _write_jsonl(raw_path, row)
+
+    result = normalize_rust_event_file(path=raw_path, store=store)
+
+    assert result.orderbooks_written == 1
+    with duckdb.connect(str(db_path), read_only=True) as conn:
+        stored = conn.execute(
+            """
+            select spread, depth_json
+            from core.orderbook_snapshots
+            """
+        ).fetchone()
+    assert stored is not None
+    assert round(float(stored[0]), 2) == 0.03
+    assert json.loads(stored[1])["top_of_book"]["spread"] == "stale-unparseable"
+
+
 def test_normalizer_collapses_consecutive_duplicate_chainlink_state(tmp_path: Path) -> None:
     db_path = tmp_path / "state.duckdb"
     store = DuckDbIngestStore(db_path)

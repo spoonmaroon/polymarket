@@ -411,11 +411,12 @@ def _top_of_book_row_from_raw(row: dict[str, Any]) -> _TopOfBookRow | None:
     payload = _payload(row)
     best_bid = _optional_probability_float(payload.get("best_bid"), "best_bid")
     best_ask = _optional_probability_float(payload.get("best_ask"), "best_ask")
-    spread = _canonical_spread(
-        best_bid,
-        best_ask,
-        _optional_probability_float(payload.get("spread"), "spread"),
+    spread_fallback = (
+        None
+        if best_bid is not None and best_ask is not None
+        else _optional_probability_float(payload.get("spread"), "spread")
     )
+    spread = _canonical_spread(best_bid, best_ask, spread_fallback)
     token_id = str(payload.get("token_id") or row.get("symbol"))
     contract_id = str(payload["contract_id"])
     event_ts = _parse_ts(row["event_ts"])
