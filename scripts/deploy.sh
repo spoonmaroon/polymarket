@@ -25,13 +25,26 @@ trap 'rm -rf "$LOCK_DIR"' EXIT
 
 cd "$REPO" || exit 1
 
+compose() {
+  if [ -f "$REPO/deploy/collector/.env" ]; then
+    docker compose --env-file "$REPO/deploy/collector/.env" "$@"
+  else
+    docker compose "$@"
+  fi
+}
+
+normalizer_running() {
+  compose -f "$COMPOSE_FILE" ps --services --status running normalizer 2>> "$LOG_FILE" \
+    | grep -qx normalizer
+}
+
 DEPLOY_REF="${POLYMARKET_DEPLOY_REF:-origin/main}"
 git fetch --quiet origin || { LOG "git fetch failed"; exit 1; }
 LOCAL="$(git rev-parse HEAD)"
 REMOTE="$(git rev-parse "$DEPLOY_REF")"
 DEPLOYED_SHA="$(cat "$DEPLOYED_MARKER" 2>/dev/null || true)"
 if [ "$LOCAL" = "$REMOTE" ] && [ "$DEPLOYED_SHA" = "$REMOTE" ] && [ "${DEPLOY_FORCE:-0}" != "1" ]; then
-  if python3 "$REPO/scripts/check_collector_status.py" \
+  if normalizer_running && python3 "$REPO/scripts/check_collector_status.py" \
     --status-path "$STATUS_PATH" \
     --max-status-age-seconds 30 \
     --max-price-age-ms 30000 \
@@ -61,14 +74,6 @@ if ! git merge --ff-only --quiet "$REMOTE"; then
   exit 1
 fi
 
-compose() {
-  if [ -f "$REPO/deploy/collector/.env" ]; then
-    docker compose --env-file "$REPO/deploy/collector/.env" "$@"
-  else
-    docker compose "$@"
-  fi
-}
-
 LOG "stopping legacy Python collector containers if present"
 docker rm -f polymarket-collector-collector-1 polymarket-python-collector-retired-retired-python-collector-1 >> "$LOG_FILE" 2>&1 || true
 
@@ -78,7 +83,7 @@ if ! compose -f "$COMPOSE_FILE" up -d --build collector normalizer >> "$LOG_FILE
 fi
 
 for _ in $(seq 1 "$DEPLOY_SMOKE_ATTEMPTS"); do
-  if python3 "$REPO/scripts/check_collector_status.py" \
+  if normalizer_running && python3 "$REPO/scripts/check_collector_status.py" \
     --status-path "$STATUS_PATH" \
     --max-status-age-seconds 30 \
     --max-price-age-ms 30000 \

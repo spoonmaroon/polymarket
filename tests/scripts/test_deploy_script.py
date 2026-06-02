@@ -116,3 +116,11 @@ def test_normalizer_sidecar_is_deployed_and_health_checked() -> None:
     assert "up -d --build collector normalizer" in script
     assert "--normalized-health-path" in script
     assert "$DATA_DIR/live/normalized_health.json" in script
+
+
+def test_deploy_script_requires_running_normalizer_before_success() -> None:
+    script = (ROOT / "scripts" / "deploy.sh").read_text(encoding="utf-8")
+
+    assert "normalizer_running()" in script
+    assert "ps --services --status running normalizer" in script
+    assert "normalizer_running && python3" in script
