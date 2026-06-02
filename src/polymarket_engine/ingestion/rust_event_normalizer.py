@@ -58,18 +58,23 @@ def normalize_rust_event_file(
     price_ticks_written = 0
     orderbooks_written = 0
     event_times: list[datetime] = []
+    price_ticks: list[PriceObservation] = []
+    orderbooks: list[OrderBookObservation] = []
     source_key, stream_key = _source_stream_from_path(path)
 
     for row in _iter_jsonl(path):
         rows_read += 1
         for tick in _price_ticks_from_row(row):
-            store.insert_price_tick(tick, raw_file_id=file_id)
+            price_ticks.append(tick)
             event_times.append(tick.event_ts)
             price_ticks_written += 1
         for book in _orderbooks_from_row(row):
-            store.insert_orderbook_snapshot(book, raw_file_id=file_id)
+            orderbooks.append(book)
             event_times.append(book.event_ts)
             orderbooks_written += 1
+
+    store.insert_price_ticks(price_ticks, raw_file_id=file_id)
+    store.insert_orderbook_snapshots(orderbooks, raw_file_id=file_id)
 
     if rows_read > 0:
         first_event_ts = min(event_times) if event_times else _fallback_file_timestamp(path)

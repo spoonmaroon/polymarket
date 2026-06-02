@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -173,23 +174,35 @@ class DuckDbIngestStore:
             )
 
     def insert_price_tick(self, tick: PriceObservation, raw_file_id: str | None = None) -> None:
+        self.insert_price_ticks((tick,), raw_file_id=raw_file_id)
+
+    def insert_price_ticks(
+        self,
+        ticks: Sequence[PriceObservation],
+        raw_file_id: str | None = None,
+    ) -> None:
+        if not ticks:
+            return
         with duckdb.connect(str(self.db_path)) as conn:
-            conn.execute(
+            conn.executemany(
                 """
                 insert or replace into core.price_ticks
                 (source_key, symbol, event_ts, observed_ts, price, bid, ask, sequence, raw_file_id)
                 values (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
-                    tick.source_key,
-                    tick.symbol,
-                    tick.event_ts,
-                    tick.observed_ts,
-                    tick.price,
-                    tick.bid,
-                    tick.ask,
-                    tick.sequence,
-                    raw_file_id,
+                    [
+                        tick.source_key,
+                        tick.symbol,
+                        tick.event_ts,
+                        tick.observed_ts,
+                        tick.price,
+                        tick.bid,
+                        tick.ask,
+                        tick.sequence,
+                        raw_file_id,
+                    ]
+                    for tick in ticks
                 ],
             )
 
@@ -198,8 +211,17 @@ class DuckDbIngestStore:
         snapshot: OrderBookObservation,
         raw_file_id: str | None = None,
     ) -> None:
+        self.insert_orderbook_snapshots((snapshot,), raw_file_id=raw_file_id)
+
+    def insert_orderbook_snapshots(
+        self,
+        snapshots: Sequence[OrderBookObservation],
+        raw_file_id: str | None = None,
+    ) -> None:
+        if not snapshots:
+            return
         with duckdb.connect(str(self.db_path)) as conn:
-            conn.execute(
+            conn.executemany(
                 """
                 insert or replace into core.orderbook_snapshots
                 (venue, contract_id, token_id, event_ts, observed_ts, best_bid, best_ask,
@@ -207,18 +229,21 @@ class DuckDbIngestStore:
                 values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
-                    snapshot.venue,
-                    snapshot.contract_id,
-                    snapshot.token_id,
-                    snapshot.event_ts,
-                    snapshot.observed_ts,
-                    snapshot.best_bid,
-                    snapshot.best_ask,
-                    snapshot.bid_size_top,
-                    snapshot.ask_size_top,
-                    snapshot.spread,
-                    snapshot.depth_json,
-                    raw_file_id,
+                    [
+                        snapshot.venue,
+                        snapshot.contract_id,
+                        snapshot.token_id,
+                        snapshot.event_ts,
+                        snapshot.observed_ts,
+                        snapshot.best_bid,
+                        snapshot.best_ask,
+                        snapshot.bid_size_top,
+                        snapshot.ask_size_top,
+                        snapshot.spread,
+                        snapshot.depth_json,
+                        raw_file_id,
+                    ]
+                    for snapshot in snapshots
                 ],
             )
 
