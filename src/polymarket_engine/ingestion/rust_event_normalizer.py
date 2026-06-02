@@ -611,7 +611,14 @@ def _optional_probability_float(value: object, field_name: str) -> float | None:
         return None
     if isinstance(value, str) and not value:
         return None
-    return _probability_float(value, field_name)
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        raise ValueError(f"{field_name} must be numeric")
+    parsed = float(value)
+    if parsed < 0:
+        raise ValueError(f"{field_name} must be nonnegative")
+    if parsed > 1:
+        raise ValueError(f"{field_name} must be between 0 and 1")
+    return parsed
 
 
 def _canonical_spread(

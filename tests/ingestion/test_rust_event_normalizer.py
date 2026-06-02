@@ -16,6 +16,7 @@ from polymarket_engine.ingestion.rust_event_normalizer import (
     _complete_jsonl_byte_limit,
     _file_id,
     _iter_jsonl,
+    _optional_probability_float,
     _parse_ts,
     normalize_rust_event_file,
     normalize_rust_event_tree,
@@ -933,6 +934,27 @@ def test_parse_ts_fast_paths_utc_z_without_offset_rewrite(
 
     assert parsed == datetime.fromisoformat("2026-06-02T05:33:54.123456+00:00")
     assert seen_inputs == ["2026-06-02T05:33:54.123456"]
+
+
+def test_optional_probability_float_parses_without_nested_probability_helper(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    probability_helper_calls = 0
+    real_probability_float = rust_event_normalizer._probability_float
+
+    def counting_probability_float(value: object, field_name: str) -> float:
+        nonlocal probability_helper_calls
+        probability_helper_calls += 1
+        return real_probability_float(value, field_name)
+
+    monkeypatch.setattr(
+        rust_event_normalizer,
+        "_probability_float",
+        counting_probability_float,
+    )
+
+    assert _optional_probability_float("0.64", "best_ask") == 0.64
+    assert probability_helper_calls == 0
 
 
 def _write_jsonl(path: Path, *rows: object) -> None:
