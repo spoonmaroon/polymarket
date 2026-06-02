@@ -81,6 +81,23 @@ def normalize_rust_event_file(
         start_byte_offset = 0
     end_byte_offset = _complete_jsonl_byte_limit(path, start_byte_offset, file_size)
     read_limit = end_byte_offset - start_byte_offset
+    if read_limit <= 0:
+        return RustEventNormalizeResult(
+            path=path,
+            file_id=_file_id_from_hasher(
+                _file_id_hasher(
+                    path,
+                    start_byte_offset=start_byte_offset,
+                    byte_limit=read_limit,
+                )
+            ),
+            start_byte_offset=start_byte_offset,
+            end_byte_offset=end_byte_offset,
+            file_size_bytes=file_size,
+            rows_read=0,
+            price_ticks_written=0,
+            orderbooks_written=0,
+        )
     file_id_hasher = _file_id_hasher(
         path,
         start_byte_offset=start_byte_offset,

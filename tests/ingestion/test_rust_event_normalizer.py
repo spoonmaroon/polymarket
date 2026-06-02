@@ -7,6 +7,7 @@ from typing import Sequence, cast
 
 import duckdb
 
+from polymarket_engine.domain.market_state import OrderBookObservation, PriceObservation
 from polymarket_engine.ingestion.rust_event_normalizer import (
     _complete_jsonl_byte_limit,
     _file_id,
@@ -375,6 +376,36 @@ def test_normalizer_only_reads_new_jsonl_bytes_on_second_pass(tmp_path: Path) ->
         assert conn.execute("select count(*) from core.price_ticks").fetchone() == (2,)
 
 
+def test_normalizer_skips_empty_storage_writes_when_checkpoint_is_current(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "state.duckdb"
+    store = _CountingCheckpointStore(db_path)
+    store.apply_schema()
+    raw_path = (
+        tmp_path
+        / "raw"
+        / "polymarket_rtds_chainlink"
+        / "price_update"
+        / "date=2026-06-02"
+        / "hour=05"
+        / "events.jsonl"
+    )
+    _write_jsonl(
+        raw_path,
+        _chainlink_row("BTC/USD", "2026-06-02T05:33:54Z", "2026-06-02T05:33:55Z", 70600.0),
+    )
+    normalize_rust_event_file(path=raw_path, store=store)
+    store.insert_price_ticks_calls = 0
+    store.insert_orderbook_snapshots_calls = 0
+
+    result = normalize_rust_event_file(path=raw_path, store=store)
+
+    assert result.rows_read == 0
+    assert store.insert_price_ticks_calls == 0
+    assert store.insert_orderbook_snapshots_calls == 0
+
+
 def test_normalizer_waits_for_complete_appended_jsonl_line(tmp_path: Path) -> None:
     db_path = tmp_path / "state.duckdb"
     store = DuckDbIngestStore(db_path)
@@ -576,6 +607,8 @@ class _CountingCheckpointStore(DuckDbIngestStore):
         super().__init__(db_path)
         self.raw_file_checkpoint_calls = 0
         self.raw_file_checkpoints_calls = 0
+        self.insert_price_ticks_calls = 0
+        self.insert_orderbook_snapshots_calls = 0
 
     def raw_file_checkpoint(self, path: Path) -> int | None:
         self.raw_file_checkpoint_calls += 1
@@ -584,3 +617,19 @@ class _CountingCheckpointStore(DuckDbIngestStore):
     def raw_file_checkpoints(self, paths: Sequence[Path]) -> dict[Path, int]:
         self.raw_file_checkpoints_calls += 1
         return super().raw_file_checkpoints(paths)
+
+    def insert_price_ticks(
+        self,
+        ticks: Sequence[PriceObservation],
+        raw_file_id: str | None = None,
+    ) -> None:
+        self.insert_price_ticks_calls += 1
+        super().insert_price_ticks(ticks, raw_file_id=raw_file_id)
+
+    def insert_orderbook_snapshots(
+        self,
+        snapshots: Sequence[OrderBookObservation],
+        raw_file_id: str | None = None,
+    ) -> None:
+        self.insert_orderbook_snapshots_calls += 1
+        super().insert_orderbook_snapshots(snapshots, raw_file_id=raw_file_id)
