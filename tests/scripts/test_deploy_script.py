@@ -57,6 +57,30 @@ def test_collector_entrypoint_enables_state_snapshot_journal() -> None:
     assert '"$STATE_SNAPSHOT_DIR"' in entrypoint
 
 
+def test_collector_fast_status_keeps_five_second_snapshot_journal() -> None:
+    env_example = (ROOT / "deploy" / "collector" / ".env.example").read_text(
+        encoding="utf-8"
+    )
+    compose = (ROOT / "deploy" / "collector" / "docker-compose.yml").read_text(
+        encoding="utf-8"
+    )
+    entrypoint = (
+        ROOT / "deploy" / "collector" / "collector-entrypoint.sh"
+    ).read_text(encoding="utf-8")
+
+    assert "POLYMARKET_STATUS_INTERVAL_MS=100" in env_example
+    assert "POLYMARKET_STATUS_INTERVAL_MS:-100" in compose
+    assert 'STATUS_INTERVAL_MS="${POLYMARKET_STATUS_INTERVAL_MS:-100}"' in entrypoint
+    assert "POLYMARKET_STATE_SNAPSHOT_INTERVAL_MS=5000" in env_example
+    assert "POLYMARKET_STATE_SNAPSHOT_INTERVAL_MS:-5000" in compose
+    assert (
+        'STATE_SNAPSHOT_INTERVAL_MS="${POLYMARKET_STATE_SNAPSHOT_INTERVAL_MS:-5000}"'
+        in entrypoint
+    )
+    assert "--state-snapshot-interval-ms" in entrypoint
+    assert '"$STATE_SNAPSHOT_INTERVAL_MS"' in entrypoint
+
+
 def test_collector_entrypoint_enables_raw_event_journal() -> None:
     compose = (ROOT / "deploy" / "collector" / "docker-compose.yml").read_text(
         encoding="utf-8"
@@ -69,3 +93,92 @@ def test_collector_entrypoint_enables_raw_event_journal() -> None:
     assert "RAW_EVENT_DIR=" in entrypoint
     assert "--raw-event-dir" in entrypoint
     assert '"$RAW_EVENT_DIR"' in entrypoint
+
+
+def test_collector_entrypoint_enables_hot_decision_journal() -> None:
+    compose = (ROOT / "deploy" / "collector" / "docker-compose.yml").read_text(
+        encoding="utf-8"
+    )
+    entrypoint = (
+        ROOT / "deploy" / "collector" / "collector-entrypoint.sh"
+    ).read_text(encoding="utf-8")
+
+    assert "POLYMARKET_DECISION_SNAPSHOT_DIR" in compose
+    assert "DECISION_SNAPSHOT_DIR=" in entrypoint
+    assert "--decision-snapshot-dir" in entrypoint
+    assert '"$DECISION_SNAPSHOT_DIR"' in entrypoint
+
+
+def test_collector_defaults_to_three_prewarm_windows() -> None:
+    env_example = (ROOT / "deploy" / "collector" / ".env.example").read_text(
+        encoding="utf-8"
+    )
+    compose = (ROOT / "deploy" / "collector" / "docker-compose.yml").read_text(
+        encoding="utf-8"
+    )
+    entrypoint = (
+        ROOT / "deploy" / "collector" / "collector-entrypoint.sh"
+    ).read_text(encoding="utf-8")
+
+    assert "POLYMARKET_PREWARM_WINDOWS=3" in env_example
+    assert "POLYMARKET_PREWARM_WINDOWS:-3" in compose
+    assert 'PREWARM_WINDOWS="${POLYMARKET_PREWARM_WINDOWS:-3}"' in entrypoint
+
+
+def test_normalizer_sidecar_is_deployed_and_health_checked() -> None:
+    compose = (ROOT / "deploy" / "collector" / "docker-compose.yml").read_text(
+        encoding="utf-8"
+    )
+    script = (ROOT / "scripts" / "deploy.sh").read_text(encoding="utf-8")
+
+    assert "normalizer:" in compose
+    assert "deploy/normalizer/Dockerfile" in compose
+    assert "NORMALIZER_INTERVAL_SECONDS" in compose
+    assert "polymarket-engine" in compose
+    assert "--normalized-health-path" in compose
+    assert "/var/lib/polymarket/live/normalized_health.json" in compose
+    assert "up -d --build collector normalizer" in script
+    assert "--normalized-health-path" in script
+    assert "$DATA_DIR/live/normalized_health.json" in script
+
+
+def test_normalizer_hot_loop_omits_state_snapshot_backfill() -> None:
+    entrypoint = (
+        ROOT / "deploy" / "normalizer" / "normalizer-entrypoint.sh"
+    ).read_text(encoding="utf-8")
+
+    assert "run-rust-normalizer-sidecar" in entrypoint
+    assert "--include-state-snapshots" not in entrypoint
+
+
+def test_normalizer_defaults_to_tenth_second_checkpointed_cadence() -> None:
+    compose = (ROOT / "deploy" / "collector" / "docker-compose.yml").read_text(
+        encoding="utf-8"
+    )
+    entrypoint = (
+        ROOT / "deploy" / "normalizer" / "normalizer-entrypoint.sh"
+    ).read_text(encoding="utf-8")
+
+    assert "POLYMARKET_NORMALIZER_INTERVAL_SECONDS:-0.1" in compose
+    assert 'INTERVAL_SECONDS="${POLYMARKET_NORMALIZER_INTERVAL_SECONDS:-0.1}"' in entrypoint
+    assert "run-rust-normalizer-sidecar" in entrypoint
+    assert "exec polymarket-engine" in entrypoint
+    assert "while true" not in entrypoint
+    assert '--interval-seconds "$INTERVAL_SECONDS"' in entrypoint
+    assert '--normalized-health-path "$NORMALIZED_HEALTH_PATH"' in entrypoint
+
+
+def test_deploy_script_requires_running_normalizer_before_success() -> None:
+    script = (ROOT / "scripts" / "deploy.sh").read_text(encoding="utf-8")
+
+    assert "normalizer_running()" in script
+    assert "ps --services --status running normalizer" in script
+    assert "normalizer_running && normalizer_uses_sidecar && python3" in script
+
+
+def test_deploy_script_rejects_old_normalize_rust_events_normalizer() -> None:
+    script = (ROOT / "scripts" / "deploy.sh").read_text(encoding="utf-8")
+
+    assert "normalizer_uses_sidecar()" in script
+    assert "run-rust-normalizer-sidecar" in script
+    assert "normalizer_running && normalizer_uses_sidecar && python3" in script

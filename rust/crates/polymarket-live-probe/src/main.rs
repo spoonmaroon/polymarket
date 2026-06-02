@@ -8,6 +8,9 @@ use tracing::info;
 
 mod book_state;
 mod clob_ws;
+mod decision_journal;
+mod hot_decision;
+mod order_latency_probe;
 mod polymarket;
 mod prices;
 mod raw_event_journal;
@@ -50,10 +53,20 @@ struct Args {
     chainlink_cache_path: Option<PathBuf>,
     #[arg(long)]
     state_snapshot_dir: Option<PathBuf>,
+    #[arg(long, default_value_t = 5_000)]
+    state_snapshot_interval_ms: u64,
     #[arg(long)]
     raw_event_dir: Option<PathBuf>,
     #[arg(long, default_value_t = 16_384)]
     raw_event_buffer_size: usize,
+    #[arg(long)]
+    decision_snapshot_dir: Option<PathBuf>,
+    #[arg(long, default_value_t = 16_384)]
+    decision_event_buffer_size: usize,
+    #[arg(long, default_value = "https://clob-v2.polymarket.com")]
+    order_latency_probe_url: String,
+    #[arg(long, default_value_t = 10)]
+    order_latency_probe_iterations: usize,
     #[arg(long, default_value = "reports/live_probe/latest.json")]
     out: PathBuf,
 }
@@ -66,6 +79,7 @@ async fn main() -> Result<()> {
     match args.mode.as_str() {
         "probe" => run_probe(args).await,
         "state-manager" => run_state_manager(args).await,
+        "latency-probe" => run_latency_probe(args).await,
         other => Err(anyhow!("unsupported mode: {other}")),
     }
 }
@@ -194,14 +208,28 @@ async fn run_state_manager(args: Args) -> Result<()> {
     let raw_event_sink = raw_event_writer
         .as_ref()
         .map(|(sink, _handle)| sink.clone());
+    let decision_writer = args
+        .decision_snapshot_dir
+        .clone()
+        .map(|dir| {
+            decision_journal::HotDecisionSink::start(dir, args.decision_event_buffer_size)
+        });
+    let decision_sink = decision_writer
+        .as_ref()
+        .map(|(sink, _handle)| sink.clone());
     let mut timer = report::ProbeTimer::start();
     timer.mark("start");
-    let mut runtime =
-        state_manager::StateManagerRuntime::start_with_raw_events(config, raw_event_sink).await?;
-    let snapshot_journal = args
+    let mut runtime = state_manager::StateManagerRuntime::start_with_raw_events_and_hot_decisions(
+        config,
+        raw_event_sink,
+        decision_sink,
+    )
+    .await?;
+    let mut snapshot_journal = args
         .state_snapshot_dir
         .clone()
-        .map(snapshot_journal::StateSnapshotJournal::new);
+        .map(|dir| snapshot_journal::StateSnapshotJournal::new(dir).writer());
+    let mut last_state_snapshot_elapsed_ms: Option<u128> = None;
     let interval = Duration::from_millis(args.status_interval_ms);
     let deadline = if args.forever {
         None
@@ -215,16 +243,26 @@ async fn run_state_manager(args: Args) -> Result<()> {
         let snapshot = runtime.snapshot(now).await?;
         let subscriptions = runtime.subscriptions();
         let websocket_status = runtime.websocket_status(chrono::Utc::now());
+        let hot_decision_telemetry = runtime.hot_decision_telemetry();
+        let elapsed_ms = timer.elapsed_ms();
         let report = report::build_state_manager_report(report::StateManagerReportInput {
-            elapsed_ms: timer.elapsed_ms(),
+            elapsed_ms,
             snapshot,
             subscriptions,
             websocket_status,
+            hot_decision_telemetry,
         });
         report::write_state_manager_report(&args.out, &report)?;
-        if let Some(journal) = &snapshot_journal {
-            let path = journal.append(&report)?;
-            info!(path = %path.display(), "appended rust state manager snapshot");
+        if let Some(journal) = &mut snapshot_journal {
+            if state_snapshot_due(
+                elapsed_ms,
+                last_state_snapshot_elapsed_ms,
+                args.state_snapshot_interval_ms,
+            ) {
+                let path = journal.append(&report)?;
+                last_state_snapshot_elapsed_ms = Some(elapsed_ms);
+                info!(path = %path.display(), "appended rust state manager snapshot");
+            }
         }
         timer.mark("state_report_written");
         info!(
@@ -248,6 +286,28 @@ async fn run_state_manager(args: Args) -> Result<()> {
             .await
             .map_err(|error| anyhow!("raw event journal task failed: {error}"))??;
     }
+    if let Some((sink, handle)) = decision_writer {
+        drop(sink);
+        handle
+            .await
+            .map_err(|error| anyhow!("hot decision journal task failed: {error}"))??;
+    }
+    Ok(())
+}
+
+async fn run_latency_probe(args: Args) -> Result<()> {
+    let result = order_latency_probe::run_order_latency_probe(
+        &args.order_latency_probe_url,
+        args.order_latency_probe_iterations,
+    )
+    .await?;
+    report::write_order_latency_probe_report(&args.out, &result)?;
+    info!(
+        path = %args.out.display(),
+        p50_http_round_trip_ms = ?result.p50_http_round_trip_ms(),
+        p95_http_round_trip_ms = ?result.p95_http_round_trip_ms(),
+        "wrote no-auth order latency probe report"
+    );
     Ok(())
 }
 
@@ -258,9 +318,20 @@ fn parse_assets(raw: &str) -> Vec<String> {
         .collect::<Vec<_>>()
 }
 
+fn state_snapshot_due(
+    elapsed_ms: u128,
+    last_snapshot_elapsed_ms: Option<u128>,
+    interval_ms: u64,
+) -> bool {
+    let Some(last_snapshot_elapsed_ms) = last_snapshot_elapsed_ms else {
+        return true;
+    };
+    elapsed_ms.saturating_sub(last_snapshot_elapsed_ms) >= u128::from(interval_ms)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::Args;
+    use super::{Args, state_snapshot_due};
     use clap::Parser;
     use std::path::PathBuf;
 
@@ -276,6 +347,66 @@ mod tests {
 
         assert_eq!(args.raw_event_dir, Some(PathBuf::from("/tmp/raw-events")));
         assert_eq!(args.raw_event_buffer_size, 8192);
+    }
+
+    #[test]
+    fn parses_hot_decision_journal_cli_options() {
+        let args = Args::parse_from([
+            "polymarket-live-probe",
+            "--decision-snapshot-dir",
+            "/tmp/decision-states",
+            "--decision-event-buffer-size",
+            "4096",
+        ]);
+
+        assert_eq!(
+            args.decision_snapshot_dir,
+            Some(PathBuf::from("/tmp/decision-states"))
+        );
+        assert_eq!(args.decision_event_buffer_size, 4096);
+    }
+
+    #[test]
+    fn parses_state_snapshot_interval_cli_options() {
+        let default_args = Args::parse_from(["polymarket-live-probe"]);
+        assert_eq!(default_args.state_snapshot_interval_ms, 5_000);
+
+        let args = Args::parse_from([
+            "polymarket-live-probe",
+            "--state-snapshot-interval-ms",
+            "2000",
+        ]);
+
+        assert_eq!(args.state_snapshot_interval_ms, 2_000);
+    }
+
+    #[test]
+    fn state_snapshot_due_keeps_journal_slower_than_fast_status_loop() {
+        assert!(state_snapshot_due(0, None, 5_000));
+        assert!(!state_snapshot_due(250, Some(0), 5_000));
+        assert!(!state_snapshot_due(4_999, Some(0), 5_000));
+        assert!(state_snapshot_due(5_000, Some(0), 5_000));
+        assert!(state_snapshot_due(5_250, Some(250), 5_000));
+    }
+
+    #[test]
+    fn parses_order_latency_probe_cli_options() {
+        let args = Args::parse_from([
+            "polymarket-live-probe",
+            "--mode",
+            "latency-probe",
+            "--order-latency-probe-url",
+            "http://127.0.0.1:8080/health",
+            "--order-latency-probe-iterations",
+            "3",
+        ]);
+
+        assert_eq!(args.mode, "latency-probe");
+        assert_eq!(
+            args.order_latency_probe_url,
+            "http://127.0.0.1:8080/health"
+        );
+        assert_eq!(args.order_latency_probe_iterations, 3);
     }
 }
 

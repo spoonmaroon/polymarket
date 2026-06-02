@@ -1,0 +1,827 @@
+{
+  "/Users/goon/polymarket/ui/package.json": {
+    "mtime": 1779999861.482338,
+    "ast_hash": "52053e856421cd5253cebe0f287f97a1",
+    "semantic_hash": "52053e856421cd5253cebe0f287f97a1"
+  },
+  "/Users/goon/polymarket/ui/tsconfig.json": {
+    "mtime": 1779999848.622158,
+    "ast_hash": "3e406117c398f31c1e8d7c5e9744644f",
+    "semantic_hash": "3e406117c398f31c1e8d7c5e9744644f"
+  },
+  "/Users/goon/polymarket/ui/vite.config.ts": {
+    "mtime": 1779999848.6699884,
+    "ast_hash": "ea5effd26043c1f292f412678770f75b",
+    "semantic_hash": "ea5effd26043c1f292f412678770f75b"
+  },
+  "/Users/goon/polymarket/ui/src/App.tsx": {
+    "mtime": 1779999848.4659028,
+    "ast_hash": "40b15b4407f5a1109c2571e929ed2772",
+    "semantic_hash": "40b15b4407f5a1109c2571e929ed2772"
+  },
+  "/Users/goon/polymarket/ui/src/main.tsx": {
+    "mtime": 1779999848.5260653,
+    "ast_hash": "3214624e941aa1d4662eb50bd81c3c51",
+    "semantic_hash": "3214624e941aa1d4662eb50bd81c3c51"
+  },
+  "/Users/goon/polymarket/cmake-build-debug/CMakeFiles/InstallScripts.json": {
+    "mtime": 1779999889.4436848,
+    "ast_hash": "9a281076ebb5708fa1cfce342312deb5",
+    "semantic_hash": "9a281076ebb5708fa1cfce342312deb5"
+  },
+  "/Users/goon/polymarket/cmake-build-debug/CMakeFiles/4.3.2/CompilerIdCXX/CMakeCXXCompilerId.cpp": {
+    "mtime": 1779999888.9211469,
+    "ast_hash": "8424ec587a542544e2b20f8a9474b699",
+    "semantic_hash": "8424ec587a542544e2b20f8a9474b699"
+  },
+  "/Users/goon/polymarket/cmake-build-debug/CMakeFiles/4.3.2/CompilerIdCXX/apple-sdk.cpp": {
+    "mtime": 1779999889.2463756,
+    "ast_hash": "1a2580eda8341890a9441e80d604c987",
+    "semantic_hash": "1a2580eda8341890a9441e80d604c987"
+  },
+  "/Users/goon/polymarket/cmake-build-debug/CMakeFiles/probability_core.dir/compiler_depend.ts": {
+    "mtime": 1779999889.4404697,
+    "ast_hash": "4827712244ab676ed0a545bad4990ff4",
+    "semantic_hash": "4827712244ab676ed0a545bad4990ff4"
+  },
+  "/Users/goon/polymarket/deploy/collector/collector-entrypoint.sh": {
+    "mtime": 1780370547.1384416,
+    "ast_hash": "c31d9f3f7f350fc7f2efdf15a732769e",
+    "semantic_hash": "c31d9f3f7f350fc7f2efdf15a732769e"
+  },
+  "/Users/goon/polymarket/tests/test_monitor.py": {
+    "mtime": 1780344080.4588385,
+    "ast_hash": "38d383e9f20a818e2add39804a11c296",
+    "semantic_hash": "38d383e9f20a818e2add39804a11c296"
+  },
+  "/Users/goon/polymarket/tests/test_part_one_ingestion_plan.py": {
+    "mtime": 1780261002.376689,
+    "ast_hash": "9795a42cfe152337de6f19a8814e41c2",
+    "semantic_hash": "9795a42cfe152337de6f19a8814e41c2"
+  },
+  "/Users/goon/polymarket/tests/test_health.py": {
+    "mtime": 1779999787.2392638,
+    "ast_hash": "e28be7aa42be35435f65f1008274a8ef",
+    "semantic_hash": "e28be7aa42be35435f65f1008274a8ef"
+  },
+  "/Users/goon/polymarket/tests/test_cli.py": {
+    "mtime": 1780370547.156455,
+    "ast_hash": "db9676b93f159c1e575449518ec86891",
+    "semantic_hash": "db9676b93f159c1e575449518ec86891"
+  },
+  "/Users/goon/polymarket/tests/ingestion/test_polymarket_rtds.py": {
+    "mtime": 1780368458.3515818,
+    "ast_hash": "8b119baa4c6cddd02276df7c68173e6e",
+    "semantic_hash": "8b119baa4c6cddd02276df7c68173e6e"
+  },
+  "/Users/goon/polymarket/tests/ingestion/test_polymarket_clob_ws.py": {
+    "mtime": 1780368458.3513815,
+    "ast_hash": "51d3339c1eb3531db35277e7b0381e2f",
+    "semantic_hash": "51d3339c1eb3531db35277e7b0381e2f"
+  },
+  "/Users/goon/polymarket/tests/ingestion/test_contract_discovery.py": {
+    "mtime": 1780345852.8538716,
+    "ast_hash": "01900f21da8d9c032a7df7eb3d63163b",
+    "semantic_hash": "01900f21da8d9c032a7df7eb3d63163b"
+  },
+  "/Users/goon/polymarket/tests/ingestion/test_reconnect.py": {
+    "mtime": 1780270361.1175518,
+    "ast_hash": "d11cfebeecfce822af3319a82df589a9",
+    "semantic_hash": "d11cfebeecfce822af3319a82df589a9"
+  },
+  "/Users/goon/polymarket/tests/ingestion/test_polymarket_clob.py": {
+    "mtime": 1780270361.1170866,
+    "ast_hash": "2d5149ff1e213c2c2967b6fee45308a2",
+    "semantic_hash": "2d5149ff1e213c2c2967b6fee45308a2"
+  },
+  "/Users/goon/polymarket/tests/ingestion/test_live_collector.py": {
+    "mtime": 1780370547.1560693,
+    "ast_hash": "715d95083fcf621f15d905484dd097bb",
+    "semantic_hash": "715d95083fcf621f15d905484dd097bb"
+  },
+  "/Users/goon/polymarket/tests/ingestion/test_collector_events.py": {
+    "mtime": 1780270361.1165617,
+    "ast_hash": "9ea2cf2294a8e94316753696f2c42165",
+    "semantic_hash": "9ea2cf2294a8e94316753696f2c42165"
+  },
+  "/Users/goon/polymarket/tests/ingestion/test_coinbase_ws.py": {
+    "mtime": 1780263841.8346076,
+    "ast_hash": "a51ce9c3bfd009125a6d991897515f71",
+    "semantic_hash": "a51ce9c3bfd009125a6d991897515f71"
+  },
+  "/Users/goon/polymarket/tests/ingestion/test_live_collector_config.py": {
+    "mtime": 1780344080.4581993,
+    "ast_hash": "84f7d256741e63b0fb8204ecce429c99",
+    "semantic_hash": "84f7d256741e63b0fb8204ecce429c99"
+  },
+  "/Users/goon/polymarket/tests/features/test_asof_inputs.py": {
+    "mtime": 1780270361.116348,
+    "ast_hash": "f687f4a201ccd7f2f4fd0a864375d45f",
+    "semantic_hash": "f687f4a201ccd7f2f4fd0a864375d45f"
+  },
+  "/Users/goon/polymarket/tests/features/test_volatility.py": {
+    "mtime": 1780344080.4579635,
+    "ast_hash": "e1604954afecc53ad0ca79964579974e",
+    "semantic_hash": "e1604954afecc53ad0ca79964579974e"
+  },
+  "/Users/goon/polymarket/tests/features/test_state_builder.py": {
+    "mtime": 1780344080.4577696,
+    "ast_hash": "2945ffbfa298cd5d6fe02bca51933917",
+    "semantic_hash": "2945ffbfa298cd5d6fe02bca51933917"
+  },
+  "/Users/goon/polymarket/tests/storage/test_retention.py": {
+    "mtime": 1780319257.5903053,
+    "ast_hash": "ea4ee8450b258bbc723f8b54604e933b",
+    "semantic_hash": "ea4ee8450b258bbc723f8b54604e933b"
+  },
+  "/Users/goon/polymarket/tests/storage/test_duckdb_store.py": {
+    "mtime": 1780270361.1183517,
+    "ast_hash": "18aa0fb10c0e86d1b7129081b21f0494",
+    "semantic_hash": "18aa0fb10c0e86d1b7129081b21f0494"
+  },
+  "/Users/goon/polymarket/tests/storage/test_contract_rule_store.py": {
+    "mtime": 1780270361.1181285,
+    "ast_hash": "f7300fc73294069b75d78d115ef7158a",
+    "semantic_hash": "f7300fc73294069b75d78d115ef7158a"
+  },
+  "/Users/goon/polymarket/tests/storage/test_atomic.py": {
+    "mtime": 1780270361.1177344,
+    "ast_hash": "a01fff8c6b236aceb29b2f6f63a43da7",
+    "semantic_hash": "a01fff8c6b236aceb29b2f6f63a43da7"
+  },
+  "/Users/goon/polymarket/tests/storage/test_recovery.py": {
+    "mtime": 1780270361.1187768,
+    "ast_hash": "182b1b8f34ae880110a04ea28e7e5738",
+    "semantic_hash": "182b1b8f34ae880110a04ea28e7e5738"
+  },
+  "/Users/goon/polymarket/tests/storage/test_buffered_writer.py": {
+    "mtime": 1780270361.1179717,
+    "ast_hash": "6ad54954900e2d1f426802ec326b23ea",
+    "semantic_hash": "6ad54954900e2d1f426802ec326b23ea"
+  },
+  "/Users/goon/polymarket/tests/storage/test_schema.py": {
+    "mtime": 1780281983.8743558,
+    "ast_hash": "3a170665702d0a1965eac17cec335339",
+    "semantic_hash": "3a170665702d0a1965eac17cec335339"
+  },
+  "/Users/goon/polymarket/tests/storage/test_raw_writer.py": {
+    "mtime": 1780270361.1186025,
+    "ast_hash": "b2f80204f6d78e386589faf82595bbd9",
+    "semantic_hash": "b2f80204f6d78e386589faf82595bbd9"
+  },
+  "/Users/goon/polymarket/tests/storage/test_state_replay.py": {
+    "mtime": 1780344080.4584298,
+    "ast_hash": "051d078a7091b303747daa746c987e3d",
+    "semantic_hash": "051d078a7091b303747daa746c987e3d"
+  },
+  "/Users/goon/polymarket/tests/storage/test_normalized_writes.py": {
+    "mtime": 1780319257.5900605,
+    "ast_hash": "01bd1ef3445ee21ed9000c1698188578",
+    "semantic_hash": "01bd1ef3445ee21ed9000c1698188578"
+  },
+  "/Users/goon/polymarket/tests/venues/test_coinbase.py": {
+    "mtime": 1780270361.1195204,
+    "ast_hash": "2ca4e556aca4e3b30566c392a0bb95bf",
+    "semantic_hash": "2ca4e556aca4e3b30566c392a0bb95bf"
+  },
+  "/Users/goon/polymarket/tests/venues/test_polymarket.py": {
+    "mtime": 1780270361.119682,
+    "ast_hash": "9c4dcf90477e4361c6b1d4a691bb28dd",
+    "semantic_hash": "9c4dcf90477e4361c6b1d4a691bb28dd"
+  },
+  "/Users/goon/polymarket/tests/venues/test_binance.py": {
+    "mtime": 1780270361.119354,
+    "ast_hash": "5a1700e3d8c2c4a692867146187c3042",
+    "semantic_hash": "5a1700e3d8c2c4a692867146187c3042"
+  },
+  "/Users/goon/polymarket/tests/scripts/test_deploy_script.py": {
+    "mtime": 1780327343.956237,
+    "ast_hash": "104701009d964d2b4911704179fc3753",
+    "semantic_hash": "104701009d964d2b4911704179fc3753"
+  },
+  "/Users/goon/polymarket/tests/scripts/test_migrate_mac_data_to_spoon.py": {
+    "mtime": 1780320248.6783388,
+    "ast_hash": "011ee76774c08470f3dc4df94dbdf19b",
+    "semantic_hash": "011ee76774c08470f3dc4df94dbdf19b"
+  },
+  "/Users/goon/polymarket/tests/scripts/test_check_collector_status.py": {
+    "mtime": 1780326780.676202,
+    "ast_hash": "f4fbd01615effde4083f7a009c7da384",
+    "semantic_hash": "f4fbd01615effde4083f7a009c7da384"
+  },
+  "/Users/goon/polymarket/tests/domain/test_contracts.py": {
+    "mtime": 1780281983.873373,
+    "ast_hash": "83f483333732a34d7941ee4e534120dc",
+    "semantic_hash": "83f483333732a34d7941ee4e534120dc"
+  },
+  "/Users/goon/polymarket/tests/domain/test_sources.py": {
+    "mtime": 1780261002.375905,
+    "ast_hash": "d16ddd6a4a8864327c6759a677275b45",
+    "semantic_hash": "d16ddd6a4a8864327c6759a677275b45"
+  },
+  "/Users/goon/polymarket/tests/domain/test_contract_rules.py": {
+    "mtime": 1780319257.5882902,
+    "ast_hash": "78c19678912364fd78cbac893aee7f07",
+    "semantic_hash": "78c19678912364fd78cbac893aee7f07"
+  },
+  "/Users/goon/polymarket/cpp/probability_core/include/probability_core/probability_core.hpp": {
+    "mtime": 1779999787.4037166,
+    "ast_hash": "2817f80493596de50e4171c14786f9cb",
+    "semantic_hash": "2817f80493596de50e4171c14786f9cb"
+  },
+  "/Users/goon/polymarket/cpp/probability_core/src/probability_core.cpp": {
+    "mtime": 1779999787.4589176,
+    "ast_hash": "dc31fa3f113419e53d07bab04359771c",
+    "semantic_hash": "dc31fa3f113419e53d07bab04359771c"
+  },
+  "/Users/goon/polymarket/scripts/check_collector_status.py": {
+    "mtime": 1780370547.1509783,
+    "ast_hash": "9b7209fa282386a362be77ff859135e3",
+    "semantic_hash": "9b7209fa282386a362be77ff859135e3"
+  },
+  "/Users/goon/polymarket/scripts/migrate_mac_data_to_spoon.sh": {
+    "mtime": 1780320248.6781015,
+    "ast_hash": "6cf2252af391b4ab49a6730617af1f48",
+    "semantic_hash": "6cf2252af391b4ab49a6730617af1f48"
+  },
+  "/Users/goon/polymarket/scripts/deploy.sh": {
+    "mtime": 1780370754.3364272,
+    "ast_hash": "cb273529d65d18888cb8fcd8619d69fd",
+    "semantic_hash": "cb273529d65d18888cb8fcd8619d69fd"
+  },
+  "/Users/goon/polymarket/data/live/status.json": {
+    "mtime": 1780319808.1998055,
+    "ast_hash": "3ec606f6fa23aef9c66609d50a779dd0",
+    "semantic_hash": "3ec606f6fa23aef9c66609d50a779dd0"
+  },
+  "/Users/goon/polymarket/data/tmp/debug_ws_errors/status.json": {
+    "mtime": 1780310645.476529,
+    "ast_hash": "6e8197873e65fea9eb40497c56ade88d",
+    "semantic_hash": "6e8197873e65fea9eb40497c56ade88d"
+  },
+  "/Users/goon/polymarket/data/tmp/always_on_plan_smoke/status.json": {
+    "mtime": 1780308044.1782024,
+    "ast_hash": "e908dec2c4fe164e7ce0be37d617408e",
+    "semantic_hash": "e908dec2c4fe164e7ce0be37d617408e"
+  },
+  "/Users/goon/polymarket/src/polymarket_engine/monitor.py": {
+    "mtime": 1780344080.4575686,
+    "ast_hash": "2f9b5adc44447f90cecd4ec6cbb3312b",
+    "semantic_hash": "2f9b5adc44447f90cecd4ec6cbb3312b"
+  },
+  "/Users/goon/polymarket/src/polymarket_engine/__init__.py": {
+    "mtime": 1779999787.1169424,
+    "ast_hash": "99cf711d14a859fdf48a3191cbda03e6",
+    "semantic_hash": "99cf711d14a859fdf48a3191cbda03e6"
+  },
+  "/Users/goon/polymarket/src/polymarket_engine/cli.py": {
+    "mtime": 1780370547.1528044,
+    "ast_hash": "f58d201230b37e24695f6d26294026fe",
+    "semantic_hash": "f58d201230b37e24695f6d26294026fe"
+  },
+  "/Users/goon/polymarket/src/polymarket_engine/app.py": {
+    "mtime": 1779999787.1809204,
+    "ast_hash": "7dfb9a56d0d566b27b4fda866ad2d03e",
+    "semantic_hash": "7dfb9a56d0d566b27b4fda866ad2d03e"
+  },
+  "/Users/goon/polymarket/src/polymarket_engine/ingestion/reconnect.py": {
+    "mtime": 1780270361.1137133,
+    "ast_hash": "56209a3a10188778c6d6532761af7849",
+    "semantic_hash": "56209a3a10188778c6d6532761af7849"
+  },
+  "/Users/goon/polymarket/src/polymarket_engine/ingestion/runner.py": {
+    "mtime": 1780261002.3740568,
+    "ast_hash": "d77e89040b8ff1075bf25b1128e30ea6",
+    "semantic_hash": "d77e89040b8ff1075bf25b1128e30ea6"
+  },
+  "/Users/goon/polymarket/src/polymarket_engine/ingestion/collector_events.py": {
+    "mtime": 1780270361.112357,
+    "ast_hash": "176b8d526a1a42a57c9abeb66f775514",
+    "semantic_hash": "176b8d526a1a42a57c9abeb66f775514"
+  },
+  "/Users/goon/polymarket/src/polymarket_engine/ingestion/live_collector.py": {
+    "mtime": 1780370547.155157,
+    "ast_hash": "089a09976897f44f6f7ff220e04b243e",
+    "semantic_hash": "089a09976897f44f6f7ff220e04b243e"
+  },
+  "/Users/goon/polymarket/src/polymarket_engine/ingestion/contract_discovery.py": {
+    "mtime": 1780345852.8513544,
+    "ast_hash": "59dd77daec2832e4b68654dacffa8339",
+    "semantic_hash": "59dd77daec2832e4b68654dacffa8339"
+  },
+  "/Users/goon/polymarket/src/polymarket_engine/ingestion/polymarket_clob.py": {
+    "mtime": 1780270361.1130266,
+    "ast_hash": "bc44baf46c23cf7fc353733d2c861965",
+    "semantic_hash": "bc44baf46c23cf7fc353733d2c861965"
+  },
+  "/Users/goon/polymarket/src/polymarket_engine/ingestion/__init__.py": {
+    "mtime": 1780261002.3738952,
+    "ast_hash": "619748f190e78f5e2f3d2b9e71fada42",
+    "semantic_hash": "619748f190e78f5e2f3d2b9e71fada42"
+  },
+  "/Users/goon/polymarket/src/polymarket_engine/ingestion/coinbase_ws.py": {
+    "mtime": 1780270401.067915,
+    "ast_hash": "89f721404e22f81cfa16891f13919ffb",
+    "semantic_hash": "89f721404e22f81cfa16891f13919ffb"
+  },
+  "/Users/goon/polymarket/src/polymarket_engine/ingestion/polymarket_clob_ws.py": {
+    "mtime": 1780319257.587223,
+    "ast_hash": "82a9c6b904c38aff85459035cc45c152",
+    "semantic_hash": "82a9c6b904c38aff85459035cc45c152"
+  },
+  "/Users/goon/polymarket/src/polymarket_engine/ingestion/polymarket_rtds.py": {
+    "mtime": 1780326780.6754818,
+    "ast_hash": "ad574d3ed1fa7319820214a658d8fc94",
+    "semantic_hash": "ad574d3ed1fa7319820214a658d8fc94"
+  },
+  "/Users/goon/polymarket/src/polymarket_engine/features/state_replay.py": {
+    "mtime": 1780344080.4568043,
+    "ast_hash": "c5e2fc74ac5fbbff4088a106b50c8af7",
+    "semantic_hash": "c5e2fc74ac5fbbff4088a106b50c8af7"
+  },
+  "/Users/goon/polymarket/src/polymarket_engine/features/asof_inputs.py": {
+    "mtime": 1780270361.1119907,
+    "ast_hash": "df5672dc197216bdd486caec8431037c",
+    "semantic_hash": "df5672dc197216bdd486caec8431037c"
+  },
+  "/Users/goon/polymarket/src/polymarket_engine/features/__init__.py": {
+    "mtime": 1780261002.3735151,
+    "ast_hash": "46f866108742e5bea5d8e3c7d3a8b42f",
+    "semantic_hash": "46f866108742e5bea5d8e3c7d3a8b42f"
+  },
+  "/Users/goon/polymarket/src/polymarket_engine/features/state_builder.py": {
+    "mtime": 1780344080.4565823,
+    "ast_hash": "8ec44c3c19b8ad67bbc6365d15db067e",
+    "semantic_hash": "8ec44c3c19b8ad67bbc6365d15db067e"
+  },
+  "/Users/goon/polymarket/src/polymarket_engine/features/volatility.py": {
+    "mtime": 1780344080.4570217,
+    "ast_hash": "aa0cf93b6f12b9450990131bfb8c128f",
+    "semantic_hash": "aa0cf93b6f12b9450990131bfb8c128f"
+  },
+  "/Users/goon/polymarket/src/polymarket_engine/storage/recovery.py": {
+    "mtime": 1780270361.1149087,
+    "ast_hash": "9293e106e0b83b25e51f76f04d6b610f",
+    "semantic_hash": "9293e106e0b83b25e51f76f04d6b610f"
+  },
+  "/Users/goon/polymarket/src/polymarket_engine/storage/paths.py": {
+    "mtime": 1780261002.3744802,
+    "ast_hash": "fb113b75bb75f5f2daed8fd48a6360da",
+    "semantic_hash": "fb113b75bb75f5f2daed8fd48a6360da"
+  },
+  "/Users/goon/polymarket/src/polymarket_engine/storage/schema.sql": {
+    "mtime": 1780281983.8730137,
+    "ast_hash": "885f271c257e11b0deabdafe8b5d47d8",
+    "semantic_hash": "885f271c257e11b0deabdafe8b5d47d8"
+  },
+  "/Users/goon/polymarket/src/polymarket_engine/storage/__init__.py": {
+    "mtime": 1780261002.374231,
+    "ast_hash": "f9d86b267ae63ea67fd2c139bde4bac1",
+    "semantic_hash": "f9d86b267ae63ea67fd2c139bde4bac1"
+  },
+  "/Users/goon/polymarket/src/polymarket_engine/storage/raw_writer.py": {
+    "mtime": 1780270361.114731,
+    "ast_hash": "cc5d2c2474892b87a41e9c7ec31fb97a",
+    "semantic_hash": "cc5d2c2474892b87a41e9c7ec31fb97a"
+  },
+  "/Users/goon/polymarket/src/polymarket_engine/storage/retention.py": {
+    "mtime": 1780319257.5881433,
+    "ast_hash": "b746a7a168cd0601f2db697bc41c129d",
+    "semantic_hash": "b746a7a168cd0601f2db697bc41c129d"
+  },
+  "/Users/goon/polymarket/src/polymarket_engine/storage/buffered_writer.py": {
+    "mtime": 1780270361.1142519,
+    "ast_hash": "51ea6415f555d791c824d32308715f30",
+    "semantic_hash": "51ea6415f555d791c824d32308715f30"
+  },
+  "/Users/goon/polymarket/src/polymarket_engine/storage/atomic.py": {
+    "mtime": 1780270361.113992,
+    "ast_hash": "7754726ce8948424bbf830c5cea66679",
+    "semantic_hash": "7754726ce8948424bbf830c5cea66679"
+  },
+  "/Users/goon/polymarket/src/polymarket_engine/storage/duckdb_store.py": {
+    "mtime": 1780319257.5879638,
+    "ast_hash": "ef623fa64714f1e1a13f855f77bfdf8e",
+    "semantic_hash": "ef623fa64714f1e1a13f855f77bfdf8e"
+  },
+  "/Users/goon/polymarket/src/polymarket_engine/venues/polymarket.py": {
+    "mtime": 1780270361.115781,
+    "ast_hash": "c81c38ffd206893cc864caa47c8dce2c",
+    "semantic_hash": "c81c38ffd206893cc864caa47c8dce2c"
+  },
+  "/Users/goon/polymarket/src/polymarket_engine/venues/__init__.py": {
+    "mtime": 1780261002.3751583,
+    "ast_hash": "2d8d1db25a050b82a9c1d74dd655076b",
+    "semantic_hash": "2d8d1db25a050b82a9c1d74dd655076b"
+  },
+  "/Users/goon/polymarket/src/polymarket_engine/venues/coinbase.py": {
+    "mtime": 1780270361.1154845,
+    "ast_hash": "51b40411e1f14ada38a046bbcda1a589",
+    "semantic_hash": "51b40411e1f14ada38a046bbcda1a589"
+  },
+  "/Users/goon/polymarket/src/polymarket_engine/venues/binance.py": {
+    "mtime": 1780270361.1153195,
+    "ast_hash": "99aea9754d83b24c17182617fec262fe",
+    "semantic_hash": "99aea9754d83b24c17182617fec262fe"
+  },
+  "/Users/goon/polymarket/src/polymarket_engine/domain/contract_rules.py": {
+    "mtime": 1780319257.586244,
+    "ast_hash": "5fd6c341d7035b951b79c091d99c8e98",
+    "semantic_hash": "5fd6c341d7035b951b79c091d99c8e98"
+  },
+  "/Users/goon/polymarket/src/polymarket_engine/domain/market_state.py": {
+    "mtime": 1780281983.8719852,
+    "ast_hash": "8a48f31622af5063517d946608a511a2",
+    "semantic_hash": "8a48f31622af5063517d946608a511a2"
+  },
+  "/Users/goon/polymarket/src/polymarket_engine/domain/__init__.py": {
+    "mtime": 1780261002.373126,
+    "ast_hash": "a13704d9b10466fbbc189d84766f71c6",
+    "semantic_hash": "a13704d9b10466fbbc189d84766f71c6"
+  },
+  "/Users/goon/polymarket/src/polymarket_engine/domain/sources.py": {
+    "mtime": 1780319257.5864098,
+    "ast_hash": "27c5c5639bb10f2b0e4c1be869144bf2",
+    "semantic_hash": "27c5c5639bb10f2b0e4c1be869144bf2"
+  },
+  "/Users/goon/polymarket/src/polymarket_engine/domain/contracts.py": {
+    "mtime": 1780281983.8716645,
+    "ast_hash": "9b43d257282604f3fda94c3642f8902e",
+    "semantic_hash": "9b43d257282604f3fda94c3642f8902e"
+  },
+  "/Users/goon/polymarket/CMakeLists.txt": {
+    "mtime": 1779999787.351414,
+    "ast_hash": "38018e1d6cedb206bc2f61a0e2377ee4",
+    "semantic_hash": "38018e1d6cedb206bc2f61a0e2377ee4"
+  },
+  "/Users/goon/polymarket/SETUP.md": {
+    "mtime": 1779999787.5843172,
+    "ast_hash": "b0b134d88e3f4bfbd89945f98221ada7",
+    "semantic_hash": "b0b134d88e3f4bfbd89945f98221ada7"
+  },
+  "/Users/goon/polymarket/README.md": {
+    "mtime": 1780371049.1745696,
+    "ast_hash": "8f5f8103235d00f49fcf024ca027dbf4",
+    "semantic_hash": "8f5f8103235d00f49fcf024ca027dbf4"
+  },
+  "/Users/goon/polymarket/ui/index.html": {
+    "mtime": 1779999848.368597,
+    "ast_hash": "fa13c57dc60c3609ac90e4febfaa65e4",
+    "semantic_hash": "fa13c57dc60c3609ac90e4febfaa65e4"
+  },
+  "/Users/goon/polymarket/cmake-build-debug/CMakeCache.txt": {
+    "mtime": 1779999889.4386673,
+    "ast_hash": "94493003dc6cb7a783efa07afa2fc6a0",
+    "semantic_hash": "94493003dc6cb7a783efa07afa2fc6a0"
+  },
+  "/Users/goon/polymarket/cmake-build-debug/CMakeFiles/CMakeConfigureLog.yaml": {
+    "mtime": 1779999889.4385355,
+    "ast_hash": "8a0793954e1262b8c0f098235fa83cdf",
+    "semantic_hash": "8a0793954e1262b8c0f098235fa83cdf"
+  },
+  "/Users/goon/polymarket/cmake-build-debug/CMakeFiles/TargetDirectories.txt": {
+    "mtime": 1779999889.442673,
+    "ast_hash": "8cea479353e2db8a780c89444b4dcc13",
+    "semantic_hash": "8cea479353e2db8a780c89444b4dcc13"
+  },
+  "/Users/goon/polymarket/cmake-build-debug/CMakeFiles/probability_core.dir/link.txt": {
+    "mtime": 1779999889.441633,
+    "ast_hash": "9a6d3d55829e32f66a6be5ba432d2fc7",
+    "semantic_hash": "9a6d3d55829e32f66a6be5ba432d2fc7"
+  },
+  "/Users/goon/polymarket/deploy/collector/docker-compose.yml": {
+    "mtime": 1780370547.139075,
+    "ast_hash": "5767e65fc18303388740b5c7357f2035",
+    "semantic_hash": "5767e65fc18303388740b5c7357f2035"
+  },
+  "/Users/goon/polymarket/secrets/README.md": {
+    "mtime": 1779999786.9952943,
+    "ast_hash": "b469f31696395fc006165a06c94b0b5f",
+    "semantic_hash": "b469f31696395fc006165a06c94b0b5f"
+  },
+  "/Users/goon/polymarket/docs/EXTERNAL_REVIEW_PROPOSITION.md": {
+    "mtime": 1780089139.7189684,
+    "ast_hash": "f8ece611e9c321da4fc288ddb94e9963",
+    "semantic_hash": "f8ece611e9c321da4fc288ddb94e9963"
+  },
+  "/Users/goon/polymarket/docs/BINARY_CONTRACT_ENGINE_PLAN.md": {
+    "mtime": 1780326780.6741357,
+    "ast_hash": "531dfaa1b61932c11c3057c512fa69d7",
+    "semantic_hash": "531dfaa1b61932c11c3057c512fa69d7"
+  },
+  "/Users/goon/polymarket/docs/PART_ONE_DATA_CONTRACT.md": {
+    "mtime": 1780328159.569109,
+    "ast_hash": "d41dade9a074c1714e2d8204f1249a02",
+    "semantic_hash": "d41dade9a074c1714e2d8204f1249a02"
+  },
+  "/Users/goon/polymarket/docs/methodology-decisions-2026-05-29.md": {
+    "mtime": 1780133975.143712,
+    "ast_hash": "6561fbd380b73a6dee9b517148dd7531",
+    "semantic_hash": "6561fbd380b73a6dee9b517148dd7531"
+  },
+  "/Users/goon/polymarket/docs/PLAN.md": {
+    "mtime": 1780000562.5530822,
+    "ast_hash": "45b66313d5f49ae86acc5f194edf1ca3",
+    "semantic_hash": "45b66313d5f49ae86acc5f194edf1ca3"
+  },
+  "/Users/goon/polymarket/docs/SPOON_DEPLOYMENT.md": {
+    "mtime": 1780371032.6980126,
+    "ast_hash": "b83f8c3aa502d588e34b3a584316560e",
+    "semantic_hash": "b83f8c3aa502d588e34b3a584316560e"
+  },
+  "/Users/goon/polymarket/docs/PART_TWO_LIVE_COLLECTORS.md": {
+    "mtime": 1780371044.146012,
+    "ast_hash": "a9fc5aef6f07f819bbd07c726c3f61c8",
+    "semantic_hash": "a9fc5aef6f07f819bbd07c726c3f61c8"
+  },
+  "/Users/goon/polymarket/docs/superpowers/plans/2026-06-01-section-4-volatility-sigma-tau.md": {
+    "mtime": 1780319257.584956,
+    "ast_hash": "a1f332c5613c4f35eae08c74985d621c",
+    "semantic_hash": "a1f332c5613c4f35eae08c74985d621c"
+  },
+  "/Users/goon/polymarket/docs/superpowers/plans/2026-05-31-always-on-collector-monitor.md": {
+    "mtime": 1780281983.8708436,
+    "ast_hash": "10cd79b8b2066399efdbdebaf8a78e5c",
+    "semantic_hash": "10cd79b8b2066399efdbdebaf8a78e5c"
+  },
+  "/Users/goon/polymarket/docs/superpowers/plans/2026-05-31-decision-state-normalized-storage.md": {
+    "mtime": 1780281983.8711994,
+    "ast_hash": "e27a9a1e2baedf7218354ce08bf0316a",
+    "semantic_hash": "e27a9a1e2baedf7218354ce08bf0316a"
+  },
+  "/Users/goon/polymarket/docs/superpowers/plans/2026-06-01-clob-websocket-spoon-deploy-migration.md": {
+    "mtime": 1780319257.584828,
+    "ast_hash": "3bd7110445ab0a5816a49a1704af3ac0",
+    "semantic_hash": "3bd7110445ab0a5816a49a1704af3ac0"
+  },
+  "/Users/goon/polymarket/docs/superpowers/plans/2026-05-31-contract-rule-parser.md": {
+    "mtime": 1780270361.1104097,
+    "ast_hash": "3e60edf3bd697cfd28aa30dbf010be09",
+    "semantic_hash": "3e60edf3bd697cfd28aa30dbf010be09"
+  },
+  "/Users/goon/polymarket/docs/superpowers/plans/2026-05-31-part-two-live-collectors.md": {
+    "mtime": 1780263024.1878097,
+    "ast_hash": "a04d117751fa024736e6404d94f666f8",
+    "semantic_hash": "a04d117751fa024736e6404d94f666f8"
+  },
+  "/Users/goon/polymarket/docs/superpowers/plans/2026-05-31-part-one-data-sources-and-databases.md": {
+    "mtime": 1780261002.372884,
+    "ast_hash": "d13aa3cece8bf75aa11574f819073d37",
+    "semantic_hash": "d13aa3cece8bf75aa11574f819073d37"
+  },
+  "/Users/goon/polymarket/docs/superpowers/specs/2026-05-31-contract-rule-parser-design.md": {
+    "mtime": 1780270361.1106982,
+    "ast_hash": "b68257aa8c4836d828093dad2867d140",
+    "semantic_hash": "b68257aa8c4836d828093dad2867d140"
+  },
+  "/Users/goon/polymarket/.github/workflows/tests.yml": {
+    "mtime": 1780319257.5823848,
+    "ast_hash": "7c3b76f5cb4788022b4d6fb09ba34796",
+    "semantic_hash": "7c3b76f5cb4788022b4d6fb09ba34796"
+  },
+  "/Users/goon/polymarket/graphify-out/converted/BTC_Binary_Path_Probability_Incomplete_Research_Paper.before_numbering_restart_20260529_172256_217b0021.md": {
+    "mtime": 1780368594.1095655,
+    "ast_hash": "ae5ea90660709675270442930c440c66",
+    "semantic_hash": "ae5ea90660709675270442930c440c66"
+  },
+  "/Users/goon/polymarket/graphify-out/converted/BTC_Binary_Path_Probability_Incomplete_Research_Paper.before_settlement_detail_20260529_171522_455d712d.md": {
+    "mtime": 1780368594.1479046,
+    "ast_hash": "879cbf8f89aaf151dd1559a581013073",
+    "semantic_hash": "879cbf8f89aaf151dd1559a581013073"
+  },
+  "/Users/goon/polymarket/graphify-out/converted/BTC_Binary_Path_Probability_Incomplete_Research_Paper.before_live_shadow_speed_insert_20260530_587e7042.md": {
+    "mtime": 1780368594.1922257,
+    "ast_hash": "ffe8e4172da31e7522c71a8a5b032df2",
+    "semantic_hash": "ffe8e4172da31e7522c71a8a5b032df2"
+  },
+  "/Users/goon/polymarket/graphify-out/converted/BTC_Binary_Path_Probability_Incomplete_Research_Paper.before_prior_distribution_20260531_190801_d41a32ad.md": {
+    "mtime": 1780368594.2248833,
+    "ast_hash": "8a9c1cf968d89b318557ea9ad18328ab",
+    "semantic_hash": "8a9c1cf968d89b318557ea9ad18328ab"
+  },
+  "/Users/goon/polymarket/graphify-out/converted/section_4_5_4_6_rewrite_tmp_0162c398.md": {
+    "mtime": 1780368594.264121,
+    "ast_hash": "c0c7c57d4a60f8a14afc51dbd6e1c8bf",
+    "semantic_hash": "c0c7c57d4a60f8a14afc51dbd6e1c8bf"
+  },
+  "/Users/goon/polymarket/graphify-out/converted/BTC_Binary_Path_Probability_Incomplete_Research_Paper.before_contract_state_visual_20260530_8504dc27.md": {
+    "mtime": 1780368594.318959,
+    "ast_hash": "d39a33710510dfa3db645e984ea7ef18",
+    "semantic_hash": "d39a33710510dfa3db645e984ea7ef18"
+  },
+  "/Users/goon/polymarket/graphify-out/converted/BTC_Binary_Path_Probability_Incomplete_Research_Paper.before_settlement_table_fix_20260529_171650_302ab443.md": {
+    "mtime": 1780368594.3597057,
+    "ast_hash": "961457ed5a1d1163dda061da90c4b96d",
+    "semantic_hash": "961457ed5a1d1163dda061da90c4b96d"
+  },
+  "/Users/goon/polymarket/graphify-out/converted/BTC_Binary_Path_Probability_Incomplete_Research_Paper.before_section4_layout_cleanup_20260529_7d8c0e48.md": {
+    "mtime": 1780368594.3951719,
+    "ast_hash": "aac1034f5bcc0d12afc7d1e2b103c500",
+    "semantic_hash": "aac1034f5bcc0d12afc7d1e2b103c500"
+  },
+  "/Users/goon/polymarket/graphify-out/converted/BTC_Binary_Path_Probability_Incomplete_Research_Paper.before_zpath_detail_20260529_170945_4ec4a3dd.md": {
+    "mtime": 1780368594.4304254,
+    "ast_hash": "b6e386049ecdeccd7640692d2f355442",
+    "semantic_hash": "b6e386049ecdeccd7640692d2f355442"
+  },
+  "/Users/goon/polymarket/graphify-out/converted/BTC_Binary_Path_Probability_Incomplete_Research_Paper.before_noise_practical_framework_20260530_4d4d1493.md": {
+    "mtime": 1780368594.4820457,
+    "ast_hash": "f18e898bf62dad0ace22262f7d7b8bba",
+    "semantic_hash": "f18e898bf62dad0ace22262f7d7b8bba"
+  },
+  "/Users/goon/polymarket/graphify-out/converted/BTC_Binary_Path_Probability_Incomplete_Research_Paper.before_prior_distribution_20260531_190702_129f68b5.md": {
+    "mtime": 1780368594.5151355,
+    "ast_hash": "a4b3097c24c4adffe9f894b60ca8b7e3",
+    "semantic_hash": "a4b3097c24c4adffe9f894b60ca8b7e3"
+  },
+  "/Users/goon/polymarket/graphify-out/converted/BTC_Binary_Path_Probability_Incomplete_Research_Paper.before_xgb_priority_restructure_20260530_d5129298.md": {
+    "mtime": 1780368594.5560668,
+    "ast_hash": "d666a8a606d278674f636ffb5f5e1990",
+    "semantic_hash": "d666a8a606d278674f636ffb5f5e1990"
+  },
+  "/Users/goon/polymarket/graphify-out/converted/BTC_Binary_Path_Probability_Incomplete_Research_Paper.before_light_reorg_20260530_29ab5acf.md": {
+    "mtime": 1780368594.6095576,
+    "ast_hash": "808d7e7529e0cd41108777ae90e3582a",
+    "semantic_hash": "808d7e7529e0cd41108777ae90e3582a"
+  },
+  "/Users/goon/polymarket/graphify-out/converted/BTC_Binary_Path_Probability_Incomplete_Research_Paper.before_table_width_fix_20260530_17d0f848.md": {
+    "mtime": 1780368594.6520078,
+    "ast_hash": "3247f722ae8bef74541ec925e329734b",
+    "semantic_hash": "3247f722ae8bef74541ec925e329734b"
+  },
+  "/Users/goon/polymarket/graphify-out/converted/BTC_Binary_Path_Probability_Incomplete_Research_Paper.before_introduction_20260529_172040_b068d73b.md": {
+    "mtime": 1780368594.693276,
+    "ast_hash": "9b47c0f5b7a3c5c6a717d1f6a4bc9086",
+    "semantic_hash": "9b47c0f5b7a3c5c6a717d1f6a4bc9086"
+  },
+  "/Users/goon/polymarket/graphify-out/converted/BTC_Binary_Path_Probability_Incomplete_Research_Paper_d182482a.md": {
+    "mtime": 1780368594.728905,
+    "ast_hash": "45d2b797447fffe21f01b795459677bf",
+    "semantic_hash": "45d2b797447fffe21f01b795459677bf"
+  },
+  "/Users/goon/polymarket/graphify-out/converted/BTC_Binary_Path_Probability_Incomplete_Research_Paper.before_paired_probability_sections_20260529_173753_1f961c47.md": {
+    "mtime": 1780368594.7703784,
+    "ast_hash": "8c830a0fc9cc9c97fa3ac3a8bd3cfa59",
+    "semantic_hash": "8c830a0fc9cc9c97fa3ac3a8bd3cfa59"
+  },
+  "/Users/goon/polymarket/graphify-out/converted/BTC_Binary_Path_Probability_Incomplete_Research_Paper.before_monte_carlo_primary_20260530_f0ddf11a.md": {
+    "mtime": 1780368594.812404,
+    "ast_hash": "351544e74aa26738c6aff4ad5c7e4066",
+    "semantic_hash": "351544e74aa26738c6aff4ad5c7e4066"
+  },
+  "/Users/goon/polymarket/graphify-out/converted/BTC_Binary_Path_Probability_Review_Brief_bf321672.md": {
+    "mtime": 1780368594.8301072,
+    "ast_hash": "7095e80dd9cc99a0462e9445317c748c",
+    "semantic_hash": "7095e80dd9cc99a0462e9445317c748c"
+  },
+  "/Users/goon/polymarket/graphify-out/converted/BTC_Binary_Path_Probability_Incomplete_Research_Paper.before_section4_5_calc_rewrite_20260530_8aea32e3.md": {
+    "mtime": 1780368594.8588479,
+    "ast_hash": "2a6b91a2913e09e750c6db63bcd69ef8",
+    "semantic_hash": "2a6b91a2913e09e750c6db63bcd69ef8"
+  },
+  "/Users/goon/polymarket/graphify-out/converted/BTC_Binary_Path_Probability_Incomplete_Research_Paper.before_zpath_formula_reconcile_20260529_171225_de80cdf3.md": {
+    "mtime": 1780368594.8968472,
+    "ast_hash": "680eb8e674aa9da16437cb6adb1b8ead",
+    "semantic_hash": "680eb8e674aa9da16437cb6adb1b8ead"
+  },
+  "/Users/goon/polymarket/graphify-out/converted/BTC_Binary_Path_Probability_Incomplete_Research_Paper.before_section_restructure_20260529_171959_b8462648.md": {
+    "mtime": 1780368594.9368768,
+    "ast_hash": "390d4943648ee7eb77647be962026948",
+    "semantic_hash": "390d4943648ee7eb77647be962026948"
+  },
+  "/Users/goon/polymarket/graphify-out/converted/BTC_Binary_Path_Probability_Incomplete_Research_Paper.before_gex_section_c6a44180.md": {
+    "mtime": 1780368594.9576693,
+    "ast_hash": "6779ce484602725e9d149c90fac7593b",
+    "semantic_hash": "6779ce484602725e9d149c90fac7593b"
+  },
+  "/Users/goon/polymarket/graphify-out/converted/BTC_Binary_Path_Probability_Incomplete_Research_Paper.before_mc_vars_etf_plan_20260530_5d7d3414.md": {
+    "mtime": 1780368595.0117893,
+    "ast_hash": "5cc6dbac2e242b662995d067a56aa221",
+    "semantic_hash": "5cc6dbac2e242b662995d067a56aa221"
+  },
+  "/Users/goon/polymarket/reports/generated/BTC_Binary_Path_Probability_Review_Brief.pdf": {
+    "mtime": 1780089438.254032,
+    "ast_hash": "2aee12b33fd1b2354d86177acf1dc6a3",
+    "semantic_hash": "2aee12b33fd1b2354d86177acf1dc6a3"
+  },
+  "/Users/goon/polymarket/reports/generated/BTC_Binary_Path_Probability_Incomplete_Research_Paper.pdf": {
+    "mtime": 1780256402.8364182,
+    "ast_hash": "2de2f9f91b51a0fd654430932540372d",
+    "semantic_hash": "2de2f9f91b51a0fd654430932540372d"
+  },
+  "/Users/goon/polymarket/reports/generated/qa_4_5_4_6_rewrite/Polymarket idea.pdf": {
+    "mtime": 1780176437.7061095,
+    "ast_hash": "fee362ad5133085642a30d358d7d7af7",
+    "semantic_hash": "fee362ad5133085642a30d358d7d7af7"
+  },
+  "/Users/goon/polymarket/reports/generated/visual_qa_contract_state/BTC_Binary_Path_Probability_Incomplete_Research_Paper.pdf": {
+    "mtime": 1780169564.3836534,
+    "ast_hash": "8cd78d7334a4c0de4105a3aa8e9befd8",
+    "semantic_hash": "8cd78d7334a4c0de4105a3aa8e9befd8"
+  },
+  "/Users/goon/polymarket/reports/generated/qa_4_5_4_6_rewrite/page-6.png": {
+    "mtime": 1780176497.3621557,
+    "ast_hash": "7a28128ba325c13aa8864a05ca32f827",
+    "semantic_hash": "7a28128ba325c13aa8864a05ca32f827"
+  },
+  "/Users/goon/polymarket/reports/generated/qa_4_5_4_6_rewrite/page-7.png": {
+    "mtime": 1780176497.4081697,
+    "ast_hash": "1fc0c0eac974ddac2891a7ea63a6320c",
+    "semantic_hash": "1fc0c0eac974ddac2891a7ea63a6320c"
+  },
+  "/Users/goon/polymarket/reports/generated/qa_4_5_4_6_rewrite/page-5.png": {
+    "mtime": 1780176437.9393556,
+    "ast_hash": "4d262a54bc6facaefaefb1e00f300d5d",
+    "semantic_hash": "4d262a54bc6facaefaefb1e00f300d5d"
+  },
+  "/Users/goon/polymarket/reports/generated/visual_qa_contract_state/page-15.png": {
+    "mtime": 1780169634.7287827,
+    "ast_hash": "634228d0a2843968c7fe76af750a9c35",
+    "semantic_hash": "634228d0a2843968c7fe76af750a9c35"
+  },
+  "/Users/goon/polymarket/reports/generated/visual_qa_contract_state/page-14.png": {
+    "mtime": 1780169634.709575,
+    "ast_hash": "fe7627c8d4eec7a157caf3dd5b5e8ba7",
+    "semantic_hash": "fe7627c8d4eec7a157caf3dd5b5e8ba7"
+  },
+  "/Users/goon/polymarket/reports/generated/visual_qa_contract_state/page-16.png": {
+    "mtime": 1780169634.7479012,
+    "ast_hash": "3ed7ef4acceb8a5b11979d9111273f14",
+    "semantic_hash": "3ed7ef4acceb8a5b11979d9111273f14"
+  },
+  "/Users/goon/polymarket/reports/generated/visual_qa_contract_state/page-17.png": {
+    "mtime": 1780169634.764864,
+    "ast_hash": "d9ee2620fd3fb7e265c9a616117fbbc2",
+    "semantic_hash": "d9ee2620fd3fb7e265c9a616117fbbc2"
+  },
+  "/Users/goon/polymarket/reports/generated/visual_qa_contract_state/page-13.png": {
+    "mtime": 1780169634.6911242,
+    "ast_hash": "1c0b93de667154fea4c9539e639e339e",
+    "semantic_hash": "1c0b93de667154fea4c9539e639e339e"
+  },
+  "/Users/goon/polymarket/reports/generated/visual_qa_contract_state/page-12.png": {
+    "mtime": 1780169634.672169,
+    "ast_hash": "fb29442ebe8e6da95c55acb0e5b46e39",
+    "semantic_hash": "fb29442ebe8e6da95c55acb0e5b46e39"
+  },
+  "/Users/goon/polymarket/reports/generated/visual_qa_contract_state/page-10.png": {
+    "mtime": 1780169634.6333668,
+    "ast_hash": "b30853b06e345c418a1f21982ef5e72d",
+    "semantic_hash": "b30853b06e345c418a1f21982ef5e72d"
+  },
+  "/Users/goon/polymarket/reports/generated/visual_qa_contract_state/page-11.png": {
+    "mtime": 1780169634.6527588,
+    "ast_hash": "e51799d61632f01c89df71bfc63b61f4",
+    "semantic_hash": "e51799d61632f01c89df71bfc63b61f4"
+  },
+  "/Users/goon/polymarket/reports/generated/visual_qa_contract_state/page-1.png": {
+    "mtime": 1780169634.4311342,
+    "ast_hash": "09dd9bf6fd62076856512ddb3574ca68",
+    "semantic_hash": "09dd9bf6fd62076856512ddb3574ca68"
+  },
+  "/Users/goon/polymarket/reports/generated/visual_qa_contract_state/page-3.png": {
+    "mtime": 1780169634.4975286,
+    "ast_hash": "7c05a01ff19a9d829b432bdd18eb3b68",
+    "semantic_hash": "7c05a01ff19a9d829b432bdd18eb3b68"
+  },
+  "/Users/goon/polymarket/reports/generated/visual_qa_contract_state/page-2.png": {
+    "mtime": 1780169634.4770434,
+    "ast_hash": "fb27a75dca1e1f767ed8a817676c5239",
+    "semantic_hash": "fb27a75dca1e1f767ed8a817676c5239"
+  },
+  "/Users/goon/polymarket/reports/generated/visual_qa_contract_state/page-6.png": {
+    "mtime": 1780169634.5565162,
+    "ast_hash": "88fa646993dc3352c57be1fd4aed38de",
+    "semantic_hash": "88fa646993dc3352c57be1fd4aed38de"
+  },
+  "/Users/goon/polymarket/reports/generated/visual_qa_contract_state/page-7.png": {
+    "mtime": 1780169634.5746946,
+    "ast_hash": "15c91fc151047fd48dc8d6b1b29aff45",
+    "semantic_hash": "15c91fc151047fd48dc8d6b1b29aff45"
+  },
+  "/Users/goon/polymarket/reports/generated/visual_qa_contract_state/page-5.png": {
+    "mtime": 1780169634.5372357,
+    "ast_hash": "ff480291dfca6bb7590d0aef72fd6ca0",
+    "semantic_hash": "ff480291dfca6bb7590d0aef72fd6ca0"
+  },
+  "/Users/goon/polymarket/reports/generated/visual_qa_contract_state/page-4.png": {
+    "mtime": 1780169634.5179188,
+    "ast_hash": "e780f3d815029eb322fe10abf27d78e4",
+    "semantic_hash": "e780f3d815029eb322fe10abf27d78e4"
+  },
+  "/Users/goon/polymarket/reports/generated/visual_qa_contract_state/page-9.png": {
+    "mtime": 1780169634.6132848,
+    "ast_hash": "d74ecdb0b225559ce51b77ef0afaa7ff",
+    "semantic_hash": "d74ecdb0b225559ce51b77ef0afaa7ff"
+  },
+  "/Users/goon/polymarket/reports/generated/visual_qa_contract_state/page-8.png": {
+    "mtime": 1780169634.5942328,
+    "ast_hash": "726dbea98d8911064feaef5bd6777a46",
+    "semantic_hash": "726dbea98d8911064feaef5bd6777a46"
+  },
+  "/Users/goon/polymarket/reports/generated/visual_qa_contract_state/contact-sheet.png": {
+    "mtime": 1780169634.7913902,
+    "ast_hash": "4dec756f98ed92897b0046d72a116059",
+    "semantic_hash": "4dec756f98ed92897b0046d72a116059"
+  }
+}

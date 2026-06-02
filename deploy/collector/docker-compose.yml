@@ -12,16 +12,19 @@ services:
       TZ: ${POLYMARKET_DISPLAY_TZ:-America/Chicago}
       POLYMARKET_ASSETS: ${POLYMARKET_ASSETS:-BTC,ETH}
       POLYMARKET_INTERVAL: ${POLYMARKET_INTERVAL:-5m}
-      POLYMARKET_PREWARM_WINDOWS: ${POLYMARKET_PREWARM_WINDOWS:-2}
-      POLYMARKET_STATUS_INTERVAL_MS: ${POLYMARKET_STATUS_INTERVAL_MS:-1000}
+      POLYMARKET_PREWARM_WINDOWS: ${POLYMARKET_PREWARM_WINDOWS:-3}
+      POLYMARKET_STATUS_INTERVAL_MS: ${POLYMARKET_STATUS_INTERVAL_MS:-100}
       POLYMARKET_PREWARM_BEFORE_EXPIRY_MS: ${POLYMARKET_PREWARM_BEFORE_EXPIRY_MS:-30000}
       POLYMARKET_STALE_CHAINLINK_AFTER_MS: ${POLYMARKET_STALE_CHAINLINK_AFTER_MS:-5000}
       POLYMARKET_STALE_ORDERBOOK_AFTER_MS: ${POLYMARKET_STALE_ORDERBOOK_AFTER_MS:-30000}
       POLYMARKET_REST_BACKUP_INTERVAL_MS: ${POLYMARKET_REST_BACKUP_INTERVAL_MS:-15000}
       POLYMARKET_STATUS_PATH: /var/lib/polymarket/live/status.json
       POLYMARKET_STATE_SNAPSHOT_DIR: /var/lib/polymarket/raw/polymarket_state_manager/state_snapshot
+      POLYMARKET_STATE_SNAPSHOT_INTERVAL_MS: ${POLYMARKET_STATE_SNAPSHOT_INTERVAL_MS:-5000}
       POLYMARKET_RAW_EVENT_DIR: /var/lib/polymarket/raw
       POLYMARKET_RAW_EVENT_BUFFER_SIZE: ${POLYMARKET_RAW_EVENT_BUFFER_SIZE:-16384}
+      POLYMARKET_DECISION_SNAPSHOT_DIR: /var/lib/polymarket/raw
+      POLYMARKET_DECISION_EVENT_BUFFER_SIZE: ${POLYMARKET_DECISION_EVENT_BUFFER_SIZE:-16384}
     volumes:
       - ${POLYMARKET_DATA_DIR:-/home/spoon/polymarket-data}/raw:/var/lib/polymarket/raw
       - ${POLYMARKET_DATA_DIR:-/home/spoon/polymarket-data}/db:/var/lib/polymarket/db
@@ -47,6 +50,12 @@ services:
           "/var/lib/polymarket/raw",
           "--max-raw-event-age-ms",
           "30000",
+          "--normalized-health-path",
+          "/var/lib/polymarket/live/normalized_health.json",
+          "--max-normalized-health-age-ms",
+          "30000",
+          "--expected-prewarm-windows",
+          "${POLYMARKET_PREWARM_WINDOWS:-3}",
         ]
       interval: 30s
       timeout: 5s
@@ -54,3 +63,38 @@ services:
       start_period: 20s
     tmpfs:
       - /tmp
+
+  normalizer:
+    build:
+      context: ../..
+      dockerfile: deploy/normalizer/Dockerfile
+    image: polymarket-normalizer:latest
+    restart: unless-stopped
+    user: "${POLYMARKET_UID:-1000}:${POLYMARKET_GID:-1000}"
+    depends_on:
+      - collector
+    environment:
+      TZ: ${POLYMARKET_DISPLAY_TZ:-America/Chicago}
+      POLYMARKET_RAW_DIR: /var/lib/polymarket/raw
+      POLYMARKET_DUCKDB_PATH: /var/lib/polymarket/db/polymarket.duckdb
+      POLYMARKET_LIVE_DIR: /var/lib/polymarket/live
+      POLYMARKET_STATUS_PATH: /var/lib/polymarket/live/status.json
+      POLYMARKET_NORMALIZED_HEALTH_PATH: /var/lib/polymarket/live/normalized_health.json
+      POLYMARKET_NORMALIZER_INTERVAL_SECONDS: ${POLYMARKET_NORMALIZER_INTERVAL_SECONDS:-0.1}
+    volumes:
+      - ${POLYMARKET_DATA_DIR:-/home/spoon/polymarket-data}/raw:/var/lib/polymarket/raw
+      - ${POLYMARKET_DATA_DIR:-/home/spoon/polymarket-data}/db:/var/lib/polymarket/db
+      - ${POLYMARKET_DATA_DIR:-/home/spoon/polymarket-data}/live:/var/lib/polymarket/live
+      - ${POLYMARKET_DATA_DIR:-/home/spoon/polymarket-data}/logs:/var/lib/polymarket/logs
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "sh",
+          "-c",
+          "command -v polymarket-engine >/dev/null && python -c \"import json, os, time; p='/var/lib/polymarket/live/normalized_health.json'; payload=json.load(open(p)); assert payload['schema_version']=='polymarket-normalized-health-v1'; assert time.time()-os.stat(p).st_mtime < 30\"",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s

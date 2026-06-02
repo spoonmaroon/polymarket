@@ -13,6 +13,23 @@ pub struct LiveBookState {
     inner: Arc<RwLock<HashMap<String, NormalizedOrderBook>>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BookUpdateOutcome {
+    MissingBook,
+    Unchanged,
+    Updated,
+}
+
+impl BookUpdateOutcome {
+    pub fn is_missing_book(self) -> bool {
+        matches!(self, Self::MissingBook)
+    }
+
+    pub fn is_updated(self) -> bool {
+        matches!(self, Self::Updated)
+    }
+}
+
 impl LiveBookState {
     pub async fn upsert_book(&self, book: NormalizedOrderBook) {
         let mut inner = self.inner.write().expect("live book state lock poisoned");
@@ -27,22 +44,42 @@ impl LiveBookState {
         spread: Decimal,
         event_ts: DateTime<Utc>,
         observed_ts: DateTime<Utc>,
-    ) -> Result<bool> {
+    ) -> Result<BookUpdateOutcome> {
         let mut inner = self.inner.write().expect("live book state lock poisoned");
         let Some(book) = inner.get_mut(token_id) else {
-            return Ok(false);
+            return Ok(BookUpdateOutcome::MissingBook);
         };
+        if book.best_bid == Some(best_bid)
+            && book.best_ask == Some(best_ask)
+            && book.spread == Some(spread)
+            && book.event_ts == event_ts
+        {
+            return Ok(BookUpdateOutcome::Unchanged);
+        }
         book.best_bid = Some(best_bid);
         book.best_ask = Some(best_ask);
         book.spread = Some(spread);
         book.event_ts = event_ts;
         book.observed_ts = observed_ts;
-        Ok(true)
+        Ok(BookUpdateOutcome::Updated)
     }
 
     pub async fn snapshot(&self) -> Vec<NormalizedOrderBook> {
         let inner = self.inner.read().expect("live book state lock poisoned");
         let mut books = inner.values().cloned().collect::<Vec<_>>();
+        books.sort_by(|left, right| left.token_id.cmp(&right.token_id));
+        books
+    }
+
+    pub async fn snapshot_for_token_ids<'a, I>(&self, token_ids: I) -> Vec<NormalizedOrderBook>
+    where
+        I: IntoIterator<Item = &'a str>,
+    {
+        let inner = self.inner.read().expect("live book state lock poisoned");
+        let mut books = token_ids
+            .into_iter()
+            .filter_map(|token_id| inner.get(token_id).cloned())
+            .collect::<Vec<_>>();
         books.sort_by(|left, right| left.token_id.cmp(&right.token_id));
         books
     }
@@ -135,7 +172,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(applied);
+        assert_eq!(applied, BookUpdateOutcome::Updated);
         let snapshot = state.snapshot().await;
         assert_eq!(snapshot[0].asset, "BTC");
         assert_eq!(snapshot[0].side, "UP");
@@ -144,6 +181,56 @@ mod tests {
         assert_eq!(snapshot[0].best_ask, Some(Decimal::new(54, 2)));
         assert_eq!(snapshot[0].spread, Some(Decimal::new(2, 2)));
         assert_eq!(snapshot[0].event_ts, ts(1));
+    }
+
+    #[tokio::test]
+    async fn top_of_book_update_ignores_duplicate_market_state() {
+        let state = LiveBookState::default();
+        state.upsert_book(sample_book()).await;
+
+        let first = state
+            .apply_top_of_book(
+                "token-1",
+                Decimal::new(52, 2),
+                Decimal::new(54, 2),
+                Decimal::new(2, 2),
+                ts(1),
+                ts(1),
+            )
+            .await
+            .unwrap();
+        let duplicate = state
+            .apply_top_of_book(
+                "token-1",
+                Decimal::new(52, 2),
+                Decimal::new(54, 2),
+                Decimal::new(2, 2),
+                ts(1),
+                ts(2),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(first, BookUpdateOutcome::Updated);
+        assert_eq!(duplicate, BookUpdateOutcome::Unchanged);
+        let snapshot = state.snapshot().await;
+        assert_eq!(snapshot[0].observed_ts, ts(1));
+    }
+
+    #[tokio::test]
+    async fn snapshot_for_token_ids_clones_only_requested_books() {
+        let state = LiveBookState::default();
+        let mut first = sample_book();
+        first.token_id = "token-1".to_owned();
+        let mut second = sample_book();
+        second.token_id = "token-2".to_owned();
+        state.upsert_book(first).await;
+        state.upsert_book(second).await;
+
+        let snapshot = state.snapshot_for_token_ids(["token-2"]).await;
+
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].token_id, "token-2");
     }
 
     #[tokio::test]

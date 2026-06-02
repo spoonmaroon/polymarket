@@ -47,7 +47,7 @@ The Rust state-manager is the active read-only runtime. It uses the official
 Polymarket Rust SDK to keep BTC/ETH 5m current, next, and next-next contract
 windows warm, subscribe to CLOB WebSocket top-of-book updates, collect
 Chainlink RTDS BTC/USD and ETH/USD reference ticks, track WebSocket status, and
-write an atomic health/status report.
+write an atomic health/status report plus append-only raw event journals.
 
 The active deployment is intentionally 5m-only for now. 15m remains part of
 the research plan, but it is not part of the current always-on Rust collector.
@@ -69,6 +69,30 @@ Verify:
 
 ```bash
 python3 scripts/verify_state_manager_report.py reports/live_probe/state_manager.json
+```
+
+Normalize persisted Rust raw journals into DuckDB for replay/research:
+
+```bash
+uv run polymarket-engine normalize-rust-events \
+  --raw-root data/raw \
+  --duckdb-path data/db/polymarket.duckdb
+```
+
+Build current as-of `DecisionState` snapshots from normalized rows:
+
+```bash
+uv run polymarket-engine build-current-decision-states \
+  --duckdb-path data/db/polymarket.duckdb \
+  --status-path data/live/status.json
+```
+
+Write normalized DuckDB table health for operators after snapshot building:
+
+```bash
+uv run polymarket-engine write-normalized-health \
+  --duckdb-path data/db/polymarket.duckdb \
+  --out data/live/normalized_health.json
 ```
 
 ## Read First

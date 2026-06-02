@@ -23,6 +23,7 @@ def test_schema_applies_to_empty_database(tmp_path: Path) -> None:
     assert {
         "ops.ingest_files",
         "ops.ingest_checkpoints",
+        "ops.raw_file_checkpoints",
         "ops.retention_manifests",
         "core.contracts",
         "core.contract_rules",
@@ -30,6 +31,7 @@ def test_schema_applies_to_empty_database(tmp_path: Path) -> None:
         "core.orderbook_snapshots",
         "features.asof_state_inputs",
         "features.decision_snapshots",
+        "features.probability_outputs",
         "validation.contract_labels",
         "validation.decision_labels",
     }.issubset(tables)

@@ -2,10 +2,13 @@ use anyhow::{Result, anyhow};
 use chrono::{DateTime, Datelike, Timelike, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::io::Write;
+use std::fs::File;
+use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+
+const RAW_EVENT_SINK_BATCH_LIMIT: usize = 1024;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RawEventRecord {
@@ -28,18 +31,17 @@ impl RawEventJournal {
         Self { root }
     }
 
-    pub fn append(&self, event: &RawEventRecord) -> Result<PathBuf> {
-        let path = self.partition_path(event);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+    pub fn writer(&self) -> RawEventJournalWriter {
+        RawEventJournalWriter {
+            journal: self.clone(),
+            open_path: None,
+            file: None,
         }
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)?;
-        serde_json::to_writer(&mut file, event)?;
-        file.write_all(b"\n")?;
-        Ok(path)
+    }
+
+    #[allow(dead_code)]
+    pub fn append(&self, event: &RawEventRecord) -> Result<PathBuf> {
+        self.writer().append(event)
     }
 
     fn partition_path(&self, event: &RawEventRecord) -> PathBuf {
@@ -58,6 +60,68 @@ impl RawEventJournal {
     }
 }
 
+pub struct RawEventJournalWriter {
+    journal: RawEventJournal,
+    open_path: Option<PathBuf>,
+    file: Option<BufWriter<File>>,
+}
+
+impl RawEventJournalWriter {
+    pub fn append(&mut self, event: &RawEventRecord) -> Result<PathBuf> {
+        let path = self.append_buffered(event)?;
+        self.flush()?;
+        Ok(path)
+    }
+
+    fn append_buffered(&mut self, event: &RawEventRecord) -> Result<PathBuf> {
+        let path = self.journal.partition_path(event);
+        if self.open_path.as_ref() != Some(&path) {
+            self.flush()?;
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let file =
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&path)?;
+            self.file = Some(BufWriter::new(file));
+            self.open_path = Some(path.clone());
+        }
+
+        let file = self
+            .file
+            .as_mut()
+            .expect("raw event journal writer opened file");
+        write_raw_event_jsonl_line(file, event)?;
+        Ok(path)
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        if let Some(file) = &mut self.file {
+            file.flush()?;
+        }
+        Ok(())
+    }
+}
+
+fn write_raw_event_jsonl_line<W: Write>(writer: &mut W, event: &RawEventRecord) -> Result<()> {
+    serde_json::to_writer(&mut *writer, event)?;
+    writer.write_all(b"\n")?;
+    Ok(())
+}
+
+fn write_raw_event_jsonl_batch<W: Write>(
+    writer: &mut W,
+    events: &[RawEventRecord],
+) -> Result<()> {
+    for event in events {
+        write_raw_event_jsonl_line(writer, event)?;
+    }
+    writer.flush()?;
+    Ok(())
+}
+
 #[derive(Clone)]
 pub struct RawEventSink {
     sender: mpsc::Sender<RawEventRecord>,
@@ -66,11 +130,21 @@ pub struct RawEventSink {
 impl RawEventSink {
     pub fn start(root: PathBuf, buffer_size: usize) -> (Self, JoinHandle<Result<()>>) {
         let (sender, mut receiver) = mpsc::channel(buffer_size);
-        let journal = RawEventJournal::new(root);
+        let mut journal = RawEventJournal::new(root).writer();
         let handle = tokio::spawn(async move {
             while let Some(event) = receiver.recv().await {
-                journal.append(&event)?;
+                journal.append_buffered(&event)?;
+                let mut drained = 1;
+                while drained < RAW_EVENT_SINK_BATCH_LIMIT {
+                    let Ok(event) = receiver.try_recv() else {
+                        break;
+                    };
+                    journal.append_buffered(&event)?;
+                    drained += 1;
+                }
+                journal.flush()?;
             }
+            journal.flush()?;
             Ok(())
         });
         (Self { sender }, handle)
@@ -85,9 +159,13 @@ impl RawEventSink {
 
 #[cfg(test)]
 mod tests {
-    use crate::raw_event_journal::{RawEventJournal, RawEventRecord, RawEventSink};
+    use crate::raw_event_journal::{
+        RawEventJournal, RawEventRecord, RawEventSink, write_raw_event_jsonl_batch,
+        write_raw_event_jsonl_line,
+    };
     use chrono::{TimeZone, Utc};
     use serde_json::json;
+    use std::io::{BufWriter, LineWriter, Write};
 
     #[test]
     fn appends_raw_events_to_source_stream_hour_partition() {
@@ -122,6 +200,96 @@ mod tests {
         assert_eq!(row["event_ts"], "2026-06-01T08:26:40Z");
         assert_eq!(row["observed_ts"], "2026-06-01T08:26:41Z");
         assert_eq!(row["payload"]["value"], "70000.1");
+    }
+
+    #[test]
+    fn streaming_writer_reuses_current_partition_and_rolls_hours() {
+        let root = temp_root("streaming-writer");
+        let journal = RawEventJournal::new(root.clone());
+        let first = RawEventRecord {
+            source_key: "polymarket_clob_market_ws".to_owned(),
+            stream_key: "best_bid_ask".to_owned(),
+            symbol: "token-1".to_owned(),
+            event_type: "best_bid_ask".to_owned(),
+            event_ts: Utc.timestamp_opt(1_780_302_400, 0).unwrap(),
+            observed_ts: Utc.timestamp_opt(1_780_302_401, 0).unwrap(),
+            payload: json!({"seq": 1}),
+        };
+        let mut second = first.clone();
+        second.observed_ts = Utc.timestamp_opt(1_780_302_402, 0).unwrap();
+        second.payload = json!({"seq": 2});
+        let mut next_hour = first.clone();
+        next_hour.event_ts = Utc.timestamp_opt(1_780_306_000, 0).unwrap();
+        next_hour.observed_ts = Utc.timestamp_opt(1_780_306_001, 0).unwrap();
+        next_hour.payload = json!({"seq": 3});
+
+        let mut writer = journal.writer();
+        let first_path = writer.append(&first).unwrap();
+        let second_path = writer.append(&second).unwrap();
+        let next_hour_path = writer.append(&next_hour).unwrap();
+
+        assert_eq!(first_path, second_path);
+        assert_ne!(first_path, next_hour_path);
+        let first_hour_lines = std::fs::read_to_string(first_path).unwrap();
+        assert_eq!(first_hour_lines.lines().count(), 2);
+        assert!(first_hour_lines.contains("\"seq\":1"));
+        assert!(first_hour_lines.contains("\"seq\":2"));
+        let next_hour_lines = std::fs::read_to_string(next_hour_path).unwrap();
+        assert_eq!(next_hour_lines.lines().count(), 1);
+        assert!(next_hour_lines.contains("\"seq\":3"));
+    }
+
+    #[test]
+    fn raw_event_jsonl_line_is_coalesced_until_newline() {
+        let event = RawEventRecord {
+            source_key: "polymarket_clob_market_ws".to_owned(),
+            stream_key: "best_bid_ask".to_owned(),
+            symbol: "token-1".to_owned(),
+            event_type: "best_bid_ask".to_owned(),
+            event_ts: Utc.timestamp_opt(1_780_302_400, 0).unwrap(),
+            observed_ts: Utc.timestamp_opt(1_780_302_401, 0).unwrap(),
+            payload: json!({"best_bid": "0.49", "best_ask": "0.51"}),
+        };
+        let mut inner = CountingWriter::default();
+        {
+            let mut writer = LineWriter::new(&mut inner);
+            write_raw_event_jsonl_line(&mut writer, &event).unwrap();
+        }
+
+        assert_eq!(inner.write_calls, 1);
+        let raw = String::from_utf8(inner.bytes).unwrap();
+        assert!(raw.ends_with('\n'));
+        let row: serde_json::Value = serde_json::from_str(raw.trim_end()).unwrap();
+        assert_eq!(row["source_key"], "polymarket_clob_market_ws");
+        assert_eq!(row["payload"]["best_bid"], "0.49");
+    }
+
+    #[test]
+    fn raw_event_jsonl_batch_flushes_multiple_rows_once() {
+        let first = RawEventRecord {
+            source_key: "polymarket_clob_market_ws".to_owned(),
+            stream_key: "best_bid_ask".to_owned(),
+            symbol: "token-1".to_owned(),
+            event_type: "best_bid_ask".to_owned(),
+            event_ts: Utc.timestamp_opt(1_780_302_400, 0).unwrap(),
+            observed_ts: Utc.timestamp_opt(1_780_302_401, 0).unwrap(),
+            payload: json!({"best_bid": "0.49", "best_ask": "0.51"}),
+        };
+        let mut second = first.clone();
+        second.symbol = "token-2".to_owned();
+        second.payload = json!({"best_bid": "0.39", "best_ask": "0.41"});
+        let mut inner = CountingWriter::default();
+        {
+            let mut writer = BufWriter::new(&mut inner);
+            write_raw_event_jsonl_batch(&mut writer, &[first, second]).unwrap();
+        }
+
+        assert_eq!(inner.write_calls, 1);
+        let raw = String::from_utf8(inner.bytes).unwrap();
+        let rows = raw.lines().collect::<Vec<_>>();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(serde_json::from_str::<serde_json::Value>(rows[0]).unwrap()["symbol"], "token-1");
+        assert_eq!(serde_json::from_str::<serde_json::Value>(rows[1]).unwrap()["symbol"], "token-2");
     }
 
     #[tokio::test]
@@ -165,5 +333,23 @@ mod tests {
             std::fs::remove_dir_all(&root).unwrap();
         }
         root
+    }
+
+    #[derive(Default)]
+    struct CountingWriter {
+        bytes: Vec<u8>,
+        write_calls: usize,
+    }
+
+    impl Write for CountingWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.write_calls += 1;
+            self.bytes.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
     }
 }

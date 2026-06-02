@@ -3,11 +3,29 @@ use chrono::{DateTime, Utc};
 use polymarket_runtime_types::{
     FeedFreshness, NormalizedOrderBook, NormalizedPriceTick, WarmStateSnapshot, WarmedContract,
 };
+#[cfg(test)]
+use std::cell::Cell;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, RwLock};
 use std::time::Duration as StdDuration;
+use tokio::task::JoinHandle;
 
+use crate::decision_journal::HotDecisionSink;
+use crate::hot_decision::{
+    HotDecisionBuilder, HotDecisionConfig, HotDecisionTelemetry, HotDecisionTelemetrySnapshot,
+    HotPathEvent, HotPathEventSink,
+};
 use crate::raw_event_journal::RawEventSink;
 use crate::report::{StateManagerSubscription, WebSocketStatus};
 use crate::{book_state::LiveBookState, clob_ws, polymarket, prices, windows};
+
+type SharedWarmedContracts = Arc<RwLock<Vec<WarmedContract>>>;
+
+#[cfg(test)]
+thread_local! {
+    static MISSING_ORDERBOOK_SCAN_COUNT: Cell<usize> = const { Cell::new(0) };
+    static SNAPSHOT_WARMED_SCAN_COUNT: Cell<usize> = const { Cell::new(0) };
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StateManagerConfig {
@@ -25,10 +43,21 @@ pub struct StateManagerRuntime {
     latest_prices: prices::LatestPrices,
     book_state: LiveBookState,
     orderbook_streams: clob_ws::BestBidAskStreamManager,
-    warmed: Vec<WarmedContract>,
+    warmed: SharedWarmedContracts,
+    market_tokens: Vec<polymarket::MarketToken>,
     token_ids: Vec<String>,
+    subscriptions: Vec<StateManagerSubscription>,
     last_refresh: DateTime<Utc>,
     chainlink_streams: prices::ChainlinkStreamManager,
+    hot_decision_worker: Option<JoinHandle<Result<()>>>,
+    hot_decision_telemetry: Option<HotDecisionTelemetry>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RefreshAction {
+    None,
+    RestBackup,
+    ContractRefresh,
 }
 
 impl StateManagerRuntime {
@@ -40,12 +69,41 @@ impl StateManagerRuntime {
         config: StateManagerConfig,
         raw_event_sink: Option<RawEventSink>,
     ) -> Result<Self> {
+        Self::start_with_raw_events_and_hot_decisions(config, raw_event_sink, None).await
+    }
+
+    pub async fn start_with_raw_events_and_hot_decisions(
+        config: StateManagerConfig,
+        raw_event_sink: Option<RawEventSink>,
+        decision_sink: Option<HotDecisionSink>,
+    ) -> Result<Self> {
+        let runtime_started_at = Utc::now();
         let latest_prices = prices::LatestPrices::default();
         let book_state = LiveBookState::default();
+        let warmed = Arc::new(RwLock::new(Vec::new()));
+        let hot_decision_telemetry = decision_sink
+            .as_ref()
+            .map(|_| HotDecisionTelemetry::default());
+        let (hot_event_sink, hot_event_receiver) =
+            HotPathEventSink::channel_with_telemetry(16_384, hot_decision_telemetry.clone());
+        let telemetry_for_worker = hot_decision_telemetry.clone();
+        let hot_decision_worker = decision_sink.map(|sink| {
+            start_hot_decision_worker(
+                hot_decision_config_for_runtime_start(runtime_started_at),
+                latest_prices.clone(),
+                book_state.clone(),
+                warmed.clone(),
+                hot_event_receiver,
+                sink,
+                telemetry_for_worker.expect("hot decision telemetry missing for worker"),
+            )
+        });
+        let hot_event_sink = hot_decision_worker.as_ref().map(|_| hot_event_sink);
         let chainlink_streams = prices::ChainlinkStreamManager::start_with_raw_events(
             chainlink_symbols_for_assets(&config.assets),
             latest_prices.clone(),
             raw_event_sink.clone(),
+            hot_event_sink.clone(),
         );
         let mut runtime = Self {
             config,
@@ -53,39 +111,54 @@ impl StateManagerRuntime {
             orderbook_streams: clob_ws::BestBidAskStreamManager::new_with_raw_events(
                 book_state.clone(),
                 raw_event_sink,
+                hot_event_sink,
             ),
             book_state,
-            warmed: Vec::new(),
+            warmed,
+            market_tokens: Vec::new(),
             token_ids: Vec::new(),
+            subscriptions: Vec::new(),
             last_refresh: Utc::now(),
             chainlink_streams,
+            hot_decision_worker,
+            hot_decision_telemetry,
         };
         runtime.refresh_contracts().await?;
         Ok(runtime)
     }
 
     pub async fn maybe_refresh(&mut self, now: DateTime<Utc>) -> Result<()> {
-        if self.needs_contract_refresh(now) || self.needs_rest_backup(now) {
-            self.refresh_contracts().await?;
+        match self.refresh_action(now) {
+            RefreshAction::ContractRefresh => self.refresh_contracts().await?,
+            RefreshAction::RestBackup => self.refresh_rest_backup(now).await?,
+            RefreshAction::None => {}
         }
         Ok(())
     }
 
     pub async fn snapshot(&self, _now: DateTime<Utc>) -> Result<WarmStateSnapshot> {
+        let warmed = self
+            .warmed
+            .read()
+            .expect("warmed contracts lock poisoned")
+            .clone();
         let chainlink_prices = self.latest_prices.snapshot().await;
-        let orderbooks = orderbooks_for_warmed(self.book_state.snapshot().await, &self.warmed);
+        let orderbooks = self
+            .book_state
+            .snapshot_for_token_ids(self.token_ids.iter().map(String::as_str))
+            .await;
         let snapshot_now = Utc::now();
         build_snapshot_from_warmed(
             snapshot_now,
             &self.config,
-            &self.warmed,
+            &warmed,
             chainlink_prices,
             orderbooks,
         )
     }
 
     pub fn subscriptions(&self) -> Vec<StateManagerSubscription> {
-        subscriptions_from_warmed_contracts(&self.warmed)
+        self.subscriptions.clone()
     }
 
     pub fn websocket_status(&self, now: DateTime<Utc>) -> Vec<WebSocketStatus> {
@@ -95,9 +168,18 @@ impl StateManagerRuntime {
         ]
     }
 
+    pub fn hot_decision_telemetry(&self) -> Option<HotDecisionTelemetrySnapshot> {
+        self.hot_decision_telemetry
+            .as_ref()
+            .map(HotDecisionTelemetry::snapshot)
+    }
+
     pub fn shutdown(&mut self) {
         self.chainlink_streams.shutdown();
         self.orderbook_streams.shutdown();
+        if let Some(worker) = self.hot_decision_worker.take() {
+            worker.abort();
+        }
     }
 
     async fn refresh_contracts(&mut self) -> Result<()> {
@@ -127,27 +209,55 @@ impl StateManagerRuntime {
             .collect::<Vec<_>>();
         token_ids.sort();
         token_ids.dedup();
+        let subscriptions = subscriptions_from_warmed_contracts(&warmed);
 
+        *self.warmed.write().expect("warmed contracts lock poisoned") = warmed;
         self.orderbook_streams.update_tokens(&token_ids)?;
+        self.market_tokens = tokens;
         self.token_ids = token_ids;
+        self.subscriptions = subscriptions;
 
-        self.warmed = warmed;
         self.last_refresh = now;
         Ok(())
     }
 
+    async fn refresh_rest_backup(&mut self, now: DateTime<Utc>) -> Result<()> {
+        if self.market_tokens.is_empty() {
+            self.refresh_contracts().await?;
+            return Ok(());
+        }
+        for book in polymarket::fetch_orderbooks(&self.market_tokens).await? {
+            self.book_state.upsert_book(book).await;
+        }
+        self.last_refresh = now;
+        Ok(())
+    }
+
+    fn refresh_action(&self, now: DateTime<Utc>) -> RefreshAction {
+        if self.needs_contract_refresh(now) {
+            RefreshAction::ContractRefresh
+        } else if self.needs_rest_backup(now) {
+            RefreshAction::RestBackup
+        } else {
+            RefreshAction::None
+        }
+    }
+
     fn needs_contract_refresh(&self, now: DateTime<Utc>) -> bool {
-        if self.warmed.is_empty() {
+        let warmed = self
+            .warmed
+            .read()
+            .expect("warmed contracts lock poisoned");
+        if warmed.is_empty() {
             return true;
         }
+        let active_contracts_by_asset = active_warmed_contracts_by_asset(now, &warmed);
         self.config.assets.iter().any(|asset| {
-            let mut asset_contracts = self
-                .warmed
-                .iter()
-                .filter(|contract| contract.window.asset == asset.to_ascii_uppercase())
-                .filter(|contract| contract.window.end_ts > now)
-                .collect::<Vec<_>>();
-            asset_contracts.sort_by_key(|contract| contract.window.start_ts);
+            let asset_key = asset.to_ascii_uppercase();
+            let asset_contracts = active_contracts_by_asset
+                .get(asset_key.as_str())
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
             asset_contracts.first().is_none_or(|contract| {
                 contract
                     .window
@@ -168,6 +278,62 @@ impl StateManagerRuntime {
     }
 }
 
+fn hot_decision_config_for_runtime_start(runtime_started_at: DateTime<Utc>) -> HotDecisionConfig {
+    HotDecisionConfig {
+        restart_started_at: Some(runtime_started_at),
+        ..HotDecisionConfig::default()
+    }
+}
+
+fn start_hot_decision_worker(
+    config: HotDecisionConfig,
+    latest_prices: prices::LatestPrices,
+    book_state: LiveBookState,
+    warmed: SharedWarmedContracts,
+    mut receiver: tokio::sync::mpsc::Receiver<HotPathEvent>,
+    decision_sink: HotDecisionSink,
+    telemetry: HotDecisionTelemetry,
+) -> JoinHandle<Result<()>> {
+    tokio::spawn(async move {
+        let builder = HotDecisionBuilder::new(config);
+        while let Some(event) = receiver.recv().await {
+            let asof_ts = Utc::now();
+            let warmed_snapshot = {
+                let warmed = warmed.read().expect("warmed contracts lock poisoned");
+                hot_event_warmed_contracts(&event, &warmed, asof_ts)
+            };
+            let price_assets = hot_event_price_assets(&event, &warmed_snapshot);
+            let prices = latest_prices
+                .history_snapshot_for_assets(price_assets.iter().map(String::as_str))
+                .await;
+            let orderbook_token_ids =
+                hot_event_orderbook_token_ids(&event, &warmed_snapshot, asof_ts);
+            let orderbooks = book_state.snapshot_for_token_ids(orderbook_token_ids).await;
+            for state in
+                builder.build_for_event(&event, &warmed_snapshot, &prices, &orderbooks, asof_ts)
+            {
+                let state_asof_ts = state.asof_ts;
+                let observed_to_state_us = state.latency.observed_to_state_us;
+                if let Err(error) = decision_sink.try_record(state) {
+                    telemetry.record_state_persist_result(
+                        state_asof_ts,
+                        observed_to_state_us,
+                        false,
+                    );
+                    tracing::warn!(error = %error, "dropped hot decision state before persistence");
+                } else {
+                    telemetry.record_state_persist_result(
+                        state_asof_ts,
+                        observed_to_state_us,
+                        true,
+                    );
+                }
+            }
+        }
+        Ok(())
+    })
+}
+
 pub fn build_snapshot_from_warmed(
     now: DateTime<Utc>,
     config: &StateManagerConfig,
@@ -179,15 +345,17 @@ pub fn build_snapshot_from_warmed(
     let mut next = Vec::new();
     let mut next_next = Vec::new();
     let mut health_flags = Vec::new();
+    let active_contracts_by_asset = active_warmed_contracts_by_asset(now, warmed_contracts);
+    let mut current_refs = Vec::new();
+    let mut next_refs = Vec::new();
+    let mut next_next_refs = Vec::new();
 
     for asset in &config.assets {
-        let mut asset_contracts = warmed_contracts
-            .iter()
-            .filter(|contract| contract.window.asset == asset.to_ascii_uppercase())
-            .filter(|contract| contract.window.end_ts > now)
-            .cloned()
-            .collect::<Vec<_>>();
-        asset_contracts.sort_by_key(|contract| contract.window.start_ts);
+        let asset_key = asset.to_ascii_uppercase();
+        let asset_contracts = active_contracts_by_asset
+            .get(asset_key.as_str())
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
 
         if let Some(contract) = asset_contracts.first() {
             let remaining_ms = contract
@@ -203,13 +371,16 @@ pub fn build_snapshot_from_warmed(
         }
 
         if let Some(contract) = asset_contracts.first() {
-            current.push(contract.clone());
+            current_refs.push(*contract);
+            current.push((*contract).clone());
         }
         if let Some(contract) = asset_contracts.get(1) {
-            next.push(contract.clone());
+            next_refs.push(*contract);
+            next.push((*contract).clone());
         }
         if let Some(contract) = asset_contracts.get(2) {
-            next_next.push(contract.clone());
+            next_next_refs.push(*contract);
+            next_next.push((*contract).clone());
         }
     }
 
@@ -223,9 +394,10 @@ pub fn build_snapshot_from_warmed(
     add_missing_feed_flags(
         config,
         &chainlink_prices,
-        [&current, &next, &next_next]
+        [&current_refs, &next_refs, &next_next_refs]
             .into_iter()
             .flat_map(|contracts| contracts.iter())
+            .copied()
             .collect::<Vec<_>>()
             .as_slice(),
         &orderbooks,
@@ -277,18 +449,113 @@ pub fn subscriptions_from_warmed_contracts(
     subscriptions
 }
 
-fn orderbooks_for_warmed(
-    orderbooks: Vec<NormalizedOrderBook>,
+fn warmed_token_ids(warmed_contracts: &[WarmedContract]) -> impl Iterator<Item = &str> {
+    warmed_contracts.iter().flat_map(|contract| {
+        [
+            contract.up.token_id.as_str(),
+            contract.down.token_id.as_str(),
+        ]
+    })
+}
+
+fn hot_event_price_assets(
+    event: &HotPathEvent,
     warmed_contracts: &[WarmedContract],
-) -> Vec<NormalizedOrderBook> {
-    let token_ids = warmed_contracts
-        .iter()
-        .flat_map(WarmedContract::token_ids)
-        .collect::<std::collections::HashSet<_>>();
-    orderbooks
-        .into_iter()
-        .filter(|book| token_ids.contains(&book.token_id))
-        .collect()
+) -> Vec<String> {
+    let mut assets = match event {
+        HotPathEvent::ChainlinkPrice { symbol, .. } => vec![price_asset_from_symbol(symbol)],
+        HotPathEvent::OrderBookTopOfBook { token_id, .. } => warmed_contracts
+            .iter()
+            .filter(|contract| {
+                token_id == &contract.up.token_id || token_id == &contract.down.token_id
+            })
+            .map(|contract| contract.window.asset.clone())
+            .collect(),
+    };
+    assets.retain(|asset| !asset.is_empty());
+    assets.sort();
+    assets.dedup();
+    assets
+}
+
+fn price_asset_from_symbol(symbol: &str) -> String {
+    symbol
+        .split_once('/')
+        .map(|(asset, _)| asset)
+        .unwrap_or(symbol)
+        .trim()
+        .to_ascii_uppercase()
+}
+
+fn hot_event_orderbook_token_ids<'a>(
+    event: &'a HotPathEvent,
+    warmed_contracts: &'a [WarmedContract],
+    asof_ts: DateTime<Utc>,
+) -> Vec<&'a str> {
+    let asof_ts = hot_event_asof_ts(event, asof_ts);
+    match event {
+        HotPathEvent::ChainlinkPrice { symbol, .. } => {
+            let asset = price_asset_from_symbol(symbol);
+            warmed_contracts
+                .iter()
+                .filter(|contract| {
+                    contract.window.start_ts <= asof_ts && asof_ts < contract.window.end_ts
+                })
+                .filter(|contract| contract.window.asset.eq_ignore_ascii_case(&asset))
+                .flat_map(|contract| {
+                    [
+                        contract.up.token_id.as_str(),
+                        contract.down.token_id.as_str(),
+                    ]
+                })
+                .collect::<Vec<_>>()
+        }
+        HotPathEvent::OrderBookTopOfBook { token_id, .. } => warmed_contracts
+            .iter()
+            .filter(|contract| {
+                contract.window.start_ts <= asof_ts && asof_ts < contract.window.end_ts
+            })
+            .any(|contract| {
+                token_id == &contract.up.token_id || token_id == &contract.down.token_id
+            })
+            .then(|| vec![token_id.as_str()])
+            .unwrap_or_default(),
+    }
+}
+
+fn hot_event_warmed_contracts(
+    event: &HotPathEvent,
+    warmed_contracts: &[WarmedContract],
+    asof_ts: DateTime<Utc>,
+) -> Vec<WarmedContract> {
+    let asof_ts = hot_event_asof_ts(event, asof_ts);
+    match event {
+        HotPathEvent::ChainlinkPrice { symbol, .. } => {
+            let asset = price_asset_from_symbol(symbol);
+            warmed_contracts
+                .iter()
+                .filter(|contract| {
+                    contract.window.start_ts <= asof_ts && asof_ts < contract.window.end_ts
+                })
+                .filter(|contract| contract.window.asset.eq_ignore_ascii_case(&asset))
+                .cloned()
+                .collect()
+        }
+        HotPathEvent::OrderBookTopOfBook { token_id, .. } => warmed_contracts
+            .iter()
+            .filter(|contract| {
+                contract.window.start_ts <= asof_ts && asof_ts < contract.window.end_ts
+            })
+            .filter(|contract| {
+                token_id == &contract.up.token_id || token_id == &contract.down.token_id
+            })
+            .cloned()
+            .collect(),
+    }
+}
+
+fn hot_event_asof_ts(event: &HotPathEvent, asof_ts: DateTime<Utc>) -> DateTime<Utc> {
+    asof_ts.max(event.observed_ts())
 }
 
 fn feed_freshness(
@@ -353,13 +620,77 @@ fn add_missing_feed_flags(
         }
     }
 
+    let orderbook_token_ids = orderbook_token_id_set(orderbooks);
     for contract in warmed_contracts {
-        for token_id in contract.token_ids() {
-            if !orderbooks.iter().any(|book| book.token_id == token_id) {
+        for token_id in contract_token_ids(contract) {
+            if !orderbook_token_ids.contains(token_id) {
                 health_flags.push(format!("orderbook_missing:{token_id}"));
             }
         }
     }
+}
+
+fn active_warmed_contracts_by_asset(
+    now: DateTime<Utc>,
+    warmed_contracts: &[WarmedContract],
+) -> HashMap<&str, Vec<&WarmedContract>> {
+    let mut contracts_by_asset: HashMap<&str, Vec<&WarmedContract>> = HashMap::new();
+    for contract in warmed_contracts {
+        record_snapshot_warmed_scan();
+        if contract.window.end_ts > now {
+            contracts_by_asset
+                .entry(contract.window.asset.as_str())
+                .or_default()
+                .push(contract);
+        }
+    }
+    for asset_contracts in contracts_by_asset.values_mut() {
+        asset_contracts.sort_by_key(|contract| contract.window.start_ts);
+    }
+    contracts_by_asset
+}
+
+fn orderbook_token_id_set(orderbooks: &[NormalizedOrderBook]) -> HashSet<&str> {
+    let mut token_ids = HashSet::with_capacity(orderbooks.len());
+    for book in orderbooks {
+        record_missing_orderbook_scan();
+        token_ids.insert(book.token_id.as_str());
+    }
+    token_ids
+}
+
+fn contract_token_ids(contract: &WarmedContract) -> [&str; 2] {
+    [contract.up.token_id.as_str(), contract.down.token_id.as_str()]
+}
+
+fn record_missing_orderbook_scan() {
+    #[cfg(test)]
+    MISSING_ORDERBOOK_SCAN_COUNT.with(|count| count.set(count.get() + 1));
+}
+
+#[cfg(test)]
+fn reset_missing_orderbook_scan_count() {
+    MISSING_ORDERBOOK_SCAN_COUNT.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+fn missing_orderbook_scan_count() -> usize {
+    MISSING_ORDERBOOK_SCAN_COUNT.with(Cell::get)
+}
+
+fn record_snapshot_warmed_scan() {
+    #[cfg(test)]
+    SNAPSHOT_WARMED_SCAN_COUNT.with(|count| count.set(count.get() + 1));
+}
+
+#[cfg(test)]
+fn reset_snapshot_warmed_scan_count() {
+    SNAPSHOT_WARMED_SCAN_COUNT.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+fn snapshot_warmed_scan_count() -> usize {
+    SNAPSHOT_WARMED_SCAN_COUNT.with(Cell::get)
 }
 
 #[allow(dead_code)]
@@ -456,6 +787,15 @@ mod tests {
     }
 
     #[test]
+    fn hot_decision_worker_config_marks_runtime_restart_start() {
+        let runtime_started_at = Utc.timestamp_opt(1_780_302_445, 0).unwrap();
+
+        let config = hot_decision_config_for_runtime_start(runtime_started_at);
+
+        assert_eq!(config.restart_started_at, Some(runtime_started_at));
+    }
+
+    #[test]
     fn warmed_contracts_roll_forward_without_resolver_call() {
         let start = 1_780_302_400;
         let warmed = vec![
@@ -515,6 +855,32 @@ mod tests {
         );
     }
 
+    #[test]
+    fn snapshot_scans_warmed_contracts_once_across_assets() {
+        let start = 1_780_302_400;
+        let now = Utc.timestamp_opt(start + 10, 0).unwrap();
+        let config = StateManagerConfig {
+            assets: vec!["BTC".to_owned(), "ETH".to_owned()],
+            ..config()
+        };
+        let warmed = vec![
+            warmed("BTC", start, "btc-current"),
+            warmed("BTC", start + 300, "btc-next"),
+            warmed("ETH", start, "eth-current"),
+            warmed("ETH", start + 300, "eth-next"),
+        ];
+        let expected_scans = warmed.len();
+
+        reset_snapshot_warmed_scan_count();
+        let snapshot = build_snapshot_from_warmed(now, &config, &warmed, vec![], vec![]).unwrap();
+
+        assert_eq!(snapshot.current[0].up.token_id, "btc-current-up");
+        assert_eq!(snapshot.current[1].up.token_id, "eth-current-up");
+        assert_eq!(snapshot.next[0].up.token_id, "btc-next-up");
+        assert_eq!(snapshot.next[1].up.token_id, "eth-next-up");
+        assert_eq!(snapshot_warmed_scan_count(), expected_scans);
+    }
+
     #[tokio::test]
     async fn runtime_snapshot_grades_freshness_at_state_capture_time() {
         let observed = Utc::now();
@@ -541,12 +907,18 @@ mod tests {
             latest_prices,
             orderbook_streams: clob_ws::BestBidAskStreamManager::new(book_state.clone()),
             book_state,
-            warmed: vec![warmed("BTC", start, "current")],
+            warmed: std::sync::Arc::new(std::sync::RwLock::new(vec![warmed(
+                "BTC", start, "current",
+            )])),
+            market_tokens: vec![],
             token_ids: vec![],
+            subscriptions: vec![],
             last_refresh: observed,
             chainlink_streams: prices::ChainlinkStreamManager::inactive_for_tests(vec![
                 "btc/usd".to_owned(),
             ]),
+            hot_decision_worker: None,
+            hot_decision_telemetry: None,
         };
 
         let snapshot = runtime.snapshot(stale_caller_now).await.unwrap();
@@ -567,6 +939,151 @@ mod tests {
             "unexpected health flags: {:?}",
             snapshot.health_flags
         );
+    }
+
+    #[tokio::test]
+    async fn runtime_subscriptions_use_cached_refresh_rows() {
+        let start = 1_780_302_400;
+        let cached_warmed = vec![warmed("ETH", start, "cached-eth")];
+        let runtime = StateManagerRuntime {
+            config: config(),
+            latest_prices: crate::prices::LatestPrices::default(),
+            orderbook_streams: clob_ws::BestBidAskStreamManager::new(LiveBookState::default()),
+            book_state: LiveBookState::default(),
+            warmed: std::sync::Arc::new(std::sync::RwLock::new(vec![warmed(
+                "BTC",
+                start,
+                "stale-btc",
+            )])),
+            market_tokens: vec![],
+            token_ids: vec!["stale-btc-up".to_owned(), "stale-btc-down".to_owned()],
+            subscriptions: subscriptions_from_warmed_contracts(&cached_warmed),
+            last_refresh: Utc.timestamp_opt(start, 0).unwrap(),
+            chainlink_streams: prices::ChainlinkStreamManager::inactive_for_tests(vec![
+                "btc/usd".to_owned(),
+            ]),
+            hot_decision_worker: None,
+            hot_decision_telemetry: None,
+        };
+
+        let subscriptions = runtime.subscriptions();
+
+        assert_eq!(subscriptions.len(), 2);
+        assert_eq!(subscriptions[0].asset, "ETH");
+        assert_eq!(subscriptions[0].token_id, "cached-eth-down");
+    }
+
+    #[tokio::test]
+    async fn runtime_snapshot_uses_cached_orderbook_token_ids() {
+        let observed = Utc::now();
+        let start = observed.timestamp() - 60;
+        let book_state = LiveBookState::default();
+        book_state
+            .upsert_book(book(
+                "BTC",
+                "UP",
+                "current-up",
+                observed.timestamp_millis(),
+            ))
+            .await;
+        book_state
+            .upsert_book(book(
+                "ETH",
+                "UP",
+                "cached-up",
+                observed.timestamp_millis(),
+            ))
+            .await;
+        let runtime = StateManagerRuntime {
+            config: config(),
+            latest_prices: crate::prices::LatestPrices::default(),
+            orderbook_streams: clob_ws::BestBidAskStreamManager::new(book_state.clone()),
+            book_state,
+            warmed: std::sync::Arc::new(std::sync::RwLock::new(vec![warmed(
+                "BTC", start, "current",
+            )])),
+            market_tokens: vec![],
+            token_ids: vec!["cached-up".to_owned()],
+            subscriptions: vec![],
+            last_refresh: observed,
+            chainlink_streams: prices::ChainlinkStreamManager::inactive_for_tests(vec![
+                "btc/usd".to_owned(),
+            ]),
+            hot_decision_worker: None,
+            hot_decision_telemetry: None,
+        };
+
+        let snapshot = runtime.snapshot(observed).await.unwrap();
+
+        assert_eq!(snapshot.orderbooks.len(), 1);
+        assert_eq!(snapshot.orderbooks[0].token_id, "cached-up");
+    }
+
+    #[tokio::test]
+    async fn runtime_rest_backup_action_uses_cached_tokens_without_contract_refresh() {
+        let start = 1_780_302_400;
+        let now = Utc.timestamp_opt(start + 60, 0).unwrap();
+        let runtime = StateManagerRuntime {
+            config: config(),
+            latest_prices: crate::prices::LatestPrices::default(),
+            orderbook_streams: clob_ws::BestBidAskStreamManager::new(LiveBookState::default()),
+            book_state: LiveBookState::default(),
+            warmed: std::sync::Arc::new(std::sync::RwLock::new(vec![
+                warmed("BTC", start, "current"),
+                warmed("BTC", start + 300, "next"),
+            ])),
+            market_tokens: vec![],
+            token_ids: vec!["current-up".to_owned(), "current-down".to_owned()],
+            subscriptions: vec![],
+            last_refresh: now - Duration::seconds(16),
+            chainlink_streams: prices::ChainlinkStreamManager::inactive_for_tests(vec![
+                "btc/usd".to_owned(),
+            ]),
+            hot_decision_worker: None,
+            hot_decision_telemetry: None,
+        };
+
+        assert_eq!(runtime.refresh_action(now), RefreshAction::RestBackup);
+    }
+
+    #[tokio::test]
+    async fn refresh_action_scans_warmed_contracts_once_across_assets() {
+        let start = 1_780_302_400;
+        let now = Utc.timestamp_opt(start + 60, 0).unwrap();
+        let warmed_contracts = vec![
+            warmed("BTC", start, "btc-current"),
+            warmed("BTC", start + 300, "btc-next"),
+            warmed("ETH", start, "eth-current"),
+            warmed("ETH", start + 300, "eth-next"),
+        ];
+        let expected_scans = warmed_contracts.len();
+        let runtime = StateManagerRuntime {
+            config: StateManagerConfig {
+                assets: vec!["BTC".to_owned(), "ETH".to_owned()],
+                windows: 2,
+                ..config()
+            },
+            latest_prices: crate::prices::LatestPrices::default(),
+            orderbook_streams: clob_ws::BestBidAskStreamManager::new(LiveBookState::default()),
+            book_state: LiveBookState::default(),
+            warmed: std::sync::Arc::new(std::sync::RwLock::new(warmed_contracts)),
+            market_tokens: vec![],
+            token_ids: vec![],
+            subscriptions: vec![],
+            last_refresh: now,
+            chainlink_streams: prices::ChainlinkStreamManager::inactive_for_tests(vec![
+                "btc/usd".to_owned(),
+                "eth/usd".to_owned(),
+            ]),
+            hot_decision_worker: None,
+            hot_decision_telemetry: None,
+        };
+
+        reset_snapshot_warmed_scan_count();
+        let action = runtime.refresh_action(now);
+
+        assert_eq!(action, RefreshAction::None);
+        assert_eq!(snapshot_warmed_scan_count(), expected_scans);
     }
 
     #[test]
@@ -636,19 +1153,181 @@ mod tests {
     }
 
     #[test]
-    fn orderbook_snapshot_keeps_only_warmed_tokens() {
+    fn snapshot_indexes_orderbooks_once_for_missing_feed_flags() {
+        let start = 1_780_302_400;
+        let now = Utc.timestamp_opt(start + 10, 0).unwrap();
+        let config = StateManagerConfig {
+            assets: vec!["BTC".to_owned(), "ETH".to_owned()],
+            ..config()
+        };
+        let warmed = vec![warmed("BTC", start, "btc"), warmed("ETH", start, "eth")];
+        let orderbooks = vec![
+            book("BTC", "UP", "btc-up", now.timestamp_millis()),
+            book("BTC", "DOWN", "btc-down", now.timestamp_millis()),
+            book("ETH", "UP", "eth-up", now.timestamp_millis()),
+        ];
+        let expected_scans = orderbooks.len();
+
+        reset_missing_orderbook_scan_count();
+        let snapshot = build_snapshot_from_warmed(
+            now,
+            &config,
+            &warmed,
+            vec![
+                chainlink("BTC", now.timestamp_millis()),
+                chainlink("ETH", now.timestamp_millis()),
+            ],
+            orderbooks,
+        )
+        .unwrap();
+
+        assert!(
+            snapshot
+                .health_flags
+                .contains(&"orderbook_missing:eth-down".to_owned())
+        );
+        assert_eq!(missing_orderbook_scan_count(), expected_scans);
+    }
+
+    #[test]
+    fn warmed_token_ids_include_only_live_up_down_tokens() {
         let start = 1_780_302_400;
         let warmed = vec![warmed("BTC", start, "btc")];
-        let books = vec![
-            book("BTC", "UP", "btc-up", start * 1000),
-            book("BTC", "DOWN", "btc-down", start * 1000),
-            book("BTC", "UP", "expired-up", start * 1000),
+
+        let token_ids = warmed_token_ids(&warmed).collect::<Vec<_>>();
+
+        assert_eq!(token_ids, vec!["btc-up", "btc-down"]);
+    }
+
+    #[test]
+    fn hot_event_price_assets_include_only_triggered_asset() {
+        let start = 1_780_302_400;
+        let warmed = vec![warmed("BTC", start, "btc"), warmed("ETH", start, "eth")];
+        let ts = Utc.timestamp_opt(start + 10, 0).unwrap();
+
+        let chainlink_assets = hot_event_price_assets(
+            &HotPathEvent::ChainlinkPrice {
+                symbol: "eth/usd".to_owned(),
+                event_ts: ts,
+                observed_ts: ts,
+            },
+            &warmed,
+        );
+        let orderbook_assets = hot_event_price_assets(
+            &HotPathEvent::OrderBookTopOfBook {
+                token_id: "btc-up".to_owned(),
+                event_ts: ts,
+                observed_ts: ts,
+            },
+            &warmed,
+        );
+        let unknown_assets = hot_event_price_assets(
+            &HotPathEvent::OrderBookTopOfBook {
+                token_id: "unknown-token".to_owned(),
+                event_ts: ts,
+                observed_ts: ts,
+            },
+            &warmed,
+        );
+
+        assert_eq!(chainlink_assets, vec!["ETH"]);
+        assert_eq!(orderbook_assets, vec!["BTC"]);
+        assert!(unknown_assets.is_empty());
+    }
+
+    #[test]
+    fn hot_event_orderbook_token_ids_include_only_impacted_current_tokens() {
+        let start = 1_780_302_400;
+        let warmed = vec![
+            warmed("BTC", start, "btc-current"),
+            warmed("BTC", start + 300, "btc-next"),
+            warmed("ETH", start, "eth-current"),
         ];
+        let ts = Utc.timestamp_opt(start + 10, 0).unwrap();
 
-        let filtered = orderbooks_for_warmed(books, &warmed);
+        let chainlink_event = HotPathEvent::ChainlinkPrice {
+            symbol: "btc/usd".to_owned(),
+            event_ts: ts,
+            observed_ts: ts,
+        };
+        let orderbook_event = HotPathEvent::OrderBookTopOfBook {
+            token_id: "btc-current-up".to_owned(),
+            event_ts: ts,
+            observed_ts: ts,
+        };
+        let unknown_event = HotPathEvent::OrderBookTopOfBook {
+            token_id: "unknown-token".to_owned(),
+            event_ts: ts,
+            observed_ts: ts,
+        };
 
-        assert_eq!(filtered.len(), 2);
-        assert!(filtered.iter().any(|book| book.token_id == "btc-up"));
-        assert!(filtered.iter().any(|book| book.token_id == "btc-down"));
+        let chainlink_tokens = hot_event_orderbook_token_ids(&chainlink_event, &warmed, ts);
+        let orderbook_tokens = hot_event_orderbook_token_ids(&orderbook_event, &warmed, ts);
+        let unknown_tokens = hot_event_orderbook_token_ids(&unknown_event, &warmed, ts);
+
+        assert_eq!(chainlink_tokens, vec!["btc-current-up", "btc-current-down"]);
+        assert_eq!(orderbook_tokens, vec!["btc-current-up"]);
+        assert!(unknown_tokens.is_empty());
+
+        let rollover_ts = Utc.timestamp_opt(start + 300, 0).unwrap();
+        let early_worker_now = rollover_ts - Duration::milliseconds(1);
+        let rollover_event = HotPathEvent::OrderBookTopOfBook {
+            token_id: "btc-next-up".to_owned(),
+            event_ts: rollover_ts,
+            observed_ts: rollover_ts,
+        };
+        let observed_asof_tokens =
+            hot_event_orderbook_token_ids(&rollover_event, &warmed, early_worker_now);
+
+        assert_eq!(observed_asof_tokens, vec!["btc-next-up"]);
+    }
+
+    #[test]
+    fn hot_event_warmed_contracts_include_only_impacted_current_contracts() {
+        let start = 1_780_302_400;
+        let warmed = vec![
+            warmed("BTC", start, "btc-current"),
+            warmed("BTC", start + 300, "btc-next"),
+            warmed("ETH", start, "eth-current"),
+        ];
+        let ts = Utc.timestamp_opt(start + 10, 0).unwrap();
+        let chainlink_event = HotPathEvent::ChainlinkPrice {
+            symbol: "btc/usd".to_owned(),
+            event_ts: ts,
+            observed_ts: ts,
+        };
+        let orderbook_event = HotPathEvent::OrderBookTopOfBook {
+            token_id: "btc-current-up".to_owned(),
+            event_ts: ts,
+            observed_ts: ts,
+        };
+        let unknown_event = HotPathEvent::OrderBookTopOfBook {
+            token_id: "unknown-token".to_owned(),
+            event_ts: ts,
+            observed_ts: ts,
+        };
+
+        let chainlink_contracts = hot_event_warmed_contracts(&chainlink_event, &warmed, ts);
+        let orderbook_contracts = hot_event_warmed_contracts(&orderbook_event, &warmed, ts);
+        let unknown_contracts = hot_event_warmed_contracts(&unknown_event, &warmed, ts);
+
+        assert_eq!(chainlink_contracts.len(), 1);
+        assert_eq!(chainlink_contracts[0].up.token_id, "btc-current-up");
+        assert_eq!(orderbook_contracts.len(), 1);
+        assert_eq!(orderbook_contracts[0].up.token_id, "btc-current-up");
+        assert!(unknown_contracts.is_empty());
+
+        let rollover_ts = Utc.timestamp_opt(start + 300, 0).unwrap();
+        let early_worker_now = rollover_ts - Duration::milliseconds(1);
+        let rollover_event = HotPathEvent::OrderBookTopOfBook {
+            token_id: "btc-next-up".to_owned(),
+            event_ts: rollover_ts,
+            observed_ts: rollover_ts,
+        };
+        let observed_asof_contracts =
+            hot_event_warmed_contracts(&rollover_event, &warmed, early_worker_now);
+
+        assert_eq!(observed_asof_contracts.len(), 1);
+        assert_eq!(observed_asof_contracts[0].up.token_id, "btc-next-up");
     }
 }

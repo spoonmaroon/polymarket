@@ -47,6 +47,18 @@ CREATE TABLE IF NOT EXISTS ops.ingest_checkpoints (
     PRIMARY KEY (source_key, stream_key, symbol)
 );
 
+CREATE TABLE IF NOT EXISTS ops.raw_file_checkpoints (
+    path VARCHAR PRIMARY KEY,
+    source_key VARCHAR NOT NULL,
+    stream_key VARCHAR NOT NULL,
+    byte_offset UBIGINT NOT NULL,
+    file_size_bytes UBIGINT NOT NULL,
+    rows_read UBIGINT NOT NULL,
+    first_event_ts TIMESTAMPTZ,
+    last_event_ts TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS core.contracts (
     contract_id VARCHAR PRIMARY KEY,
     venue VARCHAR NOT NULL,
@@ -174,6 +186,20 @@ CREATE TABLE IF NOT EXISTS features.decision_snapshots (
     model_json VARCHAR NOT NULL,
     decision VARCHAR NOT NULL,
     block_reason VARCHAR,
+    created_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS features.probability_outputs (
+    output_id VARCHAR PRIMARY KEY,
+    state_id VARCHAR NOT NULL,
+    asof_ts TIMESTAMPTZ NOT NULL,
+    model_version VARCHAR NOT NULL,
+    p_finish DOUBLE NOT NULL,
+    p_no_touch DOUBLE NOT NULL,
+    z_path DOUBLE NOT NULL,
+    seed BIGINT,
+    input_json VARCHAR NOT NULL,
+    output_json VARCHAR NOT NULL,
     created_at TIMESTAMPTZ NOT NULL
 );
 

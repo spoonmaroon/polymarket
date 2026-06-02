@@ -19,6 +19,7 @@ def parse_args() -> argparse.Namespace:
         description="Validate a state-manager smoke report JSON file."
     )
     parser.add_argument("report", type=Path, help="Path to state-manager report JSON")
+    parser.add_argument("--expected-prewarm-windows", type=int, default=3)
     return parser.parse_args()
 
 
@@ -203,7 +204,53 @@ def validate_websocket_status(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return statuses
 
 
-def validate(payload: dict[str, Any]) -> list[str]:
+def validate_latency_marks(payload: dict[str, Any]) -> None:
+    rows = require_list(payload, "latency_marks")
+    required = {
+        "chainlink_observed_age_ms",
+        "chainlink_event_to_observed_ms",
+        "orderbook_observed_age_ms",
+        "orderbook_event_to_observed_ms",
+    }
+    names: set[str] = set()
+    for idx, row in enumerate(rows):
+        mark = require_object(row, f"latency_marks[{idx}]")
+        name = require_non_empty_string(mark.get("name"), f"latency_marks[{idx}].name")
+        require_non_negative_number(
+            mark.get("elapsed_ms"),
+            f"latency_marks[{idx}].elapsed_ms",
+        )
+        names.add(name)
+    missing = sorted(required - names)
+    if missing:
+        fail("latency_marks missing: " + ", ".join(missing))
+
+
+def validate_hot_decision_telemetry(payload: dict[str, Any]) -> None:
+    telemetry = payload.get("hot_decision_telemetry")
+    if telemetry is None:
+        return
+    telemetry = require_object(telemetry, "hot_decision_telemetry")
+    for key in (
+        "states_built",
+        "states_persist_queued",
+        "dropped_events",
+        "last_state_age_ms",
+        "last_observed_to_state_us",
+    ):
+        if key not in telemetry:
+            fail(f"hot_decision_telemetry missing {key}")
+    for key in ("states_built", "states_persist_queued", "dropped_events"):
+        require_non_negative_number(telemetry.get(key), f"hot_decision_telemetry.{key}")
+    for key in ("last_state_age_ms", "last_observed_to_state_us"):
+        value = telemetry.get(key)
+        if value is not None:
+            require_non_negative_number(value, f"hot_decision_telemetry.{key}")
+    if telemetry["states_built"] < telemetry["states_persist_queued"]:
+        fail("hot_decision_telemetry states_built is less than states_persist_queued")
+
+
+def validate(payload: dict[str, Any], *, expected_prewarm_windows: int = 3) -> list[str]:
     if payload.get("schema_version") != STATE_MANAGER_SCHEMA_VERSION:
         fail(f'schema_version must be "{STATE_MANAGER_SCHEMA_VERSION}"')
     if payload.get("mode") != "state-manager":
@@ -212,10 +259,20 @@ def validate(payload: dict[str, Any]) -> list[str]:
     require_non_negative_number(payload.get("elapsed_ms"), "elapsed_ms")
 
     validate_contracts(require_list(payload, "current"), "current", require_assets=True)
-    validate_contracts(require_list(payload, "next"), "next", require_assets=True)
-    validate_contracts(require_list(payload, "next_next"), "next_next", require_assets=False)
+    validate_contracts(
+        require_list(payload, "next"),
+        "next",
+        require_assets=expected_prewarm_windows >= 2,
+    )
+    validate_contracts(
+        require_list(payload, "next_next"),
+        "next_next",
+        require_assets=expected_prewarm_windows >= 3,
+    )
     validate_optional_price_list(payload, "proxy_prices")
     validate_freshness(payload)
+    validate_latency_marks(payload)
+    validate_hot_decision_telemetry(payload)
 
     orderbooks = require_list(payload, "orderbooks")
     orderbook_tokens = {
@@ -274,12 +331,13 @@ def main() -> int:
         fail(f"invalid JSON: {exc}")
 
     payload = require_mapping(payload, "report")
-    health_flags = validate(payload)
+    health_flags = validate(payload, expected_prewarm_windows=args.expected_prewarm_windows)
     print(
         "ok",
         "mode=state-manager",
         f"current={len(payload['current'])}",
         f"next={len(payload['next'])}",
+        f"next_next={len(payload['next_next'])}",
         f"orderbooks={len(payload['orderbooks'])}",
         f"subscriptions={len(payload['subscriptions'])}",
         f"websocket_status={len(payload['websocket_status'])}",

@@ -6,7 +6,7 @@ use polymarket_runtime_types::{FeedFreshness, NormalizedPriceTick, PriceDisagree
 use rust_decimal::Decimal;
 use serde::Deserialize;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -15,10 +15,12 @@ use std::time::Duration;
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
+use crate::hot_decision::{HotPathEvent, HotPathEventSink};
 use crate::raw_event_journal::{RawEventRecord, RawEventSink};
 use crate::report::WebSocketStatus;
 
 pub const KRAKEN_TICKER_URL: &str = "https://api.kraken.com/0/public/Ticker";
+const DEFAULT_PRICE_HISTORY_LIMIT: usize = 4096;
 
 #[derive(Debug, Deserialize)]
 struct KrakenTickerResponse {
@@ -37,31 +39,135 @@ pub struct ChainlinkFetchResult {
     pub cache_hit: bool,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PriceUpdateOutcome {
+    Unchanged,
+    Updated,
+}
+
+impl PriceUpdateOutcome {
+    fn is_updated(self) -> bool {
+        matches!(self, Self::Updated)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ChainlinkTickUpdate {
+    tick: NormalizedPriceTick,
+    outcome: PriceUpdateOutcome,
+}
+
+#[derive(Debug, Clone)]
 pub struct LatestPrices {
-    inner: Arc<RwLock<HashMap<String, NormalizedPriceTick>>>,
+    inner: Arc<RwLock<LatestPricesInner>>,
+    history_limit: usize,
+}
+
+#[derive(Debug, Default)]
+struct LatestPricesInner {
+    latest: HashMap<String, NormalizedPriceTick>,
+    history: Vec<NormalizedPriceTick>,
 }
 
 impl LatestPrices {
-    pub async fn update(&self, tick: NormalizedPriceTick) {
+    pub fn with_history_limit(history_limit: usize) -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(LatestPricesInner::default())),
+            history_limit: history_limit.max(1),
+        }
+    }
+
+    pub async fn update(&self, tick: NormalizedPriceTick) -> PriceUpdateOutcome {
         let key = normalize_price_symbol(&tick.symbol);
         let mut inner = self.inner.write().expect("latest price lock poisoned");
-        inner.insert(key, tick);
+        if inner.latest.get(&key).is_some_and(|current| {
+            current.source_key == tick.source_key
+                && current.event_ts == tick.event_ts
+                && current.price == tick.price
+        }) {
+            return PriceUpdateOutcome::Unchanged;
+        }
+        inner.latest.insert(key, tick.clone());
+        inner.history.push(tick);
+        inner.history.sort_by_key(|tick| {
+            (
+                normalize_price_symbol(&tick.symbol),
+                tick.event_ts,
+                tick.observed_ts,
+            )
+        });
+        let overflow = inner.history.len().saturating_sub(self.history_limit);
+        if overflow > 0 {
+            inner.history.drain(0..overflow);
+        }
+        PriceUpdateOutcome::Updated
     }
 
     #[allow(dead_code)]
     pub async fn get(&self, symbol: &str) -> Option<NormalizedPriceTick> {
         let key = normalize_price_symbol(symbol);
         let inner = self.inner.read().expect("latest price lock poisoned");
-        inner.get(&key).cloned()
+        inner.latest.get(&key).cloned()
     }
 
     #[allow(dead_code)]
     pub async fn snapshot(&self) -> Vec<NormalizedPriceTick> {
         let inner = self.inner.read().expect("latest price lock poisoned");
-        let mut ticks = inner.values().cloned().collect::<Vec<_>>();
+        let mut ticks = inner.latest.values().cloned().collect::<Vec<_>>();
         ticks.sort_by(|left, right| left.symbol.cmp(&right.symbol));
         ticks
+    }
+
+    #[allow(dead_code)]
+    pub async fn history_snapshot(&self) -> Vec<NormalizedPriceTick> {
+        let inner = self.inner.read().expect("latest price lock poisoned");
+        inner.history.clone()
+    }
+
+    pub async fn history_snapshot_for_assets<'a, I>(&self, assets: I) -> Vec<NormalizedPriceTick>
+    where
+        I: IntoIterator<Item = &'a str>,
+    {
+        let assets = assets
+            .into_iter()
+            .map(normalize_asset)
+            .filter(|asset| !asset.is_empty())
+            .collect::<HashSet<_>>();
+        if assets.is_empty() {
+            return Vec::new();
+        }
+
+        let inner = self.inner.read().expect("latest price lock poisoned");
+        inner
+            .history
+            .iter()
+            .filter(|tick| assets.contains(&price_symbol_asset(&tick.symbol)))
+            .cloned()
+            .collect()
+    }
+
+    #[allow(dead_code)]
+    pub async fn latest_at_or_before(
+        &self,
+        symbol: &str,
+        event_ts_lte: DateTime<Utc>,
+        observed_ts_lte: DateTime<Utc>,
+    ) -> Option<NormalizedPriceTick> {
+        let key = normalize_price_symbol(symbol);
+        let inner = self.inner.read().expect("latest price lock poisoned");
+        inner
+            .history
+            .iter()
+            .filter(|tick| normalize_price_symbol(&tick.symbol) == key)
+            .filter(|tick| tick.event_ts <= event_ts_lte && tick.observed_ts <= observed_ts_lte)
+            .max_by_key(|tick| (tick.event_ts, tick.observed_ts))
+            .cloned()
+    }
+}
+
+impl Default for LatestPrices {
+    fn default() -> Self {
+        Self::with_history_limit(DEFAULT_PRICE_HISTORY_LIMIT)
     }
 }
 
@@ -83,13 +189,14 @@ pub struct ChainlinkStreamManager {
 impl ChainlinkStreamManager {
     #[allow(dead_code)]
     pub fn start(symbols: Vec<String>, latest: LatestPrices) -> Self {
-        Self::start_with_raw_events(symbols, latest, None)
+        Self::start_with_raw_events(symbols, latest, None, None)
     }
 
     pub fn start_with_raw_events(
         symbols: Vec<String>,
         latest: LatestPrices,
         raw_event_sink: Option<RawEventSink>,
+        hot_event_sink: Option<HotPathEventSink>,
     ) -> Self {
         let client = RtdsClient::default();
         let symbols = chainlink_stream_symbols(symbols);
@@ -100,6 +207,7 @@ impl ChainlinkStreamManager {
             latest,
             telemetry.clone(),
             raw_event_sink,
+            hot_event_sink,
         ))];
         let connection_monitor_task = tokio::spawn(monitor_chainlink_connection_state(
             client.clone(),
@@ -163,6 +271,19 @@ impl ChainlinkStreamManager {
 
 fn normalize_price_symbol(symbol: &str) -> String {
     symbol.trim().to_ascii_uppercase()
+}
+
+fn normalize_asset(asset: &str) -> String {
+    asset.trim().to_ascii_uppercase()
+}
+
+fn price_symbol_asset(symbol: &str) -> String {
+    normalize_asset(
+        symbol
+            .split_once('/')
+            .map(|(asset, _)| asset)
+            .unwrap_or(symbol),
+    )
 }
 
 pub fn parse_kraken_xbtusd_ticker(
@@ -262,6 +383,7 @@ pub async fn run_chainlink_stream(symbols: Vec<String>, latest: LatestPrices) ->
         latest,
         Arc::new(RwLock::new(ChainlinkWebSocketTelemetry::default())),
         None,
+        None,
     )
     .await
 }
@@ -274,6 +396,7 @@ async fn run_chainlink_symbol_stream(symbol: String, latest: LatestPrices) -> Re
         latest,
         Arc::new(RwLock::new(ChainlinkWebSocketTelemetry::default())),
         None,
+        None,
     )
     .await
 }
@@ -284,6 +407,7 @@ async fn run_chainlink_symbols_stream_with_client(
     latest: LatestPrices,
     telemetry: Arc<RwLock<ChainlinkWebSocketTelemetry>>,
     raw_event_sink: Option<RawEventSink>,
+    hot_event_sink: Option<HotPathEventSink>,
 ) -> Result<()> {
     let symbols = chainlink_stream_symbols(symbols);
     let stream = client.subscribe_raw(Subscription::chainlink_prices(None))?;
@@ -298,18 +422,30 @@ async fn run_chainlink_symbols_stream_with_client(
             }
         };
         let observed_ts = Utc::now();
-        let mut updated = false;
+        let mut matched_tracked_symbol = false;
         for symbol in &symbols {
-            if let Some(tick) =
+            if let Some(update) =
                 update_latest_from_chainlink_message(&latest, &message, symbol, observed_ts).await?
             {
+                let tick = update.tick;
                 if let Some(sink) = &raw_event_sink {
                     sink.try_record(chainlink_raw_event_record_from_tick(&message, &tick))?;
                 }
-                updated = true;
+                if update.outcome.is_updated() {
+                    if let Some(sink) = &hot_event_sink {
+                        if let Err(error) = sink.try_send(HotPathEvent::ChainlinkPrice {
+                            symbol: tick.symbol.clone(),
+                            event_ts: tick.event_ts,
+                            observed_ts: tick.observed_ts,
+                        }) {
+                            tracing::warn!(error = %error, "dropped Chainlink hot path event");
+                        }
+                    }
+                }
+                matched_tracked_symbol = true;
             }
         }
-        if updated {
+        if matched_tracked_symbol {
             record_chainlink_event(&telemetry, observed_ts);
         }
     }
@@ -402,20 +538,20 @@ async fn update_latest_from_chainlink_message(
     message: &RtdsMessage,
     requested_symbol: &str,
     observed_ts: DateTime<Utc>,
-) -> Result<Option<NormalizedPriceTick>> {
+) -> Result<Option<ChainlinkTickUpdate>> {
     if let Some(tick) =
         chainlink_snapshot_tick_from_message(message, requested_symbol, observed_ts)?
     {
-        latest.update(tick.clone()).await;
-        return Ok(Some(tick));
+        let outcome = latest.update(tick.clone()).await;
+        return Ok(Some(ChainlinkTickUpdate { tick, outcome }));
     }
 
     if let Some(price) = message.as_chainlink_price()
         && price.symbol.eq_ignore_ascii_case(requested_symbol)
     {
         let tick = chainlink_update_tick(&price.symbol, price.timestamp, price.value, observed_ts)?;
-        latest.update(tick.clone()).await;
-        return Ok(Some(tick));
+        let outcome = latest.update(tick.clone()).await;
+        return Ok(Some(ChainlinkTickUpdate { tick, outcome }));
     }
 
     Ok(None)
@@ -692,7 +828,7 @@ mod tests {
     async fn latest_prices_store_updates_and_snapshots_ticks() {
         let observed = "2026-06-01T20:00:00Z".parse::<DateTime<Utc>>().unwrap();
         let store = LatestPrices::default();
-        store
+        let outcome = store
             .update(NormalizedPriceTick {
                 source_key: "polymarket_rtds_chainlink".to_owned(),
                 symbol: "BTC/USD".to_owned(),
@@ -702,11 +838,116 @@ mod tests {
             })
             .await;
 
+        assert_eq!(outcome, PriceUpdateOutcome::Updated);
         assert_eq!(
             store.get("btc/usd").await.unwrap().price.to_string(),
             "100000"
         );
         assert_eq!(store.snapshot().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn latest_prices_ignores_duplicate_market_state() {
+        let store = LatestPrices::default();
+        let event_ts = "2026-06-01T20:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let first_observed = "2026-06-01T20:00:01Z".parse::<DateTime<Utc>>().unwrap();
+        let duplicate_observed = "2026-06-01T20:00:02Z".parse::<DateTime<Utc>>().unwrap();
+
+        let first = store
+            .update(NormalizedPriceTick {
+                observed_ts: first_observed,
+                ..chainlink_tick("BTC/USD", event_ts, Decimal::new(70_000, 0))
+            })
+            .await;
+        let duplicate = store
+            .update(NormalizedPriceTick {
+                observed_ts: duplicate_observed,
+                ..chainlink_tick("BTC/USD", event_ts, Decimal::new(70_000, 0))
+            })
+            .await;
+
+        assert_eq!(first, PriceUpdateOutcome::Updated);
+        assert_eq!(duplicate, PriceUpdateOutcome::Unchanged);
+        let latest = store.get("btc/usd").await.unwrap();
+        assert_eq!(latest.observed_ts, first_observed);
+        assert_eq!(store.history_snapshot().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn latest_prices_keeps_bounded_history_for_start_thresholds() {
+        let store = LatestPrices::with_history_limit(3);
+        let t0 = "2026-06-01T20:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        store
+            .update(chainlink_tick("BTC/USD", t0, Decimal::new(70_000, 0)))
+            .await;
+        store
+            .update(chainlink_tick(
+                "BTC/USD",
+                t0 + chrono::Duration::seconds(1),
+                Decimal::new(70_100, 0),
+            ))
+            .await;
+        store
+            .update(chainlink_tick(
+                "BTC/USD",
+                t0 + chrono::Duration::seconds(2),
+                Decimal::new(70_200, 0),
+            ))
+            .await;
+        store
+            .update(chainlink_tick(
+                "BTC/USD",
+                t0 + chrono::Duration::seconds(3),
+                Decimal::new(70_300, 0),
+            ))
+            .await;
+
+        let history = store.history_snapshot().await;
+
+        assert_eq!(history.len(), 3);
+        assert_eq!(history[0].price, Decimal::new(70_100, 0));
+        assert_eq!(
+            store
+                .latest_at_or_before(
+                    "BTC/USD",
+                    t0 + chrono::Duration::seconds(2),
+                    t0 + chrono::Duration::seconds(2),
+                )
+                .await
+                .unwrap()
+                .price,
+            Decimal::new(70_200, 0)
+        );
+    }
+
+    #[tokio::test]
+    async fn latest_prices_snapshots_history_for_requested_assets_only() {
+        let store = LatestPrices::default();
+        let t0 = "2026-06-01T20:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        store
+            .update(chainlink_tick("BTC/USD", t0, Decimal::new(70_000, 0)))
+            .await;
+        store
+            .update(chainlink_tick(
+                "ETH/USD",
+                t0 + chrono::Duration::seconds(1),
+                Decimal::new(2_000, 0),
+            ))
+            .await;
+        store
+            .update(chainlink_tick(
+                "BTC/USD",
+                t0 + chrono::Duration::seconds(2),
+                Decimal::new(70_200, 0),
+            ))
+            .await;
+
+        let history = store.history_snapshot_for_assets(["btc"]).await;
+
+        assert_eq!(history.len(), 2);
+        assert!(history.iter().all(|tick| tick.symbol == "BTC/USD"));
+        assert_eq!(history[0].price, Decimal::new(70_000, 0));
+        assert_eq!(history[1].price, Decimal::new(70_200, 0));
     }
 
     #[test]
@@ -748,11 +989,13 @@ mod tests {
         .unwrap();
         let latest = LatestPrices::default();
 
-        let tick = update_latest_from_chainlink_message(&latest, &message, "btc/usd", observed)
+        let update = update_latest_from_chainlink_message(&latest, &message, "btc/usd", observed)
             .await
             .unwrap()
             .unwrap();
+        let tick = update.tick;
 
+        assert_eq!(update.outcome, PriceUpdateOutcome::Updated);
         assert_eq!(tick.source_key, "polymarket_rtds_chainlink");
         assert_eq!(tick.symbol, "BTC/USD");
         assert_eq!(tick.event_ts.timestamp_millis(), 1780352939000_i64);
@@ -787,6 +1030,7 @@ mod tests {
         .await
         .unwrap()
         .unwrap();
+        let tick = tick.tick;
 
         let record = chainlink_raw_event_record_from_tick(&message, &tick);
 
@@ -849,5 +1093,19 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(path);
+    }
+
+    fn chainlink_tick(
+        symbol: &str,
+        timestamp: DateTime<Utc>,
+        price: Decimal,
+    ) -> NormalizedPriceTick {
+        NormalizedPriceTick {
+            source_key: "polymarket_rtds_chainlink".to_owned(),
+            symbol: symbol.to_owned(),
+            event_ts: timestamp,
+            observed_ts: timestamp,
+            price,
+        }
     }
 }
