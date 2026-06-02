@@ -5,7 +5,7 @@ from datetime import datetime
 
 from polymarket_engine.domain.contracts import ContractSpec
 from polymarket_engine.domain.market_state import DecisionState, VolatilitySnapshot
-from polymarket_engine.features.state_builder import build_decision_state
+from polymarket_engine.features.state_builder import DecisionStateUnavailable, build_decision_state
 from polymarket_engine.features.volatility import (
     VOLATILITY_REFERENCE_SOURCE_KEY,
     VolatilityConfig,
@@ -29,6 +29,9 @@ def build_decision_state_from_store(
     stale_source_after_ms: int = 2_000,
     stale_book_after_ms: int = 2_000,
 ) -> DecisionState:
+    if asof_ts < contract.start_ts:
+        raise DecisionStateUnavailable("asof_ts before contract start")
+
     threshold = None
     if contract.threshold_type == "start_price":
         threshold = store.latest_price_tick_before(

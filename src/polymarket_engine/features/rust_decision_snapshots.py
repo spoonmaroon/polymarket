@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from polymarket_engine.domain.contracts import Asset, ContractSide, ContractSpec
+from polymarket_engine.domain.market_state import OrderBookObservation, PriceObservation
 from polymarket_engine.features.state_builder import DecisionStateUnavailable
 from polymarket_engine.features.state_replay import build_decision_state_from_store
 from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
@@ -46,13 +47,14 @@ def build_current_decision_state_snapshots(
         token_metadata=token_metadata,
         include_next=include_next,
     )
+    read_store = _CachedStateReadStore(store)
     states_written = 0
     unavailable: list[UnavailableDecisionState] = []
     for contract in contracts:
         store.upsert_contract_spec(contract)
         try:
             state = build_decision_state_from_store(
-                store=store,
+                store=cast(DuckDbIngestStore, read_store),
                 contract=contract,
                 asof_ts=asof_ts,
                 resolved_threshold_price=None,
@@ -206,3 +208,89 @@ def _rule_text(*, asset: Asset, interval: str, slug: str) -> str:
 
 def _rule_hash(*, asset: Asset, interval: str, slug: str) -> str:
     return hashlib.sha256(_rule_text(asset=asset, interval=interval, slug=slug).encode()).hexdigest()
+
+
+class _CachedStateReadStore:
+    def __init__(self, store: DuckDbIngestStore) -> None:
+        self._store = store
+        self._latest_price_before: dict[
+            tuple[str, str, datetime, datetime],
+            PriceObservation | None,
+        ] = {}
+        self._latest_price: dict[tuple[str, str, datetime], PriceObservation | None] = {}
+        self._price_history: dict[
+            tuple[str, str, datetime, int],
+            tuple[PriceObservation, ...],
+        ] = {}
+        self._latest_orderbook: dict[
+            tuple[str, str, datetime],
+            OrderBookObservation | None,
+        ] = {}
+
+    def latest_price_tick_before(
+        self,
+        *,
+        source_key: str,
+        symbol: str,
+        event_ts_lte: datetime,
+        observed_ts_lte: datetime,
+    ) -> PriceObservation | None:
+        key = (source_key, symbol, event_ts_lte, observed_ts_lte)
+        if key not in self._latest_price_before:
+            self._latest_price_before[key] = self._store.latest_price_tick_before(
+                source_key=source_key,
+                symbol=symbol,
+                event_ts_lte=event_ts_lte,
+                observed_ts_lte=observed_ts_lte,
+            )
+        return self._latest_price_before[key]
+
+    def latest_price_tick(
+        self,
+        *,
+        source_key: str,
+        symbol: str,
+        asof_ts: datetime,
+    ) -> PriceObservation | None:
+        key = (source_key, symbol, asof_ts)
+        if key not in self._latest_price:
+            self._latest_price[key] = self._store.latest_price_tick(
+                source_key=source_key,
+                symbol=symbol,
+                asof_ts=asof_ts,
+            )
+        return self._latest_price[key]
+
+    def price_ticks_before(
+        self,
+        *,
+        source_key: str,
+        symbol: str,
+        asof_ts: datetime,
+        limit: int,
+    ) -> tuple[PriceObservation, ...]:
+        key = (source_key, symbol, asof_ts, limit)
+        if key not in self._price_history:
+            self._price_history[key] = self._store.price_ticks_before(
+                source_key=source_key,
+                symbol=symbol,
+                asof_ts=asof_ts,
+                limit=limit,
+            )
+        return self._price_history[key]
+
+    def latest_orderbook_snapshot(
+        self,
+        *,
+        venue: str,
+        token_id: str,
+        asof_ts: datetime,
+    ) -> OrderBookObservation | None:
+        key = (venue, token_id, asof_ts)
+        if key not in self._latest_orderbook:
+            self._latest_orderbook[key] = self._store.latest_orderbook_snapshot(
+                venue=venue,
+                token_id=token_id,
+                asof_ts=asof_ts,
+            )
+        return self._latest_orderbook[key]
