@@ -578,6 +578,52 @@ def test_sidecar_loop_uses_active_signature_between_full_scans(
         assert conn.execute("select count(*) from core.orderbook_snapshots").fetchone() == (3,)
 
 
+def test_sidecar_loop_does_not_full_scan_when_active_signature_is_empty(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_root = tmp_path / "raw"
+    db_path = tmp_path / "state.duckdb"
+    status_path = tmp_path / "live" / "status.json"
+    health_path = tmp_path / "live" / "normalized_health.json"
+    start_ts = datetime(2026, 6, 2, 6, 0, tzinfo=timezone.utc)
+    asof_ts = start_ts + timedelta(minutes=2)
+    _write_raw_tree(raw_root=raw_root, start_ts=start_ts, asof_ts=asof_ts)
+    _write_status(status_path, start_ts=start_ts, asof_ts=asof_ts)
+    real_raw_tree_signature = getattr(rust_normalizer_sidecar, "_raw_tree_signature")
+    full_signature_calls = 0
+
+    def counting_raw_tree_signature(*args: Any, **kwargs: Any) -> Any:
+        nonlocal full_signature_calls
+        full_signature_calls += 1
+        return real_raw_tree_signature(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "polymarket_engine.ingestion.rust_normalizer_sidecar._raw_tree_signature",
+        counting_raw_tree_signature,
+    )
+    monkeypatch.setattr(
+        "polymarket_engine.ingestion.rust_normalizer_sidecar._active_raw_tree_signature",
+        lambda *, raw_root: (),
+    )
+    monkeypatch.setattr(
+        "polymarket_engine.ingestion.rust_normalizer_sidecar.time.sleep",
+        lambda _: None,
+    )
+
+    run_rust_normalizer_loop(
+        raw_root=raw_root,
+        db_path=db_path,
+        status_path=status_path,
+        normalized_health_path=health_path,
+        interval_seconds=0.0,
+        include_next=False,
+        max_cycles=2,
+    )
+
+    assert full_signature_calls == 1
+
+
 def test_sidecar_loop_rebuilds_state_when_status_changes_without_raw_rows(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

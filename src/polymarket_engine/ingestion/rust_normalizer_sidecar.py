@@ -201,11 +201,8 @@ def run_rust_normalizer_loop(
             else:
                 raw_signature = _active_raw_tree_signature(raw_root=raw_root)
                 if not raw_signature:
-                    full_scan_due = True
-                    raw_signature = _raw_tree_signature(
-                        raw_root=raw_root,
-                        include_state_snapshots=False,
-                    )
+                    assert previous_raw_signature is not None
+                    raw_signature = _known_raw_tree_signature(previous_raw_signature)
 
             raw_signature_changed = False
             if previous_raw_signature is None or reprocess_all:
@@ -491,6 +488,18 @@ def _raw_file_signature(path: Path) -> RawTreeFileSignature:
         size_bytes=stat.st_size,
         mtime_ns=stat.st_mtime_ns,
     )
+
+
+def _known_raw_tree_signature(
+    previous: tuple[RawTreeFileSignature, ...],
+) -> tuple[RawTreeFileSignature, ...]:
+    rows: list[RawTreeFileSignature] = []
+    for row in previous:
+        try:
+            rows.append(_raw_file_signature(row.path))
+        except FileNotFoundError:
+            continue
+    return tuple(rows)
 
 
 def _changed_raw_signature(
