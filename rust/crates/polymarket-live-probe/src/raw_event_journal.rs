@@ -3,10 +3,12 @@ use chrono::{DateTime, Datelike, Timelike, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs::File;
-use std::io::{LineWriter, Write};
+use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+
+const RAW_EVENT_SINK_BATCH_LIMIT: usize = 1024;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RawEventRecord {
@@ -61,16 +63,20 @@ impl RawEventJournal {
 pub struct RawEventJournalWriter {
     journal: RawEventJournal,
     open_path: Option<PathBuf>,
-    file: Option<LineWriter<File>>,
+    file: Option<BufWriter<File>>,
 }
 
 impl RawEventJournalWriter {
     pub fn append(&mut self, event: &RawEventRecord) -> Result<PathBuf> {
+        let path = self.append_buffered(event)?;
+        self.flush()?;
+        Ok(path)
+    }
+
+    fn append_buffered(&mut self, event: &RawEventRecord) -> Result<PathBuf> {
         let path = self.journal.partition_path(event);
         if self.open_path.as_ref() != Some(&path) {
-            if let Some(file) = &mut self.file {
-                file.flush()?;
-            }
+            self.flush()?;
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
@@ -79,7 +85,7 @@ impl RawEventJournalWriter {
                     .create(true)
                     .append(true)
                     .open(&path)?;
-            self.file = Some(LineWriter::new(file));
+            self.file = Some(BufWriter::new(file));
             self.open_path = Some(path.clone());
         }
 
@@ -90,11 +96,29 @@ impl RawEventJournalWriter {
         write_raw_event_jsonl_line(file, event)?;
         Ok(path)
     }
+
+    fn flush(&mut self) -> Result<()> {
+        if let Some(file) = &mut self.file {
+            file.flush()?;
+        }
+        Ok(())
+    }
 }
 
 fn write_raw_event_jsonl_line<W: Write>(writer: &mut W, event: &RawEventRecord) -> Result<()> {
     serde_json::to_writer(&mut *writer, event)?;
     writer.write_all(b"\n")?;
+    Ok(())
+}
+
+fn write_raw_event_jsonl_batch<W: Write>(
+    writer: &mut W,
+    events: &[RawEventRecord],
+) -> Result<()> {
+    for event in events {
+        write_raw_event_jsonl_line(writer, event)?;
+    }
+    writer.flush()?;
     Ok(())
 }
 
@@ -109,8 +133,18 @@ impl RawEventSink {
         let mut journal = RawEventJournal::new(root).writer();
         let handle = tokio::spawn(async move {
             while let Some(event) = receiver.recv().await {
-                journal.append(&event)?;
+                journal.append_buffered(&event)?;
+                let mut drained = 1;
+                while drained < RAW_EVENT_SINK_BATCH_LIMIT {
+                    let Ok(event) = receiver.try_recv() else {
+                        break;
+                    };
+                    journal.append_buffered(&event)?;
+                    drained += 1;
+                }
+                journal.flush()?;
             }
+            journal.flush()?;
             Ok(())
         });
         (Self { sender }, handle)
@@ -126,11 +160,12 @@ impl RawEventSink {
 #[cfg(test)]
 mod tests {
     use crate::raw_event_journal::{
-        RawEventJournal, RawEventRecord, RawEventSink, write_raw_event_jsonl_line,
+        RawEventJournal, RawEventRecord, RawEventSink, write_raw_event_jsonl_batch,
+        write_raw_event_jsonl_line,
     };
     use chrono::{TimeZone, Utc};
     use serde_json::json;
-    use std::io::{LineWriter, Write};
+    use std::io::{BufWriter, LineWriter, Write};
 
     #[test]
     fn appends_raw_events_to_source_stream_hour_partition() {
@@ -227,6 +262,34 @@ mod tests {
         let row: serde_json::Value = serde_json::from_str(raw.trim_end()).unwrap();
         assert_eq!(row["source_key"], "polymarket_clob_market_ws");
         assert_eq!(row["payload"]["best_bid"], "0.49");
+    }
+
+    #[test]
+    fn raw_event_jsonl_batch_flushes_multiple_rows_once() {
+        let first = RawEventRecord {
+            source_key: "polymarket_clob_market_ws".to_owned(),
+            stream_key: "best_bid_ask".to_owned(),
+            symbol: "token-1".to_owned(),
+            event_type: "best_bid_ask".to_owned(),
+            event_ts: Utc.timestamp_opt(1_780_302_400, 0).unwrap(),
+            observed_ts: Utc.timestamp_opt(1_780_302_401, 0).unwrap(),
+            payload: json!({"best_bid": "0.49", "best_ask": "0.51"}),
+        };
+        let mut second = first.clone();
+        second.symbol = "token-2".to_owned();
+        second.payload = json!({"best_bid": "0.39", "best_ask": "0.41"});
+        let mut inner = CountingWriter::default();
+        {
+            let mut writer = BufWriter::new(&mut inner);
+            write_raw_event_jsonl_batch(&mut writer, &[first, second]).unwrap();
+        }
+
+        assert_eq!(inner.write_calls, 1);
+        let raw = String::from_utf8(inner.bytes).unwrap();
+        let rows = raw.lines().collect::<Vec<_>>();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(serde_json::from_str::<serde_json::Value>(rows[0]).unwrap()["symbol"], "token-1");
+        assert_eq!(serde_json::from_str::<serde_json::Value>(rows[1]).unwrap()["symbol"], "token-2");
     }
 
     #[tokio::test]
