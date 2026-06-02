@@ -2,6 +2,7 @@ use anyhow::{Result, anyhow};
 use chrono::{DateTime, Datelike, Timelike, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
 use tokio::sync::mpsc;
@@ -28,18 +29,16 @@ impl RawEventJournal {
         Self { root }
     }
 
-    pub fn append(&self, event: &RawEventRecord) -> Result<PathBuf> {
-        let path = self.partition_path(event);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+    pub fn writer(&self) -> RawEventJournalWriter {
+        RawEventJournalWriter {
+            journal: self.clone(),
+            open_path: None,
+            file: None,
         }
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)?;
-        serde_json::to_writer(&mut file, event)?;
-        file.write_all(b"\n")?;
-        Ok(path)
+    }
+
+    pub fn append(&self, event: &RawEventRecord) -> Result<PathBuf> {
+        self.writer().append(event)
     }
 
     fn partition_path(&self, event: &RawEventRecord) -> PathBuf {
@@ -58,6 +57,38 @@ impl RawEventJournal {
     }
 }
 
+pub struct RawEventJournalWriter {
+    journal: RawEventJournal,
+    open_path: Option<PathBuf>,
+    file: Option<File>,
+}
+
+impl RawEventJournalWriter {
+    pub fn append(&mut self, event: &RawEventRecord) -> Result<PathBuf> {
+        let path = self.journal.partition_path(event);
+        if self.open_path.as_ref() != Some(&path) {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            self.file = Some(
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&path)?,
+            );
+            self.open_path = Some(path.clone());
+        }
+
+        let file = self
+            .file
+            .as_mut()
+            .expect("raw event journal writer opened file");
+        serde_json::to_writer(&mut *file, event)?;
+        file.write_all(b"\n")?;
+        Ok(path)
+    }
+}
+
 #[derive(Clone)]
 pub struct RawEventSink {
     sender: mpsc::Sender<RawEventRecord>,
@@ -66,7 +97,7 @@ pub struct RawEventSink {
 impl RawEventSink {
     pub fn start(root: PathBuf, buffer_size: usize) -> (Self, JoinHandle<Result<()>>) {
         let (sender, mut receiver) = mpsc::channel(buffer_size);
-        let journal = RawEventJournal::new(root);
+        let mut journal = RawEventJournal::new(root).writer();
         let handle = tokio::spawn(async move {
             while let Some(event) = receiver.recv().await {
                 journal.append(&event)?;
@@ -122,6 +153,43 @@ mod tests {
         assert_eq!(row["event_ts"], "2026-06-01T08:26:40Z");
         assert_eq!(row["observed_ts"], "2026-06-01T08:26:41Z");
         assert_eq!(row["payload"]["value"], "70000.1");
+    }
+
+    #[test]
+    fn streaming_writer_reuses_current_partition_and_rolls_hours() {
+        let root = temp_root("streaming-writer");
+        let journal = RawEventJournal::new(root.clone());
+        let first = RawEventRecord {
+            source_key: "polymarket_clob_market_ws".to_owned(),
+            stream_key: "best_bid_ask".to_owned(),
+            symbol: "token-1".to_owned(),
+            event_type: "best_bid_ask".to_owned(),
+            event_ts: Utc.timestamp_opt(1_780_302_400, 0).unwrap(),
+            observed_ts: Utc.timestamp_opt(1_780_302_401, 0).unwrap(),
+            payload: json!({"seq": 1}),
+        };
+        let mut second = first.clone();
+        second.observed_ts = Utc.timestamp_opt(1_780_302_402, 0).unwrap();
+        second.payload = json!({"seq": 2});
+        let mut next_hour = first.clone();
+        next_hour.event_ts = Utc.timestamp_opt(1_780_306_000, 0).unwrap();
+        next_hour.observed_ts = Utc.timestamp_opt(1_780_306_001, 0).unwrap();
+        next_hour.payload = json!({"seq": 3});
+
+        let mut writer = journal.writer();
+        let first_path = writer.append(&first).unwrap();
+        let second_path = writer.append(&second).unwrap();
+        let next_hour_path = writer.append(&next_hour).unwrap();
+
+        assert_eq!(first_path, second_path);
+        assert_ne!(first_path, next_hour_path);
+        let first_hour_lines = std::fs::read_to_string(first_path).unwrap();
+        assert_eq!(first_hour_lines.lines().count(), 2);
+        assert!(first_hour_lines.contains("\"seq\":1"));
+        assert!(first_hour_lines.contains("\"seq\":2"));
+        let next_hour_lines = std::fs::read_to_string(next_hour_path).unwrap();
+        assert_eq!(next_hour_lines.lines().count(), 1);
+        assert!(next_hour_lines.contains("\"seq\":3"));
     }
 
     #[tokio::test]

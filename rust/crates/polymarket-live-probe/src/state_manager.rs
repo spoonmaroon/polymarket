@@ -261,7 +261,10 @@ fn start_hot_decision_worker(
                 .read()
                 .expect("warmed contracts lock poisoned")
                 .clone();
-            let prices = latest_prices.history_snapshot().await;
+            let price_assets = hot_event_price_assets(&event, &warmed_snapshot);
+            let prices = latest_prices
+                .history_snapshot_for_assets(price_assets.iter().map(String::as_str))
+                .await;
             let orderbooks = book_state
                 .snapshot_for_token_ids(warmed_token_ids(&warmed_snapshot))
                 .await;
@@ -391,9 +394,41 @@ pub fn subscriptions_from_warmed_contracts(
 }
 
 fn warmed_token_ids(warmed_contracts: &[WarmedContract]) -> impl Iterator<Item = &str> {
-    warmed_contracts
-        .iter()
-        .flat_map(|contract| [contract.up.token_id.as_str(), contract.down.token_id.as_str()])
+    warmed_contracts.iter().flat_map(|contract| {
+        [
+            contract.up.token_id.as_str(),
+            contract.down.token_id.as_str(),
+        ]
+    })
+}
+
+fn hot_event_price_assets(
+    event: &HotPathEvent,
+    warmed_contracts: &[WarmedContract],
+) -> Vec<String> {
+    let mut assets = match event {
+        HotPathEvent::ChainlinkPrice { symbol, .. } => vec![price_asset_from_symbol(symbol)],
+        HotPathEvent::OrderBookTopOfBook { token_id, .. } => warmed_contracts
+            .iter()
+            .filter(|contract| {
+                token_id == &contract.up.token_id || token_id == &contract.down.token_id
+            })
+            .map(|contract| contract.window.asset.clone())
+            .collect(),
+    };
+    assets.retain(|asset| !asset.is_empty());
+    assets.sort();
+    assets.dedup();
+    assets
+}
+
+fn price_asset_from_symbol(symbol: &str) -> String {
+    symbol
+        .split_once('/')
+        .map(|(asset, _)| asset)
+        .unwrap_or(symbol)
+        .trim()
+        .to_ascii_uppercase()
 }
 
 fn feed_freshness(
@@ -761,5 +796,41 @@ mod tests {
         let token_ids = warmed_token_ids(&warmed).collect::<Vec<_>>();
 
         assert_eq!(token_ids, vec!["btc-up", "btc-down"]);
+    }
+
+    #[test]
+    fn hot_event_price_assets_include_only_triggered_asset() {
+        let start = 1_780_302_400;
+        let warmed = vec![warmed("BTC", start, "btc"), warmed("ETH", start, "eth")];
+        let ts = Utc.timestamp_opt(start + 10, 0).unwrap();
+
+        let chainlink_assets = hot_event_price_assets(
+            &HotPathEvent::ChainlinkPrice {
+                symbol: "eth/usd".to_owned(),
+                event_ts: ts,
+                observed_ts: ts,
+            },
+            &warmed,
+        );
+        let orderbook_assets = hot_event_price_assets(
+            &HotPathEvent::OrderBookTopOfBook {
+                token_id: "btc-up".to_owned(),
+                event_ts: ts,
+                observed_ts: ts,
+            },
+            &warmed,
+        );
+        let unknown_assets = hot_event_price_assets(
+            &HotPathEvent::OrderBookTopOfBook {
+                token_id: "unknown-token".to_owned(),
+                event_ts: ts,
+                observed_ts: ts,
+            },
+            &warmed,
+        );
+
+        assert_eq!(chainlink_assets, vec!["ETH"]);
+        assert_eq!(orderbook_assets, vec!["BTC"]);
+        assert!(unknown_assets.is_empty());
     }
 }

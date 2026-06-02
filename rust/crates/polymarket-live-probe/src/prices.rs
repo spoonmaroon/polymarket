@@ -6,7 +6,7 @@ use polymarket_runtime_types::{FeedFreshness, NormalizedPriceTick, PriceDisagree
 use rust_decimal::Decimal;
 use serde::Deserialize;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -95,6 +95,28 @@ impl LatestPrices {
     pub async fn history_snapshot(&self) -> Vec<NormalizedPriceTick> {
         let inner = self.inner.read().expect("latest price lock poisoned");
         inner.history.clone()
+    }
+
+    pub async fn history_snapshot_for_assets<'a, I>(&self, assets: I) -> Vec<NormalizedPriceTick>
+    where
+        I: IntoIterator<Item = &'a str>,
+    {
+        let assets = assets
+            .into_iter()
+            .map(normalize_asset)
+            .filter(|asset| !asset.is_empty())
+            .collect::<HashSet<_>>();
+        if assets.is_empty() {
+            return Vec::new();
+        }
+
+        let inner = self.inner.read().expect("latest price lock poisoned");
+        inner
+            .history
+            .iter()
+            .filter(|tick| assets.contains(&price_symbol_asset(&tick.symbol)))
+            .cloned()
+            .collect()
     }
 
     pub async fn latest_at_or_before(
@@ -221,6 +243,19 @@ impl ChainlinkStreamManager {
 
 fn normalize_price_symbol(symbol: &str) -> String {
     symbol.trim().to_ascii_uppercase()
+}
+
+fn normalize_asset(asset: &str) -> String {
+    asset.trim().to_ascii_uppercase()
+}
+
+fn price_symbol_asset(symbol: &str) -> String {
+    normalize_asset(
+        symbol
+            .split_once('/')
+            .map(|(asset, _)| asset)
+            .unwrap_or(symbol),
+    )
 }
 
 pub fn parse_kraken_xbtusd_ticker(
@@ -824,6 +859,36 @@ mod tests {
                 .price,
             Decimal::new(70_200, 0)
         );
+    }
+
+    #[tokio::test]
+    async fn latest_prices_snapshots_history_for_requested_assets_only() {
+        let store = LatestPrices::default();
+        let t0 = "2026-06-01T20:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        store
+            .update(chainlink_tick("BTC/USD", t0, Decimal::new(70_000, 0)))
+            .await;
+        store
+            .update(chainlink_tick(
+                "ETH/USD",
+                t0 + chrono::Duration::seconds(1),
+                Decimal::new(2_000, 0),
+            ))
+            .await;
+        store
+            .update(chainlink_tick(
+                "BTC/USD",
+                t0 + chrono::Duration::seconds(2),
+                Decimal::new(70_200, 0),
+            ))
+            .await;
+
+        let history = store.history_snapshot_for_assets(["btc"]).await;
+
+        assert_eq!(history.len(), 2);
+        assert!(history.iter().all(|tick| tick.symbol == "BTC/USD"));
+        assert_eq!(history[0].price, Decimal::new(70_000, 0));
+        assert_eq!(history[1].price, Decimal::new(70_200, 0));
     }
 
     #[test]
