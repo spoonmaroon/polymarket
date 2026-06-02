@@ -53,11 +53,6 @@ impl NormalizedOrderBook {
         };
         let bid_size_top = best_bid_level.map(|level| level.size);
         let ask_size_top = best_ask_level.map(|level| level.size);
-        let depth_json = serde_json::json!({
-            "bids": bids,
-            "asks": asks,
-        });
-
         Self {
             venue: "polymarket".to_owned(),
             source_key: "polymarket_rust_sdk".to_owned(),
@@ -75,7 +70,7 @@ impl NormalizedOrderBook {
             ask_size_top,
             bids,
             asks,
-            depth_json,
+            depth_json: serde_json::Value::Null,
         }
     }
 }
@@ -126,5 +121,33 @@ mod tests {
         assert_eq!(book.spread, Some(Decimal::new(2, 2)));
         assert_eq!(book.bid_size_top, Some(Decimal::new(8, 0)));
         assert_eq!(book.ask_size_top, Some(Decimal::new(9, 0)));
+    }
+
+    #[test]
+    fn from_levels_does_not_build_duplicate_depth_json() {
+        let ts = "2026-06-01T20:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let book = NormalizedOrderBook::from_levels(
+            OrderBookMeta {
+                market_slug: "btc-updown-5m-1780301700".to_owned(),
+                contract_id: "market-1".to_owned(),
+                token_id: "token-1".to_owned(),
+                asset: "BTC".to_owned(),
+                side: "UP".to_owned(),
+                event_ts: ts,
+                observed_ts: ts,
+            },
+            vec![BookLevel {
+                price: Decimal::new(50, 2),
+                size: Decimal::new(8, 0),
+            }],
+            vec![BookLevel {
+                price: Decimal::new(52, 2),
+                size: Decimal::new(9, 0),
+            }],
+        );
+
+        assert_eq!(book.bids.len(), 1);
+        assert_eq!(book.asks.len(), 1);
+        assert!(book.depth_json.is_null());
     }
 }
