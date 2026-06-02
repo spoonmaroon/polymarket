@@ -161,12 +161,22 @@ def _complete_jsonl_byte_limit(path: Path, start_byte_offset: int, file_size: in
     if file_size <= start_byte_offset:
         return start_byte_offset
     with path.open("rb") as handle:
-        handle.seek(start_byte_offset)
-        chunk = handle.read(file_size - start_byte_offset)
-    last_newline = chunk.rfind(b"\n")
-    if last_newline < 0:
-        return start_byte_offset
-    return start_byte_offset + last_newline + 1
+        handle.seek(file_size - 1)
+        if handle.read(1) == b"\n":
+            return file_size
+
+        search_end = file_size
+        chunk_size = 64 * 1024
+        while search_end > start_byte_offset:
+            read_start = max(start_byte_offset, search_end - chunk_size)
+            handle.seek(read_start)
+            chunk = handle.read(search_end - read_start)
+            last_newline = chunk.rfind(b"\n")
+            if last_newline >= 0:
+                return read_start + last_newline + 1
+            search_end = read_start
+
+    return start_byte_offset
 
 
 def _price_ticks_from_row(row: dict[str, Any]) -> tuple[PriceObservation, ...]:

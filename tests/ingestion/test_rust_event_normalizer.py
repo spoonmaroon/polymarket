@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+from io import BytesIO
 from pathlib import Path
+from typing import cast
 
 import duckdb
 
 from polymarket_engine.ingestion.rust_event_normalizer import (
+    _complete_jsonl_byte_limit,
     _iter_jsonl,
     normalize_rust_event_file,
     normalize_rust_event_tree,
@@ -373,6 +376,17 @@ def test_jsonl_iterator_stops_at_initial_byte_limit(tmp_path: Path) -> None:
     assert rows == ({"source_key": "one"},)
 
 
+def test_complete_jsonl_byte_limit_does_not_scan_complete_tail() -> None:
+    raw_bytes = (b'{"source_key":"one"}\n' * 10_000)
+    path = _FakeBinaryPath(raw_bytes)
+
+    limit = _complete_jsonl_byte_limit(cast(Path, path), start_byte_offset=0, file_size=len(raw_bytes))
+
+    assert limit == len(raw_bytes)
+    assert path.last_reader is not None
+    assert path.last_reader.bytes_read <= 4096
+
+
 def _write_jsonl(path: Path, *rows: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -404,3 +418,26 @@ def _chainlink_row(symbol: str, event_ts: str, observed_ts: str, value: float) -
             },
         },
     }
+
+
+class _TrackingReader(BytesIO):
+    def __init__(self, value: bytes) -> None:
+        super().__init__(value)
+        self.bytes_read = 0
+
+    def read(self, size: int | None = -1) -> bytes:
+        chunk = super().read(size)
+        self.bytes_read += len(chunk)
+        return chunk
+
+
+class _FakeBinaryPath:
+    def __init__(self, value: bytes) -> None:
+        self.value = value
+        self.last_reader: _TrackingReader | None = None
+
+    def open(self, mode: str = "r", *args: object, **kwargs: object) -> _TrackingReader:
+        if mode != "rb":
+            raise AssertionError(f"expected binary read mode, got {mode!r}")
+        self.last_reader = _TrackingReader(self.value)
+        return self.last_reader
