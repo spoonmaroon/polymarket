@@ -136,6 +136,70 @@ def test_sidecar_loop_reuses_process_and_sleeps_between_cycles(
     assert 0.0 < sleeps[0] <= 1.25
 
 
+def test_sidecar_loop_initial_cycle_normalizes_only_active_raw_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_root = tmp_path / "raw"
+    db_path = tmp_path / "state.duckdb"
+    status_path = tmp_path / "live" / "status.json"
+    health_path = tmp_path / "live" / "normalized_health.json"
+    old_ts = datetime(2026, 6, 2, 4, 0, tzinfo=timezone.utc)
+    start_ts = datetime(2026, 6, 2, 6, 0, tzinfo=timezone.utc)
+    asof_ts = start_ts + timedelta(minutes=2)
+    old_path = (
+        raw_root
+        / "polymarket_rtds_chainlink"
+        / "price_update"
+        / "date=2026-06-02"
+        / "hour=04"
+        / "events.jsonl"
+    )
+    active_path = (
+        raw_root
+        / "polymarket_rtds_chainlink"
+        / "price_update"
+        / "date=2026-06-02"
+        / "hour=06"
+        / "events.jsonl"
+    )
+    _write_jsonl(old_path, _chainlink_row("ETH/USD", old_ts, old_ts, 3_700.0))
+    _write_jsonl(active_path, _chainlink_row("BTC/USD", asof_ts, asof_ts, 70_125.0))
+    _write_status(status_path, start_ts=start_ts, asof_ts=asof_ts)
+    full_signature = (
+        rust_normalizer_sidecar._raw_file_signature(old_path),
+        rust_normalizer_sidecar._raw_file_signature(active_path),
+    )
+    active_signature = (full_signature[1],)
+    monkeypatch.setattr(
+        "polymarket_engine.ingestion.rust_normalizer_sidecar._raw_tree_signature",
+        lambda **_: full_signature,
+    )
+    monkeypatch.setattr(
+        "polymarket_engine.ingestion.rust_normalizer_sidecar._active_raw_tree_signature",
+        lambda **_: active_signature,
+    )
+    monkeypatch.setattr(
+        "polymarket_engine.ingestion.rust_normalizer_sidecar.time.sleep",
+        lambda _: None,
+    )
+
+    run_rust_normalizer_loop(
+        raw_root=raw_root,
+        db_path=db_path,
+        status_path=status_path,
+        normalized_health_path=health_path,
+        interval_seconds=0.0,
+        include_next=False,
+        max_cycles=1,
+    )
+
+    with duckdb.connect(str(db_path), read_only=True) as conn:
+        assert conn.execute(
+            "select symbol from core.price_ticks order by symbol"
+        ).fetchall() == [("BTC/USD",)]
+
+
 def test_sidecar_loop_skips_state_build_when_raw_and_status_are_idle(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

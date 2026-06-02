@@ -205,7 +205,7 @@ def run_rust_normalizer_loop(
                     raw_signature = _known_raw_tree_signature(previous_raw_signature)
 
             raw_signature_changed = False
-            if previous_raw_signature is None or reprocess_all:
+            if reprocess_all:
                 result = _run_rust_normalizer_cycle_with_store(
                     raw_root=raw_root,
                     store=store,
@@ -218,6 +218,33 @@ def run_rust_normalizer_loop(
                     status_mtime_ns=status_mtime_ns,
                     force_state_build=cycles_run == 0,
                 )
+                last_health_write_monotonic = cycle_started
+            elif previous_raw_signature is None:
+                active_raw_signature = _active_raw_tree_signature(raw_root=raw_root)
+                if active_raw_signature:
+                    result = _run_changed_rust_normalizer_cycle_with_store(
+                        changed_raw_signature=active_raw_signature,
+                        store=store,
+                        status_path=status_path,
+                        normalized_health_path=normalized_health_path,
+                        include_next=include_next,
+                        previous_status_mtime_ns=previous_status_mtime_ns,
+                        status_mtime_ns=status_mtime_ns,
+                        write_health=True,
+                    )
+                else:
+                    result = _run_rust_normalizer_cycle_with_store(
+                        raw_root=raw_root,
+                        store=store,
+                        status_path=status_path,
+                        normalized_health_path=normalized_health_path,
+                        include_next=include_next,
+                        reprocess_all=reprocess_all,
+                        apply_schema=False,
+                        previous_status_mtime_ns=previous_status_mtime_ns,
+                        status_mtime_ns=status_mtime_ns,
+                        force_state_build=True,
+                    )
                 last_health_write_monotonic = cycle_started
             else:
                 changed_raw_signature = _changed_raw_signature(
