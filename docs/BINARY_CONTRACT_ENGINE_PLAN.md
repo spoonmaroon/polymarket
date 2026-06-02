@@ -51,9 +51,17 @@ Core outputs:
 
 Engineering rule: the live decision should not depend on one fragile formula. Monte Carlo is the primary estimator; closed-form formulas are debugging baselines.
 
+Task 6 implementation status: probability outputs and Monte Carlo scores are offline derived artifacts from an as-of `DecisionState`/`ProbabilityInput`. They are replay and research outputs only, not live authority, not paper trading, and not execution.
+
 ### 4. Monte Carlo Path Generation
 
 Purpose: estimate both terminal and path-sensitive probabilities from as-of state. The simulation must start from an explicit prior distribution: the engine's pre-expiry belief about realistic remaining BTC or ETH paths before the future is known.
+
+Current offline baseline:
+- `score_paths` scores explicit replay/research paths and returns `ProbabilityOutput`.
+- `run_seeded_monte_carlo` uses a deterministic NumPy lognormal baseline seeded from `sigma_tau`.
+- both paths consume only as-of `ProbabilityInput` state and strict JSON diagnostics.
+- this module must not enter the hot decision path, read live feeds directly, place orders, sign messages, or create live or paper execution authority.
 
 First-pass prior:
 - empirical conditional prior from historical BTC/ETH path fragments available before the decision time
@@ -231,6 +239,8 @@ The sections above describe what the system needs. This section describes how th
 The first version should be a read-only research engine. It should not place orders. The active runtime split is deliberate: Rust owns hot read-only state and hot `DecisionState` snapshot persistence; DuckDB/Python own normalization, replay, verification, feature construction, research notebooks, backtests, and the FastAPI service. The system should be built so every calculation can be replayed from stored raw journals and verified snapshots.
 
 The next probability module should consume verified as-of `DecisionState` rows, not ad hoc live feed reads. Monte Carlo and probability outputs should wait until hot-state replay equivalence is proven by comparing append-only Rust hot snapshots against DuckDB/Python reconstruction.
+
+The Task 6 offline Monte Carlo module is an early readiness slice under that boundary: it consumes `ProbabilityInput` derived from as-of state, emits `ProbabilityOutput` for replay/research, and has no authority over live decisions, paper trading, or execution.
 
 ### Proposed Package Layout
 

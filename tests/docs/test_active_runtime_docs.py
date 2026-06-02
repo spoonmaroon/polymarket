@@ -70,6 +70,18 @@ def test_engine_plan_reflects_active_runtime_boundary() -> None:
     assert "`polymarket-engine collect` is retired and must fail closed" in text
 
 
+def test_engine_plan_keeps_monte_carlo_offline_and_replay_derived() -> None:
+    text = (ROOT / "docs" / "BINARY_CONTRACT_ENGINE_PLAN.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "offline derived artifacts from an as-of `DecisionState`/`ProbabilityInput`" in text
+    assert "replay and research outputs only, not live authority" in text
+    assert "not paper trading, and not execution" in text
+    assert "must not enter the hot decision path" in text
+    assert "no authority over live decisions, paper trading, or execution" in text
+
+
 def test_spoon_docs_include_latency_probe_without_order_placement() -> None:
     text = (ROOT / "docs" / "SPOON_DEPLOYMENT.md").read_text(encoding="utf-8")
 
