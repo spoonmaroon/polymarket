@@ -123,7 +123,7 @@ def test_normalizer_hot_loop_omits_state_snapshot_backfill() -> None:
         ROOT / "deploy" / "normalizer" / "normalizer-entrypoint.sh"
     ).read_text(encoding="utf-8")
 
-    assert "polymarket-engine normalize-rust-events" in entrypoint
+    assert "run-rust-normalizer-sidecar" in entrypoint
     assert "--include-state-snapshots" not in entrypoint
 
 
@@ -137,7 +137,11 @@ def test_normalizer_defaults_to_one_second_checkpointed_cadence() -> None:
 
     assert "POLYMARKET_NORMALIZER_INTERVAL_SECONDS:-1" in compose
     assert 'INTERVAL_SECONDS="${POLYMARKET_NORMALIZER_INTERVAL_SECONDS:-1}"' in entrypoint
-    assert "normalizer_cycle elapsed_ms=" in entrypoint
+    assert "run-rust-normalizer-sidecar" in entrypoint
+    assert "exec polymarket-engine" in entrypoint
+    assert "while true" not in entrypoint
+    assert '--interval-seconds "$INTERVAL_SECONDS"' in entrypoint
+    assert '--normalized-health-path "$NORMALIZED_HEALTH_PATH"' in entrypoint
 
 
 def test_deploy_script_requires_running_normalizer_before_success() -> None:

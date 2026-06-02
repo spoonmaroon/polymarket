@@ -103,6 +103,28 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Also build states for the next warmed contract window.",
     )
 
+    sidecar = subparsers.add_parser("run-rust-normalizer-sidecar")
+    sidecar.add_argument("--raw-root", type=Path, required=True)
+    sidecar.add_argument("--duckdb-path", type=Path, required=True)
+    sidecar.add_argument("--status-path", type=Path, required=True)
+    sidecar.add_argument("--normalized-health-path", type=Path, required=True)
+    sidecar.add_argument("--interval-seconds", type=float, default=1.0)
+    sidecar.add_argument(
+        "--include-next",
+        action="store_true",
+        help="Also build states for the next warmed contract window.",
+    )
+    sidecar.add_argument(
+        "--reprocess-all",
+        action="store_true",
+        help="Ignore raw-file byte checkpoints and reprocess complete JSONL files.",
+    )
+    sidecar.add_argument(
+        "--once",
+        action="store_true",
+        help="Run one sidecar cycle and exit.",
+    )
+
     verify_hot_replay = subparsers.add_parser("verify-hot-decision-replay")
     verify_hot_replay.add_argument("--raw-root", type=Path, required=True)
     verify_hot_replay.add_argument("--duckdb-path", type=Path, required=True)
@@ -125,6 +147,8 @@ async def run_collect_command(argv: list[str] | None = None) -> int:
         return _run_write_normalized_health(args)
     if args.command == "build-current-decision-states":
         return _run_build_current_decision_states(args)
+    if args.command == "run-rust-normalizer-sidecar":
+        return _run_rust_normalizer_sidecar(args)
     if args.command == "verify-hot-decision-replay":
         return _run_verify_hot_decision_replay(args)
     if args.command != "collect":
@@ -212,6 +236,36 @@ def _run_build_current_decision_states(args: argparse.Namespace) -> int:
             },
             sort_keys=True,
         )
+    )
+    return 0
+
+
+def _run_rust_normalizer_sidecar(args: argparse.Namespace) -> int:
+    from polymarket_engine.ingestion.rust_normalizer_sidecar import (
+        run_rust_normalizer_cycle,
+        run_rust_normalizer_loop,
+    )
+
+    if args.once:
+        result = run_rust_normalizer_cycle(
+            raw_root=args.raw_root,
+            db_path=args.duckdb_path,
+            status_path=args.status_path,
+            normalized_health_path=args.normalized_health_path,
+            include_next=args.include_next,
+            reprocess_all=args.reprocess_all,
+            apply_schema=True,
+        )
+        print(json.dumps(result.to_json_dict(), sort_keys=True, separators=(",", ":")))
+        return 0
+    run_rust_normalizer_loop(
+        raw_root=args.raw_root,
+        db_path=args.duckdb_path,
+        status_path=args.status_path,
+        normalized_health_path=args.normalized_health_path,
+        interval_seconds=args.interval_seconds,
+        include_next=args.include_next,
+        reprocess_all=args.reprocess_all,
     )
     return 0
 

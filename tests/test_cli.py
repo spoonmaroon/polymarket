@@ -147,6 +147,33 @@ def test_parse_normalize_rust_events_reprocess_all_arg() -> None:
     assert args.reprocess_all is True
 
 
+def test_parse_run_rust_normalizer_sidecar_args() -> None:
+    args = parse_args(
+        [
+            "run-rust-normalizer-sidecar",
+            "--raw-root",
+            "data/raw",
+            "--duckdb-path",
+            "data/db/polymarket.duckdb",
+            "--status-path",
+            "data/live/status.json",
+            "--normalized-health-path",
+            "data/live/normalized_health.json",
+            "--interval-seconds",
+            "1",
+            "--once",
+        ]
+    )
+
+    assert args.command == "run-rust-normalizer-sidecar"
+    assert args.raw_root == Path("data/raw")
+    assert args.duckdb_path == Path("data/db/polymarket.duckdb")
+    assert args.status_path == Path("data/live/status.json")
+    assert args.normalized_health_path == Path("data/live/normalized_health.json")
+    assert args.interval_seconds == 1.0
+    assert args.once is True
+
+
 def test_parse_write_normalized_health_args() -> None:
     args = parse_args(
         [
@@ -350,6 +377,133 @@ async def test_run_write_normalized_health_command_writes_status(
         "core.orderbook_snapshots",
         "features.asof_state_inputs",
     }
+
+
+@pytest.mark.anyio
+async def test_run_rust_normalizer_sidecar_once_command(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    raw_root = tmp_path / "raw"
+    raw_path = (
+        raw_root
+        / "polymarket_rtds_chainlink"
+        / "price_update"
+        / "date=2026-06-02"
+        / "hour=06"
+        / "events.jsonl"
+    )
+    _write_jsonl(
+        raw_path,
+        [
+            {
+                "source_key": "polymarket_rtds_chainlink",
+                "stream_key": "price_update",
+                "symbol": "BTC/USD",
+                "event_type": "chainlink_price",
+                "event_ts": "2026-06-02T06:00:00+00:00",
+                "observed_ts": "2026-06-02T06:00:00+00:00",
+                "payload": {"value": "70000.0"},
+            }
+        ],
+    )
+    (raw_root / ".polymarket_archive_root").write_text("", encoding="utf-8")
+    status_path = tmp_path / "live" / "status.json"
+    status_path.parent.mkdir(parents=True, exist_ok=True)
+    status_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "rust-live-probe-state-manager-v1",
+                "mode": "state-manager",
+                "generated_at": "2026-06-02T06:02:00+00:00",
+                "current": [
+                    {
+                        "window": {
+                            "asset": "BTC",
+                            "interval": "5m",
+                            "start_ts": "2026-06-02T06:00:00+00:00",
+                            "end_ts": "2026-06-02T06:05:00+00:00",
+                        },
+                        "up": {"asset": "BTC", "side": "Up", "token_id": "up-token"},
+                        "down": {"asset": "BTC", "side": "Down", "token_id": "down-token"},
+                    }
+                ],
+                "orderbooks": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    health_path = tmp_path / "live" / "normalized_health.json"
+
+    result = await cli.run_collect_command(
+        [
+            "run-rust-normalizer-sidecar",
+            "--raw-root",
+            str(raw_root),
+            "--duckdb-path",
+            str(tmp_path / "state.duckdb"),
+            "--status-path",
+            str(status_path),
+            "--normalized-health-path",
+            str(health_path),
+            "--once",
+        ]
+    )
+
+    assert result == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["rows_read"] == 1
+    assert payload["bytes_read"] > 0
+    assert payload["elapsed_ms"] >= 0
+    assert payload["contracts_upserted"] == 2
+    assert health_path.exists()
+
+
+@pytest.mark.anyio
+async def test_run_rust_normalizer_sidecar_loop_command_dispatches(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_loop(**kwargs: object) -> None:
+        calls.append(kwargs)
+
+    monkeypatch.setattr(
+        "polymarket_engine.ingestion.rust_normalizer_sidecar.run_rust_normalizer_loop",
+        fake_loop,
+    )
+
+    result = await cli.run_collect_command(
+        [
+            "run-rust-normalizer-sidecar",
+            "--raw-root",
+            str(tmp_path / "raw"),
+            "--duckdb-path",
+            str(tmp_path / "state.duckdb"),
+            "--status-path",
+            str(tmp_path / "live" / "status.json"),
+            "--normalized-health-path",
+            str(tmp_path / "live" / "normalized_health.json"),
+            "--interval-seconds",
+            "1.5",
+            "--include-next",
+            "--reprocess-all",
+        ]
+    )
+
+    assert result == 0
+    assert calls == [
+        {
+            "raw_root": tmp_path / "raw",
+            "db_path": tmp_path / "state.duckdb",
+            "status_path": tmp_path / "live" / "status.json",
+            "normalized_health_path": tmp_path / "live" / "normalized_health.json",
+            "interval_seconds": 1.5,
+            "include_next": True,
+            "reprocess_all": True,
+        }
+    ]
 
 
 @pytest.mark.anyio
