@@ -363,18 +363,24 @@ def _run_changed_rust_normalizer_cycle_with_store(
         missing_paths = tuple(path for path in changed_paths if path not in checkpoints)
         if missing_paths:
             checkpoints.update(store.raw_file_checkpoints(missing_paths))
-    results = tuple(
-        normalize_rust_event_file(
-            path=row.path,
-            store=store,
-            reprocess_all=False,
-            checkpoint=checkpoints.get(row.path),
-            checkpoint_loaded=True,
-            last_price_state_by_symbol=price_state_cache,
-            last_orderbook_state_by_token=orderbook_state_cache,
+    result_rows: list[RustEventNormalizeResult] = []
+    for row in changed_raw_signature:
+        checkpoint = checkpoints.get(row.path)
+        if checkpoint == row.size_bytes:
+            result_rows.append(_cached_checkpoint_result(row, checkpoint))
+            continue
+        result_rows.append(
+            normalize_rust_event_file(
+                path=row.path,
+                store=store,
+                reprocess_all=False,
+                checkpoint=checkpoint,
+                checkpoint_loaded=True,
+                last_price_state_by_symbol=price_state_cache,
+                last_orderbook_state_by_token=orderbook_state_cache,
+            )
         )
-        for row in changed_raw_signature
-    )
+    results = tuple(result_rows)
     if checkpoint_cache is not None:
         for result in results:
             checkpoint_cache[result.path] = result.end_byte_offset
@@ -491,6 +497,22 @@ def _normalizer_summary(results: tuple[RustEventNormalizeResult, ...]) -> dict[s
         "price_ticks_written": sum(result.price_ticks_written for result in results),
         "orderbooks_written": sum(result.orderbooks_written for result in results),
     }
+
+
+def _cached_checkpoint_result(
+    row: RawTreeFileSignature,
+    checkpoint: int,
+) -> RustEventNormalizeResult:
+    return RustEventNormalizeResult(
+        path=row.path,
+        file_id="",
+        start_byte_offset=checkpoint,
+        end_byte_offset=checkpoint,
+        file_size_bytes=row.size_bytes,
+        rows_read=0,
+        price_ticks_written=0,
+        orderbooks_written=0,
+    )
 
 
 def _observations_written(summary: dict[str, int]) -> bool:

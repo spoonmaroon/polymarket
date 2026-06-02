@@ -649,6 +649,64 @@ def test_changed_sidecar_cycle_reuses_cached_raw_checkpoints(tmp_path: Path) -> 
     assert store.raw_file_checkpoint_calls == 0
 
 
+def test_changed_sidecar_cycle_skips_path_at_cached_checkpoint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_root = tmp_path / "raw"
+    db_path = tmp_path / "state.duckdb"
+    status_path = tmp_path / "live" / "status.json"
+    health_path = tmp_path / "live" / "normalized_health.json"
+    start_ts = datetime(2026, 6, 2, 6, 0, tzinfo=timezone.utc)
+    asof_ts = start_ts + timedelta(minutes=2)
+    _write_raw_tree(raw_root=raw_root, start_ts=start_ts, asof_ts=asof_ts)
+    _write_status(status_path, start_ts=start_ts, asof_ts=asof_ts)
+    changed_path = (
+        raw_root
+        / "polymarket_clob_market_ws"
+        / "best_bid_ask"
+        / "date=2026-06-02"
+        / "hour=06"
+        / "events.jsonl"
+    )
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    changed_signature = (rust_normalizer_sidecar._raw_file_signature(changed_path),)
+    checkpoint_cache = {changed_path: changed_path.stat().st_size}
+    real_normalize = getattr(rust_normalizer_sidecar, "normalize_rust_event_file")
+    normalize_calls = 0
+
+    def counting_normalize(*args: Any, **kwargs: Any) -> Any:
+        nonlocal normalize_calls
+        normalize_calls += 1
+        return real_normalize(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "polymarket_engine.ingestion.rust_normalizer_sidecar.normalize_rust_event_file",
+        counting_normalize,
+    )
+    status_mtime = status_path.stat().st_mtime_ns
+
+    result = rust_normalizer_sidecar._run_changed_rust_normalizer_cycle_with_store(
+        changed_raw_signature=changed_signature,
+        store=store,
+        status_path=status_path,
+        normalized_health_path=health_path,
+        include_next=False,
+        previous_status_mtime_ns=status_mtime,
+        status_mtime_ns=status_mtime,
+        write_health=False,
+        checkpoint_cache=checkpoint_cache,
+    )
+
+    assert normalize_calls == 0
+    assert result.files == 1
+    assert result.files_skipped == 1
+    assert result.bytes_read == 0
+    assert result.rows_read == 0
+    assert checkpoint_cache[changed_path] == changed_path.stat().st_size
+
+
 def test_sidecar_loop_throttles_changed_cycle_normalized_health_writes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
