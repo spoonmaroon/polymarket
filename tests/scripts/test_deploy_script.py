@@ -68,9 +68,9 @@ def test_collector_fast_status_keeps_five_second_snapshot_journal() -> None:
         ROOT / "deploy" / "collector" / "collector-entrypoint.sh"
     ).read_text(encoding="utf-8")
 
-    assert "POLYMARKET_STATUS_INTERVAL_MS=250" in env_example
-    assert "POLYMARKET_STATUS_INTERVAL_MS:-250" in compose
-    assert 'STATUS_INTERVAL_MS="${POLYMARKET_STATUS_INTERVAL_MS:-250}"' in entrypoint
+    assert "POLYMARKET_STATUS_INTERVAL_MS=100" in env_example
+    assert "POLYMARKET_STATUS_INTERVAL_MS:-100" in compose
+    assert 'STATUS_INTERVAL_MS="${POLYMARKET_STATUS_INTERVAL_MS:-100}"' in entrypoint
     assert "POLYMARKET_STATE_SNAPSHOT_INTERVAL_MS=5000" in env_example
     assert "POLYMARKET_STATE_SNAPSHOT_INTERVAL_MS:-5000" in compose
     assert (
