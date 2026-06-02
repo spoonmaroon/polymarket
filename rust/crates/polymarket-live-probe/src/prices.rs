@@ -431,16 +431,15 @@ async fn run_chainlink_symbols_stream_with_client(
                 if let Some(sink) = &raw_event_sink {
                     sink.try_record(chainlink_raw_event_record_from_tick(&message, &tick))?;
                 }
-                if update.outcome.is_updated() {
-                    if let Some(sink) = &hot_event_sink {
-                        if let Err(error) = sink.try_send(HotPathEvent::ChainlinkPrice {
-                            symbol: tick.symbol.clone(),
-                            event_ts: tick.event_ts,
-                            observed_ts: tick.observed_ts,
-                        }) {
-                            tracing::warn!(error = %error, "dropped Chainlink hot path event");
-                        }
-                    }
+                if update.outcome.is_updated()
+                    && let Some(sink) = &hot_event_sink
+                    && let Err(error) = sink.try_send(HotPathEvent::ChainlinkPrice {
+                        symbol: tick.symbol.clone(),
+                        event_ts: tick.event_ts,
+                        observed_ts: tick.observed_ts,
+                    })
+                {
+                    tracing::warn!(error = %error, "dropped Chainlink hot path event");
                 }
                 matched_tracked_symbol = true;
             }

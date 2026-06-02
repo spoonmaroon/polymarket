@@ -99,11 +99,10 @@ impl HotDecisionJournalWriter {
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            let file =
-                std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&path)?;
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)?;
             self.file = Some(BufWriter::new(file));
             self.open_path = Some(path.clone());
         }
@@ -124,15 +123,13 @@ impl HotDecisionJournalWriter {
     }
 }
 
-fn write_hot_decision_jsonl_line<W: Write>(
-    writer: &mut W,
-    state: &HotDecisionState,
-) -> Result<()> {
+fn write_hot_decision_jsonl_line<W: Write>(writer: &mut W, state: &HotDecisionState) -> Result<()> {
     serde_json::to_writer(&mut *writer, state)?;
     writer.write_all(b"\n")?;
     Ok(())
 }
 
+#[cfg(test)]
 fn write_hot_decision_jsonl_batch<W: Write>(
     writer: &mut W,
     states: &[HotDecisionState],
@@ -227,11 +224,11 @@ impl HotDecisionSink {
 mod tests {
     use super::*;
     use chrono::{Duration, TimeZone, Utc};
-    use std::io::{BufWriter, Write};
     use polymarket_runtime_types::{
         ContractSide, ContractToken, ContractWindow, HOT_DECISION_STATE_SCHEMA_VERSION,
         HotDecisionLatency, HotDecisionQualityFlag, HotDecisionTriggerKind, WarmedContract,
     };
+    use std::io::{BufWriter, Write};
 
     #[tokio::test]
     async fn sink_records_hot_decision_without_writing_on_hot_path() {

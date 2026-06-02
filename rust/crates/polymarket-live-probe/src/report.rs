@@ -5,10 +5,10 @@ use polymarket_runtime_types::{
     ProbeReport, WarmStateSnapshot, WarmedContract,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::path::Path;
 #[cfg(test)]
 use std::cell::Cell;
+use std::collections::HashMap;
+use std::path::Path;
 use std::time::Instant;
 
 use crate::hot_decision::HotDecisionTelemetrySnapshot;
@@ -625,11 +625,7 @@ mod tests {
             next_next: vec![],
             chainlink_prices: vec![],
             proxy_prices: vec![],
-            orderbooks: vec![sample_orderbook(
-                "token-1",
-                generated_base,
-                generated_base,
-            )],
+            orderbooks: vec![sample_orderbook("token-1", generated_base, generated_base)],
             freshness: vec![],
             health_flags: vec![],
         };
