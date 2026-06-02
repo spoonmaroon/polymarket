@@ -133,7 +133,7 @@ def _run_rust_normalizer_cycle_with_store(
     build_state = status_mtime_ns is not None and (
         force_state_build
         or reprocess_all
-        or summary["rows_read"] > 0
+        or _observations_written(summary)
         or status_mtime_ns != previous_status_mtime_ns
     )
 
@@ -185,6 +185,8 @@ def run_rust_normalizer_loop(
         previous_status_mtime_ns: int | None = None
         previous_raw_signature: tuple[RawTreeFileSignature, ...] | None = None
         raw_checkpoint_cache: dict[Path, int] = {}
+        price_state_cache: dict[tuple[str, str], tuple[object, ...]] = {}
+        orderbook_state_cache: dict[tuple[str, str], tuple[object, ...]] = {}
         last_health_write_monotonic: float | None = None
         while True:
             cycle_started = time.monotonic()
@@ -233,6 +235,8 @@ def run_rust_normalizer_loop(
                         status_mtime_ns=status_mtime_ns,
                         write_health=True,
                         checkpoint_cache=raw_checkpoint_cache,
+                        price_state_cache=price_state_cache,
+                        orderbook_state_cache=orderbook_state_cache,
                     )
                 else:
                     result = _run_rust_normalizer_cycle_with_store(
@@ -273,6 +277,8 @@ def run_rust_normalizer_loop(
                         status_mtime_ns=status_mtime_ns,
                         write_health=write_health,
                         checkpoint_cache=raw_checkpoint_cache,
+                        price_state_cache=price_state_cache,
+                        orderbook_state_cache=orderbook_state_cache,
                     )
                     if not result.health_skipped:
                         last_health_write_monotonic = cycle_started
@@ -329,6 +335,8 @@ def _run_changed_rust_normalizer_cycle_with_store(
     status_mtime_ns: int | None = None,
     write_health: bool = True,
     checkpoint_cache: dict[Path, int] | None = None,
+    price_state_cache: dict[tuple[str, str], tuple[object, ...]] | None = None,
+    orderbook_state_cache: dict[tuple[str, str], tuple[object, ...]] | None = None,
 ) -> RustNormalizerCycleResult:
     cycle_started = time.perf_counter()
     changed_paths = tuple(row.path for row in changed_raw_signature)
@@ -350,6 +358,8 @@ def _run_changed_rust_normalizer_cycle_with_store(
             reprocess_all=False,
             checkpoint=checkpoints.get(row.path),
             checkpoint_loaded=True,
+            last_price_state_by_symbol=price_state_cache,
+            last_orderbook_state_by_token=orderbook_state_cache,
         )
         for row in changed_raw_signature
     )
@@ -362,7 +372,7 @@ def _run_changed_rust_normalizer_cycle_with_store(
     if status_mtime_ns is None:
         status_mtime_ns = _file_mtime_ns(status_path)
     build_state = status_mtime_ns is not None and (
-        summary["rows_read"] > 0 or status_mtime_ns != previous_status_mtime_ns
+        _observations_written(summary) or status_mtime_ns != previous_status_mtime_ns
     )
 
     contracts_upserted = 0
@@ -464,6 +474,10 @@ def _normalizer_summary(results: tuple[RustEventNormalizeResult, ...]) -> dict[s
         "price_ticks_written": sum(result.price_ticks_written for result in results),
         "orderbooks_written": sum(result.orderbooks_written for result in results),
     }
+
+
+def _observations_written(summary: dict[str, int]) -> bool:
+    return summary["price_ticks_written"] > 0 or summary["orderbooks_written"] > 0
 
 
 def _idle_normalizer_summary(
