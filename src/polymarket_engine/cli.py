@@ -108,7 +108,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     sidecar.add_argument("--duckdb-path", type=Path, required=True)
     sidecar.add_argument("--status-path", type=Path, required=True)
     sidecar.add_argument("--normalized-health-path", type=Path, required=True)
-    sidecar.add_argument("--interval-seconds", type=float, default=1.0)
+    sidecar.add_argument("--interval-seconds", type=float, default=0.25)
     sidecar.add_argument(
         "--include-next",
         action="store_true",

@@ -149,6 +149,7 @@ def run_rust_normalizer_loop(
         store.apply_schema()
         cycles_run = 0
         while True:
+            cycle_started = time.monotonic()
             result = _run_rust_normalizer_cycle_with_store(
                 raw_root=raw_root,
                 store=store,
@@ -162,7 +163,13 @@ def run_rust_normalizer_loop(
             cycles_run += 1
             if max_cycles is not None and cycles_run >= max_cycles:
                 return
-            time.sleep(interval_seconds)
+            time.sleep(
+                _cadence_sleep_seconds(
+                    cycle_started=cycle_started,
+                    interval_seconds=interval_seconds,
+                    now=time.monotonic(),
+                )
+            )
 
 
 def _normalizer_summary(results: tuple[RustEventNormalizeResult, ...]) -> dict[str, int]:
@@ -180,6 +187,15 @@ def _normalizer_summary(results: tuple[RustEventNormalizeResult, ...]) -> dict[s
 
 def _elapsed_ms(start: float, end: float) -> int:
     return max(0, int(round((end - start) * 1000)))
+
+
+def _cadence_sleep_seconds(
+    *,
+    cycle_started: float,
+    interval_seconds: float,
+    now: float,
+) -> float:
+    return max(0.0, interval_seconds - (now - cycle_started))
 
 
 def _cycle_log_line(result: RustNormalizerCycleResult) -> str:

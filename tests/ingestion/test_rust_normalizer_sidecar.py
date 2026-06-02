@@ -9,6 +9,7 @@ import duckdb
 import pytest
 
 from polymarket_engine.ingestion.rust_normalizer_sidecar import (
+    _cadence_sleep_seconds,
     run_rust_normalizer_cycle,
     run_rust_normalizer_loop,
 )
@@ -76,6 +77,19 @@ def test_sidecar_cycle_writes_health_when_status_is_missing(tmp_path: Path) -> N
     assert health_path.exists()
 
 
+def test_cadence_sleep_subtracts_cycle_elapsed_time() -> None:
+    assert _cadence_sleep_seconds(
+        cycle_started=10.0,
+        interval_seconds=0.25,
+        now=10.04,
+    ) == pytest.approx(0.21)
+    assert _cadence_sleep_seconds(
+        cycle_started=10.0,
+        interval_seconds=0.25,
+        now=10.40,
+    ) == 0.0
+
+
 def test_sidecar_loop_reuses_process_and_sleeps_between_cycles(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -113,7 +127,8 @@ def test_sidecar_loop_reuses_process_and_sleeps_between_cycles(
     assert len(lines) == 2
     assert _log_values(lines[0])["rows_read"] == "4"
     assert _log_values(lines[1])["rows_read"] == "0"
-    assert sleeps == [1.25]
+    assert len(sleeps) == 1
+    assert 0.0 < sleeps[0] <= 1.25
 
 
 def test_sidecar_loop_reuses_one_duckdb_connection_across_cycles(

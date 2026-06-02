@@ -174,6 +174,24 @@ def test_parse_run_rust_normalizer_sidecar_args() -> None:
     assert args.once is True
 
 
+def test_run_rust_normalizer_sidecar_defaults_to_quarter_second_cadence() -> None:
+    args = parse_args(
+        [
+            "run-rust-normalizer-sidecar",
+            "--raw-root",
+            "data/raw",
+            "--duckdb-path",
+            "data/db/polymarket.duckdb",
+            "--status-path",
+            "data/live/status.json",
+            "--normalized-health-path",
+            "data/live/normalized_health.json",
+        ]
+    )
+
+    assert args.interval_seconds == 0.25
+
+
 def test_parse_write_normalized_health_args() -> None:
     args = parse_args(
         [
