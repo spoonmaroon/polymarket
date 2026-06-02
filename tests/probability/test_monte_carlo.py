@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import datetime, timezone
 
 import pytest
@@ -72,6 +73,18 @@ def test_run_seeded_monte_carlo_is_deterministic_for_same_seed() -> None:
     }
 
 
+def test_run_seeded_monte_carlo_rejects_generated_nonfinite_prices() -> None:
+    probability_input = replace(_probability_input(), sigma_tau=1000.0)
+
+    with pytest.raises(ValueError, match="path prices"):
+        run_seeded_monte_carlo(
+            probability_input,
+            path_count=1000,
+            steps=20,
+            seed=123,
+        )
+
+
 @pytest.mark.parametrize("path_count", (0, -1))
 def test_run_seeded_monte_carlo_rejects_nonpositive_path_count(path_count: int) -> None:
     with pytest.raises(ValueError, match="path_count"):
@@ -99,4 +112,11 @@ def test_score_paths_rejects_invalid_paths(
     paths: tuple[tuple[float, ...], ...],
 ) -> None:
     with pytest.raises(ValueError, match="path"):
+        score_paths(_probability_input(), paths=paths, model_version="mc-fixture", seed=7)
+
+
+def test_score_paths_rejects_ragged_paths() -> None:
+    paths = ((100.0, 101.0, 102.0), (100.0, 101.0))
+
+    with pytest.raises(ValueError, match="same length"):
         score_paths(_probability_input(), paths=paths, model_version="mc-fixture", seed=7)

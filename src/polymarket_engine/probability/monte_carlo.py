@@ -47,10 +47,11 @@ def run_seeded_monte_carlo(
     per_step_sigma = probability_input.sigma_tau / math.sqrt(steps)
     log_returns = rng.normal(0.0, per_step_sigma, size=(path_count, steps))
     cumulative_returns = np.cumsum(log_returns, axis=1)
-    simulated_prices = probability_input.settlement_price * np.exp(cumulative_returns)
+    with np.errstate(over="ignore", invalid="ignore"):
+        simulated_prices = probability_input.settlement_price * np.exp(cumulative_returns)
     start_column = np.full((path_count, 1), probability_input.settlement_price)
     full_paths = np.concatenate((start_column, simulated_prices), axis=1)
-    path_rows = tuple(tuple(float(price) for price in row) for row in full_paths)
+    path_rows = _validate_paths(tuple(tuple(float(price) for price in row) for row in full_paths))
 
     counts = _score_validated_paths(probability_input, path_rows)
     return ProbabilityOutput(
@@ -74,9 +75,12 @@ def _validate_paths(paths: Iterable[Sequence[float]]) -> tuple[tuple[float, ...]
     if not path_rows:
         raise ValueError("paths must contain at least one path")
 
+    expected_length = len(path_rows[0])
     for path in path_rows:
         if not path:
             raise ValueError("path rows must contain at least one price")
+        if len(path) != expected_length:
+            raise ValueError("path rows must have the same length")
         for price in path:
             if not _is_positive_finite_number(price):
                 raise ValueError("path prices must be positive and finite")
