@@ -205,8 +205,13 @@ impl HotDecisionBuilder {
             .iter()
             .filter(|contract| is_current_window(contract, asof_ts))
         {
+            let impacted_slots = impacted_token_slots(event, contract);
+            if impacted_slots.iter().all(Option::is_none) {
+                continue;
+            }
             let price_context = contract_price_context(chainlink_history, contract, asof_ts);
-            for impacted in impacted_token_slots(event, contract).into_iter().flatten() {
+            let state_id_context = StateIdContext::new(contract, asof_ts);
+            for impacted in impacted_slots.into_iter().flatten() {
                 let side = impacted.side;
                 let token_id = impacted.token_id;
                 let threshold = price_context.threshold;
@@ -250,7 +255,7 @@ impl HotDecisionBuilder {
 
                 states.push(HotDecisionState {
                     schema_version: HOT_DECISION_STATE_SCHEMA_VERSION.to_owned(),
-                    state_id: state_id(contract, &side, asof_ts),
+                    state_id: state_id_context.for_side(&side),
                     trigger_kind: event.trigger_kind(),
                     trigger_symbol: event.trigger_symbol(),
                     trigger_token_id: event.trigger_token_id(),
@@ -293,6 +298,30 @@ struct ImpactedToken<'a> {
 struct ContractPriceContext<'a> {
     threshold: Option<&'a NormalizedPriceTick>,
     settlement: Option<&'a NormalizedPriceTick>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StateIdContext {
+    contract_slug: String,
+    asof_ts: String,
+}
+
+impl StateIdContext {
+    fn new(contract: &WarmedContract, asof_ts: DateTime<Utc>) -> Self {
+        Self {
+            contract_slug: contract.window.slug(),
+            asof_ts: asof_ts.to_rfc3339(),
+        }
+    }
+
+    fn for_side(&self, side: &ContractSide) -> String {
+        format!(
+            "{}:{}:{}",
+            self.contract_slug,
+            side_label(side),
+            self.asof_ts
+        )
+    }
 }
 
 fn contract_price_context<'a>(
@@ -401,15 +430,6 @@ fn symbol_asset(symbol: &str) -> String {
         .unwrap_or(symbol)
         .trim()
         .to_ascii_uppercase()
-}
-
-fn state_id(contract: &WarmedContract, side: &ContractSide, asof_ts: DateTime<Utc>) -> String {
-    format!(
-        "{}:{}:{}",
-        contract.window.slug(),
-        side_label(side),
-        asof_ts.to_rfc3339()
-    )
 }
 
 fn side_label(side: &ContractSide) -> &'static str {
@@ -720,6 +740,29 @@ mod tests {
             vec![(ContractSide::Down, "down-token")]
         );
         assert!(slot_pairs(unknown_slots).is_empty());
+    }
+
+    #[test]
+    fn state_id_context_reuses_contract_slug_and_asof_timestamp() {
+        let start = Utc.timestamp_opt(1_780_302_400, 0).unwrap();
+        let asof = start + Duration::seconds(12);
+        let contract = WarmedContract::new(
+            ContractWindow::new("BTC", "5m", start, start + Duration::seconds(300)).unwrap(),
+            ContractToken::new("BTC", ContractSide::Up, "up-token"),
+            ContractToken::new("BTC", ContractSide::Down, "down-token"),
+        )
+        .unwrap();
+
+        let context = StateIdContext::new(&contract, asof);
+
+        assert_eq!(
+            context.for_side(&ContractSide::Up),
+            "btc-updown-5m-1780302400:UP:2026-06-01T08:26:52+00:00"
+        );
+        assert_eq!(
+            context.for_side(&ContractSide::Down),
+            "btc-updown-5m-1780302400:DOWN:2026-06-01T08:26:52+00:00"
+        );
     }
 
     fn price(
