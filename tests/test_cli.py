@@ -258,13 +258,67 @@ async def test_run_normalize_rust_events_command_writes_duckdb(
 
     assert result == 0
     assert json.loads(capsys.readouterr().out) == {
+        "bytes_read": raw_path.stat().st_size,
         "files": 1,
+        "file_size_bytes": raw_path.stat().st_size,
+        "files_skipped": 0,
+        "files_with_rows": 1,
         "orderbooks_written": 0,
         "price_ticks_written": 1,
         "rows_read": 1,
     }
     with duckdb.connect(str(db_path), read_only=True) as conn:
         assert conn.execute("select count(*) from core.price_ticks").fetchone() == (1,)
+
+
+@pytest.mark.anyio
+async def test_run_normalize_rust_events_command_reports_byte_delta_and_skips(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    raw_path = (
+        tmp_path
+        / "raw"
+        / "polymarket_rtds_chainlink"
+        / "price_update"
+        / "date=2026-06-02"
+        / "hour=05"
+        / "events.jsonl"
+    )
+    _write_jsonl(
+        raw_path,
+        [
+            {
+                "source_key": "polymarket_rtds_chainlink",
+                "stream_key": "price_update",
+                "symbol": "BTC/USD",
+                "event_type": "chainlink_price",
+                "event_ts": "2026-06-02T05:33:54Z",
+                "observed_ts": "2026-06-02T05:33:55Z",
+                "payload": {"value": "70600.0"},
+            }
+        ],
+    )
+    db_path = tmp_path / "state.duckdb"
+    argv = [
+        "normalize-rust-events",
+        "--raw-root",
+        str(tmp_path / "raw"),
+        "--duckdb-path",
+        str(db_path),
+    ]
+
+    assert await cli.run_collect_command(argv) == 0
+    first_payload = json.loads(capsys.readouterr().out)
+    assert first_payload["bytes_read"] == raw_path.stat().st_size
+    assert first_payload["files_with_rows"] == 1
+    assert first_payload["files_skipped"] == 0
+
+    assert await cli.run_collect_command(argv) == 0
+    second_payload = json.loads(capsys.readouterr().out)
+    assert second_payload["bytes_read"] == 0
+    assert second_payload["files_with_rows"] == 0
+    assert second_payload["files_skipped"] == 1
 
 
 @pytest.mark.anyio

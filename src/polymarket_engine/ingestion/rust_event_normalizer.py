@@ -28,6 +28,7 @@ class RustEventNormalizeResult:
     file_id: str
     start_byte_offset: int
     end_byte_offset: int
+    file_size_bytes: int
     rows_read: int
     price_ticks_written: int
     orderbooks_written: int
@@ -122,6 +123,7 @@ def normalize_rust_event_file(
         file_id=file_id,
         start_byte_offset=start_byte_offset,
         end_byte_offset=end_byte_offset,
+        file_size_bytes=file_size,
         rows_read=rows_read,
         price_ticks_written=price_ticks_written,
         orderbooks_written=orderbooks_written,

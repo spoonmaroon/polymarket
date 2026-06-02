@@ -161,6 +161,10 @@ def _run_normalize_rust_events(args: argparse.Namespace) -> int:
         )
     summary = {
         "files": len(results),
+        "files_with_rows": sum(1 for result in results if result.rows_read > 0),
+        "files_skipped": sum(1 for result in results if result.rows_read == 0),
+        "bytes_read": sum(result.end_byte_offset - result.start_byte_offset for result in results),
+        "file_size_bytes": sum(result.file_size_bytes for result in results),
         "rows_read": sum(result.rows_read for result in results),
         "price_ticks_written": sum(result.price_ticks_written for result in results),
         "orderbooks_written": sum(result.orderbooks_written for result in results),
