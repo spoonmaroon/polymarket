@@ -20,6 +20,7 @@ pub const STATE_MANAGER_REPORT_MODE: &str = "state-manager";
 #[cfg(test)]
 thread_local! {
     static ORDERBOOK_LATENCY_SCAN_COUNT: Cell<usize> = const { Cell::new(0) };
+    static CHAINLINK_LATENCY_SCAN_COUNT: Cell<usize> = const { Cell::new(0) };
 }
 
 pub struct ProbeTimer {
@@ -150,28 +151,8 @@ pub fn build_state_manager_report(input: StateManagerReportInput) -> StateManage
 
 fn state_manager_latency_marks(snapshot: &WarmStateSnapshot) -> Vec<LatencyMark> {
     let mut marks = Vec::new();
-    if let Some(value) = snapshot
-        .chainlink_prices
-        .iter()
-        .map(|tick| duration_ms(snapshot.observed_ts - tick.observed_ts))
-        .max()
-    {
-        marks.push(LatencyMark {
-            name: "chainlink_observed_age_ms".to_owned(),
-            elapsed_ms: value,
-        });
-    }
-    if let Some(value) = snapshot
-        .chainlink_prices
-        .iter()
-        .map(|tick| duration_ms(tick.observed_ts - tick.event_ts))
-        .max()
-    {
-        marks.push(LatencyMark {
-            name: "chainlink_event_to_observed_ms".to_owned(),
-            elapsed_ms: value,
-        });
-    }
+    let chainlink_latency = chainlink_latency_stats(snapshot);
+    push_chainlink_latency_marks(&mut marks, &chainlink_latency);
     let orderbook_latency = orderbook_latency_stats(snapshot);
     push_orderbook_latency_marks(&mut marks, "orderbook", &orderbook_latency.all);
     push_orderbook_latency_marks(
@@ -186,6 +167,54 @@ fn state_manager_latency_marks(snapshot: &WarmStateSnapshot) -> Vec<LatencyMark>
         &orderbook_latency.windows[2],
     );
     marks
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct ChainlinkLatencyStats {
+    observed_age_ms: Option<u128>,
+    event_to_observed_ms: Option<u128>,
+}
+
+impl ChainlinkLatencyStats {
+    fn update(&mut self, observed_age_ms: u128, event_to_observed_ms: u128) {
+        self.observed_age_ms = Some(
+            self.observed_age_ms
+                .map_or(observed_age_ms, |value| value.max(observed_age_ms)),
+        );
+        self.event_to_observed_ms = Some(
+            self.event_to_observed_ms
+                .map_or(event_to_observed_ms, |value| {
+                    value.max(event_to_observed_ms)
+                }),
+        );
+    }
+}
+
+fn chainlink_latency_stats(snapshot: &WarmStateSnapshot) -> ChainlinkLatencyStats {
+    let mut stats = ChainlinkLatencyStats::default();
+    for tick in &snapshot.chainlink_prices {
+        record_chainlink_latency_scan();
+        stats.update(
+            duration_ms(snapshot.observed_ts - tick.observed_ts),
+            duration_ms(tick.observed_ts - tick.event_ts),
+        );
+    }
+    stats
+}
+
+fn push_chainlink_latency_marks(marks: &mut Vec<LatencyMark>, stats: &ChainlinkLatencyStats) {
+    if let Some(value) = stats.observed_age_ms {
+        marks.push(LatencyMark {
+            name: "chainlink_observed_age_ms".to_owned(),
+            elapsed_ms: value,
+        });
+    }
+    if let Some(value) = stats.event_to_observed_ms {
+        marks.push(LatencyMark {
+            name: "chainlink_event_to_observed_ms".to_owned(),
+            elapsed_ms: value,
+        });
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -289,6 +318,21 @@ fn reset_orderbook_latency_scan_count() {
 #[cfg(test)]
 fn orderbook_latency_scan_count() -> usize {
     ORDERBOOK_LATENCY_SCAN_COUNT.with(Cell::get)
+}
+
+fn record_chainlink_latency_scan() {
+    #[cfg(test)]
+    CHAINLINK_LATENCY_SCAN_COUNT.with(|count| count.set(count.get() + 1));
+}
+
+#[cfg(test)]
+fn reset_chainlink_latency_scan_count() {
+    CHAINLINK_LATENCY_SCAN_COUNT.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+fn chainlink_latency_scan_count() -> usize {
+    CHAINLINK_LATENCY_SCAN_COUNT.with(Cell::get)
 }
 
 fn duration_ms(duration: chrono::Duration) -> u128 {
@@ -518,6 +562,57 @@ mod tests {
         assert_eq!(by_name["chainlink_event_to_observed_ms"], 1_500);
         assert_eq!(by_name["orderbook_observed_age_ms"], 800);
         assert_eq!(by_name["orderbook_event_to_observed_ms"], 2_200);
+    }
+
+    #[test]
+    fn state_manager_report_scans_chainlink_latency_once_per_tick() {
+        let generated_base = Utc.timestamp_opt(1_780_302_400, 0).unwrap();
+        let prices = vec![
+            NormalizedPriceTick {
+                source_key: "polymarket_rtds_chainlink".to_owned(),
+                symbol: "BTC/USD".to_owned(),
+                event_ts: generated_base - chrono::Duration::milliseconds(2_000),
+                observed_ts: generated_base - chrono::Duration::milliseconds(500),
+                price: Decimal::new(70_100, 0),
+            },
+            NormalizedPriceTick {
+                source_key: "polymarket_rtds_chainlink".to_owned(),
+                symbol: "ETH/USD".to_owned(),
+                event_ts: generated_base - chrono::Duration::milliseconds(3_000),
+                observed_ts: generated_base - chrono::Duration::milliseconds(700),
+                price: Decimal::new(3_500, 0),
+            },
+        ];
+        let expected_scans = prices.len();
+        let snapshot = WarmStateSnapshot {
+            observed_ts: generated_base,
+            current: vec![],
+            next: vec![],
+            next_next: vec![],
+            chainlink_prices: prices,
+            proxy_prices: vec![],
+            orderbooks: vec![],
+            freshness: vec![],
+            health_flags: vec![],
+        };
+
+        reset_chainlink_latency_scan_count();
+        let report = build_state_manager_report(StateManagerReportInput {
+            elapsed_ms: 10,
+            snapshot,
+            subscriptions: vec![],
+            websocket_status: vec![],
+            hot_decision_telemetry: None,
+        });
+        let by_name = report
+            .latency_marks
+            .iter()
+            .map(|mark| (mark.name.as_str(), mark.elapsed_ms))
+            .collect::<std::collections::BTreeMap<_, _>>();
+
+        assert_eq!(by_name["chainlink_observed_age_ms"], 700);
+        assert_eq!(by_name["chainlink_event_to_observed_ms"], 2_300);
+        assert_eq!(chainlink_latency_scan_count(), expected_scans);
     }
 
     #[test]
