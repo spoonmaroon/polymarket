@@ -2,7 +2,7 @@ from collections.abc import Iterator, Sequence
 from datetime import datetime, timezone
 import json
 from pathlib import Path
-from typing import Any, cast, overload
+from typing import Any, TypeVar, cast, overload
 
 import duckdb
 import pytest
@@ -12,6 +12,31 @@ from polymarket_engine.domain.market_state import DecisionState, OrderBookObserv
 from polymarket_engine.probability.schema import ProbabilityInput, ProbabilityOutput
 from polymarket_engine.storage import duckdb_store
 from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
+
+
+T = TypeVar("T")
+
+
+class _CountingSequence(Sequence[T]):
+    def __init__(self, items: tuple[T, ...]) -> None:
+        self._items = items
+        self.iterations = 0
+
+    def __iter__(self) -> Iterator[T]:
+        self.iterations += 1
+        return iter(self._items)
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    @overload
+    def __getitem__(self, index: int) -> T: ...
+
+    @overload
+    def __getitem__(self, index: slice) -> tuple[T, ...]: ...
+
+    def __getitem__(self, index: int | slice) -> T | tuple[T, ...]:
+        return self._items[index]
 
 
 def _contract() -> ContractSpec:
@@ -430,6 +455,40 @@ def test_store_batch_writes_prices_and_orderbooks(tmp_path: Path) -> None:
         ).fetchall() == [("sha256:raw",)]
 
 
+def test_store_builds_price_tick_batch_columns_in_one_pass(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.duckdb"
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    asof_ts = datetime(2026, 5, 31, 20, 3, tzinfo=timezone.utc)
+    ticks = _CountingSequence(
+        (
+            PriceObservation(
+                source_key="polymarket_rtds_chainlink",
+                symbol="BTC/USD",
+                event_ts=asof_ts,
+                observed_ts=asof_ts,
+                price=104_000.0,
+            ),
+            PriceObservation(
+                source_key="polymarket_rtds_chainlink",
+                symbol="ETH/USD",
+                event_ts=asof_ts,
+                observed_ts=asof_ts,
+                price=3_900.0,
+            ),
+        )
+    )
+
+    store.insert_price_ticks(ticks, raw_file_id="sha256:raw")
+
+    with duckdb.connect(str(db_path), read_only=True) as conn:
+        assert conn.execute("select count(*) from core.price_ticks").fetchone() == (2,)
+        assert conn.execute(
+            "select distinct raw_file_id from core.price_ticks"
+        ).fetchall() == [("sha256:raw",)]
+    assert ticks.iterations == 1
+
+
 def test_store_builds_orderbook_snapshot_batch_columns_in_one_pass(
     tmp_path: Path,
 ) -> None:
@@ -437,30 +496,6 @@ def test_store_builds_orderbook_snapshot_batch_columns_in_one_pass(
     store = DuckDbIngestStore(db_path)
     store.apply_schema()
     asof_ts = datetime(2026, 5, 31, 20, 3, tzinfo=timezone.utc)
-
-    class _CountingSequence(Sequence[OrderBookObservation]):
-        def __init__(self, items: tuple[OrderBookObservation, ...]) -> None:
-            self._items = items
-            self.iterations = 0
-
-        def __iter__(self) -> Iterator[OrderBookObservation]:
-            self.iterations += 1
-            return iter(self._items)
-
-        def __len__(self) -> int:
-            return len(self._items)
-
-        @overload
-        def __getitem__(self, index: int) -> OrderBookObservation: ...
-
-        @overload
-        def __getitem__(self, index: slice) -> tuple[OrderBookObservation, ...]: ...
-
-        def __getitem__(
-            self,
-            index: int | slice,
-        ) -> OrderBookObservation | tuple[OrderBookObservation, ...]:
-            return self._items[index]
 
     snapshots = _CountingSequence(
         (

@@ -359,17 +359,38 @@ class DuckDbIngestStore:
     ) -> None:
         if not ticks:
             return
+        source_keys: list[str] = []
+        symbols: list[str] = []
+        event_timestamps: list[datetime] = []
+        observed_timestamps: list[datetime] = []
+        prices: list[float] = []
+        bids: list[float | None] = []
+        asks: list[float | None] = []
+        sequences: list[str | None] = []
+        raw_file_ids: list[str | None] = []
+
+        for tick in ticks:
+            source_keys.append(tick.source_key)
+            symbols.append(tick.symbol)
+            event_timestamps.append(tick.event_ts)
+            observed_timestamps.append(tick.observed_ts)
+            prices.append(tick.price)
+            bids.append(tick.bid)
+            asks.append(tick.ask)
+            sequences.append(tick.sequence)
+            raw_file_ids.append(raw_file_id)
+
         frame = pl.DataFrame(
             {
-                "source_key": [tick.source_key for tick in ticks],
-                "symbol": [tick.symbol for tick in ticks],
-                "event_ts": [tick.event_ts for tick in ticks],
-                "observed_ts": [tick.observed_ts for tick in ticks],
-                "price": [tick.price for tick in ticks],
-                "bid": [tick.bid for tick in ticks],
-                "ask": [tick.ask for tick in ticks],
-                "sequence": [tick.sequence for tick in ticks],
-                "raw_file_id": [raw_file_id for _ in ticks],
+                "source_key": source_keys,
+                "symbol": symbols,
+                "event_ts": event_timestamps,
+                "observed_ts": observed_timestamps,
+                "price": prices,
+                "bid": bids,
+                "ask": asks,
+                "sequence": sequences,
+                "raw_file_id": raw_file_ids,
             }
         )
         with self._connection() as conn:
