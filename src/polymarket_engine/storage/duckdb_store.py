@@ -770,6 +770,59 @@ class DuckDbIngestStore:
             for row in rows
         )
 
+    def price_ticks_before_by_symbol(
+        self,
+        *,
+        source_key: str,
+        symbols: Sequence[str],
+        asof_ts: datetime,
+        limit: int,
+    ) -> dict[str, tuple[PriceObservation, ...]]:
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        unique_symbols = tuple(dict.fromkeys(symbols))
+        if not unique_symbols:
+            return {}
+        symbol_frame = pl.DataFrame({"symbol": list(unique_symbols)})
+        with self._connection() as conn:
+            conn.register("price_history_symbols", symbol_frame)
+            rows = conn.execute(
+                """
+                select source_key, symbol, event_ts::VARCHAR, observed_ts::VARCHAR,
+                       price, bid, ask, sequence
+                from (
+                    select ticks.*,
+                           row_number() over (
+                               partition by ticks.symbol
+                               order by ticks.event_ts desc, ticks.observed_ts desc
+                           ) as row_number
+                    from core.price_ticks as ticks
+                    join price_history_symbols as symbols using (symbol)
+                    where ticks.source_key = ?
+                      and ticks.event_ts <= ?
+                      and ticks.observed_ts <= ?
+                ) as ranked_ticks
+                where row_number <= ?
+                order by symbol asc, event_ts asc, observed_ts asc
+                """,
+                [source_key, asof_ts, asof_ts, limit],
+            ).fetchall()
+        history: dict[str, list[PriceObservation]] = {}
+        for row in rows:
+            history.setdefault(row[1], []).append(
+                PriceObservation(
+                    source_key=row[0],
+                    symbol=row[1],
+                    event_ts=_parse_duckdb_timestamptz(row[2]),
+                    observed_ts=_parse_duckdb_timestamptz(row[3]),
+                    price=row[4],
+                    bid=row[5],
+                    ask=row[6],
+                    sequence=row[7],
+                )
+            )
+        return {symbol: tuple(rows) for symbol, rows in history.items()}
+
     def latest_orderbook_snapshot(
         self,
         *,

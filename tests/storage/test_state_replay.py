@@ -589,6 +589,37 @@ def test_store_price_ticks_before_limits_latest_rows_and_returns_ascending(
     assert [tick.event_ts for tick in history] == [ticks[2][0], ticks[3][0]]
 
 
+def test_store_price_ticks_before_by_symbol_limits_each_symbol_and_orders_ascending(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "replay.duckdb"
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    asof_ts = datetime(2026, 5, 31, 20, 3, tzinfo=timezone.utc)
+    for symbol, base_price in (("BTC/USD", 104000.0), ("ETH/USD", 2600.0)):
+        for offset in range(4):
+            event_ts = datetime(2026, 5, 31, 20, 2, 56 + offset, tzinfo=timezone.utc)
+            store.insert_price_tick(
+                PriceObservation(
+                    "polymarket_rtds_chainlink",
+                    symbol,
+                    event_ts,
+                    event_ts,
+                    base_price + offset,
+                )
+            )
+
+    history = store.price_ticks_before_by_symbol(
+        source_key="polymarket_rtds_chainlink",
+        symbols=("BTC/USD", "ETH/USD"),
+        asof_ts=asof_ts,
+        limit=2,
+    )
+
+    assert [tick.price for tick in history["BTC/USD"]] == [104002.0, 104003.0]
+    assert [tick.price for tick in history["ETH/USD"]] == [2602.0, 2603.0]
+
+
 def test_store_price_ticks_before_filters_observed_source_and_symbol(
     tmp_path: Path,
 ) -> None:

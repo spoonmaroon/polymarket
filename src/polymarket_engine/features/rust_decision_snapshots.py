@@ -59,6 +59,12 @@ def build_current_decision_state_snapshots(
         source_key=SETTLEMENT_SOURCE_KEY,
         asof_ts=asof_ts,
     )
+    read_store.prime_price_histories(
+        contracts,
+        source_key=SETTLEMENT_SOURCE_KEY,
+        asof_ts=asof_ts,
+        limit=180,
+    )
     read_store.prime_latest_orderbooks(contracts, asof_ts=asof_ts)
     store.upsert_contract_specs(contracts)
     states: list[DecisionState] = []
@@ -355,6 +361,41 @@ class _CachedStateReadStore:
             )
         return self._price_history[key]
 
+    def price_ticks_before_by_symbol(
+        self,
+        *,
+        source_key: str,
+        symbols: Sequence[str],
+        asof_ts: datetime,
+        limit: int,
+    ) -> dict[str, tuple[PriceObservation, ...]]:
+        unique_symbols = tuple(dict.fromkeys(symbols))
+        missing_symbols = [
+            symbol
+            for symbol in unique_symbols
+            if (source_key, symbol, asof_ts, limit) not in self._price_history
+        ]
+        if missing_symbols:
+            histories = self._store.price_ticks_before_by_symbol(
+                source_key=source_key,
+                symbols=missing_symbols,
+                asof_ts=asof_ts,
+                limit=limit,
+            )
+            for symbol in missing_symbols:
+                self._price_history[(source_key, symbol, asof_ts, limit)] = (
+                    histories.get(symbol, ())
+                )
+        return {
+            symbol: history
+            for symbol in unique_symbols
+            if (
+                history := self._price_history[
+                    (source_key, symbol, asof_ts, limit)
+                ]
+            )
+        }
+
     def latest_orderbook_snapshot(
         self,
         *,
@@ -409,6 +450,26 @@ class _CachedStateReadStore:
             source_key=source_key,
             symbols=symbols,
             asof_ts=asof_ts,
+        )
+
+    def prime_price_histories(
+        self,
+        contracts: Sequence[ContractSpec],
+        *,
+        source_key: str,
+        asof_ts: datetime,
+        limit: int,
+    ) -> None:
+        symbols = [
+            contract.settlement_symbol
+            for contract in contracts
+            if asof_ts >= contract.start_ts
+        ]
+        self.price_ticks_before_by_symbol(
+            source_key=source_key,
+            symbols=symbols,
+            asof_ts=asof_ts,
+            limit=limit,
         )
 
     def prime_latest_orderbooks(
