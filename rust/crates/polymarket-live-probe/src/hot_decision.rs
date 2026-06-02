@@ -379,3 +379,36 @@ mod tests {
         )
     }
 }
+
+#[cfg(test)]
+mod channel_tests {
+    use super::*;
+    use chrono::{TimeZone, Utc};
+
+    #[tokio::test]
+    async fn hot_path_event_sink_queues_chainlink_and_orderbook_events() {
+        let (sink, mut receiver) = HotPathEventSink::channel(4);
+        let ts = Utc.timestamp_opt(1_780_302_400, 0).unwrap();
+        sink.try_send(HotPathEvent::ChainlinkPrice {
+            symbol: "BTC/USD".to_owned(),
+            event_ts: ts,
+            observed_ts: ts,
+        })
+        .unwrap();
+        sink.try_send(HotPathEvent::OrderBookTopOfBook {
+            token_id: "up-token".to_owned(),
+            event_ts: ts,
+            observed_ts: ts,
+        })
+        .unwrap();
+
+        assert!(matches!(
+            receiver.recv().await.unwrap(),
+            HotPathEvent::ChainlinkPrice { .. }
+        ));
+        assert!(matches!(
+            receiver.recv().await.unwrap(),
+            HotPathEvent::OrderBookTopOfBook { .. }
+        ));
+    }
+}

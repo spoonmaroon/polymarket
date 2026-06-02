@@ -15,6 +15,7 @@ use std::time::Duration;
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
+use crate::hot_decision::{HotPathEvent, HotPathEventSink};
 use crate::raw_event_journal::{RawEventRecord, RawEventSink};
 use crate::report::WebSocketStatus;
 
@@ -138,13 +139,14 @@ pub struct ChainlinkStreamManager {
 impl ChainlinkStreamManager {
     #[allow(dead_code)]
     pub fn start(symbols: Vec<String>, latest: LatestPrices) -> Self {
-        Self::start_with_raw_events(symbols, latest, None)
+        Self::start_with_raw_events(symbols, latest, None, None)
     }
 
     pub fn start_with_raw_events(
         symbols: Vec<String>,
         latest: LatestPrices,
         raw_event_sink: Option<RawEventSink>,
+        hot_event_sink: Option<HotPathEventSink>,
     ) -> Self {
         let client = RtdsClient::default();
         let symbols = chainlink_stream_symbols(symbols);
@@ -155,6 +157,7 @@ impl ChainlinkStreamManager {
             latest,
             telemetry.clone(),
             raw_event_sink,
+            hot_event_sink,
         ))];
         let connection_monitor_task = tokio::spawn(monitor_chainlink_connection_state(
             client.clone(),
@@ -317,6 +320,7 @@ pub async fn run_chainlink_stream(symbols: Vec<String>, latest: LatestPrices) ->
         latest,
         Arc::new(RwLock::new(ChainlinkWebSocketTelemetry::default())),
         None,
+        None,
     )
     .await
 }
@@ -329,6 +333,7 @@ async fn run_chainlink_symbol_stream(symbol: String, latest: LatestPrices) -> Re
         latest,
         Arc::new(RwLock::new(ChainlinkWebSocketTelemetry::default())),
         None,
+        None,
     )
     .await
 }
@@ -339,6 +344,7 @@ async fn run_chainlink_symbols_stream_with_client(
     latest: LatestPrices,
     telemetry: Arc<RwLock<ChainlinkWebSocketTelemetry>>,
     raw_event_sink: Option<RawEventSink>,
+    hot_event_sink: Option<HotPathEventSink>,
 ) -> Result<()> {
     let symbols = chainlink_stream_symbols(symbols);
     let stream = client.subscribe_raw(Subscription::chainlink_prices(None))?;
@@ -360,6 +366,13 @@ async fn run_chainlink_symbols_stream_with_client(
             {
                 if let Some(sink) = &raw_event_sink {
                     sink.try_record(chainlink_raw_event_record_from_tick(&message, &tick))?;
+                }
+                if let Some(sink) = &hot_event_sink {
+                    sink.try_send(HotPathEvent::ChainlinkPrice {
+                        symbol: tick.symbol.clone(),
+                        event_ts: tick.event_ts,
+                        observed_ts: tick.observed_ts,
+                    })?;
                 }
                 updated = true;
             }

@@ -16,6 +16,7 @@ use std::time::Duration;
 use tokio::task::JoinHandle;
 
 use crate::book_state::LiveBookState;
+use crate::hot_decision::{HotPathEvent, HotPathEventSink};
 use crate::raw_event_journal::{RawEventRecord, RawEventSink};
 use crate::report::WebSocketStatus;
 
@@ -109,16 +110,18 @@ pub struct BestBidAskStreamManager {
     telemetry: Arc<RwLock<WebSocketTelemetry>>,
     connection_monitor_task: JoinHandle<()>,
     raw_event_sink: Option<RawEventSink>,
+    hot_event_sink: Option<HotPathEventSink>,
 }
 
 impl BestBidAskStreamManager {
     pub fn new(book_state: LiveBookState) -> Self {
-        Self::new_with_raw_events(book_state, None)
+        Self::new_with_raw_events(book_state, None, None)
     }
 
     pub fn new_with_raw_events(
         book_state: LiveBookState,
         raw_event_sink: Option<RawEventSink>,
+        hot_event_sink: Option<HotPathEventSink>,
     ) -> Self {
         let client = ClobWsClient::default();
         let telemetry = Arc::new(RwLock::new(WebSocketTelemetry::default()));
@@ -132,6 +135,7 @@ impl BestBidAskStreamManager {
             token_streams: BTreeMap::new(),
             telemetry,
             raw_event_sink,
+            hot_event_sink,
         }
     }
 
@@ -158,6 +162,7 @@ impl BestBidAskStreamManager {
             let book_state = self.book_state.clone();
             let telemetry = self.telemetry.clone();
             let raw_event_sink = self.raw_event_sink.clone();
+            let hot_event_sink = self.hot_event_sink.clone();
             let token_label = token_id.clone();
             let task = tokio::spawn(async move {
                 let mut stream = Box::pin(stream);
@@ -179,7 +184,24 @@ impl BestBidAskStreamManager {
                         sink.try_record(record)?;
                     }
                     let applied = apply_clob_market_event(&event, &book_state).await?;
-                    if !applied {
+                    if applied {
+                        if let (
+                            Some(sink),
+                            ClobMarketEvent::TopOfBook {
+                                token_id,
+                                event_ts,
+                                observed_ts,
+                                ..
+                            },
+                        ) = (hot_event_sink.as_ref(), &event)
+                        {
+                            sink.try_send(HotPathEvent::OrderBookTopOfBook {
+                                token_id: token_id.clone(),
+                                event_ts: *event_ts,
+                                observed_ts: *observed_ts,
+                            })?;
+                        }
+                    } else {
                         tracing::warn!("received CLOB best_bid_ask for unseeded orderbook");
                     }
                 }

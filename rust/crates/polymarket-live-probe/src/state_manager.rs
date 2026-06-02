@@ -3,11 +3,17 @@ use chrono::{DateTime, Utc};
 use polymarket_runtime_types::{
     FeedFreshness, NormalizedOrderBook, NormalizedPriceTick, WarmStateSnapshot, WarmedContract,
 };
+use std::sync::{Arc, RwLock};
 use std::time::Duration as StdDuration;
+use tokio::task::JoinHandle;
 
+use crate::decision_journal::HotDecisionSink;
+use crate::hot_decision::{HotDecisionBuilder, HotDecisionConfig, HotPathEvent, HotPathEventSink};
 use crate::raw_event_journal::RawEventSink;
 use crate::report::{StateManagerSubscription, WebSocketStatus};
 use crate::{book_state::LiveBookState, clob_ws, polymarket, prices, windows};
+
+type SharedWarmedContracts = Arc<RwLock<Vec<WarmedContract>>>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StateManagerConfig {
@@ -25,10 +31,11 @@ pub struct StateManagerRuntime {
     latest_prices: prices::LatestPrices,
     book_state: LiveBookState,
     orderbook_streams: clob_ws::BestBidAskStreamManager,
-    warmed: Vec<WarmedContract>,
+    warmed: SharedWarmedContracts,
     token_ids: Vec<String>,
     last_refresh: DateTime<Utc>,
     chainlink_streams: prices::ChainlinkStreamManager,
+    hot_decision_worker: Option<JoinHandle<Result<()>>>,
 }
 
 impl StateManagerRuntime {
@@ -40,12 +47,34 @@ impl StateManagerRuntime {
         config: StateManagerConfig,
         raw_event_sink: Option<RawEventSink>,
     ) -> Result<Self> {
+        Self::start_with_raw_events_and_hot_decisions(config, raw_event_sink, None).await
+    }
+
+    pub async fn start_with_raw_events_and_hot_decisions(
+        config: StateManagerConfig,
+        raw_event_sink: Option<RawEventSink>,
+        decision_sink: Option<HotDecisionSink>,
+    ) -> Result<Self> {
         let latest_prices = prices::LatestPrices::default();
         let book_state = LiveBookState::default();
+        let warmed = Arc::new(RwLock::new(Vec::new()));
+        let (hot_event_sink, hot_event_receiver) = HotPathEventSink::channel(16_384);
+        let hot_decision_worker = decision_sink.map(|sink| {
+            start_hot_decision_worker(
+                HotDecisionConfig::default(),
+                latest_prices.clone(),
+                book_state.clone(),
+                warmed.clone(),
+                hot_event_receiver,
+                sink,
+            )
+        });
+        let hot_event_sink = hot_decision_worker.as_ref().map(|_| hot_event_sink);
         let chainlink_streams = prices::ChainlinkStreamManager::start_with_raw_events(
             chainlink_symbols_for_assets(&config.assets),
             latest_prices.clone(),
             raw_event_sink.clone(),
+            hot_event_sink.clone(),
         );
         let mut runtime = Self {
             config,
@@ -53,12 +82,14 @@ impl StateManagerRuntime {
             orderbook_streams: clob_ws::BestBidAskStreamManager::new_with_raw_events(
                 book_state.clone(),
                 raw_event_sink,
+                hot_event_sink,
             ),
             book_state,
-            warmed: Vec::new(),
+            warmed,
             token_ids: Vec::new(),
             last_refresh: Utc::now(),
             chainlink_streams,
+            hot_decision_worker,
         };
         runtime.refresh_contracts().await?;
         Ok(runtime)
@@ -72,20 +103,30 @@ impl StateManagerRuntime {
     }
 
     pub async fn snapshot(&self, _now: DateTime<Utc>) -> Result<WarmStateSnapshot> {
+        let warmed = self
+            .warmed
+            .read()
+            .expect("warmed contracts lock poisoned")
+            .clone();
         let chainlink_prices = self.latest_prices.snapshot().await;
-        let orderbooks = orderbooks_for_warmed(self.book_state.snapshot().await, &self.warmed);
+        let orderbooks = orderbooks_for_warmed(self.book_state.snapshot().await, &warmed);
         let snapshot_now = Utc::now();
         build_snapshot_from_warmed(
             snapshot_now,
             &self.config,
-            &self.warmed,
+            &warmed,
             chainlink_prices,
             orderbooks,
         )
     }
 
     pub fn subscriptions(&self) -> Vec<StateManagerSubscription> {
-        subscriptions_from_warmed_contracts(&self.warmed)
+        let warmed = self
+            .warmed
+            .read()
+            .expect("warmed contracts lock poisoned")
+            .clone();
+        subscriptions_from_warmed_contracts(&warmed)
     }
 
     pub fn websocket_status(&self, now: DateTime<Utc>) -> Vec<WebSocketStatus> {
@@ -98,6 +139,9 @@ impl StateManagerRuntime {
     pub fn shutdown(&mut self) {
         self.chainlink_streams.shutdown();
         self.orderbook_streams.shutdown();
+        if let Some(worker) = self.hot_decision_worker.take() {
+            worker.abort();
+        }
     }
 
     async fn refresh_contracts(&mut self) -> Result<()> {
@@ -128,21 +172,25 @@ impl StateManagerRuntime {
         token_ids.sort();
         token_ids.dedup();
 
+        *self.warmed.write().expect("warmed contracts lock poisoned") = warmed;
         self.orderbook_streams.update_tokens(&token_ids)?;
         self.token_ids = token_ids;
 
-        self.warmed = warmed;
         self.last_refresh = now;
         Ok(())
     }
 
     fn needs_contract_refresh(&self, now: DateTime<Utc>) -> bool {
-        if self.warmed.is_empty() {
+        let warmed = self
+            .warmed
+            .read()
+            .expect("warmed contracts lock poisoned")
+            .clone();
+        if warmed.is_empty() {
             return true;
         }
         self.config.assets.iter().any(|asset| {
-            let mut asset_contracts = self
-                .warmed
+            let mut asset_contracts = warmed
                 .iter()
                 .filter(|contract| contract.window.asset == asset.to_ascii_uppercase())
                 .filter(|contract| contract.window.end_ts > now)
@@ -166,6 +214,34 @@ impl StateManagerRuntime {
                 .num_milliseconds()
                 >= self.config.rest_backup_interval_ms
     }
+}
+
+fn start_hot_decision_worker(
+    config: HotDecisionConfig,
+    latest_prices: prices::LatestPrices,
+    book_state: LiveBookState,
+    warmed: SharedWarmedContracts,
+    mut receiver: tokio::sync::mpsc::Receiver<HotPathEvent>,
+    decision_sink: HotDecisionSink,
+) -> JoinHandle<Result<()>> {
+    tokio::spawn(async move {
+        let builder = HotDecisionBuilder::new(config);
+        while let Some(event) = receiver.recv().await {
+            let asof_ts = Utc::now();
+            let warmed_snapshot = warmed
+                .read()
+                .expect("warmed contracts lock poisoned")
+                .clone();
+            let prices = latest_prices.history_snapshot().await;
+            let orderbooks = orderbooks_for_warmed(book_state.snapshot().await, &warmed_snapshot);
+            for state in
+                builder.build_for_event(&event, &warmed_snapshot, &prices, &orderbooks, asof_ts)
+            {
+                decision_sink.try_record(state)?;
+            }
+        }
+        Ok(())
+    })
 }
 
 pub fn build_snapshot_from_warmed(
@@ -541,12 +617,15 @@ mod tests {
             latest_prices,
             orderbook_streams: clob_ws::BestBidAskStreamManager::new(book_state.clone()),
             book_state,
-            warmed: vec![warmed("BTC", start, "current")],
+            warmed: std::sync::Arc::new(std::sync::RwLock::new(vec![warmed(
+                "BTC", start, "current",
+            )])),
             token_ids: vec![],
             last_refresh: observed,
             chainlink_streams: prices::ChainlinkStreamManager::inactive_for_tests(vec![
                 "btc/usd".to_owned(),
             ]),
+            hot_decision_worker: None,
         };
 
         let snapshot = runtime.snapshot(stale_caller_now).await.unwrap();
