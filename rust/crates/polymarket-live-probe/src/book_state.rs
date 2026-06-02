@@ -47,6 +47,19 @@ impl LiveBookState {
         books
     }
 
+    pub async fn snapshot_for_token_ids<'a, I>(&self, token_ids: I) -> Vec<NormalizedOrderBook>
+    where
+        I: IntoIterator<Item = &'a str>,
+    {
+        let inner = self.inner.read().expect("live book state lock poisoned");
+        let mut books = token_ids
+            .into_iter()
+            .filter_map(|token_id| inner.get(token_id).cloned())
+            .collect::<Vec<_>>();
+        books.sort_by(|left, right| left.token_id.cmp(&right.token_id));
+        books
+    }
+
     pub async fn freshness(&self, now: DateTime<Utc>, max_age: Duration) -> Vec<FeedFreshness> {
         let max_age_ms = i64::try_from(max_age.as_millis()).unwrap_or(i64::MAX);
         self.snapshot()
@@ -144,6 +157,22 @@ mod tests {
         assert_eq!(snapshot[0].best_ask, Some(Decimal::new(54, 2)));
         assert_eq!(snapshot[0].spread, Some(Decimal::new(2, 2)));
         assert_eq!(snapshot[0].event_ts, ts(1));
+    }
+
+    #[tokio::test]
+    async fn snapshot_for_token_ids_clones_only_requested_books() {
+        let state = LiveBookState::default();
+        let mut first = sample_book();
+        first.token_id = "token-1".to_owned();
+        let mut second = sample_book();
+        second.token_id = "token-2".to_owned();
+        state.upsert_book(first).await;
+        state.upsert_book(second).await;
+
+        let snapshot = state.snapshot_for_token_ids(["token-2"]).await;
+
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].token_id, "token-2");
     }
 
     #[tokio::test]

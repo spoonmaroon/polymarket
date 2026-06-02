@@ -121,7 +121,10 @@ impl StateManagerRuntime {
             .expect("warmed contracts lock poisoned")
             .clone();
         let chainlink_prices = self.latest_prices.snapshot().await;
-        let orderbooks = orderbooks_for_warmed(self.book_state.snapshot().await, &warmed);
+        let orderbooks = self
+            .book_state
+            .snapshot_for_token_ids(warmed_token_ids(&warmed))
+            .await;
         let snapshot_now = Utc::now();
         build_snapshot_from_warmed(
             snapshot_now,
@@ -259,7 +262,9 @@ fn start_hot_decision_worker(
                 .expect("warmed contracts lock poisoned")
                 .clone();
             let prices = latest_prices.history_snapshot().await;
-            let orderbooks = orderbooks_for_warmed(book_state.snapshot().await, &warmed_snapshot);
+            let orderbooks = book_state
+                .snapshot_for_token_ids(warmed_token_ids(&warmed_snapshot))
+                .await;
             for state in
                 builder.build_for_event(&event, &warmed_snapshot, &prices, &orderbooks, asof_ts)
             {
@@ -385,18 +390,10 @@ pub fn subscriptions_from_warmed_contracts(
     subscriptions
 }
 
-fn orderbooks_for_warmed(
-    orderbooks: Vec<NormalizedOrderBook>,
-    warmed_contracts: &[WarmedContract],
-) -> Vec<NormalizedOrderBook> {
-    let token_ids = warmed_contracts
+fn warmed_token_ids(warmed_contracts: &[WarmedContract]) -> impl Iterator<Item = &str> {
+    warmed_contracts
         .iter()
-        .flat_map(WarmedContract::token_ids)
-        .collect::<std::collections::HashSet<_>>();
-    orderbooks
-        .into_iter()
-        .filter(|book| token_ids.contains(&book.token_id))
-        .collect()
+        .flat_map(|contract| [contract.up.token_id.as_str(), contract.down.token_id.as_str()])
 }
 
 fn feed_freshness(
@@ -757,19 +754,12 @@ mod tests {
     }
 
     #[test]
-    fn orderbook_snapshot_keeps_only_warmed_tokens() {
+    fn warmed_token_ids_include_only_live_up_down_tokens() {
         let start = 1_780_302_400;
         let warmed = vec![warmed("BTC", start, "btc")];
-        let books = vec![
-            book("BTC", "UP", "btc-up", start * 1000),
-            book("BTC", "DOWN", "btc-down", start * 1000),
-            book("BTC", "UP", "expired-up", start * 1000),
-        ];
 
-        let filtered = orderbooks_for_warmed(books, &warmed);
+        let token_ids = warmed_token_ids(&warmed).collect::<Vec<_>>();
 
-        assert_eq!(filtered.len(), 2);
-        assert!(filtered.iter().any(|book| book.token_id == "btc-up"));
-        assert!(filtered.iter().any(|book| book.token_id == "btc-down"));
+        assert_eq!(token_ids, vec!["btc-up", "btc-down"]);
     }
 }
