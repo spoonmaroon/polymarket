@@ -247,18 +247,17 @@ impl StateManagerRuntime {
         let warmed = self
             .warmed
             .read()
-            .expect("warmed contracts lock poisoned")
-            .clone();
+            .expect("warmed contracts lock poisoned");
         if warmed.is_empty() {
             return true;
         }
+        let active_contracts_by_asset = active_warmed_contracts_by_asset(now, &warmed);
         self.config.assets.iter().any(|asset| {
-            let mut asset_contracts = warmed
-                .iter()
-                .filter(|contract| contract.window.asset == asset.to_ascii_uppercase())
-                .filter(|contract| contract.window.end_ts > now)
-                .collect::<Vec<_>>();
-            asset_contracts.sort_by_key(|contract| contract.window.start_ts);
+            let asset_key = asset.to_ascii_uppercase();
+            let asset_contracts = active_contracts_by_asset
+                .get(asset_key.as_str())
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
             asset_contracts.first().is_none_or(|contract| {
                 contract
                     .window
@@ -1045,6 +1044,46 @@ mod tests {
         };
 
         assert_eq!(runtime.refresh_action(now), RefreshAction::RestBackup);
+    }
+
+    #[tokio::test]
+    async fn refresh_action_scans_warmed_contracts_once_across_assets() {
+        let start = 1_780_302_400;
+        let now = Utc.timestamp_opt(start + 60, 0).unwrap();
+        let warmed_contracts = vec![
+            warmed("BTC", start, "btc-current"),
+            warmed("BTC", start + 300, "btc-next"),
+            warmed("ETH", start, "eth-current"),
+            warmed("ETH", start + 300, "eth-next"),
+        ];
+        let expected_scans = warmed_contracts.len();
+        let runtime = StateManagerRuntime {
+            config: StateManagerConfig {
+                assets: vec!["BTC".to_owned(), "ETH".to_owned()],
+                windows: 2,
+                ..config()
+            },
+            latest_prices: crate::prices::LatestPrices::default(),
+            orderbook_streams: clob_ws::BestBidAskStreamManager::new(LiveBookState::default()),
+            book_state: LiveBookState::default(),
+            warmed: std::sync::Arc::new(std::sync::RwLock::new(warmed_contracts)),
+            market_tokens: vec![],
+            token_ids: vec![],
+            subscriptions: vec![],
+            last_refresh: now,
+            chainlink_streams: prices::ChainlinkStreamManager::inactive_for_tests(vec![
+                "btc/usd".to_owned(),
+                "eth/usd".to_owned(),
+            ]),
+            hot_decision_worker: None,
+            hot_decision_telemetry: None,
+        };
+
+        reset_snapshot_warmed_scan_count();
+        let action = runtime.refresh_action(now);
+
+        assert_eq!(action, RefreshAction::None);
+        assert_eq!(snapshot_warmed_scan_count(), expected_scans);
     }
 
     #[test]
