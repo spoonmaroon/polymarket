@@ -3,7 +3,7 @@ use chrono::{DateTime, Datelike, Timelike, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs::File;
-use std::io::Write;
+use std::io::{LineWriter, Write};
 use std::path::PathBuf;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -61,22 +61,25 @@ impl RawEventJournal {
 pub struct RawEventJournalWriter {
     journal: RawEventJournal,
     open_path: Option<PathBuf>,
-    file: Option<File>,
+    file: Option<LineWriter<File>>,
 }
 
 impl RawEventJournalWriter {
     pub fn append(&mut self, event: &RawEventRecord) -> Result<PathBuf> {
         let path = self.journal.partition_path(event);
         if self.open_path.as_ref() != Some(&path) {
+            if let Some(file) = &mut self.file {
+                file.flush()?;
+            }
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            self.file = Some(
+            let file =
                 std::fs::OpenOptions::new()
                     .create(true)
                     .append(true)
-                    .open(&path)?,
-            );
+                    .open(&path)?;
+            self.file = Some(LineWriter::new(file));
             self.open_path = Some(path.clone());
         }
 
@@ -84,10 +87,15 @@ impl RawEventJournalWriter {
             .file
             .as_mut()
             .expect("raw event journal writer opened file");
-        serde_json::to_writer(&mut *file, event)?;
-        file.write_all(b"\n")?;
+        write_raw_event_jsonl_line(file, event)?;
         Ok(path)
     }
+}
+
+fn write_raw_event_jsonl_line<W: Write>(writer: &mut W, event: &RawEventRecord) -> Result<()> {
+    serde_json::to_writer(&mut *writer, event)?;
+    writer.write_all(b"\n")?;
+    Ok(())
 }
 
 #[derive(Clone)]
@@ -117,9 +125,12 @@ impl RawEventSink {
 
 #[cfg(test)]
 mod tests {
-    use crate::raw_event_journal::{RawEventJournal, RawEventRecord, RawEventSink};
+    use crate::raw_event_journal::{
+        RawEventJournal, RawEventRecord, RawEventSink, write_raw_event_jsonl_line,
+    };
     use chrono::{TimeZone, Utc};
     use serde_json::json;
+    use std::io::{LineWriter, Write};
 
     #[test]
     fn appends_raw_events_to_source_stream_hour_partition() {
@@ -193,6 +204,31 @@ mod tests {
         assert!(next_hour_lines.contains("\"seq\":3"));
     }
 
+    #[test]
+    fn raw_event_jsonl_line_is_coalesced_until_newline() {
+        let event = RawEventRecord {
+            source_key: "polymarket_clob_market_ws".to_owned(),
+            stream_key: "best_bid_ask".to_owned(),
+            symbol: "token-1".to_owned(),
+            event_type: "best_bid_ask".to_owned(),
+            event_ts: Utc.timestamp_opt(1_780_302_400, 0).unwrap(),
+            observed_ts: Utc.timestamp_opt(1_780_302_401, 0).unwrap(),
+            payload: json!({"best_bid": "0.49", "best_ask": "0.51"}),
+        };
+        let mut inner = CountingWriter::default();
+        {
+            let mut writer = LineWriter::new(&mut inner);
+            write_raw_event_jsonl_line(&mut writer, &event).unwrap();
+        }
+
+        assert_eq!(inner.write_calls, 1);
+        let raw = String::from_utf8(inner.bytes).unwrap();
+        assert!(raw.ends_with('\n'));
+        let row: serde_json::Value = serde_json::from_str(raw.trim_end()).unwrap();
+        assert_eq!(row["source_key"], "polymarket_clob_market_ws");
+        assert_eq!(row["payload"]["best_bid"], "0.49");
+    }
+
     #[tokio::test]
     async fn sink_records_events_without_calling_writer_on_hot_path() {
         let root = temp_root("sink");
@@ -234,5 +270,23 @@ mod tests {
             std::fs::remove_dir_all(&root).unwrap();
         }
         root
+    }
+
+    #[derive(Default)]
+    struct CountingWriter {
+        bytes: Vec<u8>,
+        write_calls: usize,
+    }
+
+    impl Write for CountingWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.write_calls += 1;
+            self.bytes.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
     }
 }
