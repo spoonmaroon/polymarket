@@ -19,6 +19,7 @@ use crate::raw_event_journal::{RawEventRecord, RawEventSink};
 use crate::report::WebSocketStatus;
 
 pub const KRAKEN_TICKER_URL: &str = "https://api.kraken.com/0/public/Ticker";
+const DEFAULT_PRICE_HISTORY_LIMIT: usize = 4096;
 
 #[derive(Debug, Deserialize)]
 struct KrakenTickerResponse {
@@ -37,31 +38,85 @@ pub struct ChainlinkFetchResult {
     pub cache_hit: bool,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct LatestPrices {
-    inner: Arc<RwLock<HashMap<String, NormalizedPriceTick>>>,
+    inner: Arc<RwLock<LatestPricesInner>>,
+    history_limit: usize,
+}
+
+#[derive(Debug, Default)]
+struct LatestPricesInner {
+    latest: HashMap<String, NormalizedPriceTick>,
+    history: Vec<NormalizedPriceTick>,
 }
 
 impl LatestPrices {
+    pub fn with_history_limit(history_limit: usize) -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(LatestPricesInner::default())),
+            history_limit: history_limit.max(1),
+        }
+    }
+
     pub async fn update(&self, tick: NormalizedPriceTick) {
         let key = normalize_price_symbol(&tick.symbol);
         let mut inner = self.inner.write().expect("latest price lock poisoned");
-        inner.insert(key, tick);
+        inner.latest.insert(key, tick.clone());
+        inner.history.push(tick);
+        inner.history.sort_by_key(|tick| {
+            (
+                normalize_price_symbol(&tick.symbol),
+                tick.event_ts,
+                tick.observed_ts,
+            )
+        });
+        let overflow = inner.history.len().saturating_sub(self.history_limit);
+        if overflow > 0 {
+            inner.history.drain(0..overflow);
+        }
     }
 
     #[allow(dead_code)]
     pub async fn get(&self, symbol: &str) -> Option<NormalizedPriceTick> {
         let key = normalize_price_symbol(symbol);
         let inner = self.inner.read().expect("latest price lock poisoned");
-        inner.get(&key).cloned()
+        inner.latest.get(&key).cloned()
     }
 
     #[allow(dead_code)]
     pub async fn snapshot(&self) -> Vec<NormalizedPriceTick> {
         let inner = self.inner.read().expect("latest price lock poisoned");
-        let mut ticks = inner.values().cloned().collect::<Vec<_>>();
+        let mut ticks = inner.latest.values().cloned().collect::<Vec<_>>();
         ticks.sort_by(|left, right| left.symbol.cmp(&right.symbol));
         ticks
+    }
+
+    pub async fn history_snapshot(&self) -> Vec<NormalizedPriceTick> {
+        let inner = self.inner.read().expect("latest price lock poisoned");
+        inner.history.clone()
+    }
+
+    pub async fn latest_at_or_before(
+        &self,
+        symbol: &str,
+        event_ts_lte: DateTime<Utc>,
+        observed_ts_lte: DateTime<Utc>,
+    ) -> Option<NormalizedPriceTick> {
+        let key = normalize_price_symbol(symbol);
+        let inner = self.inner.read().expect("latest price lock poisoned");
+        inner
+            .history
+            .iter()
+            .filter(|tick| normalize_price_symbol(&tick.symbol) == key)
+            .filter(|tick| tick.event_ts <= event_ts_lte && tick.observed_ts <= observed_ts_lte)
+            .max_by_key(|tick| (tick.event_ts, tick.observed_ts))
+            .cloned()
+    }
+}
+
+impl Default for LatestPrices {
+    fn default() -> Self {
+        Self::with_history_limit(DEFAULT_PRICE_HISTORY_LIMIT)
     }
 }
 
@@ -709,6 +764,53 @@ mod tests {
         assert_eq!(store.snapshot().await.len(), 1);
     }
 
+    #[tokio::test]
+    async fn latest_prices_keeps_bounded_history_for_start_thresholds() {
+        let store = LatestPrices::with_history_limit(3);
+        let t0 = "2026-06-01T20:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        store
+            .update(chainlink_tick("BTC/USD", t0, Decimal::new(70_000, 0)))
+            .await;
+        store
+            .update(chainlink_tick(
+                "BTC/USD",
+                t0 + chrono::Duration::seconds(1),
+                Decimal::new(70_100, 0),
+            ))
+            .await;
+        store
+            .update(chainlink_tick(
+                "BTC/USD",
+                t0 + chrono::Duration::seconds(2),
+                Decimal::new(70_200, 0),
+            ))
+            .await;
+        store
+            .update(chainlink_tick(
+                "BTC/USD",
+                t0 + chrono::Duration::seconds(3),
+                Decimal::new(70_300, 0),
+            ))
+            .await;
+
+        let history = store.history_snapshot().await;
+
+        assert_eq!(history.len(), 3);
+        assert_eq!(history[0].price, Decimal::new(70_100, 0));
+        assert_eq!(
+            store
+                .latest_at_or_before(
+                    "BTC/USD",
+                    t0 + chrono::Duration::seconds(2),
+                    t0 + chrono::Duration::seconds(2),
+                )
+                .await
+                .unwrap()
+                .price,
+            Decimal::new(70_200, 0)
+        );
+    }
+
     #[test]
     fn chainlink_freshness_marks_stale_ticks() {
         let observed = "2026-06-01T20:00:00Z".parse::<DateTime<Utc>>().unwrap();
@@ -849,5 +951,19 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(path);
+    }
+
+    fn chainlink_tick(
+        symbol: &str,
+        timestamp: DateTime<Utc>,
+        price: Decimal,
+    ) -> NormalizedPriceTick {
+        NormalizedPriceTick {
+            source_key: "polymarket_rtds_chainlink".to_owned(),
+            symbol: symbol.to_owned(),
+            event_ts: timestamp,
+            observed_ts: timestamp,
+            price,
+        }
     }
 }
