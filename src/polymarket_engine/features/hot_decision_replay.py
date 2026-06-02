@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections import deque
+from collections import Counter, deque
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -72,6 +72,8 @@ class HotDecisionReplaySelection:
     rows_scanned: int
     rows_skipped_not_replay_ready: int
     rows_skipped_quality_blocked: int
+    rows_skipped_not_replay_ready_by_reason: dict[str, int]
+    rows_skipped_quality_blocked_by_reason: dict[str, int]
     price_observed_watermark: datetime | None
     orderbook_observed_watermark: datetime | None
 
@@ -101,22 +103,37 @@ def replay_ready_hot_decision_rows(
     if limit <= 0:
         raise ValueError("limit must be positive")
     price_watermark, orderbook_watermark = _duckdb_observed_watermarks(store)
-    quality_ready = tuple(row for row in rows if not _is_quality_blocked(row))
-    eligible = tuple(
-        row
-        for row in quality_ready
-        if _is_replay_ready(
+    quality_blocked_by_reason: Counter[str] = Counter()
+    replay_not_ready_by_reason: Counter[str] = Counter()
+    quality_ready: list[dict[str, Any]] = []
+    eligible: list[dict[str, Any]] = []
+
+    for row in rows:
+        quality_block_reasons = _quality_block_reasons(row)
+        if quality_block_reasons:
+            quality_blocked_by_reason.update(quality_block_reasons)
+            continue
+        quality_ready.append(row)
+
+    for row in quality_ready:
+        replay_not_ready_reasons = _replay_not_ready_reasons(
             row,
             price_observed_watermark=price_watermark,
             orderbook_observed_watermark=orderbook_watermark,
         )
-    )
+        if replay_not_ready_reasons:
+            replay_not_ready_by_reason.update(replay_not_ready_reasons)
+            continue
+        eligible.append(row)
+
     selected = eligible[-limit:]
     return HotDecisionReplaySelection(
-        rows=selected,
+        rows=tuple(selected),
         rows_scanned=len(rows),
         rows_skipped_not_replay_ready=len(quality_ready) - len(eligible),
         rows_skipped_quality_blocked=len(rows) - len(quality_ready),
+        rows_skipped_not_replay_ready_by_reason=dict(replay_not_ready_by_reason),
+        rows_skipped_quality_blocked_by_reason=dict(quality_blocked_by_reason),
         price_observed_watermark=price_watermark,
         orderbook_observed_watermark=orderbook_watermark,
     )
@@ -152,23 +169,49 @@ def _is_replay_ready(
     price_observed_watermark: datetime | None,
     orderbook_observed_watermark: datetime | None,
 ) -> bool:
+    return not _replay_not_ready_reasons(
+        row,
+        price_observed_watermark=price_observed_watermark,
+        orderbook_observed_watermark=orderbook_observed_watermark,
+    )
+
+
+def _replay_not_ready_reasons(
+    row: dict[str, Any],
+    *,
+    price_observed_watermark: datetime | None,
+    orderbook_observed_watermark: datetime | None,
+) -> tuple[str, ...]:
+    reasons: list[str] = []
     source_observed_ts = _observed_ts_from_age(row, "source_age_ms")
-    if source_observed_ts is None or price_observed_watermark is None:
-        return False
-    if source_observed_ts > price_observed_watermark:
-        return False
+    if source_observed_ts is None:
+        reasons.append("missing_source_age_ms")
+    if price_observed_watermark is None:
+        reasons.append("missing_price_observed_watermark")
+    elif source_observed_ts is not None and source_observed_ts > price_observed_watermark:
+        reasons.append("price_observed_after_watermark")
 
     if _has_hot_orderbook(row):
         book_observed_ts = _observed_ts_from_age(row, "book_age_ms")
-        if book_observed_ts is None or orderbook_observed_watermark is None:
-            return False
-        if book_observed_ts > orderbook_observed_watermark:
-            return False
-    return True
+        if book_observed_ts is None:
+            reasons.append("missing_book_age_ms")
+        if orderbook_observed_watermark is None:
+            reasons.append("missing_orderbook_observed_watermark")
+        elif book_observed_ts is not None and book_observed_ts > orderbook_observed_watermark:
+            reasons.append("orderbook_observed_after_watermark")
+    return tuple(reasons)
 
 
 def _is_quality_blocked(row: dict[str, Any]) -> bool:
-    return any(flag in REPLAY_BLOCKING_HOT_FLAGS for flag in _string_list(row.get("data_quality_flags")))
+    return bool(_quality_block_reasons(row))
+
+
+def _quality_block_reasons(row: dict[str, Any]) -> tuple[str, ...]:
+    return tuple(
+        flag
+        for flag in _string_list(row.get("data_quality_flags"))
+        if flag in REPLAY_BLOCKING_HOT_FLAGS
+    )
 
 
 def _observed_ts_from_age(row: dict[str, Any], age_field: str) -> datetime | None:

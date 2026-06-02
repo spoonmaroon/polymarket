@@ -450,6 +450,13 @@ async def test_run_verify_hot_decision_replay_command_writes_report(
     assert file_payload["rows_checked"] == 1
     assert file_payload["rows_skipped_not_replay_ready"] == 1
     assert file_payload["rows_skipped_quality_blocked"] == 1
+    assert file_payload["rows_skipped_not_replay_ready_by_reason"] == {
+        "price_observed_after_watermark": 1,
+        "orderbook_observed_after_watermark": 1,
+    }
+    assert file_payload["rows_skipped_quality_blocked_by_reason"] == {
+        "MissingThreshold": 1,
+    }
     assert file_payload["mismatch_count"] == 0
     assert file_payload["mismatches"] == []
 

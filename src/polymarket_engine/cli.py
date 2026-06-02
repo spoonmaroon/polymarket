@@ -222,6 +222,8 @@ def _run_verify_hot_decision_replay(args: argparse.Namespace) -> int:
         "rows_checked": result.rows_checked,
         "rows_skipped_not_replay_ready": selection.rows_skipped_not_replay_ready,
         "rows_skipped_quality_blocked": selection.rows_skipped_quality_blocked,
+        "rows_skipped_not_replay_ready_by_reason": selection.rows_skipped_not_replay_ready_by_reason,
+        "rows_skipped_quality_blocked_by_reason": selection.rows_skipped_quality_blocked_by_reason,
         "mismatch_count": len(result.mismatches),
         "price_observed_watermark": _isoformat_optional(selection.price_observed_watermark),
         "orderbook_observed_watermark": _isoformat_optional(selection.orderbook_observed_watermark),
