@@ -5,7 +5,10 @@ use polymarket_runtime_types::{
     ProbeReport, WarmStateSnapshot, WarmedContract,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::Path;
+#[cfg(test)]
+use std::cell::Cell;
 use std::time::Instant;
 
 use crate::hot_decision::HotDecisionTelemetrySnapshot;
@@ -13,6 +16,11 @@ use crate::hot_decision::HotDecisionTelemetrySnapshot;
 pub const REPORT_SCHEMA_VERSION: &str = "rust-live-probe-v1";
 pub const STATE_MANAGER_REPORT_SCHEMA_VERSION: &str = "rust-live-probe-state-manager-v1";
 pub const STATE_MANAGER_REPORT_MODE: &str = "state-manager";
+
+#[cfg(test)]
+thread_local! {
+    static ORDERBOOK_LATENCY_SCAN_COUNT: Cell<usize> = const { Cell::new(0) };
+}
 
 pub struct ProbeTimer {
     started: Instant,
@@ -164,70 +172,123 @@ fn state_manager_latency_marks(snapshot: &WarmStateSnapshot) -> Vec<LatencyMark>
             elapsed_ms: value,
         });
     }
-    if let Some(value) = snapshot
-        .orderbooks
-        .iter()
-        .map(|book| duration_ms(snapshot.observed_ts - book.observed_ts))
-        .max()
-    {
-        marks.push(LatencyMark {
-            name: "orderbook_observed_age_ms".to_owned(),
-            elapsed_ms: value,
-        });
-    }
-    if let Some(value) = snapshot
-        .orderbooks
-        .iter()
-        .map(|book| duration_ms(book.observed_ts - book.event_ts))
-        .max()
-    {
-        marks.push(LatencyMark {
-            name: "orderbook_event_to_observed_ms".to_owned(),
-            elapsed_ms: value,
-        });
-    }
-    add_window_orderbook_latency_marks(&mut marks, "current", snapshot, &snapshot.current);
-    add_window_orderbook_latency_marks(&mut marks, "next", snapshot, &snapshot.next);
-    add_window_orderbook_latency_marks(&mut marks, "next_next", snapshot, &snapshot.next_next);
+    let orderbook_latency = orderbook_latency_stats(snapshot);
+    push_orderbook_latency_marks(&mut marks, "orderbook", &orderbook_latency.all);
+    push_orderbook_latency_marks(
+        &mut marks,
+        "current_orderbook",
+        &orderbook_latency.windows[0],
+    );
+    push_orderbook_latency_marks(&mut marks, "next_orderbook", &orderbook_latency.windows[1]);
+    push_orderbook_latency_marks(
+        &mut marks,
+        "next_next_orderbook",
+        &orderbook_latency.windows[2],
+    );
     marks
 }
 
-fn add_window_orderbook_latency_marks(
+#[derive(Clone, Copy, Debug, Default)]
+struct OrderbookLatencyStats {
+    observed_age_ms: Option<u128>,
+    event_to_observed_ms: Option<u128>,
+}
+
+impl OrderbookLatencyStats {
+    fn update(&mut self, observed_age_ms: u128, event_to_observed_ms: u128) {
+        self.observed_age_ms = Some(
+            self.observed_age_ms
+                .map_or(observed_age_ms, |value| value.max(observed_age_ms)),
+        );
+        self.event_to_observed_ms = Some(
+            self.event_to_observed_ms
+                .map_or(event_to_observed_ms, |value| {
+                    value.max(event_to_observed_ms)
+                }),
+        );
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct OrderbookLatencySummary {
+    all: OrderbookLatencyStats,
+    windows: [OrderbookLatencyStats; 3],
+}
+
+fn orderbook_latency_stats(snapshot: &WarmStateSnapshot) -> OrderbookLatencySummary {
+    let window_bits_by_token = orderbook_window_bits_by_token(snapshot);
+    let mut summary = OrderbookLatencySummary::default();
+    for book in &snapshot.orderbooks {
+        record_orderbook_latency_scan();
+        let observed_age_ms = duration_ms(snapshot.observed_ts - book.observed_ts);
+        let event_to_observed_ms = duration_ms(book.observed_ts - book.event_ts);
+        summary.all.update(observed_age_ms, event_to_observed_ms);
+        if let Some(window_bits) = window_bits_by_token.get(book.token_id.as_str()).copied() {
+            for (index, stats) in summary.windows.iter_mut().enumerate() {
+                if window_bits & (1_u8 << index) != 0 {
+                    stats.update(observed_age_ms, event_to_observed_ms);
+                }
+            }
+        }
+    }
+    summary
+}
+
+fn push_orderbook_latency_marks(
     marks: &mut Vec<LatencyMark>,
-    window_name: &str,
-    snapshot: &WarmStateSnapshot,
-    contracts: &[WarmedContract],
+    name_prefix: &str,
+    stats: &OrderbookLatencyStats,
 ) {
-    if let Some(value) = snapshot
-        .orderbooks
-        .iter()
-        .filter(|book| orderbook_matches_contracts(book, contracts))
-        .map(|book| duration_ms(snapshot.observed_ts - book.observed_ts))
-        .max()
-    {
+    if let Some(value) = stats.observed_age_ms {
         marks.push(LatencyMark {
-            name: format!("{window_name}_orderbook_observed_age_ms"),
+            name: format!("{name_prefix}_observed_age_ms"),
             elapsed_ms: value,
         });
     }
-    if let Some(value) = snapshot
-        .orderbooks
-        .iter()
-        .filter(|book| orderbook_matches_contracts(book, contracts))
-        .map(|book| duration_ms(book.observed_ts - book.event_ts))
-        .max()
-    {
+    if let Some(value) = stats.event_to_observed_ms {
         marks.push(LatencyMark {
-            name: format!("{window_name}_orderbook_event_to_observed_ms"),
+            name: format!("{name_prefix}_event_to_observed_ms"),
             elapsed_ms: value,
         });
     }
 }
 
-fn orderbook_matches_contracts(book: &NormalizedOrderBook, contracts: &[WarmedContract]) -> bool {
-    contracts.iter().any(|contract| {
-        contract.up.token_id == book.token_id || contract.down.token_id == book.token_id
-    })
+fn orderbook_window_bits_by_token(snapshot: &WarmStateSnapshot) -> HashMap<&str, u8> {
+    let mut window_bits_by_token = HashMap::new();
+    for (index, contracts) in [
+        snapshot.current.as_slice(),
+        snapshot.next.as_slice(),
+        snapshot.next_next.as_slice(),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let bit = 1_u8 << index;
+        for contract in contracts {
+            *window_bits_by_token
+                .entry(contract.up.token_id.as_str())
+                .or_insert(0) |= bit;
+            *window_bits_by_token
+                .entry(contract.down.token_id.as_str())
+                .or_insert(0) |= bit;
+        }
+    }
+    window_bits_by_token
+}
+
+fn record_orderbook_latency_scan() {
+    #[cfg(test)]
+    ORDERBOOK_LATENCY_SCAN_COUNT.with(|count| count.set(count.get() + 1));
+}
+
+#[cfg(test)]
+fn reset_orderbook_latency_scan_count() {
+    ORDERBOOK_LATENCY_SCAN_COUNT.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+fn orderbook_latency_scan_count() -> usize {
+    ORDERBOOK_LATENCY_SCAN_COUNT.with(Cell::get)
 }
 
 fn duration_ms(duration: chrono::Duration) -> u128 {
@@ -544,6 +605,62 @@ mod tests {
         assert_eq!(by_name["next_orderbook_observed_age_ms"], 9_000);
         assert_eq!(by_name["next_orderbook_event_to_observed_ms"], 1_000);
         assert_eq!(by_name["orderbook_observed_age_ms"], 9_000);
+    }
+
+    #[test]
+    fn state_manager_report_classifies_orderbook_latency_windows_once_per_book() {
+        let generated_base = Utc.timestamp_opt(1_780_302_400, 0).unwrap();
+        let current = sample_warmed_contract("BTC", 1_780_302_400);
+        let next = sample_warmed_contract("BTC", 1_780_302_700);
+        let next_next = sample_warmed_contract("BTC", 1_780_303_000);
+        let orderbooks = vec![
+            sample_orderbook(
+                &current.up.token_id,
+                generated_base - chrono::Duration::milliseconds(300),
+                generated_base - chrono::Duration::milliseconds(100),
+            ),
+            sample_orderbook(
+                &current.down.token_id,
+                generated_base - chrono::Duration::milliseconds(500),
+                generated_base - chrono::Duration::milliseconds(200),
+            ),
+            sample_orderbook(
+                &next.up.token_id,
+                generated_base - chrono::Duration::milliseconds(10_000),
+                generated_base - chrono::Duration::milliseconds(9_000),
+            ),
+            sample_orderbook(
+                &next_next.down.token_id,
+                generated_base - chrono::Duration::milliseconds(2_500),
+                generated_base - chrono::Duration::milliseconds(400),
+            ),
+        ];
+        let expected_scans = orderbooks.len();
+        let snapshot = WarmStateSnapshot {
+            observed_ts: generated_base,
+            current: vec![current],
+            next: vec![next],
+            next_next: vec![next_next],
+            chainlink_prices: vec![],
+            proxy_prices: vec![],
+            orderbooks,
+            freshness: vec![],
+            health_flags: vec![],
+        };
+
+        reset_orderbook_latency_scan_count();
+        let report = build_state_manager_report(StateManagerReportInput {
+            elapsed_ms: 10,
+            snapshot,
+            subscriptions: vec![],
+            websocket_status: vec![],
+            hot_decision_telemetry: None,
+        });
+
+        assert!(report.latency_marks.iter().any(|mark| {
+            mark.name == "next_next_orderbook_observed_age_ms" && mark.elapsed_ms == 400
+        }));
+        assert_eq!(orderbook_latency_scan_count(), expected_scans);
     }
 
     #[test]
