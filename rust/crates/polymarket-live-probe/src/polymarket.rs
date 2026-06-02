@@ -92,10 +92,7 @@ pub fn warmed_contracts_from_tokens(tokens: &[MarketToken]) -> Result<Vec<Warmed
         .collect()
 }
 
-fn warmed_contract_from_slug_tokens(
-    slug: &str,
-    tokens: &[&MarketToken],
-) -> Result<WarmedContract> {
+fn warmed_contract_from_slug_tokens(slug: &str, tokens: &[&MarketToken]) -> Result<WarmedContract> {
     let window = window_from_slug(slug)?;
     let mut up: Option<ContractToken> = None;
     let mut down: Option<ContractToken> = None;
@@ -210,10 +207,7 @@ pub async fn discover_current_markets(
 #[allow(dead_code)]
 pub async fn discover_windows(windows: &[ContractWindow]) -> Result<Vec<WarmedContract>> {
     let gamma = GammaClient::new(GAMMA_HOST)?;
-    let slugs = windows
-        .iter()
-        .map(ContractWindow::slug)
-        .collect::<Vec<_>>();
+    let slugs = windows.iter().map(ContractWindow::slug).collect::<Vec<_>>();
     let request = MarketsRequest::builder().slug(slugs).closed(false).build();
     let markets = gamma.markets(&request).await?;
     let mut tokens = Vec::new();

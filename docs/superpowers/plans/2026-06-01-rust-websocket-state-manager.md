@@ -415,24 +415,24 @@ git commit -m "Support prewarmed contract discovery"
 **Files:**
 - Modify: `rust/crates/polymarket-live-probe/src/prices.rs`
 
-- [ ] **Step 1: Add tests for BTC and ETH Chainlink parsing**
+- [x] **Step 1: Add tests for BTC and ETH Chainlink parsing**
 
 Add fixtures for `crypto_prices_chainlink` containing both `btc/usd` and `eth/usd`, then assert both normalize into `polymarket_rtds_chainlink` rows.
 
-- [ ] **Step 2: Add latest-price store**
+- [x] **Step 2: Add latest-price store**
 
 Implement:
 
 ```rust
 #[derive(Debug, Default, Clone)]
 pub struct LatestPrices {
-    inner: std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<String, NormalizedPriceTick>>>,
+    inner: std::sync::Arc<std::sync::RwLock<std::collections::HashMap<String, NormalizedPriceTick>>>,
 }
 ```
 
 Expose `update(tick)`, `get(symbol)`, and `snapshot()` methods.
 
-- [ ] **Step 3: Add always-on Chainlink loop**
+- [x] **Step 3: Add always-on Chainlink loop**
 
 Implement:
 
@@ -442,7 +442,7 @@ pub async fn run_chainlink_stream(symbols: Vec<String>, latest: LatestPrices) ->
 
 Subscribe to Chainlink RTDS and update the store for `btc/usd` and `eth/usd`. If filtered multi-symbol subscriptions are unreliable, subscribe broadly and filter locally.
 
-- [ ] **Step 4: Add freshness helper**
+- [x] **Step 4: Add freshness helper**
 
 Implement:
 
@@ -456,7 +456,7 @@ pub fn chainlink_freshness(
 
 Mark BTC/USD or ETH/USD stale when `now - observed_ts > max_age_ms`.
 
-- [ ] **Step 5: Run tests**
+- [x] **Step 5: Run tests**
 
 ```bash
 cargo test -p polymarket-live-probe prices::tests -q

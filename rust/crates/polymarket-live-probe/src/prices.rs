@@ -1,8 +1,8 @@
 use anyhow::{Result, anyhow};
 use chrono::{DateTime, TimeZone, Utc};
-use futures::StreamExt as _;
+use futures::{StreamExt as _, future::try_join_all};
 use polymarket_client_sdk_v2::rtds::{Client as RtdsClient, RtdsMessage, Subscription};
-use polymarket_runtime_types::{NormalizedPriceTick, PriceDisagreement};
+use polymarket_runtime_types::{FeedFreshness, NormalizedPriceTick, PriceDisagreement};
 use rust_decimal::Decimal;
 use serde::Deserialize;
 use serde_json::Value;
@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::time::timeout;
 
@@ -30,6 +31,36 @@ struct KrakenTickerPair {
 pub struct ChainlinkFetchResult {
     pub tick: NormalizedPriceTick,
     pub cache_hit: bool,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct LatestPrices {
+    inner: Arc<RwLock<HashMap<String, NormalizedPriceTick>>>,
+}
+
+impl LatestPrices {
+    pub async fn update(&self, tick: NormalizedPriceTick) {
+        let key = normalize_price_symbol(&tick.symbol);
+        let mut inner = self.inner.write().expect("latest price lock poisoned");
+        inner.insert(key, tick);
+    }
+
+    pub async fn get(&self, symbol: &str) -> Option<NormalizedPriceTick> {
+        let key = normalize_price_symbol(symbol);
+        let inner = self.inner.read().expect("latest price lock poisoned");
+        inner.get(&key).cloned()
+    }
+
+    pub async fn snapshot(&self) -> Vec<NormalizedPriceTick> {
+        let inner = self.inner.read().expect("latest price lock poisoned");
+        let mut ticks = inner.values().cloned().collect::<Vec<_>>();
+        ticks.sort_by(|left, right| left.symbol.cmp(&right.symbol));
+        ticks
+    }
+}
+
+fn normalize_price_symbol(symbol: &str) -> String {
+    symbol.trim().to_ascii_uppercase()
 }
 
 pub fn parse_kraken_xbtusd_ticker(
@@ -121,11 +152,98 @@ pub async fn fetch_chainlink_btc_usd_cached(
     })
 }
 
+#[allow(dead_code)]
+pub async fn run_chainlink_stream(symbols: Vec<String>, latest: LatestPrices) -> Result<()> {
+    let streams = chainlink_stream_symbols(symbols)
+        .into_iter()
+        .map(|symbol| run_chainlink_symbol_stream(symbol, latest.clone()));
+    try_join_all(streams).await?;
+    Ok(())
+}
+
+#[allow(dead_code)]
+async fn run_chainlink_symbol_stream(symbol: String, latest: LatestPrices) -> Result<()> {
+    let client = RtdsClient::default();
+    let stream = client.subscribe_raw(Subscription::chainlink_prices(Some(symbol.clone())))?;
+    let mut stream = Box::pin(stream);
+
+    while let Some(message_result) = stream.next().await {
+        let message = message_result?;
+        let observed_ts = Utc::now();
+        update_latest_from_chainlink_message(&latest, &message, &symbol, observed_ts).await?;
+    }
+
+    Err(anyhow!("Chainlink RTDS stream ended for {symbol}"))
+}
+
+fn chainlink_stream_symbols(symbols: Vec<String>) -> Vec<String> {
+    let raw_symbols = if symbols.is_empty() {
+        vec!["btc/usd".to_owned(), "eth/usd".to_owned()]
+    } else {
+        symbols
+    };
+    let mut normalized = Vec::new();
+    for symbol in raw_symbols {
+        let symbol = symbol.trim().to_ascii_lowercase();
+        if !symbol.is_empty() && !normalized.contains(&symbol) {
+            normalized.push(symbol);
+        }
+    }
+    normalized
+}
+
 pub fn compare_btc_sources(
     chainlink: &NormalizedPriceTick,
     kraken: &NormalizedPriceTick,
 ) -> PriceDisagreement {
     PriceDisagreement::calculate("BTC", chainlink, kraken)
+}
+
+pub fn chainlink_freshness(
+    ticks: &[NormalizedPriceTick],
+    now: DateTime<Utc>,
+    max_age: Duration,
+) -> Vec<FeedFreshness> {
+    let max_age_ms = i64::try_from(max_age.as_millis()).unwrap_or(i64::MAX);
+    ticks
+        .iter()
+        .filter(|tick| tick.source_key == "polymarket_rtds_chainlink")
+        .map(|tick| {
+            let age_ms = now
+                .signed_duration_since(tick.observed_ts)
+                .num_milliseconds();
+            FeedFreshness {
+                source_key: tick.source_key.clone(),
+                symbol: normalize_price_symbol(&tick.symbol),
+                age_ms,
+                stale: age_ms < 0 || age_ms > max_age_ms,
+            }
+        })
+        .collect()
+}
+
+async fn update_latest_from_chainlink_message(
+    latest: &LatestPrices,
+    message: &RtdsMessage,
+    requested_symbol: &str,
+    observed_ts: DateTime<Utc>,
+) -> Result<bool> {
+    if let Some(tick) =
+        chainlink_snapshot_tick_from_message(message, requested_symbol, observed_ts)?
+    {
+        latest.update(tick).await;
+        return Ok(true);
+    }
+
+    if let Some(price) = message.as_chainlink_price()
+        && price.symbol.eq_ignore_ascii_case(requested_symbol)
+    {
+        let tick = chainlink_update_tick(&price.symbol, price.timestamp, price.value, observed_ts)?;
+        latest.update(tick).await;
+        return Ok(true);
+    }
+
+    Ok(false)
 }
 
 fn chainlink_update_tick(
@@ -325,6 +443,116 @@ mod tests {
         assert_eq!(tick.symbol, "BTC/USD");
         assert_eq!(tick.event_ts.timestamp_millis(), 1780352939000_i64);
         assert_eq!(tick.price.to_string(), "71209.78951739693");
+    }
+
+    #[test]
+    fn parses_chainlink_eth_snapshot_latest_point() {
+        let observed = "2026-06-01T20:00:01Z".parse::<DateTime<Utc>>().unwrap();
+        let message = serde_json::json!({
+            "topic": "crypto_prices_chainlink",
+            "type": "snapshot",
+            "payload": {
+                "symbol": "eth/usd",
+                "data": [
+                    {"timestamp": 1780352937000_i64, "value": "1990.25"},
+                    {"timestamp": 1780352939000_i64, "value": "1991.50"}
+                ]
+            }
+        });
+
+        let tick = chainlink_snapshot_tick(&message, "eth/usd", observed).unwrap();
+
+        assert_eq!(tick.source_key, "polymarket_rtds_chainlink");
+        assert_eq!(tick.symbol, "ETH/USD");
+        assert_eq!(tick.event_ts.timestamp_millis(), 1780352939000_i64);
+        assert_eq!(tick.price.to_string(), "1991.50");
+    }
+
+    #[tokio::test]
+    async fn latest_prices_store_updates_and_snapshots_ticks() {
+        let observed = "2026-06-01T20:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let store = LatestPrices::default();
+        store
+            .update(NormalizedPriceTick {
+                source_key: "polymarket_rtds_chainlink".to_owned(),
+                symbol: "BTC/USD".to_owned(),
+                event_ts: observed,
+                observed_ts: observed,
+                price: Decimal::new(100_000, 0),
+            })
+            .await;
+
+        assert_eq!(
+            store.get("btc/usd").await.unwrap().price.to_string(),
+            "100000"
+        );
+        assert_eq!(store.snapshot().await.len(), 1);
+    }
+
+    #[test]
+    fn chainlink_freshness_marks_stale_ticks() {
+        let observed = "2026-06-01T20:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let now = "2026-06-01T20:00:02Z".parse::<DateTime<Utc>>().unwrap();
+        let tick = NormalizedPriceTick {
+            source_key: "polymarket_rtds_chainlink".to_owned(),
+            symbol: "ETH/USD".to_owned(),
+            event_ts: observed,
+            observed_ts: observed,
+            price: Decimal::new(2_000, 0),
+        };
+
+        let freshness = chainlink_freshness(&[tick], now, Duration::from_millis(1500));
+
+        assert_eq!(freshness.len(), 1);
+        assert_eq!(freshness[0].source_key, "polymarket_rtds_chainlink");
+        assert_eq!(freshness[0].symbol, "ETH/USD");
+        assert_eq!(freshness[0].age_ms, 2_000);
+        assert!(freshness[0].stale);
+    }
+
+    #[tokio::test]
+    async fn updates_latest_prices_from_matching_chainlink_message() {
+        let observed = "2026-06-01T20:00:01Z".parse::<DateTime<Utc>>().unwrap();
+        let message: RtdsMessage = serde_json::from_value(serde_json::json!({
+            "topic": "crypto_prices_chainlink",
+            "type": "snapshot",
+            "timestamp": 1780352939000_i64,
+            "payload": {
+                "symbol": "btc/usd",
+                "data": [
+                    {"timestamp": 1780352937000_i64, "value": "71209.81"},
+                    {"timestamp": 1780352939000_i64, "value": "71210.25"}
+                ]
+            }
+        }))
+        .unwrap();
+        let latest = LatestPrices::default();
+
+        let updated = update_latest_from_chainlink_message(&latest, &message, "btc/usd", observed)
+            .await
+            .unwrap();
+
+        assert!(updated);
+        assert_eq!(
+            latest.get("BTC/USD").await.unwrap().price.to_string(),
+            "71210.25"
+        );
+    }
+
+    #[test]
+    fn chainlink_stream_symbols_default_and_normalize() {
+        assert_eq!(
+            chainlink_stream_symbols(vec![]),
+            vec!["btc/usd".to_owned(), "eth/usd".to_owned()]
+        );
+        assert_eq!(
+            chainlink_stream_symbols(vec![
+                " BTC/USD ".to_owned(),
+                "eth/usd".to_owned(),
+                "BTC/USD".to_owned(),
+            ]),
+            vec!["btc/usd".to_owned(), "eth/usd".to_owned()]
+        );
     }
 
     #[test]
