@@ -30,3 +30,18 @@ def test_readme_points_to_state_manager_not_legacy_collector() -> None:
     assert "normalize-rust-events" in text
     assert "write-normalized-health" in text
     assert "build-current-decision-states" in text
+
+
+def test_spoon_docs_describe_three_window_runtime_and_normalizer_sidecar() -> None:
+    part_two = (ROOT / "docs" / "PART_TWO_LIVE_COLLECTORS.md").read_text(
+        encoding="utf-8"
+    )
+    deployment = (ROOT / "docs" / "SPOON_DEPLOYMENT.md").read_text(encoding="utf-8")
+
+    assert "current, next, and next-next 5m windows" in part_two
+    assert "POLYMARKET_PREWARM_WINDOWS=3" in deployment
+    assert "normalizer sidecar" in part_two
+    assert "normalized_health.json" in part_two
+    assert "core.contract_rules remains empty" in part_two
+    assert "features.decision_snapshots remains empty until probability" in part_two
+    assert "origin/codex/rust-raw-normalizer" in deployment

@@ -40,7 +40,7 @@ polymarket-live-probe \
   --mode state-manager \
   --assets BTC,ETH \
   --interval 5m \
-  --prewarm-windows 2 \
+  --prewarm-windows 3 \
   --forever \
   --state-snapshot-dir /var/lib/polymarket/raw/polymarket_state_manager/state_snapshot \
   --out /var/lib/polymarket/live/status.json
@@ -48,6 +48,11 @@ polymarket-live-probe \
 
 The runtime remains read-only. It keeps the current, next, and next-next 5m
 contracts warm so rollover does not require contract discovery on the hot path.
+The spoon deployment tracks current, next, and next-next 5m windows with
+`POLYMARKET_PREWARM_WINDOWS=3`. The collector process owns live WebSocket state
+and append-only raw JSONL journals. A normalizer sidecar reads those raw
+journals, writes normalized DuckDB rows, builds current/next `DecisionState`
+snapshots, and refreshes `data/live/normalized_health.json`.
 
 The Rust state-manager status file records:
 
@@ -84,6 +89,13 @@ should persist this exact state first, while raw Chainlink/CLOB event journals
 remain the replay/audit trail. Use `polymarket-engine write-normalized-health`
 after snapshot building to publish `normalized_health.json` with final DuckDB
 table counts and latest timestamps.
+
+Database expectation: `core.price_ticks`, `core.orderbook_snapshots`, and
+`features.asof_state_inputs` should stay fresh while the normalizer sidecar is
+running. `core.contract_rules remains empty` for Rust status-derived contracts
+because the Rust status file does not contain full venue rule text; do not
+synthesize rule text. `features.decision_snapshots remains empty until probability`
+because no probability model or decision policy exists yet.
 
 ## Source Rules
 

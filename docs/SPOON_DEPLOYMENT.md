@@ -27,9 +27,12 @@ cd /home/spoon/polymarket
 cp deploy/collector/.env.example deploy/collector/.env
 sed -i "s/^POLYMARKET_UID=.*/POLYMARKET_UID=$(id -u)/" deploy/collector/.env
 sed -i "s/^POLYMARKET_GID=.*/POLYMARKET_GID=$(id -g)/" deploy/collector/.env
-docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml up -d --build collector
+docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml up -d --build collector normalizer
 python3 scripts/check_collector_status.py --status-path /home/spoon/polymarket-data/live/status.json --max-status-age-seconds 30 --max-price-age-ms 30000 --max-orderbook-age-ms 30000 --max-websocket-event-age-ms 30000
 ```
+
+Set `POLYMARKET_PREWARM_WINDOWS=3` or rely on the compose default so spoon warms
+BTC/ETH current, next, and next-next 5m windows.
 
 ## Auto Deploy
 
@@ -47,6 +50,11 @@ For branch testing before merge:
 ```bash
 POLYMARKET_DEPLOY_REF=origin/main DEPLOY_FORCE=1 /home/spoon/polymarket/scripts/deploy.sh
 ```
+
+When testing the raw-normalizer deployment before merge, deploy explicitly with
+`POLYMARKET_DEPLOY_REF=origin/codex/rust-raw-normalizer`. Do not let spoon's
+local `main` remain ahead of `origin/main` after the branch is ready; either
+merge/push main or keep the deploy ref explicit.
 
 ## Retention
 
