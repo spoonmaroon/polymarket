@@ -763,6 +763,26 @@ def test_normalizer_summary_scans_cycle_results_once() -> None:
     assert results.iterations == 1
 
 
+def test_idle_normalizer_summary_uses_precomputed_raw_summary() -> None:
+    raw_summary = rust_normalizer_sidecar.RawTreeIdleSummary(
+        files=2,
+        file_size_bytes=28,
+    )
+
+    summary = rust_normalizer_sidecar._idle_normalizer_summary(raw_summary=raw_summary)
+
+    assert summary == {
+        "files": 2,
+        "files_with_rows": 0,
+        "files_skipped": 2,
+        "bytes_read": 0,
+        "file_size_bytes": 28,
+        "rows_read": 0,
+        "price_ticks_written": 0,
+        "orderbooks_written": 0,
+    }
+
+
 def test_sidecar_loop_throttles_changed_cycle_normalized_health_writes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

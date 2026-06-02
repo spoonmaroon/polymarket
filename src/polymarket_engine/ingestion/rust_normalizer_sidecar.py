@@ -35,6 +35,12 @@ class RawTreeFileSignature:
 
 
 @dataclass(frozen=True)
+class RawTreeIdleSummary:
+    files: int
+    file_size_bytes: int
+
+
+@dataclass(frozen=True)
 class RustNormalizerCycleResult:
     files: int
     files_with_rows: int
@@ -190,6 +196,7 @@ def run_rust_normalizer_loop(
         cycles_run = 0
         previous_status_mtime_ns: int | None = None
         previous_raw_signature: tuple[RawTreeFileSignature, ...] | None = None
+        previous_raw_summary: RawTreeIdleSummary | None = None
         raw_checkpoint_cache: dict[Path, int] = {}
         price_state_cache: dict[tuple[str, str], tuple[object, ...]] = {}
         orderbook_state_cache: dict[tuple[str, str], tuple[object, ...]] = {}
@@ -300,6 +307,7 @@ def run_rust_normalizer_loop(
                     ) or status_changed
                     result = _run_idle_rust_normalizer_cycle_with_store(
                         raw_signature=previous_raw_signature,
+                        raw_summary=previous_raw_summary,
                         store=store,
                         status_path=status_path,
                         normalized_health_path=normalized_health_path,
@@ -317,6 +325,7 @@ def run_rust_normalizer_loop(
             previous_status_mtime_ns = status_mtime_ns
             if full_scan_due:
                 previous_raw_signature = raw_signature
+                previous_raw_summary = _raw_tree_idle_summary(previous_raw_signature)
             else:
                 assert previous_raw_signature is not None
                 if raw_signature_changed:
@@ -324,6 +333,7 @@ def run_rust_normalizer_loop(
                         previous=previous_raw_signature,
                         current=raw_signature,
                     )
+                    previous_raw_summary = _raw_tree_idle_summary(previous_raw_signature)
             cycles_run += 1
             if max_cycles is not None and cycles_run >= max_cycles:
                 return
@@ -433,6 +443,7 @@ def _run_changed_rust_normalizer_cycle_with_store(
 def _run_idle_rust_normalizer_cycle_with_store(
     *,
     raw_signature: tuple[RawTreeFileSignature, ...],
+    raw_summary: RawTreeIdleSummary | None = None,
     store: DuckDbIngestStore,
     status_path: Path,
     normalized_health_path: Path,
@@ -474,7 +485,10 @@ def _run_idle_rust_normalizer_cycle_with_store(
     health_at = time.perf_counter()
 
     return RustNormalizerCycleResult(
-        **_idle_normalizer_summary(raw_signature),
+        **_idle_normalizer_summary(
+            raw_signature=raw_signature,
+            raw_summary=raw_summary,
+        ),
         contracts_upserted=contracts_upserted,
         states_written=states_written,
         state_skipped=status_mtime_ns is not None and not build_state,
@@ -530,15 +544,28 @@ def _observations_written(summary: dict[str, int]) -> bool:
     return summary["price_ticks_written"] > 0 or summary["orderbooks_written"] > 0
 
 
-def _idle_normalizer_summary(
+def _raw_tree_idle_summary(
     raw_signature: tuple[RawTreeFileSignature, ...],
+) -> RawTreeIdleSummary:
+    return RawTreeIdleSummary(
+        files=len(raw_signature),
+        file_size_bytes=sum(row.size_bytes for row in raw_signature),
+    )
+
+
+def _idle_normalizer_summary(
+    raw_signature: tuple[RawTreeFileSignature, ...] = (),
+    *,
+    raw_summary: RawTreeIdleSummary | None = None,
 ) -> dict[str, int]:
+    if raw_summary is None:
+        raw_summary = _raw_tree_idle_summary(raw_signature)
     return {
-        "files": len(raw_signature),
+        "files": raw_summary.files,
         "files_with_rows": 0,
-        "files_skipped": len(raw_signature),
+        "files_skipped": raw_summary.files,
         "bytes_read": 0,
-        "file_size_bytes": sum(row.size_bytes for row in raw_signature),
+        "file_size_bytes": raw_summary.file_size_bytes,
         "rows_read": 0,
         "price_ticks_written": 0,
         "orderbooks_written": 0,
