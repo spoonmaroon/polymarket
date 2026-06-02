@@ -163,7 +163,7 @@ def normalize_rust_event_file(
             last_event_ts=max(event_times) if event_times else None,
         )
 
-    if rows_read > 0:
+    if rows_read > 0 and (price_ticks_written > 0 or orderbooks_written > 0):
         first_event_ts = min(event_times) if event_times else _fallback_file_timestamp(path)
         last_event_ts = max(event_times) if event_times else first_event_ts
         store.register_ingest_file(

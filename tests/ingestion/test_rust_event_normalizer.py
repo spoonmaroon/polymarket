@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from io import BytesIO
 from pathlib import Path
 from typing import Sequence, cast
@@ -460,6 +461,58 @@ def test_normalizer_skips_empty_storage_writes_when_checkpoint_is_current(
     assert store.insert_orderbook_snapshots_calls == 0
 
 
+def test_normalizer_skips_ingest_file_registration_for_duplicate_only_chunk(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "state.duckdb"
+    store = _CountingCheckpointStore(db_path)
+    store.apply_schema()
+    raw_path = (
+        tmp_path
+        / "raw"
+        / "polymarket_clob_market_ws"
+        / "best_bid_ask"
+        / "date=2026-06-02"
+        / "hour=05"
+        / "events.jsonl"
+    )
+    row = {
+        "source_key": "polymarket_clob_market_ws",
+        "stream_key": "best_bid_ask",
+        "symbol": "token-1",
+        "event_type": "best_bid_ask",
+        "event_ts": "2026-06-02T05:33:54.100Z",
+        "observed_ts": "2026-06-02T05:33:54.200Z",
+        "payload": {
+            "contract_id": "0xabc",
+            "token_id": "token-1",
+            "best_bid": "0.61",
+            "best_ask": "0.64",
+            "spread": "0.03",
+        },
+    }
+    orderbook_state_cache: dict[tuple[str, str], tuple[object, ...]] = {}
+    _write_jsonl(raw_path, row)
+    first = normalize_rust_event_file(
+        path=raw_path,
+        store=store,
+        last_orderbook_state_by_token=orderbook_state_cache,
+    )
+    store.register_ingest_file_calls = 0
+    _append_jsonl(raw_path, row)
+
+    second = normalize_rust_event_file(
+        path=raw_path,
+        store=store,
+        last_orderbook_state_by_token=orderbook_state_cache,
+    )
+
+    assert first.orderbooks_written == 1
+    assert second.rows_read == 1
+    assert second.orderbooks_written == 0
+    assert store.register_ingest_file_calls == 0
+
+
 def test_normalizer_waits_for_complete_appended_jsonl_line(tmp_path: Path) -> None:
     db_path = tmp_path / "state.duckdb"
     store = DuckDbIngestStore(db_path)
@@ -687,6 +740,7 @@ class _CountingCheckpointStore(DuckDbIngestStore):
         self.raw_file_checkpoints_calls = 0
         self.insert_price_ticks_calls = 0
         self.insert_orderbook_snapshots_calls = 0
+        self.register_ingest_file_calls = 0
 
     def raw_file_checkpoint(self, path: Path) -> int | None:
         self.raw_file_checkpoint_calls += 1
@@ -711,3 +765,30 @@ class _CountingCheckpointStore(DuckDbIngestStore):
     ) -> None:
         self.insert_orderbook_snapshots_calls += 1
         super().insert_orderbook_snapshots(snapshots, raw_file_id=raw_file_id)
+
+    def register_ingest_file(
+        self,
+        file_id: str,
+        source_key: str,
+        stream_key: str,
+        partition_date: str,
+        partition_hour: int,
+        path: str,
+        sha256: str,
+        row_count: int,
+        first_event_ts: datetime,
+        last_event_ts: datetime,
+    ) -> None:
+        self.register_ingest_file_calls += 1
+        super().register_ingest_file(
+            file_id=file_id,
+            source_key=source_key,
+            stream_key=stream_key,
+            partition_date=partition_date,
+            partition_hour=partition_hour,
+            path=path,
+            sha256=sha256,
+            row_count=row_count,
+            first_event_ts=first_event_ts,
+            last_event_ts=last_event_ts,
+        )
