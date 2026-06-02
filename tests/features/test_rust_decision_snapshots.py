@@ -245,7 +245,7 @@ def test_current_decision_states_reuse_asset_level_store_reads(
 
     assert result.contracts_upserted == 8
     assert result.states_written == 4
-    assert len(result.unavailable) == 4
+    assert result.unavailable == ()
     assert store.latest_price_ticks_before_calls == 1
     assert store.latest_price_tick_before_calls == 0
     assert store.latest_price_ticks_calls == 1
@@ -259,6 +259,72 @@ def test_current_decision_states_reuse_asset_level_store_reads(
     assert store.upsert_asof_state_inputs_calls == 1
     assert store.upsert_asof_state_input_calls == 0
     assert volatility_snapshot_calls == 2
+
+
+def test_include_next_skips_prestart_decision_state_builds(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.duckdb"
+    store = _CountingIngestStore(db_path)
+    store.apply_schema()
+    status_path = tmp_path / "status.json"
+    start_ts = datetime(2026, 6, 2, 6, 0, tzinfo=timezone.utc)
+    asof_ts = start_ts + timedelta(minutes=2)
+    _write_multi_asset_status(status_path, start_ts=start_ts, asof_ts=asof_ts)
+    for asset, base_price in (("BTC", 70_000.0), ("ETH", 2_000.0)):
+        symbol = f"{asset}/USD"
+        store.insert_price_tick(
+            PriceObservation(
+                "polymarket_rtds_chainlink",
+                symbol,
+                start_ts,
+                start_ts,
+                base_price,
+            )
+        )
+        store.insert_price_tick(
+            PriceObservation(
+                "polymarket_rtds_chainlink",
+                symbol,
+                asof_ts,
+                asof_ts,
+                base_price + 10.0,
+            )
+        )
+    for asset in ("BTC", "ETH"):
+        for side, bid, ask in (("up", 0.61, 0.64), ("down", 0.36, 0.39)):
+            token_id = f"{asset.lower()}-current-{side}-token"
+            store.insert_orderbook_snapshot(
+                OrderBookObservation(
+                    venue="polymarket",
+                    contract_id=f"0x{asset.lower()}current",
+                    token_id=token_id,
+                    event_ts=asof_ts,
+                    observed_ts=asof_ts,
+                    best_bid=bid,
+                    best_ask=ask,
+                    bid_size_top=50.0,
+                    ask_size_top=40.0,
+                    spread=ask - bid,
+                    depth_json="{}",
+                )
+            )
+
+    result = build_current_decision_state_snapshots(
+        status_path=status_path,
+        store=store,
+        include_next=True,
+    )
+
+    assert result.contracts_upserted == 8
+    assert result.states_written == 4
+    assert result.unavailable == ()
+    assert store.latest_orderbook_token_ids_requests == [
+        (
+            "btc-current-up-token",
+            "btc-current-down-token",
+            "eth-current-up-token",
+            "eth-current-down-token",
+        )
+    ]
 
 
 def _write_status(path: Path, *, start_ts: datetime, asof_ts: datetime) -> None:
@@ -356,6 +422,7 @@ class _CountingIngestStore(DuckDbIngestStore):
         self.price_ticks_before_calls = 0
         self.price_ticks_before_by_symbol_calls = 0
         self.latest_orderbook_snapshots_calls = 0
+        self.latest_orderbook_token_ids_requests: list[tuple[str, ...]] = []
         self.latest_orderbook_snapshot_calls = 0
         self.upsert_contract_specs_calls = 0
         self.upsert_contract_spec_calls = 0
@@ -484,6 +551,7 @@ class _CountingIngestStore(DuckDbIngestStore):
         asof_ts: datetime,
     ) -> dict[str, OrderBookObservation]:
         self.latest_orderbook_snapshots_calls += 1
+        self.latest_orderbook_token_ids_requests.append(tuple(token_ids))
         return super().latest_orderbook_snapshots(
             venue=venue,
             token_ids=token_ids,

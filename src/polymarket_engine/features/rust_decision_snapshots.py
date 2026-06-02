@@ -55,26 +55,27 @@ def build_current_decision_state_snapshots(
         token_metadata=token_metadata,
         include_next=include_next,
     )
+    state_contracts = tuple(contract for contract in contracts if contract.start_ts <= asof_ts)
     read_store = _CachedStateReadStore(store)
     read_store.prime_threshold_prices(
-        contracts,
+        state_contracts,
         source_key=SETTLEMENT_SOURCE_KEY,
         asof_ts=asof_ts,
     )
     read_store.prime_latest_prices(
-        contracts,
+        state_contracts,
         source_key=SETTLEMENT_SOURCE_KEY,
         asof_ts=asof_ts,
     )
     read_store.prime_price_histories(
-        contracts,
+        state_contracts,
         source_key=SETTLEMENT_SOURCE_KEY,
         asof_ts=asof_ts,
         limit=VOLATILITY_LOOKBACK_LIMIT,
     )
-    read_store.prime_latest_orderbooks(contracts, asof_ts=asof_ts)
+    read_store.prime_latest_orderbooks(state_contracts, asof_ts=asof_ts)
     volatilities = _volatility_snapshots_for_contracts(
-        contracts,
+        state_contracts,
         read_store=read_store,
         source_key=SETTLEMENT_SOURCE_KEY,
         asof_ts=asof_ts,
@@ -83,7 +84,7 @@ def build_current_decision_state_snapshots(
     store.upsert_contract_specs(contracts)
     states: list[DecisionState] = []
     unavailable: list[UnavailableDecisionState] = []
-    for contract in contracts:
+    for contract in state_contracts:
         volatility = volatilities.get((contract.settlement_symbol, contract.expiry_ts))
         try:
             state = build_decision_state_from_store(
