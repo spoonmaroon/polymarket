@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Sequence, cast
 
 import duckdb
+import msgspec
 import pytest
 
 from polymarket_engine.domain.market_state import OrderBookObservation, PriceObservation
@@ -1171,10 +1172,33 @@ def test_jsonl_iterator_loads_raw_bytes_without_text_decode(
 ) -> None:
     raw_path = _FakeBinaryPath(b'{"source_key":"one"}\n')
     seen_input_types: list[type[object]] = []
+    real_decode = msgspec.json.decode
+
+    def tracking_decode(value: Any, *args: Any, **kwargs: Any) -> Any:
+        seen_input_types.append(type(value))
+        return real_decode(value, *args, **kwargs)
+
+    monkeypatch.setattr(
+        "msgspec.json.decode",
+        tracking_decode,
+    )
+
+    rows = tuple(_iter_jsonl(cast(Path, raw_path)))
+
+    assert rows == ({"source_key": "one"},)
+    assert seen_input_types == [bytes]
+
+
+def test_jsonl_iterator_skips_stdlib_json_decoder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_path = _FakeBinaryPath(b'{"source_key":"one"}\n')
+    json_loads_calls = 0
     real_json_loads = json.loads
 
     def tracking_json_loads(value: Any, *args: Any, **kwargs: Any) -> Any:
-        seen_input_types.append(type(value))
+        nonlocal json_loads_calls
+        json_loads_calls += 1
         return real_json_loads(value, *args, **kwargs)
 
     monkeypatch.setattr(
@@ -1185,7 +1209,7 @@ def test_jsonl_iterator_loads_raw_bytes_without_text_decode(
     rows = tuple(_iter_jsonl(cast(Path, raw_path)))
 
     assert rows == ({"source_key": "one"},)
-    assert seen_input_types == [bytes]
+    assert json_loads_calls == 0
 
 
 def test_jsonl_iterator_skips_whitespace_only_lines() -> None:

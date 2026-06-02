@@ -9,6 +9,8 @@ from json.encoder import encode_basestring_ascii
 from pathlib import Path
 from typing import Any
 
+import msgspec
+
 from polymarket_engine.domain.market_state import OrderBookObservation, PriceObservation
 from polymarket_engine.storage.duckdb_store import (
     DuckDbIngestStore,
@@ -317,7 +319,7 @@ def _iter_jsonl(
                 break
             if raw_line[0] <= 32 and not raw_line.strip():
                 continue
-            value = json.loads(raw_line)
+            value = msgspec.json.decode(raw_line)
             if not isinstance(value, dict):
                 raise ValueError(f"{path}:{line_number} JSONL row must be an object")
             yield value
