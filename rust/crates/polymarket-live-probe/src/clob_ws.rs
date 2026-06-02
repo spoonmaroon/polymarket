@@ -15,7 +15,7 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::task::JoinHandle;
 
-use crate::book_state::LiveBookState;
+use crate::book_state::{BookUpdateOutcome, LiveBookState};
 use crate::hot_decision::{HotPathEvent, HotPathEventSink};
 use crate::raw_event_journal::{RawEventRecord, RawEventSink};
 use crate::report::WebSocketStatus;
@@ -183,8 +183,8 @@ impl BestBidAskStreamManager {
                     ) {
                         sink.try_record(record)?;
                     }
-                    let applied = apply_clob_market_event(&event, &book_state).await?;
-                    if applied {
+                    let outcome = apply_clob_market_event(&event, &book_state).await?;
+                    if outcome.is_updated() {
                         if let (
                             Some(sink),
                             ClobMarketEvent::TopOfBook {
@@ -203,7 +203,7 @@ impl BestBidAskStreamManager {
                                 tracing::warn!(error = %error, "dropped CLOB hot path event");
                             }
                         }
-                    } else {
+                    } else if outcome.is_missing_book() {
                         tracing::warn!("received CLOB best_bid_ask for unseeded orderbook");
                     }
                 }
@@ -364,8 +364,8 @@ pub async fn run_best_bid_ask_stream(
     while let Some(update_result) = stream.next().await {
         let update = update_result?;
         let observed_ts = Utc::now();
-        let applied = apply_best_bid_ask_update(update, &book_state, observed_ts).await?;
-        if !applied {
+        let outcome = apply_best_bid_ask_update(update, &book_state, observed_ts).await?;
+        if outcome.is_missing_book() {
             tracing::warn!("received CLOB best_bid_ask for unseeded orderbook");
         }
     }
@@ -377,7 +377,7 @@ pub async fn apply_best_bid_ask_update(
     update: BestBidAsk,
     book_state: &LiveBookState,
     observed_ts: DateTime<Utc>,
-) -> Result<bool> {
+) -> Result<BookUpdateOutcome> {
     let event = top_of_book_event_from_best_bid_ask(update, observed_ts)?;
     apply_clob_market_event(&event, book_state).await
 }
@@ -385,7 +385,7 @@ pub async fn apply_best_bid_ask_update(
 pub async fn apply_clob_market_event(
     event: &ClobMarketEvent,
     book_state: &LiveBookState,
-) -> Result<bool> {
+) -> Result<BookUpdateOutcome> {
     match event {
         ClobMarketEvent::TopOfBook {
             token_id,
@@ -407,7 +407,7 @@ pub async fn apply_clob_market_event(
                 )
                 .await
         }
-        _ => Ok(false),
+        _ => Ok(BookUpdateOutcome::Unchanged),
     }
 }
 
@@ -618,6 +618,36 @@ mod tests {
         "2026-06-01T20:00:01Z".parse::<DateTime<Utc>>().unwrap()
     }
 
+    fn ts(second: u32) -> DateTime<Utc> {
+        format!("2026-06-01T20:00:{second:02}Z")
+            .parse::<DateTime<Utc>>()
+            .unwrap()
+    }
+
+    fn sample_book() -> NormalizedOrderBook {
+        let mut book = NormalizedOrderBook::from_levels(
+            OrderBookMeta {
+                market_slug: "btc-updown-5m-1780352700".to_owned(),
+                contract_id: "market-1".to_owned(),
+                token_id: "111".to_owned(),
+                asset: "BTC".to_owned(),
+                side: "UP".to_owned(),
+                event_ts: ts(0),
+                observed_ts: ts(0),
+            },
+            vec![BookLevel {
+                price: Decimal::new(49, 2),
+                size: Decimal::new(20, 0),
+            }],
+            vec![BookLevel {
+                price: Decimal::new(51, 2),
+                size: Decimal::new(30, 0),
+            }],
+        );
+        book.source_key = "polymarket_market_ws".to_owned();
+        book
+    }
+
     #[test]
     fn market_subscription_payload_sorts_and_deduplicates_tokens() {
         let payload =
@@ -696,6 +726,38 @@ mod tests {
             }
             other => panic!("expected top-of-book event, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn duplicate_top_of_book_event_reports_unchanged() {
+        let state = LiveBookState::default();
+        state.upsert_book(sample_book()).await;
+        let event = ClobMarketEvent::TopOfBook {
+            contract_id: "market-1".to_owned(),
+            token_id: "111".to_owned(),
+            best_bid: Decimal::new(52, 2),
+            best_ask: Decimal::new(54, 2),
+            spread: Decimal::new(2, 2),
+            event_ts: ts(1),
+            observed_ts: ts(1),
+        };
+        let duplicate = ClobMarketEvent::TopOfBook {
+            contract_id: "market-1".to_owned(),
+            token_id: "111".to_owned(),
+            best_bid: Decimal::new(52, 2),
+            best_ask: Decimal::new(54, 2),
+            spread: Decimal::new(2, 2),
+            event_ts: ts(1),
+            observed_ts: ts(2),
+        };
+
+        let first = apply_clob_market_event(&event, &state).await.unwrap();
+        let repeated = apply_clob_market_event(&duplicate, &state).await.unwrap();
+
+        assert_eq!(first, BookUpdateOutcome::Updated);
+        assert_eq!(repeated, BookUpdateOutcome::Unchanged);
+        let snapshot = state.snapshot().await;
+        assert_eq!(snapshot[0].observed_ts, ts(1));
     }
 
     #[test]
