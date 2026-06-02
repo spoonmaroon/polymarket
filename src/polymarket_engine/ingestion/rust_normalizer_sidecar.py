@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,9 @@ from polymarket_engine.ingestion.rust_event_normalizer import (
     normalize_rust_event_tree,
 )
 from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
+
+
+FULL_RAW_TREE_SCAN_INTERVAL_CYCLES = 240
 
 
 @dataclass(frozen=True)
@@ -179,28 +183,39 @@ def run_rust_normalizer_loop(
         while True:
             cycle_started = time.monotonic()
             status_mtime_ns = _file_mtime_ns(status_path)
-            raw_signature = _raw_tree_signature(
-                raw_root=raw_root,
-                include_state_snapshots=False,
+            full_scan_due = (
+                reprocess_all
+                or previous_raw_signature is None
+                or cycles_run % FULL_RAW_TREE_SCAN_INTERVAL_CYCLES == 0
             )
-            raw_tree_idle = (
-                not reprocess_all
-                and cycles_run > 0
-                and raw_signature == previous_raw_signature
-            )
-            if raw_tree_idle:
-                result = _run_idle_rust_normalizer_cycle_with_store(
-                    raw_signature=raw_signature,
+            if full_scan_due:
+                raw_signature = _raw_tree_signature(
+                    raw_root=raw_root,
+                    include_state_snapshots=False,
+                )
+            else:
+                raw_signature = _active_raw_tree_signature(raw_root=raw_root)
+                if not raw_signature:
+                    full_scan_due = True
+                    raw_signature = _raw_tree_signature(
+                        raw_root=raw_root,
+                        include_state_snapshots=False,
+                    )
+
+            if previous_raw_signature is None or reprocess_all:
+                result = _run_rust_normalizer_cycle_with_store(
+                    raw_root=raw_root,
                     store=store,
                     status_path=status_path,
                     normalized_health_path=normalized_health_path,
                     include_next=include_next,
                     reprocess_all=reprocess_all,
+                    apply_schema=False,
                     previous_status_mtime_ns=previous_status_mtime_ns,
                     status_mtime_ns=status_mtime_ns,
                     force_state_build=cycles_run == 0,
                 )
-            elif previous_raw_signature is not None and not reprocess_all:
+            else:
                 changed_raw_signature = _changed_raw_signature(
                     previous=previous_raw_signature,
                     current=raw_signature,
@@ -217,7 +232,7 @@ def run_rust_normalizer_loop(
                     )
                 else:
                     result = _run_idle_rust_normalizer_cycle_with_store(
-                        raw_signature=raw_signature,
+                        raw_signature=previous_raw_signature,
                         store=store,
                         status_path=status_path,
                         normalized_health_path=normalized_health_path,
@@ -225,23 +240,18 @@ def run_rust_normalizer_loop(
                         reprocess_all=reprocess_all,
                         previous_status_mtime_ns=previous_status_mtime_ns,
                         status_mtime_ns=status_mtime_ns,
+                        force_state_build=cycles_run == 0,
                     )
-            else:
-                result = _run_rust_normalizer_cycle_with_store(
-                    raw_root=raw_root,
-                    store=store,
-                    status_path=status_path,
-                    normalized_health_path=normalized_health_path,
-                    include_next=include_next,
-                    reprocess_all=reprocess_all,
-                    apply_schema=False,
-                    previous_status_mtime_ns=previous_status_mtime_ns,
-                    status_mtime_ns=status_mtime_ns,
-                    force_state_build=cycles_run == 0,
-                )
             print(_cycle_log_line(result), flush=True)
             previous_status_mtime_ns = status_mtime_ns
-            previous_raw_signature = raw_signature
+            if full_scan_due:
+                previous_raw_signature = raw_signature
+            else:
+                assert previous_raw_signature is not None
+                previous_raw_signature = _merge_raw_signatures(
+                    previous=previous_raw_signature,
+                    current=raw_signature,
+                )
             cycles_run += 1
             if max_cycles is not None and cycles_run >= max_cycles:
                 return
@@ -405,15 +415,44 @@ def _raw_tree_signature(
         for path in sorted(stream_root.rglob("*.jsonl")):
             if not path.is_file():
                 continue
-            stat = path.stat()
-            rows.append(
-                RawTreeFileSignature(
-                    path=path,
-                    size_bytes=stat.st_size,
-                    mtime_ns=stat.st_mtime_ns,
-                )
-            )
+            rows.append(_raw_file_signature(path))
     return tuple(rows)
+
+
+def _active_raw_tree_signature(
+    *,
+    raw_root: Path,
+    now: datetime | None = None,
+) -> tuple[RawTreeFileSignature, ...]:
+    if now is None:
+        now = datetime.now(timezone.utc)
+    now = now.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    hours = (now - timedelta(hours=1), now)
+    rows: list[RawTreeFileSignature] = []
+    for source_key, stream_key in RUST_JSONL_STREAMS:
+        for hour in hours:
+            hour_root = (
+                raw_root
+                / source_key
+                / stream_key
+                / f"date={hour.date().isoformat()}"
+                / f"hour={hour.hour:02d}"
+            )
+            if not hour_root.exists():
+                continue
+            for path in sorted(hour_root.glob("*.jsonl")):
+                if path.is_file():
+                    rows.append(_raw_file_signature(path))
+    return tuple(rows)
+
+
+def _raw_file_signature(path: Path) -> RawTreeFileSignature:
+    stat = path.stat()
+    return RawTreeFileSignature(
+        path=path,
+        size_bytes=stat.st_size,
+        mtime_ns=stat.st_mtime_ns,
+    )
 
 
 def _changed_raw_signature(
@@ -423,6 +462,16 @@ def _changed_raw_signature(
 ) -> tuple[RawTreeFileSignature, ...]:
     previous_by_path = {row.path: row for row in previous}
     return tuple(row for row in current if previous_by_path.get(row.path) != row)
+
+
+def _merge_raw_signatures(
+    *,
+    previous: tuple[RawTreeFileSignature, ...],
+    current: tuple[RawTreeFileSignature, ...],
+) -> tuple[RawTreeFileSignature, ...]:
+    by_path = {row.path: row for row in previous}
+    by_path.update((row.path, row) for row in current)
+    return tuple(by_path[path] for path in sorted(by_path))
 
 
 def _elapsed_ms(start: float, end: float) -> int:

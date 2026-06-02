@@ -290,6 +290,74 @@ def test_sidecar_loop_normalizes_only_changed_raw_files(
         assert conn.execute("select count(*) from core.orderbook_snapshots").fetchone() == (3,)
 
 
+def test_sidecar_loop_uses_active_signature_between_full_scans(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_root = tmp_path / "raw"
+    db_path = tmp_path / "state.duckdb"
+    status_path = tmp_path / "live" / "status.json"
+    health_path = tmp_path / "live" / "normalized_health.json"
+    start_ts = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    asof_ts = start_ts + timedelta(minutes=2)
+    _write_current_hour_raw_tree(raw_root=raw_root, start_ts=start_ts, asof_ts=asof_ts)
+    _write_status(status_path, start_ts=start_ts, asof_ts=asof_ts)
+    changed_path = (
+        raw_root
+        / "polymarket_clob_market_ws"
+        / "best_bid_ask"
+        / f"date={asof_ts.date().isoformat()}"
+        / f"hour={asof_ts.hour:02d}"
+        / "events.jsonl"
+    )
+    real_raw_tree_signature = getattr(rust_normalizer_sidecar, "_raw_tree_signature")
+    full_signature_calls = 0
+
+    def counting_raw_tree_signature(*args: Any, **kwargs: Any) -> Any:
+        nonlocal full_signature_calls
+        full_signature_calls += 1
+        return real_raw_tree_signature(*args, **kwargs)
+
+    def append_raw_row(_: float) -> None:
+        with changed_path.open("a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(
+                    _orderbook_row(
+                        "up-token",
+                        asof_ts,
+                        asof_ts,
+                        0.62,
+                        0.65,
+                    ),
+                    separators=(",", ":"),
+                )
+                + "\n"
+            )
+
+    monkeypatch.setattr(
+        "polymarket_engine.ingestion.rust_normalizer_sidecar._raw_tree_signature",
+        counting_raw_tree_signature,
+    )
+    monkeypatch.setattr(
+        "polymarket_engine.ingestion.rust_normalizer_sidecar.time.sleep",
+        append_raw_row,
+    )
+
+    run_rust_normalizer_loop(
+        raw_root=raw_root,
+        db_path=db_path,
+        status_path=status_path,
+        normalized_health_path=health_path,
+        interval_seconds=0.0,
+        include_next=False,
+        max_cycles=2,
+    )
+
+    assert full_signature_calls == 1
+    with duckdb.connect(str(db_path), read_only=True) as conn:
+        assert conn.execute("select count(*) from core.orderbook_snapshots").fetchone() == (3,)
+
+
 def test_sidecar_loop_rebuilds_state_when_status_changes_without_raw_rows(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -404,6 +472,31 @@ def _write_raw_tree(*, raw_root: Path, start_ts: datetime, asof_ts: datetime) ->
         / "best_bid_ask"
         / "date=2026-06-02"
         / "hour=06"
+        / "events.jsonl",
+        _orderbook_row("up-token", asof_ts - timedelta(seconds=2), asof_ts - timedelta(seconds=1), 0.61, 0.64),
+        _orderbook_row("down-token", asof_ts - timedelta(seconds=2), asof_ts - timedelta(seconds=1), 0.36, 0.39),
+    )
+
+
+def _write_current_hour_raw_tree(*, raw_root: Path, start_ts: datetime, asof_ts: datetime) -> None:
+    raw_root.mkdir(parents=True, exist_ok=True)
+    (raw_root / ".polymarket_archive_root").write_text("", encoding="utf-8")
+    _write_jsonl(
+        raw_root
+        / "polymarket_rtds_chainlink"
+        / "price_update"
+        / f"date={asof_ts.date().isoformat()}"
+        / f"hour={asof_ts.hour:02d}"
+        / "events.jsonl",
+        _chainlink_row("BTC/USD", start_ts, start_ts, 70_000.0),
+        _chainlink_row("BTC/USD", asof_ts - timedelta(seconds=2), asof_ts - timedelta(seconds=1), 70_125.0),
+    )
+    _write_jsonl(
+        raw_root
+        / "polymarket_clob_market_ws"
+        / "best_bid_ask"
+        / f"date={asof_ts.date().isoformat()}"
+        / f"hour={asof_ts.hour:02d}"
         / "events.jsonl",
         _orderbook_row("up-token", asof_ts - timedelta(seconds=2), asof_ts - timedelta(seconds=1), 0.61, 0.64),
         _orderbook_row("down-token", asof_ts - timedelta(seconds=2), asof_ts - timedelta(seconds=1), 0.36, 0.39),
