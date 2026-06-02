@@ -127,6 +127,19 @@ def test_normalizer_hot_loop_omits_state_snapshot_backfill() -> None:
     assert "--include-state-snapshots" not in entrypoint
 
 
+def test_normalizer_defaults_to_one_second_checkpointed_cadence() -> None:
+    compose = (ROOT / "deploy" / "collector" / "docker-compose.yml").read_text(
+        encoding="utf-8"
+    )
+    entrypoint = (
+        ROOT / "deploy" / "normalizer" / "normalizer-entrypoint.sh"
+    ).read_text(encoding="utf-8")
+
+    assert "POLYMARKET_NORMALIZER_INTERVAL_SECONDS:-1" in compose
+    assert 'INTERVAL_SECONDS="${POLYMARKET_NORMALIZER_INTERVAL_SECONDS:-1}"' in entrypoint
+    assert "normalizer_cycle elapsed_ms=" in entrypoint
+
+
 def test_deploy_script_requires_running_normalizer_before_success() -> None:
     script = (ROOT / "scripts" / "deploy.sh").read_text(encoding="utf-8")
 
