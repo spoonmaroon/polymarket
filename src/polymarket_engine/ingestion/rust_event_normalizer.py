@@ -67,12 +67,30 @@ class _PriceTickRow:
 class _EventTimeBounds:
     first: datetime | None = None
     last: datetime | None = None
+    first_raw_utc: str | None = None
+    last_raw_utc: str | None = None
 
     def record(self, event_ts: datetime) -> None:
         if self.first is None or event_ts < self.first:
             self.first = event_ts
         if self.last is None or event_ts > self.last:
             self.last = event_ts
+
+    def record_raw_utc(self, event_ts: str) -> None:
+        if self.first_raw_utc is None or event_ts < self.first_raw_utc:
+            self.first_raw_utc = event_ts
+        if self.last_raw_utc is None or event_ts > self.last_raw_utc:
+            self.last_raw_utc = event_ts
+
+    def resolve(self) -> tuple[datetime | None, datetime | None]:
+        if self.first is not None or self.last is not None:
+            return self.first, self.last
+        if self.first_raw_utc is None:
+            return None, None
+        first = _parse_ts(self.first_raw_utc)
+        if self.last_raw_utc is None or self.last_raw_utc == self.first_raw_utc:
+            return first, first
+        return first, _parse_ts(self.last_raw_utc)
 
 
 def normalize_rust_event_tree(
@@ -205,6 +223,7 @@ def normalize_rust_event_file(
         store.insert_price_ticks(price_ticks, raw_file_id=file_id)
     if orderbooks:
         store.insert_orderbook_snapshot_batch(orderbooks, raw_file_id=file_id)
+    first_event_ts, last_event_ts = event_time_bounds.resolve()
 
     if end_byte_offset > start_byte_offset:
         store.upsert_raw_file_checkpoint(
@@ -214,13 +233,13 @@ def normalize_rust_event_file(
             byte_offset=end_byte_offset,
             file_size_bytes=file_size,
             rows_read=rows_read,
-            first_event_ts=event_time_bounds.first,
-            last_event_ts=event_time_bounds.last,
+            first_event_ts=first_event_ts,
+            last_event_ts=last_event_ts,
         )
 
     if rows_read > 0 and (price_ticks_written > 0 or orderbooks_written > 0):
-        first_event_ts = event_time_bounds.first or _fallback_file_timestamp(path)
-        last_event_ts = event_time_bounds.last or first_event_ts
+        first_event_ts = first_event_ts or _fallback_file_timestamp(path)
+        last_event_ts = last_event_ts or first_event_ts
         store.register_ingest_file(
             file_id=file_id,
             source_key=source_key,
@@ -433,7 +452,7 @@ def _append_top_of_book_from_raw(
         raise ValueError("best_bid must be less than or equal to best_ask")
     token_id = str(payload.get("token_id") or row.get("symbol"))
     contract_id = str(payload["contract_id"])
-    event_ts = _parse_ts(row["event_ts"])
+    event_ts = str(row["event_ts"])
     token_key = ("polymarket", token_id)
     state_key = (
         "top_of_book",
@@ -462,7 +481,7 @@ def _append_top_of_book_from_raw(
             spread=spread,
             depth_json=_top_of_book_depth_json(payload),
         )
-        event_time_bounds.record(event_ts)
+        event_time_bounds.record_raw_utc(event_ts)
     return True
 
 

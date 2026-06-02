@@ -343,6 +343,78 @@ def test_top_of_book_rows_defer_observed_timestamp_parsing_to_duckdb(
     assert parse_ts_calls == 1
 
 
+def test_top_of_book_rows_parse_only_event_time_bounds_in_python(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "state.duckdb"
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    raw_path = (
+        tmp_path
+        / "raw"
+        / "polymarket_clob_market_ws"
+        / "best_bid_ask"
+        / "date=2026-06-02"
+        / "hour=05"
+        / "events.jsonl"
+    )
+    _write_jsonl(
+        raw_path,
+        _orderbook_row(
+            "token-1",
+            "2026-06-02T05:33:54.100Z",
+            "2026-06-02T05:33:54.200000000Z",
+            0.61,
+            0.64,
+        ),
+        _orderbook_row(
+            "token-1",
+            "2026-06-02T05:33:55.100Z",
+            "2026-06-02T05:33:55.200000000Z",
+            0.62,
+            0.65,
+        ),
+        _orderbook_row(
+            "token-1",
+            "2026-06-02T05:33:56.100Z",
+            "2026-06-02T05:33:56.200000000Z",
+            0.63,
+            0.66,
+        ),
+    )
+    parse_ts_calls = 0
+    real_parse_ts = rust_event_normalizer._parse_ts
+
+    def counting_parse_ts(value: object) -> datetime:
+        nonlocal parse_ts_calls
+        parse_ts_calls += 1
+        return real_parse_ts(value)
+
+    monkeypatch.setattr(
+        "polymarket_engine.ingestion.rust_event_normalizer._parse_ts",
+        counting_parse_ts,
+    )
+
+    result = normalize_rust_event_file(path=raw_path, store=store)
+
+    assert result.orderbooks_written == 3
+    with duckdb.connect(str(db_path), read_only=True) as conn:
+        rows = conn.execute(
+            """
+            select event_ts
+            from core.orderbook_snapshots
+            order by event_ts
+            """
+        ).fetchall()
+    assert rows == [
+        (datetime(2026, 6, 2, 5, 33, 54, 100000, tzinfo=timezone.utc),),
+        (datetime(2026, 6, 2, 5, 33, 55, 100000, tzinfo=timezone.utc),),
+        (datetime(2026, 6, 2, 5, 33, 56, 100000, tzinfo=timezone.utc),),
+    ]
+    assert parse_ts_calls == 2
+
+
 def test_normalizes_clob_spread_from_bid_ask_when_payload_spread_is_stale(tmp_path: Path) -> None:
     db_path = tmp_path / "state.duckdb"
     store = DuckDbIngestStore(db_path)
@@ -964,7 +1036,7 @@ def test_duplicate_top_of_book_rows_skip_depth_json_materialization(
     assert duplicate.rows_read == 1
     assert duplicate.orderbooks_written == 0
     assert json_dumps_calls == 0
-    assert parse_ts_calls == 1
+    assert parse_ts_calls == 0
     assert store.insert_orderbook_snapshots_calls == 0
 
 
