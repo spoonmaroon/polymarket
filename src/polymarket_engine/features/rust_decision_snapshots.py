@@ -49,6 +49,11 @@ def build_current_decision_state_snapshots(
         include_next=include_next,
     )
     read_store = _CachedStateReadStore(store)
+    read_store.prime_latest_prices(
+        contracts,
+        source_key=SETTLEMENT_SOURCE_KEY,
+        asof_ts=asof_ts,
+    )
     read_store.prime_latest_orderbooks(contracts, asof_ts=asof_ts)
     store.upsert_contract_specs(contracts)
     states: list[DecisionState] = []
@@ -263,6 +268,33 @@ class _CachedStateReadStore:
             )
         return self._latest_price[key]
 
+    def latest_price_ticks(
+        self,
+        *,
+        source_key: str,
+        symbols: Sequence[str],
+        asof_ts: datetime,
+    ) -> dict[str, PriceObservation]:
+        unique_symbols = tuple(dict.fromkeys(symbols))
+        missing_symbols = [
+            symbol
+            for symbol in unique_symbols
+            if (source_key, symbol, asof_ts) not in self._latest_price
+        ]
+        if missing_symbols:
+            ticks = self._store.latest_price_ticks(
+                source_key=source_key,
+                symbols=missing_symbols,
+                asof_ts=asof_ts,
+            )
+            for symbol in missing_symbols:
+                self._latest_price[(source_key, symbol, asof_ts)] = ticks.get(symbol)
+        return {
+            symbol: tick
+            for symbol in unique_symbols
+            if (tick := self._latest_price[(source_key, symbol, asof_ts)]) is not None
+        }
+
     def price_ticks_before(
         self,
         *,
@@ -296,6 +328,24 @@ class _CachedStateReadStore:
                 asof_ts=asof_ts,
             )
         return self._latest_orderbook[key]
+
+    def prime_latest_prices(
+        self,
+        contracts: Sequence[ContractSpec],
+        *,
+        source_key: str,
+        asof_ts: datetime,
+    ) -> None:
+        symbols = [
+            contract.settlement_symbol
+            for contract in contracts
+            if asof_ts >= contract.start_ts
+        ]
+        self.latest_price_ticks(
+            source_key=source_key,
+            symbols=symbols,
+            asof_ts=asof_ts,
+        )
 
     def prime_latest_orderbooks(
         self,

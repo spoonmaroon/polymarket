@@ -228,7 +228,8 @@ def test_current_decision_states_reuse_asset_level_store_reads(tmp_path: Path) -
     assert result.states_written == 4
     assert len(result.unavailable) == 4
     assert store.latest_price_tick_before_calls <= 6
-    assert store.latest_price_tick_calls <= 2
+    assert store.latest_price_ticks_calls == 1
+    assert store.latest_price_tick_calls == 0
     assert store.price_ticks_before_calls <= 2
     assert store.latest_orderbook_snapshots_calls == 1
     assert store.latest_orderbook_snapshot_calls == 0
@@ -328,6 +329,7 @@ class _CountingIngestStore(DuckDbIngestStore):
         super().__init__(db_path)
         self.latest_price_tick_before_calls = 0
         self.latest_price_tick_calls = 0
+        self.latest_price_ticks_calls = 0
         self.price_ticks_before_calls = 0
         self.latest_orderbook_snapshots_calls = 0
         self.latest_orderbook_snapshot_calls = 0
@@ -377,6 +379,20 @@ class _CountingIngestStore(DuckDbIngestStore):
     ) -> PriceObservation | None:
         self.latest_price_tick_calls += 1
         return super().latest_price_tick(source_key=source_key, symbol=symbol, asof_ts=asof_ts)
+
+    def latest_price_ticks(
+        self,
+        *,
+        source_key: str,
+        symbols: Sequence[str],
+        asof_ts: datetime,
+    ) -> dict[str, PriceObservation]:
+        self.latest_price_ticks_calls += 1
+        return super().latest_price_ticks(
+            source_key=source_key,
+            symbols=symbols,
+            asof_ts=asof_ts,
+        )
 
     def price_ticks_before(
         self,
