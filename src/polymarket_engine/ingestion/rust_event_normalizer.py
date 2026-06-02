@@ -41,7 +41,7 @@ class _TopOfBookRow:
     contract_id: str
     token_id: str
     event_ts: datetime
-    observed_ts: datetime
+    observed_ts: object
     best_bid: float | None
     best_ask: float | None
     spread: float | None
@@ -55,7 +55,7 @@ class _PriceTickRow:
     source_key: str
     symbol: str
     event_ts: datetime
-    observed_ts: datetime
+    observed_ts: object
     price: float
 
 
@@ -337,14 +337,13 @@ def _price_tick_row_from_raw(row: dict[str, Any]) -> _PriceTickRow | None:
     source_key = "polymarket_rtds_chainlink"
     symbol = str(row["symbol"]).upper()
     event_ts = _parse_ts(row["event_ts"])
-    observed_ts = _parse_ts(row["observed_ts"])
     return _PriceTickRow(
         symbol_key=(source_key, symbol),
         state_key=(source_key, symbol, event_ts, price, None, None, None),
         source_key=source_key,
         symbol=symbol,
         event_ts=event_ts,
-        observed_ts=observed_ts,
+        observed_ts=row["observed_ts"],
         price=price,
     )
 
@@ -354,7 +353,7 @@ def _price_observation_from_price_tick_row(row: _PriceTickRow) -> PriceObservati
         source_key=row.source_key,
         symbol=row.symbol,
         event_ts=row.event_ts,
-        observed_ts=row.observed_ts,
+        observed_ts=_parse_ts(row.observed_ts),
         price=row.price,
     )
 
@@ -420,7 +419,6 @@ def _top_of_book_row_from_raw(row: dict[str, Any]) -> _TopOfBookRow | None:
     token_id = str(payload.get("token_id") or row.get("symbol"))
     contract_id = str(payload["contract_id"])
     event_ts = _parse_ts(row["event_ts"])
-    observed_ts = _parse_ts(row["observed_ts"])
     return _TopOfBookRow(
         token_key=("polymarket", token_id),
         state_key=(
@@ -438,7 +436,7 @@ def _top_of_book_row_from_raw(row: dict[str, Any]) -> _TopOfBookRow | None:
         contract_id=contract_id,
         token_id=token_id,
         event_ts=event_ts,
-        observed_ts=observed_ts,
+        observed_ts=row["observed_ts"],
         best_bid=best_bid,
         best_ask=best_ask,
         spread=spread,
@@ -452,7 +450,7 @@ def _orderbook_from_top_of_book_row(row: _TopOfBookRow) -> OrderBookObservation:
         contract_id=row.contract_id,
         token_id=row.token_id,
         event_ts=row.event_ts,
-        observed_ts=row.observed_ts,
+        observed_ts=_parse_ts(row.observed_ts),
         best_bid=row.best_bid,
         best_ask=row.best_ask,
         bid_size_top=None,

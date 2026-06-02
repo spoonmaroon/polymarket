@@ -608,16 +608,27 @@ def test_duplicate_chainlink_rows_skip_price_observation_materialization(
     store.insert_price_ticks_calls = 0
     _append_jsonl(raw_path, row)
     price_observation_calls = 0
+    parse_ts_calls = 0
     real_price_observation = PriceObservation
+    real_parse_ts = rust_event_normalizer._parse_ts
 
     def counting_price_observation(*args: Any, **kwargs: Any) -> PriceObservation:
         nonlocal price_observation_calls
         price_observation_calls += 1
         return real_price_observation(*args, **kwargs)
 
+    def counting_parse_ts(value: object) -> datetime:
+        nonlocal parse_ts_calls
+        parse_ts_calls += 1
+        return real_parse_ts(value)
+
     monkeypatch.setattr(
         "polymarket_engine.ingestion.rust_event_normalizer.PriceObservation",
         counting_price_observation,
+    )
+    monkeypatch.setattr(
+        "polymarket_engine.ingestion.rust_event_normalizer._parse_ts",
+        counting_parse_ts,
     )
 
     duplicate = normalize_rust_event_file(
@@ -630,6 +641,7 @@ def test_duplicate_chainlink_rows_skip_price_observation_materialization(
     assert duplicate.rows_read == 1
     assert duplicate.price_ticks_written == 0
     assert price_observation_calls == 0
+    assert parse_ts_calls == 1
     assert store.insert_price_ticks_calls == 0
 
 
@@ -666,16 +678,27 @@ def test_duplicate_top_of_book_rows_skip_depth_json_materialization(
     store.insert_orderbook_snapshots_calls = 0
     _append_jsonl(raw_path, row)
     json_dumps_calls = 0
+    parse_ts_calls = 0
     real_json_dumps = json.dumps
+    real_parse_ts = rust_event_normalizer._parse_ts
 
     def counting_json_dumps(*args: Any, **kwargs: Any) -> str:
         nonlocal json_dumps_calls
         json_dumps_calls += 1
         return real_json_dumps(*args, **kwargs)
 
+    def counting_parse_ts(value: object) -> datetime:
+        nonlocal parse_ts_calls
+        parse_ts_calls += 1
+        return real_parse_ts(value)
+
     monkeypatch.setattr(
         "polymarket_engine.ingestion.rust_event_normalizer.json.dumps",
         counting_json_dumps,
+    )
+    monkeypatch.setattr(
+        "polymarket_engine.ingestion.rust_event_normalizer._parse_ts",
+        counting_parse_ts,
     )
 
     duplicate = normalize_rust_event_file(
@@ -688,6 +711,7 @@ def test_duplicate_top_of_book_rows_skip_depth_json_materialization(
     assert duplicate.rows_read == 1
     assert duplicate.orderbooks_written == 0
     assert json_dumps_calls == 0
+    assert parse_ts_calls == 1
     assert store.insert_orderbook_snapshots_calls == 0
 
 
