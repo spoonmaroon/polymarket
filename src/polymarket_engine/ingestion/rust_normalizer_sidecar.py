@@ -496,7 +496,12 @@ def _changed_raw_signature(
     current: tuple[RawTreeFileSignature, ...],
 ) -> tuple[RawTreeFileSignature, ...]:
     previous_by_path = {row.path: row for row in previous}
-    return tuple(row for row in current if previous_by_path.get(row.path) != row)
+    return tuple(
+        row
+        for row in current
+        if (old := previous_by_path.get(row.path)) is None
+        or old.size_bytes != row.size_bytes
+    )
 
 
 def _merge_raw_signatures(

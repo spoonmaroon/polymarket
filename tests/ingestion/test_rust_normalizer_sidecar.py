@@ -272,6 +272,34 @@ def test_sidecar_loop_skips_signature_merge_when_raw_tree_is_idle(
     assert merge_calls == 0
 
 
+def test_changed_raw_signature_ignores_mtime_only_touch_for_append_only_files(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "events.jsonl"
+    path.write_text('{"event":"old"}\n', encoding="utf-8")
+    previous = (
+        rust_normalizer_sidecar.RawTreeFileSignature(
+            path=path,
+            size_bytes=path.stat().st_size,
+            mtime_ns=100,
+        ),
+    )
+    current = (
+        rust_normalizer_sidecar.RawTreeFileSignature(
+            path=path,
+            size_bytes=path.stat().st_size,
+            mtime_ns=200,
+        ),
+    )
+
+    changed = rust_normalizer_sidecar._changed_raw_signature(
+        previous=previous,
+        current=current,
+    )
+
+    assert changed == ()
+
+
 def test_sidecar_loop_throttles_idle_normalized_health_writes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
