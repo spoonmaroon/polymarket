@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 import json
 from datetime import datetime
 from io import BytesIO
@@ -10,6 +11,7 @@ import duckdb
 import pytest
 
 from polymarket_engine.domain.market_state import OrderBookObservation, PriceObservation
+from polymarket_engine.ingestion import rust_event_normalizer
 from polymarket_engine.ingestion.rust_event_normalizer import (
     _complete_jsonl_byte_limit,
     _file_id,
@@ -430,6 +432,62 @@ def test_normalizer_only_reads_new_jsonl_bytes_on_second_pass(tmp_path: Path) ->
     assert third.rows_read == 0
     with duckdb.connect(str(db_path), read_only=True) as conn:
         assert conn.execute("select count(*) from core.price_ticks").fetchone() == (2,)
+
+
+def test_normalizer_tracks_event_time_bounds_without_post_scan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "state.duckdb"
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    raw_path = (
+        tmp_path
+        / "raw"
+        / "polymarket_rtds_chainlink"
+        / "price_update"
+        / "date=2026-06-02"
+        / "hour=05"
+        / "events.jsonl"
+    )
+    _write_jsonl(
+        raw_path,
+        _chainlink_row("BTC/USD", "2026-06-02T05:33:56Z", "2026-06-02T05:33:57Z", 70601.0),
+        _chainlink_row("BTC/USD", "2026-06-02T05:33:54Z", "2026-06-02T05:33:55Z", 70600.0),
+    )
+    min_calls = 0
+    max_calls = 0
+
+    def counting_min(*args: Any, **kwargs: Any) -> Any:
+        nonlocal min_calls
+        min_calls += 1
+        return builtins.min(*args, **kwargs)
+
+    def counting_max(*args: Any, **kwargs: Any) -> Any:
+        nonlocal max_calls
+        max_calls += 1
+        return builtins.max(*args, **kwargs)
+
+    monkeypatch.setattr(rust_event_normalizer, "min", counting_min, raising=False)
+    monkeypatch.setattr(rust_event_normalizer, "max", counting_max, raising=False)
+
+    result = normalize_rust_event_file(path=raw_path, store=store)
+
+    assert result.price_ticks_written == 2
+    assert min_calls == 0
+    assert max_calls == 0
+    with duckdb.connect(str(db_path), read_only=True) as conn:
+        row = conn.execute(
+            """
+            select first_event_ts, last_event_ts
+            from ops.ingest_files
+            where path = ?
+            """,
+            [str(raw_path)],
+        ).fetchone()
+    assert row is not None
+    assert row[0] == datetime.fromisoformat("2026-06-02 05:33:54+00:00")
+    assert row[1] == datetime.fromisoformat("2026-06-02 05:33:56+00:00")
 
 
 def test_normalizer_skips_empty_storage_writes_when_checkpoint_is_current(

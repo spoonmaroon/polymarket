@@ -59,6 +59,18 @@ class _PriceTickRow:
     price: float
 
 
+@dataclass
+class _EventTimeBounds:
+    first: datetime | None = None
+    last: datetime | None = None
+
+    def record(self, event_ts: datetime) -> None:
+        if self.first is None or event_ts < self.first:
+            self.first = event_ts
+        if self.last is None or event_ts > self.last:
+            self.last = event_ts
+
+
 def normalize_rust_event_tree(
     *,
     raw_root: Path,
@@ -133,7 +145,7 @@ def normalize_rust_event_file(
     rows_read = 0
     price_ticks_written = 0
     orderbooks_written = 0
-    event_times: list[datetime] = []
+    event_time_bounds = _EventTimeBounds()
     price_ticks: list[PriceObservation] = []
     orderbooks: list[OrderBookObservation] = []
     price_state_cache: dict[tuple[str, str], tuple[object, ...]]
@@ -160,7 +172,7 @@ def normalize_rust_event_file(
             price_state_cache[price_tick.symbol_key] = price_tick.state_key
             tick = _price_observation_from_price_tick_row(price_tick)
             price_ticks.append(tick)
-            event_times.append(tick.event_ts)
+            event_time_bounds.record(tick.event_ts)
             price_ticks_written += 1
             continue
         if row.get("schema_version") == STATE_MANAGER_SCHEMA_VERSION:
@@ -170,13 +182,13 @@ def normalize_rust_event_file(
                 if price_state_cache.get(symbol_key) != state_key:
                     price_state_cache[symbol_key] = state_key
                     price_ticks.append(tick)
-                    event_times.append(tick.event_ts)
+                    event_time_bounds.record(tick.event_ts)
                     price_ticks_written += 1
         _append_orderbooks_from_row(
             row=row,
             orderbook_state_cache=orderbook_state_cache,
             orderbooks=orderbooks,
-            event_times=event_times,
+            event_time_bounds=event_time_bounds,
         )
         orderbooks_written = len(orderbooks)
 
@@ -194,13 +206,13 @@ def normalize_rust_event_file(
             byte_offset=end_byte_offset,
             file_size_bytes=file_size,
             rows_read=rows_read,
-            first_event_ts=min(event_times) if event_times else None,
-            last_event_ts=max(event_times) if event_times else None,
+            first_event_ts=event_time_bounds.first,
+            last_event_ts=event_time_bounds.last,
         )
 
     if rows_read > 0 and (price_ticks_written > 0 or orderbooks_written > 0):
-        first_event_ts = min(event_times) if event_times else _fallback_file_timestamp(path)
-        last_event_ts = max(event_times) if event_times else first_event_ts
+        first_event_ts = event_time_bounds.first or _fallback_file_timestamp(path)
+        last_event_ts = event_time_bounds.last or first_event_ts
         store.register_ingest_file(
             file_id=file_id,
             source_key=source_key,
@@ -373,7 +385,7 @@ def _append_orderbooks_from_row(
     row: dict[str, Any],
     orderbook_state_cache: dict[tuple[str, str], tuple[object, ...]],
     orderbooks: list[OrderBookObservation],
-    event_times: list[datetime],
+    event_time_bounds: _EventTimeBounds,
 ) -> None:
     top_of_book = _top_of_book_row_from_raw(row)
     if top_of_book is not None:
@@ -381,7 +393,7 @@ def _append_orderbooks_from_row(
             orderbook_state_cache[top_of_book.token_key] = top_of_book.state_key
             orderbook = _orderbook_from_top_of_book_row(top_of_book)
             orderbooks.append(orderbook)
-            event_times.append(orderbook.event_ts)
+            event_time_bounds.record(orderbook.event_ts)
         return
     for book in _orderbooks_from_row(row):
         token_key = (book.venue, book.token_id)
@@ -389,7 +401,7 @@ def _append_orderbooks_from_row(
         if orderbook_state_cache.get(token_key) != state_key:
             orderbook_state_cache[token_key] = state_key
             orderbooks.append(book)
-            event_times.append(book.event_ts)
+            event_time_bounds.record(book.event_ts)
 
 
 def _top_of_book_row_from_raw(row: dict[str, Any]) -> _TopOfBookRow | None:
