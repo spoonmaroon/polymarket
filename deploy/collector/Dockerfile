@@ -1,18 +1,21 @@
-FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+FROM rust:1.88-bookworm AS builder
 
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
-ENV UV_LINK_MODE=copy
+WORKDIR /app/rust
 
-WORKDIR /app
+COPY rust/Cargo.toml rust/Cargo.lock ./
+COPY rust/crates ./crates
 
-COPY pyproject.toml uv.lock README.md /app/
-COPY src /app/src
-COPY deploy/collector/collector-entrypoint.sh /app/collector-entrypoint.sh
+RUN cargo build --release -p polymarket-live-probe
 
-RUN uv sync --frozen --no-dev
-RUN chmod 755 /app/collector-entrypoint.sh
+FROM debian:bookworm-slim
 
-ENV PATH="/app/.venv/bin:${PATH}"
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates tini \
+    && rm -rf /var/lib/apt/lists/*
 
-ENTRYPOINT ["/app/collector-entrypoint.sh"]
+COPY --from=builder /app/rust/target/release/polymarket-live-probe /usr/local/bin/polymarket-live-probe
+COPY deploy/collector/collector-entrypoint.sh /usr/local/bin/collector-entrypoint.sh
+
+RUN chmod 755 /usr/local/bin/collector-entrypoint.sh
+
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/collector-entrypoint.sh"]

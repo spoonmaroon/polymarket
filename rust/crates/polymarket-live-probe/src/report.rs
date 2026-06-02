@@ -46,6 +46,7 @@ pub struct StateManagerSubscription {
 pub struct StateManagerReport {
     pub schema_version: String,
     pub mode: String,
+    pub generated_at: chrono::DateTime<Utc>,
     pub elapsed_ms: u128,
     pub current: Vec<WarmedContract>,
     pub next: Vec<WarmedContract>,
@@ -101,6 +102,7 @@ pub fn build_state_manager_report(input: StateManagerReportInput) -> StateManage
     StateManagerReport {
         schema_version: STATE_MANAGER_REPORT_SCHEMA_VERSION.to_owned(),
         mode: STATE_MANAGER_REPORT_MODE.to_owned(),
+        generated_at: Utc::now(),
         elapsed_ms: input.elapsed_ms,
         current: input.snapshot.current,
         next: input.snapshot.next,
@@ -196,6 +198,7 @@ mod tests {
 
         assert_eq!(value["schema_version"], "rust-live-probe-state-manager-v1");
         assert_eq!(value["mode"], "state-manager");
+        assert!(value.get("generated_at").unwrap().is_string());
         assert_eq!(value["elapsed_ms"], 250);
         assert!(value.get("current").unwrap().is_array());
         assert!(value.get("next").unwrap().is_array());

@@ -718,7 +718,7 @@ python3 ../scripts/verify_state_manager_report.py ../reports/state_manager_local
 
 Expected: report verifies or prints exact stale feed flags.
 
-- [ ] **Step 3: Update docs**
+- [x] **Step 3: Update docs**
 
 Document:
 
@@ -746,6 +746,47 @@ Expected: all commands pass.
 git add README.md docs/PART_TWO_LIVE_COLLECTORS.md scripts/verify_state_manager_report.py
 git commit -m "Document websocket state manager"
 ```
+
+## Task 8.5: Migrate Docker Deployment To Rust Collector
+
+**Files:**
+- Modify: `deploy/collector/Dockerfile`
+- Modify: `deploy/collector/docker-compose.yml`
+- Modify: `deploy/collector/collector-entrypoint.sh`
+- Modify: `deploy/collector/.env.example`
+- Modify: `scripts/deploy.sh`
+- Modify: `scripts/check_collector_status.py`
+- Modify: `docs/SPOON_DEPLOYMENT.md`
+
+- [x] **Step 1: Replace Python collector image with Rust multi-stage image**
+
+Expected: Docker builds `polymarket-live-probe` release binary and runtime image has no Python collector entrypoint.
+
+- [x] **Step 2: Add read-only Rust collector entrypoint**
+
+Expected: entrypoint checks persistent data sentinel, removes stale tmp status files, and runs `--mode state-manager --forever`.
+
+- [x] **Step 3: Update compose service**
+
+Expected: stable service name `collector`, Rust image, persistent data mounts, local status-file healthcheck, no trading secrets.
+
+- [x] **Step 4: Update deploy script**
+
+Expected: deploy stops known legacy Python collector containers, fast-forwards to configured ref, starts Rust collector, and validates status.
+
+- [x] **Step 5: Update status checker**
+
+Expected: checker accepts the new Rust state-manager report while preserving old status compatibility.
+
+- [ ] **Step 6: Verify local Docker build and smoke**
+
+```bash
+docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml build collector
+docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml up -d collector
+python3 scripts/check_collector_status.py --status-path <data-dir>/live/status.json
+```
+
+Expected: Rust collector writes fresh Chainlink BTC/ETH and CLOB order-book status.
 
 ## Task 9: Spoon Verification
 

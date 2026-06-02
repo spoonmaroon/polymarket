@@ -4,6 +4,7 @@ use polymarket_runtime_types::{
     FeedFreshness, NormalizedOrderBook, NormalizedPriceTick, WarmStateSnapshot, WarmedContract,
 };
 use std::time::Duration as StdDuration;
+use tokio::task::JoinHandle;
 
 use crate::report::StateManagerSubscription;
 use crate::{book_state::LiveBookState, clob_ws, polymarket, prices, windows};
@@ -17,6 +18,144 @@ pub struct StateManagerConfig {
     pub stale_chainlink_after_ms: i64,
     pub stale_orderbook_after_ms: i64,
     pub rest_backup_interval_ms: i64,
+}
+
+pub struct StateManagerRuntime {
+    config: StateManagerConfig,
+    latest_prices: prices::LatestPrices,
+    book_state: LiveBookState,
+    warmed: Vec<WarmedContract>,
+    token_ids: Vec<String>,
+    last_refresh: DateTime<Utc>,
+    orderbook_task: Option<JoinHandle<Result<()>>>,
+    chainlink_task: JoinHandle<Result<()>>,
+}
+
+impl StateManagerRuntime {
+    pub async fn start(config: StateManagerConfig) -> Result<Self> {
+        let latest_prices = prices::LatestPrices::default();
+        let chainlink_task = tokio::spawn(prices::run_chainlink_stream(
+            chainlink_symbols_for_assets(&config.assets),
+            latest_prices.clone(),
+        ));
+        let mut runtime = Self {
+            config,
+            latest_prices,
+            book_state: LiveBookState::default(),
+            warmed: Vec::new(),
+            token_ids: Vec::new(),
+            last_refresh: Utc::now(),
+            orderbook_task: None,
+            chainlink_task,
+        };
+        runtime.refresh_contracts().await?;
+        Ok(runtime)
+    }
+
+    pub async fn maybe_refresh(&mut self, now: DateTime<Utc>) -> Result<()> {
+        if self.needs_contract_refresh(now) || self.needs_rest_backup(now) {
+            self.refresh_contracts().await?;
+        }
+        Ok(())
+    }
+
+    pub async fn snapshot(&self, now: DateTime<Utc>) -> Result<WarmStateSnapshot> {
+        let chainlink_prices = self.latest_prices.snapshot().await;
+        let orderbooks = orderbooks_for_warmed(self.book_state.snapshot().await, &self.warmed);
+        build_snapshot_from_warmed(
+            now,
+            &self.config,
+            &self.warmed,
+            chainlink_prices,
+            orderbooks,
+        )
+    }
+
+    pub fn subscriptions(&self) -> Vec<StateManagerSubscription> {
+        subscriptions_from_warmed_contracts(&self.warmed)
+    }
+
+    pub fn shutdown(&mut self) {
+        if let Some(task) = self.orderbook_task.take() {
+            task.abort();
+        }
+        self.chainlink_task.abort();
+    }
+
+    async fn refresh_contracts(&mut self) -> Result<()> {
+        let now = Utc::now();
+        let asset_refs = self
+            .config
+            .assets
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        let windows = windows::schedule_windows(
+            now,
+            &asset_refs,
+            &self.config.interval,
+            self.config.windows,
+        )?;
+        let tokens = polymarket::discover_window_tokens(&windows).await?;
+        let warmed = polymarket::warmed_contracts_from_tokens(&tokens)?;
+
+        for book in polymarket::fetch_orderbooks(&tokens).await? {
+            self.book_state.upsert_book(book).await;
+        }
+
+        let mut token_ids = tokens
+            .iter()
+            .map(|token| token.token_id.to_string())
+            .collect::<Vec<_>>();
+        token_ids.sort();
+        token_ids.dedup();
+
+        if token_ids != self.token_ids {
+            if let Some(task) = self.orderbook_task.take() {
+                task.abort();
+            }
+            self.orderbook_task = Some(tokio::spawn(clob_ws::run_best_bid_ask_stream(
+                token_ids.clone(),
+                self.book_state.clone(),
+            )));
+            self.token_ids = token_ids;
+        }
+
+        self.warmed = warmed;
+        self.last_refresh = now;
+        Ok(())
+    }
+
+    fn needs_contract_refresh(&self, now: DateTime<Utc>) -> bool {
+        if self.warmed.is_empty() {
+            return true;
+        }
+        self.config.assets.iter().any(|asset| {
+            let mut asset_contracts = self
+                .warmed
+                .iter()
+                .filter(|contract| contract.window.asset == asset.to_ascii_uppercase())
+                .filter(|contract| contract.window.end_ts > now)
+                .collect::<Vec<_>>();
+            asset_contracts.sort_by_key(|contract| contract.window.start_ts);
+            asset_contracts.first().is_none_or(|contract| {
+                contract
+                    .window
+                    .end_ts
+                    .signed_duration_since(now)
+                    .num_milliseconds()
+                    <= self.config.prewarm_before_expiry_ms
+            }) || asset_contracts.len() < usize::from(self.config.windows.min(2))
+        })
+    }
+
+    fn needs_rest_backup(&self, now: DateTime<Utc>) -> bool {
+        self.config.rest_backup_interval_ms > 0
+            && now
+                .signed_duration_since(self.last_refresh)
+                .num_milliseconds()
+                >= self.config.rest_backup_interval_ms
+    }
 }
 
 pub fn build_snapshot_from_warmed(
@@ -128,12 +267,18 @@ pub fn subscriptions_from_warmed_contracts(
     subscriptions
 }
 
-pub fn subscriptions_from_snapshot(snapshot: &WarmStateSnapshot) -> Vec<StateManagerSubscription> {
-    let mut contracts = Vec::new();
-    contracts.extend(snapshot.current.iter().cloned());
-    contracts.extend(snapshot.next.iter().cloned());
-    contracts.extend(snapshot.next_next.iter().cloned());
-    subscriptions_from_warmed_contracts(&contracts)
+fn orderbooks_for_warmed(
+    orderbooks: Vec<NormalizedOrderBook>,
+    warmed_contracts: &[WarmedContract],
+) -> Vec<NormalizedOrderBook> {
+    let token_ids = warmed_contracts
+        .iter()
+        .flat_map(WarmedContract::token_ids)
+        .collect::<std::collections::HashSet<_>>();
+    orderbooks
+        .into_iter()
+        .filter(|book| token_ids.contains(&book.token_id))
+        .collect()
 }
 
 fn feed_freshness(
@@ -212,42 +357,12 @@ pub async fn run_until_report(
     config: StateManagerConfig,
     run_for: StdDuration,
 ) -> Result<WarmStateSnapshot> {
-    let now = Utc::now();
-    let asset_refs = config.assets.iter().map(String::as_str).collect::<Vec<_>>();
-    let windows = windows::schedule_windows(now, &asset_refs, &config.interval, config.windows)?;
-    let tokens = polymarket::discover_window_tokens(&windows).await?;
-    let warmed = polymarket::warmed_contracts_from_tokens(&tokens)?;
-
-    let book_state = LiveBookState::default();
-    for book in polymarket::fetch_orderbooks(&tokens).await? {
-        book_state.upsert_book(book).await;
-    }
-
-    let token_ids = tokens
-        .iter()
-        .map(|token| token.token_id.to_string())
-        .collect::<Vec<_>>();
-    let orderbook_task = tokio::spawn(clob_ws::run_best_bid_ask_stream(
-        token_ids,
-        book_state.clone(),
-    ));
-
-    let latest_prices = prices::LatestPrices::default();
-    let chainlink_task = tokio::spawn(prices::run_chainlink_stream(
-        chainlink_symbols_for_assets(&config.assets),
-        latest_prices.clone(),
-    ));
-
+    let mut runtime = StateManagerRuntime::start(config).await?;
     tokio::time::sleep(run_for).await;
-
-    let snapshot_now = Utc::now();
-    let chainlink_prices = latest_prices.snapshot().await;
-    let orderbooks = book_state.snapshot().await;
-
-    orderbook_task.abort();
-    chainlink_task.abort();
-
-    build_snapshot_from_warmed(snapshot_now, &config, &warmed, chainlink_prices, orderbooks)
+    runtime.maybe_refresh(Utc::now()).await?;
+    let snapshot = runtime.snapshot(Utc::now()).await;
+    runtime.shutdown();
+    snapshot
 }
 
 fn chainlink_symbols_for_assets(assets: &[String]) -> Vec<String> {
@@ -454,5 +569,22 @@ mod tests {
                 .health_flags
                 .contains(&"orderbook_missing:eth-down".to_owned())
         );
+    }
+
+    #[test]
+    fn orderbook_snapshot_keeps_only_warmed_tokens() {
+        let start = 1_780_302_400;
+        let warmed = vec![warmed("BTC", start, "btc")];
+        let books = vec![
+            book("BTC", "UP", "btc-up", start * 1000),
+            book("BTC", "DOWN", "btc-down", start * 1000),
+            book("BTC", "UP", "expired-up", start * 1000),
+        ];
+
+        let filtered = orderbooks_for_warmed(books, &warmed);
+
+        assert_eq!(filtered.len(), 2);
+        assert!(filtered.iter().any(|book| book.token_id == "btc-up"));
+        assert!(filtered.iter().any(|book| book.token_id == "btc-down"));
     }
 }

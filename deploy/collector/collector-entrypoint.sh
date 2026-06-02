@@ -1,12 +1,36 @@
 #!/usr/bin/env sh
 set -eu
 
-cat >&2 <<'EOF'
-The Python Polymarket live collector is retired and cannot be started from this image.
-Use the Rust runtime instead:
+RAW_DIR="${POLYMARKET_RAW_DIR:-/var/lib/polymarket/raw}"
+LIVE_DIR="${POLYMARKET_LIVE_DIR:-/var/lib/polymarket/live}"
+STATUS_PATH="${POLYMARKET_STATUS_PATH:-$LIVE_DIR/status.json}"
 
-  cd rust
-  cargo run -p polymarket-live-probe -- --assets BTC,ETH --interval 5m --windows 1
+if [ ! -f "$RAW_DIR/.polymarket_archive_root" ]; then
+  echo "missing archive sentinel: $RAW_DIR/.polymarket_archive_root" >&2
+  exit 66
+fi
 
-EOF
-exit 64
+mkdir -p "$LIVE_DIR"
+rm -f "$STATUS_PATH.tmp" "$STATUS_PATH.json.tmp" 2>/dev/null || true
+
+ASSETS="${POLYMARKET_ASSETS:-BTC,ETH}"
+INTERVAL="${POLYMARKET_INTERVAL:-5m}"
+PREWARM_WINDOWS="${POLYMARKET_PREWARM_WINDOWS:-2}"
+STATUS_INTERVAL_MS="${POLYMARKET_STATUS_INTERVAL_MS:-1000}"
+PREWARM_BEFORE_EXPIRY_MS="${POLYMARKET_PREWARM_BEFORE_EXPIRY_MS:-30000}"
+STALE_CHAINLINK_AFTER_MS="${POLYMARKET_STALE_CHAINLINK_AFTER_MS:-5000}"
+STALE_ORDERBOOK_AFTER_MS="${POLYMARKET_STALE_ORDERBOOK_AFTER_MS:-30000}"
+REST_BACKUP_INTERVAL_MS="${POLYMARKET_REST_BACKUP_INTERVAL_MS:-15000}"
+
+exec /usr/local/bin/polymarket-live-probe \
+  --mode state-manager \
+  --assets "$ASSETS" \
+  --interval "$INTERVAL" \
+  --prewarm-windows "$PREWARM_WINDOWS" \
+  --forever \
+  --status-interval-ms "$STATUS_INTERVAL_MS" \
+  --prewarm-before-expiry-ms "$PREWARM_BEFORE_EXPIRY_MS" \
+  --stale-chainlink-after-ms "$STALE_CHAINLINK_AFTER_MS" \
+  --stale-orderbook-after-ms "$STALE_ORDERBOOK_AFTER_MS" \
+  --rest-backup-interval-ms "$REST_BACKUP_INTERVAL_MS" \
+  --out "$STATUS_PATH"

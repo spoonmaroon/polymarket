@@ -17,9 +17,6 @@ LOG() { echo "[$(date -Iseconds)] $*" | tee -a "$LOG_FILE"; }
 mkdir -p "$REPO/logs" "$DATA_DIR/raw" "$DATA_DIR/db" "$DATA_DIR/live" "$DATA_DIR/logs" "$(dirname "$DEPLOYED_MARKER")"
 touch "$DATA_DIR/raw/.polymarket_archive_root"
 
-LOG "Python collector deployment is retired. Use the Rust runtime path; refusing to start legacy collector."
-exit 64
-
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
   LOG "deploy already running"
   exit 75
@@ -28,11 +25,19 @@ trap 'rm -rf "$LOCK_DIR"' EXIT
 
 cd "$REPO" || exit 1
 
-git fetch --quiet origin main || { LOG "git fetch failed"; exit 1; }
+DEPLOY_REF="${POLYMARKET_DEPLOY_REF:-origin/main}"
+git fetch --quiet origin || { LOG "git fetch failed"; exit 1; }
 LOCAL="$(git rev-parse HEAD)"
-REMOTE="$(git rev-parse origin/main)"
+REMOTE="$(git rev-parse "$DEPLOY_REF")"
 if [ "$LOCAL" = "$REMOTE" ] && [ "${DEPLOY_FORCE:-0}" != "1" ]; then
-  exit 0
+  if python3 "$REPO/scripts/check_collector_status.py" \
+    --status-path "$STATUS_PATH" \
+    --max-status-age-seconds 30 \
+    --max-price-age-ms 30000 \
+    --max-orderbook-age-ms 30000 >> "$LOG_FILE" 2>&1; then
+    exit 0
+  fi
+  LOG "target commit already checked out but collector is unhealthy; redeploying"
 fi
 
 if ! git diff --quiet || ! git diff --cached --quiet; then
@@ -43,8 +48,8 @@ fi
 
 LOG "deploying $REMOTE from $LOCAL"
 
-if ! git pull --ff-only --quiet origin main; then
-  LOG "git pull failed"
+if ! git merge --ff-only --quiet "$REMOTE"; then
+  LOG "git fast-forward failed for $DEPLOY_REF"
   exit 1
 fi
 
@@ -52,6 +57,9 @@ COMPOSE_ENV_ARGS=()
 if [ -f "$REPO/deploy/collector/.env" ]; then
   COMPOSE_ENV_ARGS=(--env-file "$REPO/deploy/collector/.env")
 fi
+
+LOG "stopping legacy Python collector containers if present"
+docker rm -f polymarket-collector-collector-1 polymarket-python-collector-retired-retired-python-collector-1 >> "$LOG_FILE" 2>&1 || true
 
 if ! docker compose "${COMPOSE_ENV_ARGS[@]}" -f "$COMPOSE_FILE" up -d --build collector >> "$LOG_FILE" 2>&1; then
   LOG "docker compose failed"

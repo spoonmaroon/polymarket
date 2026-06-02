@@ -31,7 +31,7 @@ def main() -> int:
     if status_age > args.max_status_age_seconds:
         raise SystemExit(f"status file stale: age_seconds={status_age:.2f}")
 
-    prices = payload.get("prices", [])
+    prices = payload.get("prices") or payload.get("chainlink_prices", [])
     if not prices:
         raise SystemExit("status has no price rows")
     orderbooks = payload.get("orderbooks", [])
@@ -46,19 +46,22 @@ def main() -> int:
         raise SystemExit(f"price rows stale: age_ms={price_age_ms}")
     if book_age_ms > args.max_orderbook_age_ms:
         raise SystemExit(f"orderbook rows stale: age_ms={book_age_ms}")
-    _reject_bad_freshness_rows(payload.get("source_freshness", []), label="source_freshness")
-    _reject_bad_freshness_rows(
-        payload.get("orderbook_freshness", []),
-        label="orderbook_freshness",
-        allow_missing_or_stale=True,
-    )
-    _reject_required_source_errors(
-        payload.get("source_errors", {}),
-        required_source_keys=(
-            "polymarket_market_ws",
-            "polymarket_rtds",
-        ),
-    )
+    if payload.get("mode") == "state-manager":
+        _reject_state_manager_payload(payload)
+    else:
+        _reject_bad_freshness_rows(payload.get("source_freshness", []), label="source_freshness")
+        _reject_bad_freshness_rows(
+            payload.get("orderbook_freshness", []),
+            label="orderbook_freshness",
+            allow_missing_or_stale=True,
+        )
+        _reject_required_source_errors(
+            payload.get("source_errors", {}),
+            required_source_keys=(
+                "polymarket_market_ws",
+                "polymarket_rtds",
+            ),
+        )
 
     print(
         {
@@ -109,6 +112,29 @@ def _reject_required_source_errors(
         error = source_errors.get(source_key)
         if error:
             raise SystemExit(f"required source error: source={source_key} error={error}")
+
+
+def _reject_state_manager_payload(payload: dict) -> None:
+    if payload.get("schema_version") != "rust-live-probe-state-manager-v1":
+        raise SystemExit("state-manager status has unexpected schema_version")
+    symbols = {
+        str(row.get("symbol", "")).upper()
+        for row in payload.get("chainlink_prices", [])
+        if row.get("source_key") == "polymarket_rtds_chainlink"
+    }
+    missing_symbols = {"BTC/USD", "ETH/USD"} - symbols
+    if missing_symbols:
+        raise SystemExit(
+            "state-manager missing Chainlink symbols: "
+            + ", ".join(sorted(missing_symbols))
+        )
+    if len(payload.get("current", [])) < 2:
+        raise SystemExit("state-manager missing current BTC/ETH contracts")
+    if len(payload.get("next", [])) < 2:
+        raise SystemExit("state-manager missing next BTC/ETH contracts")
+    health_flags = payload.get("health_flags", [])
+    if health_flags:
+        raise SystemExit("state-manager health flags present: " + ", ".join(health_flags))
 
 
 if __name__ == "__main__":

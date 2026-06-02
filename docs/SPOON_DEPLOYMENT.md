@@ -21,8 +21,8 @@ cd /home/spoon/polymarket
 cp deploy/collector/.env.example deploy/collector/.env
 sed -i "s/^POLYMARKET_UID=.*/POLYMARKET_UID=$(id -u)/" deploy/collector/.env
 sed -i "s/^POLYMARKET_GID=.*/POLYMARKET_GID=$(id -g)/" deploy/collector/.env
-docker compose -f deploy/collector/docker-compose.yml --env-file deploy/collector/.env up -d --build collector
-python3 scripts/check_collector_status.py --status-path /home/spoon/polymarket-data/live/status.json
+docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml up -d --build collector
+python3 scripts/check_collector_status.py --status-path /home/spoon/polymarket-data/live/status.json --max-status-age-seconds 30 --max-price-age-ms 30000 --max-orderbook-age-ms 30000
 ```
 
 ## Auto Deploy
@@ -33,8 +33,14 @@ Install a cron entry on spoon:
 */5 * * * * /home/spoon/polymarket/scripts/deploy.sh >> /home/spoon/polymarket/logs/deploy.cron.log 2>&1
 ```
 
-The deploy script fetches `origin/main`, refuses dirty server worktrees, pulls fast-forward only, rebuilds the collector image, restarts the collector, and smoke-checks the status file.
-If `deploy/collector/.env` exists, the deploy script uses it explicitly. Set `POLYMARKET_ENABLE_CLOB_WEBSOCKET=0` only as an operational kill switch for CLOB WebSocket problems; the deploy smoke check otherwise requires fresh WebSocket order-book rows.
+The deploy script fetches the configured deploy ref, refuses dirty server worktrees, fast-forwards only, rebuilds the Rust collector image, restarts the collector, and smoke-checks the status file.
+If `deploy/collector/.env` exists, the deploy script uses it explicitly. The collector is read-only and runs Chainlink RTDS plus Polymarket CLOB WebSocket state-manager mode.
+
+For branch testing before merge:
+
+```bash
+POLYMARKET_DEPLOY_REF=origin/codex/ws-state-manager-design DEPLOY_FORCE=1 /home/spoon/polymarket/scripts/deploy.sh
+```
 
 ## Retention
 
@@ -45,7 +51,8 @@ Raw data remains hot for 90 days. Do not enable deletion until compact replay te
 ```bash
 docker compose -f /home/spoon/polymarket/deploy/collector/docker-compose.yml ps
 docker compose -f /home/spoon/polymarket/deploy/collector/docker-compose.yml logs --tail=100 collector
-python3 /home/spoon/polymarket/scripts/check_collector_status.py --status-path /home/spoon/polymarket-data/live/status.json
+python3 /home/spoon/polymarket/scripts/check_collector_status.py --status-path /home/spoon/polymarket-data/live/status.json --max-status-age-seconds 30 --max-price-age-ms 30000 --max-orderbook-age-ms 30000
+python3 /home/spoon/polymarket/scripts/verify_state_manager_report.py /home/spoon/polymarket-data/live/status.json
 du -sh /home/spoon/polymarket-data/*
 ```
 

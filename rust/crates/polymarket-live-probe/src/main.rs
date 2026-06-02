@@ -28,6 +28,10 @@ struct Args {
     timeout_seconds: u64,
     #[arg(long, default_value_t = 30)]
     run_for_seconds: u64,
+    #[arg(long, default_value_t = false)]
+    forever: bool,
+    #[arg(long, default_value_t = 1_000)]
+    status_interval_ms: u64,
     #[arg(long, default_value_t = 3)]
     prewarm_windows: u8,
     #[arg(long, default_value_t = 30_000)]
@@ -177,22 +181,40 @@ async fn run_state_manager(args: Args) -> Result<()> {
     };
     let mut timer = report::ProbeTimer::start();
     timer.mark("start");
+    let mut runtime = state_manager::StateManagerRuntime::start(config).await?;
+    let interval = Duration::from_millis(args.status_interval_ms);
+    let deadline = if args.forever {
+        None
+    } else {
+        Some(std::time::Instant::now() + Duration::from_secs(args.run_for_seconds))
+    };
 
-    let snapshot =
-        state_manager::run_until_report(config, Duration::from_secs(args.run_for_seconds)).await?;
-    timer.mark("state_snapshot_built");
-    let subscriptions = state_manager::subscriptions_from_snapshot(&snapshot);
-    let report = report::build_state_manager_report(report::StateManagerReportInput {
-        elapsed_ms: timer.elapsed_ms(),
-        snapshot,
-        subscriptions,
-    });
-    report::write_state_manager_report(&args.out, &report)?;
-    info!(
-        path = %args.out.display(),
-        elapsed_ms = report.elapsed_ms,
-        "wrote rust state manager report"
-    );
+    loop {
+        let now = chrono::Utc::now();
+        runtime.maybe_refresh(now).await?;
+        let snapshot = runtime.snapshot(now).await?;
+        let subscriptions = runtime.subscriptions();
+        let report = report::build_state_manager_report(report::StateManagerReportInput {
+            elapsed_ms: timer.elapsed_ms(),
+            snapshot,
+            subscriptions,
+        });
+        report::write_state_manager_report(&args.out, &report)?;
+        timer.mark("state_report_written");
+        info!(
+            path = %args.out.display(),
+            elapsed_ms = report.elapsed_ms,
+            health_flags = report.health_flags.len(),
+            "wrote rust state manager report"
+        );
+
+        if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+            break;
+        }
+        tokio::time::sleep(interval).await;
+    }
+
+    runtime.shutdown();
     Ok(())
 }
 

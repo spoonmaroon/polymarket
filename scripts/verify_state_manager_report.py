@@ -186,6 +186,7 @@ def validate(payload: dict[str, Any]) -> list[str]:
         fail(f'schema_version must be "{STATE_MANAGER_SCHEMA_VERSION}"')
     if payload.get("mode") != "state-manager":
         fail('mode must be "state-manager"')
+    require_timestamp(payload.get("generated_at"), "generated_at")
     require_non_negative_number(payload.get("elapsed_ms"), "elapsed_ms")
 
     validate_contracts(require_list(payload, "current"), "current", require_assets=True)
