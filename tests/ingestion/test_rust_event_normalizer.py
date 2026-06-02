@@ -187,6 +187,51 @@ def test_top_of_book_depth_json_materializes_without_json_dumps(
     }
 
 
+def test_top_of_book_rows_skip_intermediate_row_materialization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "state.duckdb"
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    raw_path = (
+        tmp_path
+        / "raw"
+        / "polymarket_clob_market_ws"
+        / "best_bid_ask"
+        / "date=2026-06-02"
+        / "hour=05"
+        / "events.jsonl"
+    )
+    _write_jsonl(
+        raw_path,
+        _orderbook_row(
+            "token-1",
+            "2026-06-02T05:33:54Z",
+            "2026-06-02T05:33:55Z",
+            0.61,
+            0.64,
+        ),
+    )
+    top_of_book_row_calls = 0
+    real_top_of_book_row = rust_event_normalizer._TopOfBookRow
+
+    def counting_top_of_book_row(*args: Any, **kwargs: Any) -> object:
+        nonlocal top_of_book_row_calls
+        top_of_book_row_calls += 1
+        return real_top_of_book_row(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "polymarket_engine.ingestion.rust_event_normalizer._TopOfBookRow",
+        counting_top_of_book_row,
+    )
+
+    result = normalize_rust_event_file(path=raw_path, store=store)
+
+    assert result.orderbooks_written == 1
+    assert top_of_book_row_calls == 0
+
+
 def test_normalizes_clob_spread_from_bid_ask_when_payload_spread_is_stale(tmp_path: Path) -> None:
     db_path = tmp_path / "state.duckdb"
     store = DuckDbIngestStore(db_path)

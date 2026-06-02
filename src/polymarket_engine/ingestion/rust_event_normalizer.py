@@ -390,13 +390,12 @@ def _append_orderbooks_from_row(
     orderbooks: list[OrderBookObservation],
     event_time_bounds: _EventTimeBounds,
 ) -> None:
-    top_of_book = _top_of_book_row_from_raw(row)
-    if top_of_book is not None:
-        if orderbook_state_cache.get(top_of_book.token_key) != top_of_book.state_key:
-            orderbook_state_cache[top_of_book.token_key] = top_of_book.state_key
-            orderbook = _orderbook_from_top_of_book_row(top_of_book)
-            orderbooks.append(orderbook)
-            event_time_bounds.record(orderbook.event_ts)
+    if _append_top_of_book_from_raw(
+        row=row,
+        orderbook_state_cache=orderbook_state_cache,
+        orderbooks=orderbooks,
+        event_time_bounds=event_time_bounds,
+    ):
         return
     for book in _orderbooks_from_row(row):
         token_key = (book.venue, book.token_id)
@@ -405,6 +404,62 @@ def _append_orderbooks_from_row(
             orderbook_state_cache[token_key] = state_key
             orderbooks.append(book)
             event_time_bounds.record(book.event_ts)
+
+
+def _append_top_of_book_from_raw(
+    *,
+    row: dict[str, Any],
+    orderbook_state_cache: dict[tuple[str, str], tuple[object, ...]],
+    orderbooks: list[OrderBookObservation],
+    event_time_bounds: _EventTimeBounds,
+) -> bool:
+    if row.get("source_key") != "polymarket_clob_market_ws":
+        return False
+    if row.get("stream_key") != "best_bid_ask":
+        return False
+    payload = _payload(row)
+    best_bid = _optional_probability_float(payload.get("best_bid"), "best_bid")
+    best_ask = _optional_probability_float(payload.get("best_ask"), "best_ask")
+    spread_fallback = (
+        None
+        if best_bid is not None and best_ask is not None
+        else _optional_probability_float(payload.get("spread"), "spread")
+    )
+    spread = _canonical_spread(best_bid, best_ask, spread_fallback)
+    token_id = str(payload.get("token_id") or row.get("symbol"))
+    contract_id = str(payload["contract_id"])
+    event_ts = _parse_ts(row["event_ts"])
+    token_key = ("polymarket", token_id)
+    state_key = (
+        "top_of_book",
+        "polymarket",
+        contract_id,
+        token_id,
+        event_ts,
+        best_bid,
+        best_ask,
+        None,
+        None,
+        spread,
+    )
+    if orderbook_state_cache.get(token_key) != state_key:
+        orderbook_state_cache[token_key] = state_key
+        orderbook = OrderBookObservation(
+            venue="polymarket",
+            contract_id=contract_id,
+            token_id=token_id,
+            event_ts=event_ts,
+            observed_ts=_parse_ts(row["observed_ts"]),
+            best_bid=best_bid,
+            best_ask=best_ask,
+            bid_size_top=None,
+            ask_size_top=None,
+            spread=spread,
+            depth_json=_top_of_book_depth_json(payload),
+        )
+        orderbooks.append(orderbook)
+        event_time_bounds.record(orderbook.event_ts)
+    return True
 
 
 def _top_of_book_row_from_raw(row: dict[str, Any]) -> _TopOfBookRow | None:
