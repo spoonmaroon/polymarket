@@ -125,7 +125,7 @@ impl StateManagerRuntime {
         let chainlink_prices = self.latest_prices.snapshot().await;
         let orderbooks = self
             .book_state
-            .snapshot_for_token_ids(warmed_token_ids(&warmed))
+            .snapshot_for_token_ids(self.token_ids.iter().map(String::as_str))
             .await;
         let snapshot_now = Utc::now();
         build_snapshot_from_warmed(
@@ -831,6 +831,51 @@ mod tests {
         assert_eq!(subscriptions.len(), 2);
         assert_eq!(subscriptions[0].asset, "ETH");
         assert_eq!(subscriptions[0].token_id, "cached-eth-down");
+    }
+
+    #[tokio::test]
+    async fn runtime_snapshot_uses_cached_orderbook_token_ids() {
+        let observed = Utc::now();
+        let start = observed.timestamp() - 60;
+        let book_state = LiveBookState::default();
+        book_state
+            .upsert_book(book(
+                "BTC",
+                "UP",
+                "current-up",
+                observed.timestamp_millis(),
+            ))
+            .await;
+        book_state
+            .upsert_book(book(
+                "ETH",
+                "UP",
+                "cached-up",
+                observed.timestamp_millis(),
+            ))
+            .await;
+        let runtime = StateManagerRuntime {
+            config: config(),
+            latest_prices: crate::prices::LatestPrices::default(),
+            orderbook_streams: clob_ws::BestBidAskStreamManager::new(book_state.clone()),
+            book_state,
+            warmed: std::sync::Arc::new(std::sync::RwLock::new(vec![warmed(
+                "BTC", start, "current",
+            )])),
+            token_ids: vec!["cached-up".to_owned()],
+            subscriptions: vec![],
+            last_refresh: observed,
+            chainlink_streams: prices::ChainlinkStreamManager::inactive_for_tests(vec![
+                "btc/usd".to_owned(),
+            ]),
+            hot_decision_worker: None,
+            hot_decision_telemetry: None,
+        };
+
+        let snapshot = runtime.snapshot(observed).await.unwrap();
+
+        assert_eq!(snapshot.orderbooks.len(), 1);
+        assert_eq!(snapshot.orderbooks[0].token_id, "cached-up");
     }
 
     #[test]
