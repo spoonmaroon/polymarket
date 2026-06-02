@@ -206,6 +206,11 @@ pub async fn discover_current_markets(
 
 #[allow(dead_code)]
 pub async fn discover_windows(windows: &[ContractWindow]) -> Result<Vec<WarmedContract>> {
+    let tokens = discover_window_tokens(windows).await?;
+    warmed_contracts_from_tokens(&tokens)
+}
+
+pub async fn discover_window_tokens(windows: &[ContractWindow]) -> Result<Vec<MarketToken>> {
     let gamma = GammaClient::new(GAMMA_HOST)?;
     let slugs = windows.iter().map(ContractWindow::slug).collect::<Vec<_>>();
     let request = MarketsRequest::builder().slug(slugs).closed(false).build();
@@ -216,7 +221,7 @@ pub async fn discover_windows(windows: &[ContractWindow]) -> Result<Vec<WarmedCo
         tokens.extend(market_tokens_from_gamma_market(&market)?);
     }
 
-    warmed_contracts_from_tokens(&tokens)
+    Ok(tokens)
 }
 
 pub async fn fetch_orderbooks(tokens: &[MarketToken]) -> Result<Vec<NormalizedOrderBook>> {

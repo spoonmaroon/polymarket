@@ -1,0 +1,458 @@
+use anyhow::Result;
+use chrono::{DateTime, Utc};
+use polymarket_runtime_types::{
+    FeedFreshness, NormalizedOrderBook, NormalizedPriceTick, WarmStateSnapshot, WarmedContract,
+};
+use std::time::Duration as StdDuration;
+
+use crate::report::StateManagerSubscription;
+use crate::{book_state::LiveBookState, clob_ws, polymarket, prices, windows};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StateManagerConfig {
+    pub assets: Vec<String>,
+    pub interval: String,
+    pub windows: u8,
+    pub prewarm_before_expiry_ms: i64,
+    pub stale_chainlink_after_ms: i64,
+    pub stale_orderbook_after_ms: i64,
+    pub rest_backup_interval_ms: i64,
+}
+
+pub fn build_snapshot_from_warmed(
+    now: DateTime<Utc>,
+    config: &StateManagerConfig,
+    warmed_contracts: &[WarmedContract],
+    chainlink_prices: Vec<NormalizedPriceTick>,
+    orderbooks: Vec<NormalizedOrderBook>,
+) -> Result<WarmStateSnapshot> {
+    let mut current = Vec::new();
+    let mut next = Vec::new();
+    let mut next_next = Vec::new();
+    let mut health_flags = Vec::new();
+
+    for asset in &config.assets {
+        let mut asset_contracts = warmed_contracts
+            .iter()
+            .filter(|contract| contract.window.asset == asset.to_ascii_uppercase())
+            .filter(|contract| contract.window.end_ts > now)
+            .cloned()
+            .collect::<Vec<_>>();
+        asset_contracts.sort_by_key(|contract| contract.window.start_ts);
+
+        if let Some(contract) = asset_contracts.first() {
+            let remaining_ms = contract
+                .window
+                .end_ts
+                .signed_duration_since(now)
+                .num_milliseconds();
+            if remaining_ms <= config.prewarm_before_expiry_ms && asset_contracts.len() < 2 {
+                health_flags.push(format!("next_contract_not_warmed:{asset}"));
+            }
+        } else {
+            health_flags.push(format!("current_contract_not_warmed:{asset}"));
+        }
+
+        if let Some(contract) = asset_contracts.first() {
+            current.push(contract.clone());
+        }
+        if let Some(contract) = asset_contracts.get(1) {
+            next.push(contract.clone());
+        }
+        if let Some(contract) = asset_contracts.get(2) {
+            next_next.push(contract.clone());
+        }
+    }
+
+    let freshness = feed_freshness(
+        now,
+        config,
+        &chainlink_prices,
+        &orderbooks,
+        &mut health_flags,
+    );
+    add_missing_feed_flags(
+        config,
+        &chainlink_prices,
+        [&current, &next, &next_next]
+            .into_iter()
+            .flat_map(|contracts| contracts.iter())
+            .collect::<Vec<_>>()
+            .as_slice(),
+        &orderbooks,
+        &mut health_flags,
+    );
+
+    Ok(WarmStateSnapshot {
+        observed_ts: now,
+        current,
+        next,
+        next_next,
+        chainlink_prices,
+        proxy_prices: vec![],
+        orderbooks,
+        freshness,
+        health_flags,
+    })
+}
+
+pub fn subscriptions_from_warmed_contracts(
+    warmed_contracts: &[WarmedContract],
+) -> Vec<StateManagerSubscription> {
+    let mut subscriptions = warmed_contracts
+        .iter()
+        .flat_map(|contract| {
+            [
+                StateManagerSubscription {
+                    source_key: "polymarket_clob_market_ws".to_owned(),
+                    channel: "best_bid_ask".to_owned(),
+                    asset: contract.window.asset.clone(),
+                    token_id: contract.down.token_id.clone(),
+                },
+                StateManagerSubscription {
+                    source_key: "polymarket_clob_market_ws".to_owned(),
+                    channel: "best_bid_ask".to_owned(),
+                    asset: contract.window.asset.clone(),
+                    token_id: contract.up.token_id.clone(),
+                },
+            ]
+        })
+        .collect::<Vec<_>>();
+    subscriptions.sort_by(|left, right| {
+        left.asset
+            .cmp(&right.asset)
+            .then_with(|| left.token_id.cmp(&right.token_id))
+    });
+    subscriptions
+        .dedup_by(|left, right| left.asset == right.asset && left.token_id == right.token_id);
+    subscriptions
+}
+
+pub fn subscriptions_from_snapshot(snapshot: &WarmStateSnapshot) -> Vec<StateManagerSubscription> {
+    let mut contracts = Vec::new();
+    contracts.extend(snapshot.current.iter().cloned());
+    contracts.extend(snapshot.next.iter().cloned());
+    contracts.extend(snapshot.next_next.iter().cloned());
+    subscriptions_from_warmed_contracts(&contracts)
+}
+
+fn feed_freshness(
+    now: DateTime<Utc>,
+    config: &StateManagerConfig,
+    chainlink_prices: &[NormalizedPriceTick],
+    orderbooks: &[NormalizedOrderBook],
+    health_flags: &mut Vec<String>,
+) -> Vec<FeedFreshness> {
+    let mut freshness = Vec::new();
+    for tick in chainlink_prices
+        .iter()
+        .filter(|tick| tick.source_key == "polymarket_rtds_chainlink")
+    {
+        let age_ms = now
+            .signed_duration_since(tick.observed_ts)
+            .num_milliseconds();
+        let stale = age_ms < 0 || age_ms > config.stale_chainlink_after_ms;
+        if stale {
+            health_flags.push(format!("chainlink_price_stale:{}", tick.symbol));
+        }
+        freshness.push(FeedFreshness {
+            source_key: tick.source_key.clone(),
+            symbol: tick.symbol.to_ascii_uppercase(),
+            age_ms,
+            stale,
+        });
+    }
+
+    for book in orderbooks {
+        let age_ms = now
+            .signed_duration_since(book.observed_ts)
+            .num_milliseconds();
+        let stale = age_ms < 0 || age_ms > config.stale_orderbook_after_ms;
+        if stale {
+            health_flags.push(format!("orderbook_stale:{}", book.token_id));
+        }
+        freshness.push(FeedFreshness {
+            source_key: book.source_key.clone(),
+            symbol: book.token_id.clone(),
+            age_ms,
+            stale,
+        });
+    }
+    freshness
+}
+
+fn add_missing_feed_flags(
+    config: &StateManagerConfig,
+    chainlink_prices: &[NormalizedPriceTick],
+    warmed_contracts: &[&WarmedContract],
+    orderbooks: &[NormalizedOrderBook],
+    health_flags: &mut Vec<String>,
+) {
+    for asset in &config.assets {
+        let expected_symbol = format!("{}/USD", asset.to_ascii_uppercase());
+        if !chainlink_prices
+            .iter()
+            .any(|tick| tick.symbol.eq_ignore_ascii_case(&expected_symbol))
+        {
+            health_flags.push(format!("chainlink_price_missing:{expected_symbol}"));
+        }
+    }
+
+    for contract in warmed_contracts {
+        for token_id in contract.token_ids() {
+            if !orderbooks.iter().any(|book| book.token_id == token_id) {
+                health_flags.push(format!("orderbook_missing:{token_id}"));
+            }
+        }
+    }
+}
+
+#[allow(dead_code)]
+pub async fn run_until_report(
+    config: StateManagerConfig,
+    run_for: StdDuration,
+) -> Result<WarmStateSnapshot> {
+    let now = Utc::now();
+    let asset_refs = config.assets.iter().map(String::as_str).collect::<Vec<_>>();
+    let windows = windows::schedule_windows(now, &asset_refs, &config.interval, config.windows)?;
+    let tokens = polymarket::discover_window_tokens(&windows).await?;
+    let warmed = polymarket::warmed_contracts_from_tokens(&tokens)?;
+
+    let book_state = LiveBookState::default();
+    for book in polymarket::fetch_orderbooks(&tokens).await? {
+        book_state.upsert_book(book).await;
+    }
+
+    let token_ids = tokens
+        .iter()
+        .map(|token| token.token_id.to_string())
+        .collect::<Vec<_>>();
+    let orderbook_task = tokio::spawn(clob_ws::run_best_bid_ask_stream(
+        token_ids,
+        book_state.clone(),
+    ));
+
+    let latest_prices = prices::LatestPrices::default();
+    let chainlink_task = tokio::spawn(prices::run_chainlink_stream(
+        chainlink_symbols_for_assets(&config.assets),
+        latest_prices.clone(),
+    ));
+
+    tokio::time::sleep(run_for).await;
+
+    let snapshot_now = Utc::now();
+    let chainlink_prices = latest_prices.snapshot().await;
+    let orderbooks = book_state.snapshot().await;
+
+    orderbook_task.abort();
+    chainlink_task.abort();
+
+    build_snapshot_from_warmed(snapshot_now, &config, &warmed, chainlink_prices, orderbooks)
+}
+
+fn chainlink_symbols_for_assets(assets: &[String]) -> Vec<String> {
+    assets
+        .iter()
+        .map(|asset| format!("{}/usd", asset.trim().to_ascii_lowercase()))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{Duration, TimeZone, Utc};
+    use polymarket_runtime_types::{
+        BookLevel, ContractSide, ContractToken, ContractWindow, NormalizedOrderBook,
+        NormalizedPriceTick, OrderBookMeta, WarmedContract,
+    };
+    use rust_decimal::Decimal;
+
+    fn config() -> StateManagerConfig {
+        StateManagerConfig {
+            assets: vec!["BTC".to_owned()],
+            interval: "5m".to_owned(),
+            windows: 3,
+            prewarm_before_expiry_ms: 30_000,
+            stale_chainlink_after_ms: 2_500,
+            stale_orderbook_after_ms: 2_000,
+            rest_backup_interval_ms: 15_000,
+        }
+    }
+
+    fn warmed(asset: &str, start_epoch: i64, token_prefix: &str) -> WarmedContract {
+        let start = Utc.timestamp_opt(start_epoch, 0).unwrap();
+        let end = start + Duration::seconds(300);
+        let window = ContractWindow::new(asset, "5m", start, end).unwrap();
+        WarmedContract::new(
+            window,
+            ContractToken::new(asset, ContractSide::Up, &format!("{token_prefix}-up")),
+            ContractToken::new(asset, ContractSide::Down, &format!("{token_prefix}-down")),
+        )
+        .unwrap()
+    }
+
+    fn book(
+        asset: &str,
+        side: &str,
+        token_id: &str,
+        observed_epoch_ms: i64,
+    ) -> NormalizedOrderBook {
+        let observed_ts = Utc.timestamp_millis_opt(observed_epoch_ms).unwrap();
+        NormalizedOrderBook::from_levels(
+            OrderBookMeta {
+                market_slug: format!("{}-updown-5m-1780302400", asset.to_ascii_lowercase()),
+                contract_id: format!("market-{token_id}"),
+                token_id: token_id.to_owned(),
+                asset: asset.to_owned(),
+                side: side.to_owned(),
+                event_ts: observed_ts,
+                observed_ts,
+            },
+            vec![BookLevel {
+                price: Decimal::new(49, 2),
+                size: Decimal::new(10, 0),
+            }],
+            vec![BookLevel {
+                price: Decimal::new(51, 2),
+                size: Decimal::new(12, 0),
+            }],
+        )
+    }
+
+    fn chainlink(asset: &str, observed_epoch_ms: i64) -> NormalizedPriceTick {
+        let observed_ts = Utc.timestamp_millis_opt(observed_epoch_ms).unwrap();
+        NormalizedPriceTick {
+            source_key: "polymarket_rtds_chainlink".to_owned(),
+            symbol: format!("{asset}/USD"),
+            event_ts: observed_ts,
+            observed_ts,
+            price: Decimal::new(100_000, 0),
+        }
+    }
+
+    #[test]
+    fn warmed_contracts_roll_forward_without_resolver_call() {
+        let start = 1_780_302_400;
+        let warmed = vec![
+            warmed("BTC", start, "current"),
+            warmed("BTC", start + 300, "next"),
+            warmed("BTC", start + 600, "next-next"),
+        ];
+
+        let before_rollover = build_snapshot_from_warmed(
+            Utc.timestamp_opt(start + 295, 0).unwrap(),
+            &config(),
+            &warmed,
+            vec![],
+            vec![],
+        )
+        .unwrap();
+        let after_rollover = build_snapshot_from_warmed(
+            Utc.timestamp_opt(start + 305, 0).unwrap(),
+            &config(),
+            &warmed,
+            vec![],
+            vec![],
+        )
+        .unwrap();
+
+        assert_eq!(before_rollover.current[0].up.token_id, "current-up");
+        assert_eq!(before_rollover.next[0].up.token_id, "next-up");
+        assert_eq!(after_rollover.current[0].up.token_id, "next-up");
+        assert_eq!(after_rollover.next[0].up.token_id, "next-next-up");
+        assert!(
+            !after_rollover
+                .health_flags
+                .contains(&"next_contract_not_warmed:BTC".to_owned())
+        );
+    }
+
+    #[test]
+    fn missing_next_contract_before_cutoff_adds_health_flag() {
+        let start = 1_780_302_400;
+        let warmed = vec![warmed("BTC", start, "current")];
+
+        let snapshot = build_snapshot_from_warmed(
+            Utc.timestamp_opt(start + 295, 0).unwrap(),
+            &config(),
+            &warmed,
+            vec![],
+            vec![],
+        )
+        .unwrap();
+
+        assert_eq!(snapshot.current.len(), 1);
+        assert!(snapshot.next.is_empty());
+        assert!(
+            snapshot
+                .health_flags
+                .contains(&"next_contract_not_warmed:BTC".to_owned())
+        );
+    }
+
+    #[test]
+    fn subscriptions_cover_every_warmed_token() {
+        let start = 1_780_302_400;
+        let warmed = vec![warmed("BTC", start, "btc"), warmed("ETH", start, "eth")];
+
+        let subscriptions = subscriptions_from_warmed_contracts(&warmed);
+
+        assert_eq!(subscriptions.len(), 4);
+        assert_eq!(subscriptions[0].source_key, "polymarket_clob_market_ws");
+        assert_eq!(subscriptions[0].channel, "best_bid_ask");
+        assert_eq!(subscriptions[0].asset, "BTC");
+        assert_eq!(subscriptions[0].token_id, "btc-down");
+        assert_eq!(subscriptions[3].asset, "ETH");
+        assert_eq!(subscriptions[3].token_id, "eth-up");
+    }
+
+    #[test]
+    fn snapshot_reports_feed_freshness_and_missing_orderbooks() {
+        let start = 1_780_302_400;
+        let now = Utc.timestamp_opt(start + 10, 0).unwrap();
+        let config = StateManagerConfig {
+            assets: vec!["BTC".to_owned(), "ETH".to_owned()],
+            ..config()
+        };
+        let warmed = vec![warmed("BTC", start, "btc"), warmed("ETH", start, "eth")];
+
+        let snapshot = build_snapshot_from_warmed(
+            now,
+            &config,
+            &warmed,
+            vec![chainlink("BTC", now.timestamp_millis())],
+            vec![
+                book("BTC", "UP", "btc-up", now.timestamp_millis()),
+                book("BTC", "DOWN", "btc-down", now.timestamp_millis() - 3_000),
+            ],
+        )
+        .unwrap();
+
+        assert!(
+            snapshot
+                .freshness
+                .iter()
+                .any(|row| row.source_key == "polymarket_rtds_chainlink"
+                    && row.symbol == "BTC/USD"
+                    && !row.stale)
+        );
+        assert!(
+            snapshot
+                .freshness
+                .iter()
+                .any(|row| row.source_key == "polymarket_rust_sdk"
+                    && row.symbol == "btc-down"
+                    && row.stale)
+        );
+        assert!(
+            snapshot
+                .health_flags
+                .contains(&"chainlink_price_missing:ETH/USD".to_owned())
+        );
+        assert!(
+            snapshot
+                .health_flags
+                .contains(&"orderbook_missing:eth-down".to_owned())
+        );
+    }
+}

@@ -1,11 +1,16 @@
 #![allow(dead_code)]
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, TimeZone, Utc};
-use polymarket_client_sdk_v2::clob::ws::WsMessage;
+use futures::StreamExt as _;
+use polymarket_client_sdk_v2::clob::ws::{BestBidAsk, Client as ClobWsClient, WsMessage};
+use polymarket_client_sdk_v2::types::U256;
 use polymarket_runtime_types::{BookLevel, NormalizedOrderBook, OrderBookMeta};
 use rust_decimal::Decimal;
 use serde_json::Value;
+use std::str::FromStr;
+
+use crate::book_state::LiveBookState;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClobMarketEvent {
@@ -47,6 +52,69 @@ pub fn market_subscription_payload(token_ids: &[String]) -> Value {
         "initial_dump": true,
         "custom_feature_enabled": true
     })
+}
+
+pub fn parse_asset_ids_for_subscription(token_ids: &[String]) -> Result<Vec<U256>> {
+    let mut asset_ids = token_ids
+        .iter()
+        .map(|token_id| token_id.trim())
+        .filter(|token_id| !token_id.is_empty())
+        .map(|token_id| {
+            U256::from_str(token_id)
+                .with_context(|| format!("invalid CLOB asset id for websocket: {token_id}"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    asset_ids.sort();
+    asset_ids.dedup();
+    Ok(asset_ids)
+}
+
+pub async fn run_best_bid_ask_stream(
+    token_ids: Vec<String>,
+    book_state: LiveBookState,
+) -> Result<()> {
+    let asset_ids = parse_asset_ids_for_subscription(&token_ids)?;
+    if asset_ids.is_empty() {
+        bail!("cannot subscribe to CLOB best_bid_ask stream without token ids");
+    }
+
+    let client = ClobWsClient::default();
+    let stream = client.subscribe_best_bid_ask(asset_ids)?;
+    let mut stream = Box::pin(stream);
+
+    while let Some(update_result) = stream.next().await {
+        let update = update_result?;
+        let observed_ts = Utc::now();
+        let applied = apply_best_bid_ask_update(update, &book_state, observed_ts).await?;
+        if !applied {
+            tracing::warn!("received CLOB best_bid_ask for unseeded orderbook");
+        }
+    }
+
+    Err(anyhow!("CLOB best_bid_ask stream ended"))
+}
+
+pub async fn apply_best_bid_ask_update(
+    update: BestBidAsk,
+    book_state: &LiveBookState,
+    observed_ts: DateTime<Utc>,
+) -> Result<bool> {
+    match top_of_book_event_from_best_bid_ask(update, observed_ts)? {
+        ClobMarketEvent::TopOfBook {
+            token_id,
+            best_bid,
+            best_ask,
+            spread,
+            event_ts,
+            observed_ts,
+            ..
+        } => {
+            book_state
+                .apply_top_of_book(&token_id, best_bid, best_ask, spread, event_ts, observed_ts)
+                .await
+        }
+        _ => Ok(false),
+    }
 }
 
 pub fn parse_clob_market_events(
@@ -98,6 +166,21 @@ pub fn parse_clob_market_events(
         }
         _ => Ok(vec![]),
     }
+}
+
+pub fn top_of_book_event_from_best_bid_ask(
+    update: BestBidAsk,
+    observed_ts: DateTime<Utc>,
+) -> Result<ClobMarketEvent> {
+    Ok(ClobMarketEvent::TopOfBook {
+        contract_id: update.market.to_string(),
+        token_id: update.asset_id.to_string(),
+        best_bid: update.best_bid,
+        best_ask: update.best_ask,
+        spread: update.spread,
+        event_ts: timestamp_millis(update.timestamp)?,
+        observed_ts,
+    })
 }
 
 fn normalized_book(
@@ -282,5 +365,60 @@ mod tests {
         let events = parse_clob_market_events(&message, observed_ts()).unwrap();
 
         assert!(events.is_empty());
+    }
+
+    #[test]
+    fn maps_typed_best_bid_ask_without_json_roundtrip() {
+        let message = serde_json::json!({
+            "event_type": "best_bid_ask",
+            "market": "0x0000000000000000000000000000000000000000000000000000000000000002",
+            "asset_id": "222",
+            "best_bid": "0.73",
+            "best_ask": "0.77",
+            "spread": "0.04",
+            "timestamp": "1780352939001"
+        });
+        let update = match serde_json::from_value::<WsMessage>(message).unwrap() {
+            WsMessage::BestBidAsk(update) => update,
+            _ => panic!("expected BestBidAsk"),
+        };
+
+        let event = top_of_book_event_from_best_bid_ask(update, observed_ts()).unwrap();
+
+        match event {
+            ClobMarketEvent::TopOfBook {
+                token_id,
+                best_bid,
+                best_ask,
+                ..
+            } => {
+                assert_eq!(token_id, "222");
+                assert_eq!(best_bid, Decimal::new(73, 2));
+                assert_eq!(best_ask, Decimal::new(77, 2));
+            }
+            other => panic!("expected top-of-book event, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_unique_u256_asset_ids_for_sdk_subscription() {
+        let ids = parse_asset_ids_for_subscription(&[
+            "222".to_owned(),
+            "111".to_owned(),
+            "222".to_owned(),
+        ])
+        .unwrap();
+
+        assert_eq!(ids.len(), 2);
+        assert_eq!(ids[0].to_string(), "111");
+        assert_eq!(ids[1].to_string(), "222");
+    }
+
+    #[test]
+    fn rejects_invalid_asset_id_for_sdk_subscription() {
+        let error = parse_asset_ids_for_subscription(&["not-a-number".to_owned()])
+            .expect_err("invalid asset id should fail");
+
+        assert!(error.to_string().contains("invalid CLOB asset id"));
     }
 }

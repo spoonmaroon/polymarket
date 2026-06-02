@@ -11,10 +11,13 @@ mod clob_ws;
 mod polymarket;
 mod prices;
 mod report;
+mod state_manager;
 mod windows;
 
 #[derive(Debug, Parser)]
 struct Args {
+    #[arg(long, default_value = "probe")]
+    mode: String,
     #[arg(long, default_value = "BTC")]
     assets: String,
     #[arg(long, default_value = "5m")]
@@ -23,6 +26,18 @@ struct Args {
     windows: u8,
     #[arg(long, default_value_t = 20)]
     timeout_seconds: u64,
+    #[arg(long, default_value_t = 30)]
+    run_for_seconds: u64,
+    #[arg(long, default_value_t = 3)]
+    prewarm_windows: u8,
+    #[arg(long, default_value_t = 30_000)]
+    prewarm_before_expiry_ms: i64,
+    #[arg(long, default_value_t = 2_500)]
+    stale_chainlink_after_ms: i64,
+    #[arg(long, default_value_t = 2_000)]
+    stale_orderbook_after_ms: i64,
+    #[arg(long, default_value_t = 15_000)]
+    rest_backup_interval_ms: i64,
     #[arg(long, default_value_t = 1500)]
     max_chainlink_cache_age_ms: u64,
     #[arg(long)]
@@ -36,7 +51,11 @@ async fn main() -> Result<()> {
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
     tracing_subscriber::fmt::init();
     let args = Args::parse();
-    run_probe(args).await
+    match args.mode.as_str() {
+        "probe" => run_probe(args).await,
+        "state-manager" => run_state_manager(args).await,
+        other => Err(anyhow!("unsupported mode: {other}")),
+    }
 }
 
 async fn run_probe(args: Args) -> Result<()> {
@@ -143,6 +162,45 @@ async fn run_probe(args: Args) -> Result<()> {
     report::write_report(&args.out, &final_report)?;
     info!(path = %args.out.display(), elapsed_ms = final_report.elapsed_ms, "wrote rust live probe report");
     Ok(())
+}
+
+async fn run_state_manager(args: Args) -> Result<()> {
+    let assets = parse_assets(&args.assets);
+    let config = state_manager::StateManagerConfig {
+        assets,
+        interval: args.interval.clone(),
+        windows: args.prewarm_windows,
+        prewarm_before_expiry_ms: args.prewarm_before_expiry_ms,
+        stale_chainlink_after_ms: args.stale_chainlink_after_ms,
+        stale_orderbook_after_ms: args.stale_orderbook_after_ms,
+        rest_backup_interval_ms: args.rest_backup_interval_ms,
+    };
+    let mut timer = report::ProbeTimer::start();
+    timer.mark("start");
+
+    let snapshot =
+        state_manager::run_until_report(config, Duration::from_secs(args.run_for_seconds)).await?;
+    timer.mark("state_snapshot_built");
+    let subscriptions = state_manager::subscriptions_from_snapshot(&snapshot);
+    let report = report::build_state_manager_report(report::StateManagerReportInput {
+        elapsed_ms: timer.elapsed_ms(),
+        snapshot,
+        subscriptions,
+    });
+    report::write_state_manager_report(&args.out, &report)?;
+    info!(
+        path = %args.out.display(),
+        elapsed_ms = report.elapsed_ms,
+        "wrote rust state manager report"
+    );
+    Ok(())
+}
+
+fn parse_assets(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(|asset| asset.trim().to_uppercase())
+        .filter(|asset| !asset.is_empty())
+        .collect::<Vec<_>>()
 }
 
 async fn with_timeout<T, F>(label: &str, timeout_seconds: u64, future: F) -> Result<T>

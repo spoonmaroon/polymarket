@@ -594,7 +594,7 @@ git commit -m "Maintain live orderbook state"
 - Modify: `rust/crates/polymarket-live-probe/src/report.rs`
 - Modify: `rust/crates/polymarket-live-probe/src/main.rs`
 
-- [ ] **Step 1: Write rollover test**
+- [x] **Step 1: Write rollover test**
 
 Use a fake clock and fake contract resolver. Assert:
 
@@ -602,7 +602,7 @@ Use a fake clock and fake contract resolver. Assert:
 - after rollover, next becomes current without calling resolver during the transition;
 - missing next contract before cutoff adds `next_contract_not_warmed`.
 
-- [ ] **Step 2: Implement `StateManagerConfig`**
+- [x] **Step 2: Implement `StateManagerConfig`**
 
 Include:
 
@@ -618,7 +618,7 @@ pub struct StateManagerConfig {
 }
 ```
 
-- [ ] **Step 3: Implement `StateManager`**
+- [x] **Step 3: Implement `StateManager`**
 
 The manager owns:
 
@@ -636,7 +636,7 @@ pub async fn run_until_report(config: StateManagerConfig, run_for: Duration) -> 
 
 This finite method is for smoke tests and the terminal monitor.
 
-- [ ] **Step 4: Add report schema**
+- [x] **Step 4: Add report schema**
 
 Extend `report.rs` with a state-manager report containing:
 
@@ -653,7 +653,7 @@ Extend `report.rs` with a state-manager report containing:
 - `health_flags`
 - `subscriptions`
 
-- [ ] **Step 5: Wire CLI**
+- [x] **Step 5: Wire CLI**
 
 Add CLI flags:
 
@@ -669,7 +669,7 @@ Add CLI flags:
 
 Default mode should remain `probe` so existing scripts do not break.
 
-- [ ] **Step 6: Run tests**
+- [x] **Step 6: Run tests**
 
 ```bash
 cargo test -p polymarket-live-probe state_manager::tests report::tests -q
@@ -677,7 +677,7 @@ cargo test -p polymarket-live-probe state_manager::tests report::tests -q
 
 Expected: state manager and report tests pass.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add rust/crates/polymarket-live-probe/src/state_manager.rs rust/crates/polymarket-live-probe/src/report.rs rust/crates/polymarket-live-probe/src/main.rs
@@ -691,17 +691,17 @@ git commit -m "Add always-on websocket state manager"
 - Modify: `docs/PART_TWO_LIVE_COLLECTORS.md`
 - Create: `scripts/verify_state_manager_report.py`
 
-- [ ] **Step 1: Add verifier**
+- [x] **Step 1: Add verifier**
 
 Create a Python verifier that checks:
 
 - mode is `state-manager`;
 - current and next contain BTC and ETH;
-- at least four active order books exist;
+- at least four active order books exist once persistent CLOB subscriptions are present;
 - Chainlink BTC/USD and ETH/USD exist;
 - health flags are empty or explicitly printed.
 
-- [ ] **Step 2: Run local smoke**
+- [x] **Step 2: Run local smoke**
 
 Run:
 

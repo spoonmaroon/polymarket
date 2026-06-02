@@ -1,0 +1,116 @@
+{
+  "schema_version": "rust-live-probe-state-manager-v1",
+  "mode": "state-manager",
+  "elapsed_ms": 125,
+  "current": [
+    {
+      "window": {
+        "asset": "BTC",
+        "interval": "5m",
+        "start_ts": "2026-06-01T20:00:00Z",
+        "end_ts": "2026-06-01T20:05:00Z"
+      },
+      "up": {
+        "asset": "BTC",
+        "side": "Up",
+        "token_id": "btc-current-up"
+      },
+      "down": {
+        "asset": "BTC",
+        "side": "Down",
+        "token_id": "btc-current-down"
+      }
+    },
+    {
+      "window": {
+        "asset": "ETH",
+        "interval": "5m",
+        "start_ts": "2026-06-01T20:00:00Z",
+        "end_ts": "2026-06-01T20:05:00Z"
+      },
+      "up": {
+        "asset": "ETH",
+        "side": "Up",
+        "token_id": "eth-current-up"
+      },
+      "down": {
+        "asset": "ETH",
+        "side": "Down",
+        "token_id": "eth-current-down"
+      }
+    }
+  ],
+  "next": [
+    {
+      "window": {
+        "asset": "BTC",
+        "interval": "5m",
+        "start_ts": "2026-06-01T20:05:00Z",
+        "end_ts": "2026-06-01T20:10:00Z"
+      },
+      "up": {
+        "asset": "BTC",
+        "side": "Up",
+        "token_id": "btc-next-up"
+      },
+      "down": {
+        "asset": "BTC",
+        "side": "Down",
+        "token_id": "btc-next-down"
+      }
+    },
+    {
+      "window": {
+        "asset": "ETH",
+        "interval": "5m",
+        "start_ts": "2026-06-01T20:05:00Z",
+        "end_ts": "2026-06-01T20:10:00Z"
+      },
+      "up": {
+        "asset": "ETH",
+        "side": "Up",
+        "token_id": "eth-next-up"
+      },
+      "down": {
+        "asset": "ETH",
+        "side": "Down",
+        "token_id": "eth-next-down"
+      }
+    }
+  ],
+  "next_next": [],
+  "chainlink_prices": [
+    {
+      "source_key": "polymarket_rtds_chainlink",
+      "symbol": "BTC/USD",
+      "event_ts": "2026-06-01T20:00:01Z",
+      "observed_ts": "2026-06-01T20:00:01Z",
+      "price": "105000.25"
+    },
+    {
+      "source_key": "polymarket_rtds_chainlink",
+      "symbol": "ETH/USD",
+      "event_ts": "2026-06-01T20:00:01Z",
+      "observed_ts": "2026-06-01T20:00:01Z",
+      "price": "3900.50"
+    }
+  ],
+  "proxy_prices": [],
+  "orderbooks": [],
+  "freshness": [
+    {
+      "source_key": "polymarket_rtds_chainlink",
+      "symbol": "BTC/USD",
+      "age_ms": 100,
+      "stale": false
+    },
+    {
+      "source_key": "polymarket_rtds_chainlink",
+      "symbol": "ETH/USD",
+      "age_ms": 120,
+      "stale": false
+    }
+  ],
+  "health_flags": [],
+  "subscriptions": []
+}
