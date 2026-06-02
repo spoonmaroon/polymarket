@@ -14,6 +14,7 @@ from polymarket_engine.ingestion.rust_event_normalizer import (
     RUST_JSONL_STREAMS,
     STATE_SNAPSHOT_STREAMS,
     RustEventNormalizeResult,
+    normalize_rust_event_file,
     normalize_rust_event_tree,
 )
 from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
@@ -199,6 +200,32 @@ def run_rust_normalizer_loop(
                     status_mtime_ns=status_mtime_ns,
                     force_state_build=cycles_run == 0,
                 )
+            elif previous_raw_signature is not None and not reprocess_all:
+                changed_raw_signature = _changed_raw_signature(
+                    previous=previous_raw_signature,
+                    current=raw_signature,
+                )
+                if changed_raw_signature:
+                    result = _run_changed_rust_normalizer_cycle_with_store(
+                        changed_raw_signature=changed_raw_signature,
+                        store=store,
+                        status_path=status_path,
+                        normalized_health_path=normalized_health_path,
+                        include_next=include_next,
+                        previous_status_mtime_ns=previous_status_mtime_ns,
+                        status_mtime_ns=status_mtime_ns,
+                    )
+                else:
+                    result = _run_idle_rust_normalizer_cycle_with_store(
+                        raw_signature=raw_signature,
+                        store=store,
+                        status_path=status_path,
+                        normalized_health_path=normalized_health_path,
+                        include_next=include_next,
+                        reprocess_all=reprocess_all,
+                        previous_status_mtime_ns=previous_status_mtime_ns,
+                        status_mtime_ns=status_mtime_ns,
+                    )
             else:
                 result = _run_rust_normalizer_cycle_with_store(
                     raw_root=raw_root,
@@ -225,6 +252,64 @@ def run_rust_normalizer_loop(
                     now=time.monotonic(),
                 )
             )
+
+
+def _run_changed_rust_normalizer_cycle_with_store(
+    *,
+    changed_raw_signature: tuple[RawTreeFileSignature, ...],
+    store: DuckDbIngestStore,
+    status_path: Path,
+    normalized_health_path: Path,
+    include_next: bool,
+    previous_status_mtime_ns: int | None = None,
+    status_mtime_ns: int | None = None,
+) -> RustNormalizerCycleResult:
+    cycle_started = time.perf_counter()
+    results = tuple(
+        normalize_rust_event_file(
+            path=row.path,
+            store=store,
+            reprocess_all=False,
+        )
+        for row in changed_raw_signature
+    )
+    normalized_at = time.perf_counter()
+
+    summary = _normalizer_summary(results)
+    if status_mtime_ns is None:
+        status_mtime_ns = _file_mtime_ns(status_path)
+    build_state = status_mtime_ns is not None and (
+        summary["rows_read"] > 0 or status_mtime_ns != previous_status_mtime_ns
+    )
+
+    contracts_upserted = 0
+    states_written = 0
+    unavailable: tuple[UnavailableDecisionState, ...] = ()
+    if build_state:
+        state_result = build_current_decision_state_snapshots(
+            status_path=status_path,
+            store=store,
+            include_next=include_next,
+        )
+        contracts_upserted = state_result.contracts_upserted
+        states_written = state_result.states_written
+        unavailable = state_result.unavailable
+    state_at = time.perf_counter()
+
+    write_normalized_health_status(store=store, out_path=normalized_health_path)
+    health_at = time.perf_counter()
+
+    return RustNormalizerCycleResult(
+        **summary,
+        contracts_upserted=contracts_upserted,
+        states_written=states_written,
+        state_skipped=status_mtime_ns is not None and not build_state,
+        unavailable=unavailable,
+        elapsed_ms=_elapsed_ms(cycle_started, health_at),
+        normalize_ms=_elapsed_ms(cycle_started, normalized_at),
+        state_ms=_elapsed_ms(normalized_at, state_at),
+        health_ms=_elapsed_ms(state_at, health_at),
+    )
 
 
 def _run_idle_rust_normalizer_cycle_with_store(
@@ -329,6 +414,15 @@ def _raw_tree_signature(
                 )
             )
     return tuple(rows)
+
+
+def _changed_raw_signature(
+    *,
+    previous: tuple[RawTreeFileSignature, ...],
+    current: tuple[RawTreeFileSignature, ...],
+) -> tuple[RawTreeFileSignature, ...]:
+    previous_by_path = {row.path: row for row in previous}
+    return tuple(row for row in current if previous_by_path.get(row.path) != row)
 
 
 def _elapsed_ms(start: float, end: float) -> int:
