@@ -303,11 +303,14 @@ def _run_changed_rust_normalizer_cycle_with_store(
     write_health: bool = True,
 ) -> RustNormalizerCycleResult:
     cycle_started = time.perf_counter()
+    checkpoints = store.raw_file_checkpoints(tuple(row.path for row in changed_raw_signature))
     results = tuple(
         normalize_rust_event_file(
             path=row.path,
             store=store,
             reprocess_all=False,
+            checkpoint=checkpoints.get(row.path),
+            checkpoint_loaded=True,
         )
         for row in changed_raw_signature
     )

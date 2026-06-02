@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, cast
@@ -17,6 +18,7 @@ from polymarket_engine.ingestion.rust_normalizer_sidecar import (
     run_rust_normalizer_loop,
 )
 from polymarket_engine.storage import duckdb_store
+from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
 
 
 def test_sidecar_cycle_normalizes_builds_states_and_writes_health(tmp_path: Path) -> None:
@@ -408,6 +410,36 @@ def test_sidecar_loop_normalizes_only_changed_raw_files(
     assert tree_calls == 1
     with duckdb.connect(str(db_path), read_only=True) as conn:
         assert conn.execute("select count(*) from core.orderbook_snapshots").fetchone() == (3,)
+
+
+def test_changed_sidecar_cycle_batches_raw_checkpoint_reads(tmp_path: Path) -> None:
+    raw_root = tmp_path / "raw"
+    db_path = tmp_path / "state.duckdb"
+    status_path = tmp_path / "live" / "status.json"
+    health_path = tmp_path / "live" / "normalized_health.json"
+    start_ts = datetime(2026, 6, 2, 6, 0, tzinfo=timezone.utc)
+    asof_ts = start_ts + timedelta(minutes=2)
+    _write_raw_tree(raw_root=raw_root, start_ts=start_ts, asof_ts=asof_ts)
+    _write_status(status_path, start_ts=start_ts, asof_ts=asof_ts)
+    store = _CountingCheckpointStore(db_path)
+    store.apply_schema()
+    changed_signature = rust_normalizer_sidecar._raw_tree_signature(
+        raw_root=raw_root,
+        include_state_snapshots=False,
+    )
+
+    result = rust_normalizer_sidecar._run_changed_rust_normalizer_cycle_with_store(
+        changed_raw_signature=changed_signature,
+        store=store,
+        status_path=status_path,
+        normalized_health_path=health_path,
+        include_next=False,
+    )
+
+    assert result.files == 2
+    assert result.rows_read == 4
+    assert store.raw_file_checkpoints_calls == 1
+    assert store.raw_file_checkpoint_calls == 0
 
 
 def test_sidecar_loop_throttles_changed_cycle_normalized_health_writes(
@@ -823,3 +855,18 @@ def _write_jsonl(path: Path, *rows: dict[str, object]) -> None:
 
 def _log_values(line: str) -> dict[str, str]:
     return dict(part.split("=", maxsplit=1) for part in line.split()[1:])
+
+
+class _CountingCheckpointStore(DuckDbIngestStore):
+    def __init__(self, db_path: Path) -> None:
+        super().__init__(db_path)
+        self.raw_file_checkpoint_calls = 0
+        self.raw_file_checkpoints_calls = 0
+
+    def raw_file_checkpoint(self, path: Path) -> int | None:
+        self.raw_file_checkpoint_calls += 1
+        return super().raw_file_checkpoint(path)
+
+    def raw_file_checkpoints(self, paths: Sequence[Path]) -> dict[Path, int]:
+        self.raw_file_checkpoints_calls += 1
+        return super().raw_file_checkpoints(paths)
