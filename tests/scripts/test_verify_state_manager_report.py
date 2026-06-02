@@ -163,6 +163,14 @@ def test_verifier_rejects_missing_next_next_assets() -> None:
         script.validate(payload)
 
 
+def test_verifier_accepts_missing_next_next_for_two_window_experiment() -> None:
+    script = _load_script()
+    payload = _report()
+    payload["next_next"] = []
+
+    assert script.validate(payload, expected_prewarm_windows=2) == []
+
+
 def test_verifier_accepts_next_next_assets(
     capsys: pytest.CaptureFixture[str],
     tmp_path: Path,

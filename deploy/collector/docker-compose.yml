@@ -53,6 +53,8 @@ services:
           "/var/lib/polymarket/live/normalized_health.json",
           "--max-normalized-health-age-ms",
           "30000",
+          "--expected-prewarm-windows",
+          "${POLYMARKET_PREWARM_WINDOWS:-3}",
         ]
       interval: 30s
       timeout: 5s

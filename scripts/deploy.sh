@@ -38,6 +38,31 @@ normalizer_running() {
     | grep -qx normalizer
 }
 
+collector_prewarm_windows() {
+  if [ -n "${POLYMARKET_PREWARM_WINDOWS:-}" ]; then
+    echo "$POLYMARKET_PREWARM_WINDOWS"
+    return
+  fi
+  if [ -f "$REPO/deploy/collector/.env" ]; then
+    awk -F= '
+      $1 == "POLYMARKET_PREWARM_WINDOWS" {
+        print $2
+        found = 1
+        exit
+      }
+      END {
+        if (!found) {
+          print "3"
+        }
+      }
+    ' "$REPO/deploy/collector/.env"
+    return
+  fi
+  echo "3"
+}
+
+COLLECTOR_PREWARM_WINDOWS="$(collector_prewarm_windows)"
+
 DEPLOY_REF="${POLYMARKET_DEPLOY_REF:-origin/main}"
 git fetch --quiet origin || { LOG "git fetch failed"; exit 1; }
 LOCAL="$(git rev-parse HEAD)"
@@ -53,7 +78,8 @@ if [ "$LOCAL" = "$REMOTE" ] && [ "$DEPLOYED_SHA" = "$REMOTE" ] && [ "${DEPLOY_FO
     --raw-root "$DATA_DIR/raw" \
     --max-raw-event-age-ms 30000 \
     --normalized-health-path "$DATA_DIR/live/normalized_health.json" \
-    --max-normalized-health-age-ms 30000 >> "$LOG_FILE" 2>&1; then
+    --max-normalized-health-age-ms 30000 \
+    --expected-prewarm-windows "$COLLECTOR_PREWARM_WINDOWS" >> "$LOG_FILE" 2>&1; then
     exit 0
   fi
   LOG "target commit already checked out but collector is unhealthy; redeploying"
@@ -92,7 +118,8 @@ for _ in $(seq 1 "$DEPLOY_SMOKE_ATTEMPTS"); do
     --raw-root "$DATA_DIR/raw" \
     --max-raw-event-age-ms 30000 \
     --normalized-health-path "$DATA_DIR/live/normalized_health.json" \
-    --max-normalized-health-age-ms 30000 >> "$LOG_FILE" 2>&1; then
+    --max-normalized-health-age-ms 30000 \
+    --expected-prewarm-windows "$COLLECTOR_PREWARM_WINDOWS" >> "$LOG_FILE" 2>&1; then
     echo "$REMOTE" > "$DEPLOYED_MARKER"
     LOG "deploy OK $REMOTE"
     exit 0

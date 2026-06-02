@@ -346,6 +346,31 @@ def test_state_manager_status_rejects_missing_next_next_contracts(
         script.main()
 
 
+def test_state_manager_status_accepts_missing_next_next_for_two_window_experiment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    script = _load_script()
+    status = _fresh_state_manager_status()
+    status["next_next"] = []
+    status_path = tmp_path / "status.json"
+    status_path.write_text(json.dumps(status), encoding="utf-8")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "check_collector_status.py",
+            "--status-path",
+            str(status_path),
+            "--expected-prewarm-windows",
+            "2",
+        ],
+    )
+
+    assert script.main() == 0
+    assert "'ok': True" in capsys.readouterr().out
+
+
 def test_state_manager_status_accepts_healthy_websocket_rows(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

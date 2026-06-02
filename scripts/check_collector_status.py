@@ -34,6 +34,7 @@ def main() -> int:
     parser.add_argument("--max-raw-event-age-ms", type=int, default=30_000)
     parser.add_argument("--normalized-health-path", type=Path)
     parser.add_argument("--max-normalized-health-age-ms", type=int, default=30_000)
+    parser.add_argument("--expected-prewarm-windows", type=int, default=3)
     args = parser.parse_args()
 
     payload = json.loads(args.status_path.read_text(encoding="utf-8"))
@@ -62,6 +63,7 @@ def main() -> int:
         _reject_state_manager_payload(
             payload,
             max_websocket_event_age_ms=args.max_websocket_event_age_ms,
+            expected_prewarm_windows=args.expected_prewarm_windows,
         )
         if args.raw_root is not None:
             _reject_stale_raw_websocket_journals(
@@ -143,6 +145,7 @@ def _reject_state_manager_payload(
     payload: dict,
     *,
     max_websocket_event_age_ms: int,
+    expected_prewarm_windows: int,
 ) -> None:
     if payload.get("schema_version") != "rust-live-probe-state-manager-v1":
         raise SystemExit("state-manager status has unexpected schema_version")
@@ -159,9 +162,9 @@ def _reject_state_manager_payload(
         )
     if len(payload.get("current", [])) < 2:
         raise SystemExit("state-manager missing current BTC/ETH contracts")
-    if len(payload.get("next", [])) < 2:
+    if expected_prewarm_windows >= 2 and len(payload.get("next", [])) < 2:
         raise SystemExit("state-manager missing next BTC/ETH contracts")
-    if len(payload.get("next_next", [])) < 2:
+    if expected_prewarm_windows >= 3 and len(payload.get("next_next", [])) < 2:
         raise SystemExit("state-manager missing next_next BTC/ETH contracts")
     _reject_bad_websocket_status(
         payload.get("websocket_status", []),

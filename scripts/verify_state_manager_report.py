@@ -19,6 +19,7 @@ def parse_args() -> argparse.Namespace:
         description="Validate a state-manager smoke report JSON file."
     )
     parser.add_argument("report", type=Path, help="Path to state-manager report JSON")
+    parser.add_argument("--expected-prewarm-windows", type=int, default=3)
     return parser.parse_args()
 
 
@@ -249,7 +250,7 @@ def validate_hot_decision_telemetry(payload: dict[str, Any]) -> None:
         fail("hot_decision_telemetry states_built is less than states_persist_queued")
 
 
-def validate(payload: dict[str, Any]) -> list[str]:
+def validate(payload: dict[str, Any], *, expected_prewarm_windows: int = 3) -> list[str]:
     if payload.get("schema_version") != STATE_MANAGER_SCHEMA_VERSION:
         fail(f'schema_version must be "{STATE_MANAGER_SCHEMA_VERSION}"')
     if payload.get("mode") != "state-manager":
@@ -258,8 +259,16 @@ def validate(payload: dict[str, Any]) -> list[str]:
     require_non_negative_number(payload.get("elapsed_ms"), "elapsed_ms")
 
     validate_contracts(require_list(payload, "current"), "current", require_assets=True)
-    validate_contracts(require_list(payload, "next"), "next", require_assets=True)
-    validate_contracts(require_list(payload, "next_next"), "next_next", require_assets=True)
+    validate_contracts(
+        require_list(payload, "next"),
+        "next",
+        require_assets=expected_prewarm_windows >= 2,
+    )
+    validate_contracts(
+        require_list(payload, "next_next"),
+        "next_next",
+        require_assets=expected_prewarm_windows >= 3,
+    )
     validate_optional_price_list(payload, "proxy_prices")
     validate_freshness(payload)
     validate_latency_marks(payload)
@@ -322,7 +331,7 @@ def main() -> int:
         fail(f"invalid JSON: {exc}")
 
     payload = require_mapping(payload, "report")
-    health_flags = validate(payload)
+    health_flags = validate(payload, expected_prewarm_windows=args.expected_prewarm_windows)
     print(
         "ok",
         "mode=state-manager",
