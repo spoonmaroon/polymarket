@@ -3,7 +3,10 @@ use chrono::{DateTime, Utc};
 use polymarket_runtime_types::{
     FeedFreshness, NormalizedOrderBook, NormalizedPriceTick, WarmStateSnapshot, WarmedContract,
 };
+use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
+#[cfg(test)]
+use std::cell::Cell;
 use std::time::Duration as StdDuration;
 use tokio::task::JoinHandle;
 
@@ -17,6 +20,11 @@ use crate::report::{StateManagerSubscription, WebSocketStatus};
 use crate::{book_state::LiveBookState, clob_ws, polymarket, prices, windows};
 
 type SharedWarmedContracts = Arc<RwLock<Vec<WarmedContract>>>;
+
+#[cfg(test)]
+thread_local! {
+    static MISSING_ORDERBOOK_SCAN_COUNT: Cell<usize> = const { Cell::new(0) };
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StateManagerConfig {
@@ -606,13 +614,42 @@ fn add_missing_feed_flags(
         }
     }
 
+    let orderbook_token_ids = orderbook_token_id_set(orderbooks);
     for contract in warmed_contracts {
-        for token_id in contract.token_ids() {
-            if !orderbooks.iter().any(|book| book.token_id == token_id) {
+        for token_id in contract_token_ids(contract) {
+            if !orderbook_token_ids.contains(token_id) {
                 health_flags.push(format!("orderbook_missing:{token_id}"));
             }
         }
     }
+}
+
+fn orderbook_token_id_set(orderbooks: &[NormalizedOrderBook]) -> HashSet<&str> {
+    let mut token_ids = HashSet::with_capacity(orderbooks.len());
+    for book in orderbooks {
+        record_missing_orderbook_scan();
+        token_ids.insert(book.token_id.as_str());
+    }
+    token_ids
+}
+
+fn contract_token_ids(contract: &WarmedContract) -> [&str; 2] {
+    [contract.up.token_id.as_str(), contract.down.token_id.as_str()]
+}
+
+fn record_missing_orderbook_scan() {
+    #[cfg(test)]
+    MISSING_ORDERBOOK_SCAN_COUNT.with(|count| count.set(count.get() + 1));
+}
+
+#[cfg(test)]
+fn reset_missing_orderbook_scan_count() {
+    MISSING_ORDERBOOK_SCAN_COUNT.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+fn missing_orderbook_scan_count() -> usize {
+    MISSING_ORDERBOOK_SCAN_COUNT.with(Cell::get)
 }
 
 #[allow(dead_code)]
@@ -1006,6 +1043,43 @@ mod tests {
                 .health_flags
                 .contains(&"orderbook_missing:eth-down".to_owned())
         );
+    }
+
+    #[test]
+    fn snapshot_indexes_orderbooks_once_for_missing_feed_flags() {
+        let start = 1_780_302_400;
+        let now = Utc.timestamp_opt(start + 10, 0).unwrap();
+        let config = StateManagerConfig {
+            assets: vec!["BTC".to_owned(), "ETH".to_owned()],
+            ..config()
+        };
+        let warmed = vec![warmed("BTC", start, "btc"), warmed("ETH", start, "eth")];
+        let orderbooks = vec![
+            book("BTC", "UP", "btc-up", now.timestamp_millis()),
+            book("BTC", "DOWN", "btc-down", now.timestamp_millis()),
+            book("ETH", "UP", "eth-up", now.timestamp_millis()),
+        ];
+        let expected_scans = orderbooks.len();
+
+        reset_missing_orderbook_scan_count();
+        let snapshot = build_snapshot_from_warmed(
+            now,
+            &config,
+            &warmed,
+            vec![
+                chainlink("BTC", now.timestamp_millis()),
+                chainlink("ETH", now.timestamp_millis()),
+            ],
+            orderbooks,
+        )
+        .unwrap();
+
+        assert!(
+            snapshot
+                .health_flags
+                .contains(&"orderbook_missing:eth-down".to_owned())
+        );
+        assert_eq!(missing_orderbook_scan_count(), expected_scans);
     }
 
     #[test]
