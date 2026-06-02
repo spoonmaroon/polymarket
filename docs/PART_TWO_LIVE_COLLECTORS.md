@@ -97,6 +97,11 @@ remain the replay/audit trail. Use `polymarket-engine write-normalized-health`
 after snapshot building to publish `normalized_health.json` with final DuckDB
 table counts and latest timestamps.
 
+The safe hot replay gate verifies append-only hot `DecisionState` rows against a
+copied read-only snapshot of the normalized DuckDB database. This avoids
+normalizer DB lock collisions, does not pause collector or normalizer, and
+must not enter the hot live decision path.
+
 Database expectation: `core.price_ticks`, `core.orderbook_snapshots`, and
 `features.asof_state_inputs` should stay fresh while the normalizer sidecar is
 running. `core.contract_rules remains empty` for Rust status-derived contracts

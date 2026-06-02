@@ -94,6 +94,18 @@ uv run polymarket-engine write-normalized-health \
   --out /home/spoon/polymarket-data/live/normalized_health.json
 ```
 
+## Hot Replay Gate
+
+Run this operational gate after normalized DuckDB rows are current:
+
+```bash
+python3 scripts/run_hot_replay_gate.py --raw-root /home/spoon/polymarket-data/raw --duckdb-path /home/spoon/polymarket-data/db/polymarket.duckdb --snapshot-dir /home/spoon/polymarket-data/live/hot-replay-snapshot --report-out /home/spoon/polymarket-data/live/hot_decision_replay_report.json --limit 40 --scan-limit 5000
+```
+
+The gate avoids normalizer DB lock collisions by verifying hot-state replay
+against a copied read-only snapshot. It does not pause collector or normalizer,
+and it must not enter the hot live decision path.
+
 Durability decision: persist exact `DecisionState` snapshots as the pre-
 probability live decision boundary, and keep append-only Chainlink/CLOB raw
 event journals as the replay/audit trail. Live decision work does not need to

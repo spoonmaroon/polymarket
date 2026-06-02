@@ -76,3 +76,26 @@ def test_spoon_docs_include_latency_probe_without_order_placement() -> None:
     assert "--mode latency-probe" in text
     assert "no-auth" in text.lower()
     assert "does not place orders" in text
+
+
+def test_spoon_docs_pin_safe_hot_replay_gate_command() -> None:
+    deployment = (ROOT / "docs" / "SPOON_DEPLOYMENT.md").read_text(encoding="utf-8")
+    part_two = (ROOT / "docs" / "PART_TWO_LIVE_COLLECTORS.md").read_text(
+        encoding="utf-8"
+    )
+    command = (
+        "python3 scripts/run_hot_replay_gate.py "
+        "--raw-root /home/spoon/polymarket-data/raw "
+        "--duckdb-path /home/spoon/polymarket-data/db/polymarket.duckdb "
+        "--snapshot-dir /home/spoon/polymarket-data/live/hot-replay-snapshot "
+        "--report-out /home/spoon/polymarket-data/live/hot_decision_replay_report.json "
+        "--limit 40 --scan-limit 5000"
+    )
+
+    assert command in deployment
+    assert "copied read-only snapshot" in deployment
+    assert "does not pause collector or normalizer" in deployment
+    assert "must not enter the hot live decision path" in deployment
+    assert "copied read-only snapshot" in part_two
+    assert "does not pause collector or normalizer" in part_two
+    assert "must not enter the hot live decision path" in part_two
