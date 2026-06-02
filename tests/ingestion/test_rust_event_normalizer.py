@@ -9,6 +9,7 @@ import duckdb
 
 from polymarket_engine.ingestion.rust_event_normalizer import (
     _complete_jsonl_byte_limit,
+    _file_id,
     _iter_jsonl,
     normalize_rust_event_file,
     normalize_rust_event_tree,
@@ -365,6 +366,35 @@ def test_normalizer_waits_for_complete_appended_jsonl_line(tmp_path: Path) -> No
         assert conn.execute("select count(*) from core.price_ticks").fetchone() == (2,)
 
 
+def test_normalizer_reads_complete_chunk_once_after_byte_limit(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.duckdb"
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    raw_path = (
+        tmp_path
+        / "raw"
+        / "polymarket_rtds_chainlink"
+        / "price_update"
+        / "date=2026-06-02"
+        / "hour=05"
+        / "events.jsonl"
+    )
+    _write_jsonl(
+        raw_path,
+        _chainlink_row("BTC/USD", "2026-06-02T05:33:54Z", "2026-06-02T05:33:55Z", 70600.0),
+        _chainlink_row("BTC/USD", "2026-06-02T05:33:56Z", "2026-06-02T05:33:57Z", 70601.0),
+    )
+    raw_size = raw_path.stat().st_size
+    counted_path = _CountingBinaryPath(raw_path)
+    expected_file_id = _file_id(raw_path, start_byte_offset=0, byte_limit=raw_size)
+
+    result = normalize_rust_event_file(path=cast(Path, counted_path), store=store)
+
+    assert result.rows_read == 2
+    assert result.file_id == expected_file_id
+    assert counted_path.bytes_read <= raw_size + 1
+
+
 def test_jsonl_iterator_stops_at_initial_byte_limit(tmp_path: Path) -> None:
     raw_path = tmp_path / "events.jsonl"
     first_line = json.dumps({"source_key": "one"}, separators=(",", ":")) + "\n"
@@ -430,6 +460,11 @@ class _TrackingReader(BytesIO):
         self.bytes_read += len(chunk)
         return chunk
 
+    def readline(self, size: int | None = -1) -> bytes:
+        chunk = super().readline(size)
+        self.bytes_read += len(chunk)
+        return chunk
+
 
 class _FakeBinaryPath:
     def __init__(self, value: bytes) -> None:
@@ -441,3 +476,52 @@ class _FakeBinaryPath:
             raise AssertionError(f"expected binary read mode, got {mode!r}")
         self.last_reader = _TrackingReader(self.value)
         return self.last_reader
+
+
+class _CountingBinaryPath:
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.bytes_read = 0
+        self.readers: list[_CountingReader] = []
+
+    @property
+    def parts(self) -> tuple[str, ...]:
+        return self.path.parts
+
+    def __str__(self) -> str:
+        return str(self.path)
+
+    def stat(self) -> object:
+        return self.path.stat()
+
+    def open(self, mode: str = "r", *args: object, **kwargs: object) -> _TrackingReader:
+        if mode != "rb":
+            raise AssertionError(f"expected binary read mode, got {mode!r}")
+        reader = _CountingReader(self.path.read_bytes(), self)
+        self.readers.append(reader)
+        return reader
+
+
+class _CountingReader(_TrackingReader):
+    def __init__(self, value: bytes, path: _CountingBinaryPath) -> None:
+        super().__init__(value)
+        self.path = path
+
+    def __iter__(self) -> _CountingReader:
+        return self
+
+    def __next__(self) -> bytes:
+        line = self.readline()
+        if line:
+            return line
+        raise StopIteration
+
+    def read(self, size: int | None = -1) -> bytes:
+        chunk = super().read(size)
+        self.path.bytes_read += len(chunk)
+        return chunk
+
+    def readline(self, size: int | None = -1) -> bytes:
+        chunk = super().readline(size)
+        self.path.bytes_read += len(chunk)
+        return chunk

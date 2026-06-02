@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -67,7 +67,11 @@ def normalize_rust_event_file(
         start_byte_offset = 0
     end_byte_offset = _complete_jsonl_byte_limit(path, start_byte_offset, file_size)
     read_limit = end_byte_offset - start_byte_offset
-    file_id = _file_id(path, start_byte_offset=start_byte_offset, byte_limit=read_limit)
+    file_id_hasher = _file_id_hasher(
+        path,
+        start_byte_offset=start_byte_offset,
+        byte_limit=read_limit,
+    )
     rows_read = 0
     price_ticks_written = 0
     orderbooks_written = 0
@@ -76,7 +80,12 @@ def normalize_rust_event_file(
     orderbooks: list[OrderBookObservation] = []
     source_key, stream_key = _source_stream_from_path(path)
 
-    for row in _iter_jsonl(path, start_byte_offset=start_byte_offset, byte_limit=read_limit):
+    for row in _iter_jsonl(
+        path,
+        start_byte_offset=start_byte_offset,
+        byte_limit=read_limit,
+        raw_line_handler=file_id_hasher.update,
+    ):
         rows_read += 1
         for tick in _price_ticks_from_row(row):
             price_ticks.append(tick)
@@ -87,6 +96,7 @@ def normalize_rust_event_file(
             event_times.append(book.event_ts)
             orderbooks_written += 1
 
+    file_id = _file_id_from_hasher(file_id_hasher)
     store.insert_price_ticks(price_ticks, raw_file_id=file_id)
     store.insert_orderbook_snapshots(orderbooks, raw_file_id=file_id)
 
@@ -134,7 +144,10 @@ def _iter_jsonl(
     path: Path,
     byte_limit: int | None = None,
     start_byte_offset: int = 0,
+    raw_line_handler: Callable[[bytes], None] | None = None,
 ) -> Iterator[dict[str, Any]]:
+    if byte_limit is not None and byte_limit <= 0:
+        return
     with path.open("rb") as handle:
         if start_byte_offset:
             handle.seek(start_byte_offset)
@@ -146,6 +159,8 @@ def _iter_jsonl(
                 if bytes_read + len(raw_line) > byte_limit:
                     break
             bytes_read += len(raw_line)
+            if raw_line_handler is not None:
+                raw_line_handler(raw_line)
             if not raw_line.endswith(b"\n"):
                 break
             line = raw_line.decode("utf-8")
@@ -409,13 +424,7 @@ def _file_id(
     byte_limit: int | None = None,
     start_byte_offset: int = 0,
 ) -> str:
-    hasher = hashlib.sha256()
-    hasher.update(str(path).encode("utf-8"))
-    hasher.update(b"\0")
-    hasher.update(str(start_byte_offset).encode("ascii"))
-    hasher.update(b"\0")
-    hasher.update(str(byte_limit).encode("ascii"))
-    hasher.update(b"\0")
+    hasher = _file_id_hasher(path, byte_limit=byte_limit, start_byte_offset=start_byte_offset)
     bytes_read = 0
     with path.open("rb") as handle:
         if start_byte_offset:
@@ -432,8 +441,26 @@ def _file_id(
                 break
             bytes_read += len(chunk)
             hasher.update(chunk)
-    digest = hasher.hexdigest()
-    return f"sha256:{digest}"
+    return _file_id_from_hasher(hasher)
+
+
+def _file_id_hasher(
+    path: Path,
+    byte_limit: int | None = None,
+    start_byte_offset: int = 0,
+) -> Any:
+    hasher = hashlib.sha256()
+    hasher.update(str(path).encode("utf-8"))
+    hasher.update(b"\0")
+    hasher.update(str(start_byte_offset).encode("ascii"))
+    hasher.update(b"\0")
+    hasher.update(str(byte_limit).encode("ascii"))
+    hasher.update(b"\0")
+    return hasher
+
+
+def _file_id_from_hasher(hasher: Any) -> str:
+    return f"sha256:{hasher.hexdigest()}"
 
 
 def _source_stream_from_path(path: Path) -> tuple[str, str]:
