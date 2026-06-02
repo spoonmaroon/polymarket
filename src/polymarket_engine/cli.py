@@ -84,6 +84,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Also normalize repeated state-manager snapshot rows.",
     )
+    normalize.add_argument(
+        "--reprocess-all",
+        action="store_true",
+        help="Ignore raw-file byte checkpoints and reprocess complete JSONL files.",
+    )
 
     normalized_health = subparsers.add_parser("write-normalized-health")
     normalized_health.add_argument("--duckdb-path", type=Path, required=True)
@@ -140,12 +145,19 @@ def _run_normalize_rust_events(args: argparse.Namespace) -> int:
         store.apply_schema()
     results: tuple[RustEventNormalizeResult, ...]
     if args.file is not None:
-        results = (normalize_rust_event_file(path=args.file, store=store),)
+        results = (
+            normalize_rust_event_file(
+                path=args.file,
+                store=store,
+                reprocess_all=args.reprocess_all,
+            ),
+        )
     else:
         results = normalize_rust_event_tree(
             raw_root=args.raw_root,
             store=store,
             include_state_snapshots=args.include_state_snapshots,
+            reprocess_all=args.reprocess_all,
         )
     summary = {
         "files": len(results),

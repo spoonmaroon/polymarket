@@ -293,6 +293,75 @@ def test_tree_normalizer_excludes_state_snapshots_by_default(tmp_path: Path) -> 
     ]
 
 
+def test_normalizer_only_reads_new_jsonl_bytes_on_second_pass(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.duckdb"
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    raw_path = (
+        tmp_path
+        / "raw"
+        / "polymarket_rtds_chainlink"
+        / "price_update"
+        / "date=2026-06-02"
+        / "hour=05"
+        / "events.jsonl"
+    )
+    _write_jsonl(
+        raw_path,
+        _chainlink_row("BTC/USD", "2026-06-02T05:33:54Z", "2026-06-02T05:33:55Z", 70600.0),
+    )
+    first = normalize_rust_event_file(path=raw_path, store=store)
+
+    _append_jsonl(
+        raw_path,
+        _chainlink_row("BTC/USD", "2026-06-02T05:33:56Z", "2026-06-02T05:33:57Z", 70601.0),
+    )
+    second = normalize_rust_event_file(path=raw_path, store=store)
+    third = normalize_rust_event_file(path=raw_path, store=store)
+
+    assert first.rows_read == 1
+    assert second.rows_read == 1
+    assert second.price_ticks_written == 1
+    assert third.rows_read == 0
+    with duckdb.connect(str(db_path), read_only=True) as conn:
+        assert conn.execute("select count(*) from core.price_ticks").fetchone() == (2,)
+
+
+def test_normalizer_waits_for_complete_appended_jsonl_line(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.duckdb"
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    raw_path = (
+        tmp_path
+        / "raw"
+        / "polymarket_rtds_chainlink"
+        / "price_update"
+        / "date=2026-06-02"
+        / "hour=05"
+        / "events.jsonl"
+    )
+    _write_jsonl(
+        raw_path,
+        _chainlink_row("BTC/USD", "2026-06-02T05:33:54Z", "2026-06-02T05:33:55Z", 70600.0),
+    )
+    normalize_rust_event_file(path=raw_path, store=store)
+
+    partial_row = json.dumps(
+        _chainlink_row("BTC/USD", "2026-06-02T05:33:56Z", "2026-06-02T05:33:57Z", 70601.0),
+        separators=(",", ":"),
+    )
+    raw_path.write_text(raw_path.read_text(encoding="utf-8") + partial_row, encoding="utf-8")
+
+    partial = normalize_rust_event_file(path=raw_path, store=store)
+    raw_path.write_text(raw_path.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+    completed = normalize_rust_event_file(path=raw_path, store=store)
+
+    assert partial.rows_read == 0
+    assert completed.rows_read == 1
+    with duckdb.connect(str(db_path), read_only=True) as conn:
+        assert conn.execute("select count(*) from core.price_ticks").fetchone() == (2,)
+
+
 def test_jsonl_iterator_stops_at_initial_byte_limit(tmp_path: Path) -> None:
     raw_path = tmp_path / "events.jsonl"
     first_line = json.dumps({"source_key": "one"}, separators=(",", ":")) + "\n"
@@ -310,3 +379,28 @@ def _write_jsonl(path: Path, *rows: object) -> None:
         "".join(json.dumps(row, separators=(",", ":")) + "\n" for row in rows),
         encoding="utf-8",
     )
+
+
+def _append_jsonl(path: Path, *rows: object) -> None:
+    with path.open("a", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(row, separators=(",", ":")) + "\n")
+
+
+def _chainlink_row(symbol: str, event_ts: str, observed_ts: str, value: float) -> dict[str, object]:
+    return {
+        "source_key": "polymarket_rtds_chainlink",
+        "stream_key": "price_update",
+        "symbol": symbol,
+        "event_type": "chainlink_price",
+        "event_ts": event_ts,
+        "observed_ts": observed_ts,
+        "payload": {
+            "topic": "crypto_prices_chainlink",
+            "payload": {
+                "symbol": symbol.lower(),
+                "timestamp": 1,
+                "value": value,
+            },
+        },
+    }

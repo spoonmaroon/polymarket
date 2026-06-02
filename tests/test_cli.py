@@ -128,6 +128,23 @@ def test_parse_normalize_rust_events_args() -> None:
     assert args.duckdb_path == Path("data/db/polymarket.duckdb")
     assert args.skip_apply_schema is False
     assert args.include_state_snapshots is False
+    assert args.reprocess_all is False
+
+
+def test_parse_normalize_rust_events_reprocess_all_arg() -> None:
+    args = parse_args(
+        [
+            "normalize-rust-events",
+            "--raw-root",
+            "data/raw",
+            "--duckdb-path",
+            "data/db/polymarket.duckdb",
+            "--reprocess-all",
+        ]
+    )
+
+    assert args.command == "normalize-rust-events"
+    assert args.reprocess_all is True
 
 
 def test_parse_write_normalized_health_args() -> None:

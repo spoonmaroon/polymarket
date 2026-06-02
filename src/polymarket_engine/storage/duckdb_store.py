@@ -94,6 +94,51 @@ class DuckDbIngestStore:
                 ],
             )
 
+    def raw_file_checkpoint(self, path: Path) -> int | None:
+        with duckdb.connect(str(self.db_path)) as conn:
+            row = conn.execute(
+                """
+                select byte_offset
+                from ops.raw_file_checkpoints
+                where path = ?
+                """,
+                [str(path)],
+            ).fetchone()
+        return int(row[0]) if row is not None else None
+
+    def upsert_raw_file_checkpoint(
+        self,
+        *,
+        path: Path,
+        source_key: str,
+        stream_key: str,
+        byte_offset: int,
+        file_size_bytes: int,
+        rows_read: int,
+        first_event_ts: datetime | None,
+        last_event_ts: datetime | None,
+    ) -> None:
+        with duckdb.connect(str(self.db_path)) as conn:
+            conn.execute(
+                """
+                insert or replace into ops.raw_file_checkpoints
+                (path, source_key, stream_key, byte_offset, file_size_bytes, rows_read,
+                 first_event_ts, last_event_ts, updated_at)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    str(path),
+                    source_key,
+                    stream_key,
+                    byte_offset,
+                    file_size_bytes,
+                    rows_read,
+                    first_event_ts,
+                    last_event_ts,
+                    datetime.now(timezone.utc),
+                ],
+            )
+
     def upsert_contract_rule(self, rule: NormalizedContractRule) -> None:
         with duckdb.connect(str(self.db_path)) as conn:
             conn.execute(

@@ -186,7 +186,48 @@ fn state_manager_latency_marks(snapshot: &WarmStateSnapshot) -> Vec<LatencyMark>
             elapsed_ms: value,
         });
     }
+    add_window_orderbook_latency_marks(&mut marks, "current", snapshot, &snapshot.current);
+    add_window_orderbook_latency_marks(&mut marks, "next", snapshot, &snapshot.next);
+    add_window_orderbook_latency_marks(&mut marks, "next_next", snapshot, &snapshot.next_next);
     marks
+}
+
+fn add_window_orderbook_latency_marks(
+    marks: &mut Vec<LatencyMark>,
+    window_name: &str,
+    snapshot: &WarmStateSnapshot,
+    contracts: &[WarmedContract],
+) {
+    if let Some(value) = snapshot
+        .orderbooks
+        .iter()
+        .filter(|book| orderbook_matches_contracts(book, contracts))
+        .map(|book| duration_ms(snapshot.observed_ts - book.observed_ts))
+        .max()
+    {
+        marks.push(LatencyMark {
+            name: format!("{window_name}_orderbook_observed_age_ms"),
+            elapsed_ms: value,
+        });
+    }
+    if let Some(value) = snapshot
+        .orderbooks
+        .iter()
+        .filter(|book| orderbook_matches_contracts(book, contracts))
+        .map(|book| duration_ms(book.observed_ts - book.event_ts))
+        .max()
+    {
+        marks.push(LatencyMark {
+            name: format!("{window_name}_orderbook_event_to_observed_ms"),
+            elapsed_ms: value,
+        });
+    }
+}
+
+fn orderbook_matches_contracts(book: &NormalizedOrderBook, contracts: &[WarmedContract]) -> bool {
+    contracts.iter().any(|contract| {
+        contract.up.token_id == book.token_id || contract.down.token_id == book.token_id
+    })
 }
 
 fn duration_ms(duration: chrono::Duration) -> u128 {
@@ -388,6 +429,59 @@ mod tests {
     }
 
     #[test]
+    fn state_manager_report_splits_orderbook_latency_by_window() {
+        let generated_base = Utc.timestamp_opt(1_780_302_400, 0).unwrap();
+        let current = sample_warmed_contract("BTC", 1_780_302_400);
+        let next = sample_warmed_contract("BTC", 1_780_302_700);
+        let snapshot = WarmStateSnapshot {
+            observed_ts: generated_base,
+            current: vec![current.clone()],
+            next: vec![next.clone()],
+            next_next: vec![],
+            chainlink_prices: vec![],
+            proxy_prices: vec![],
+            orderbooks: vec![
+                sample_orderbook(
+                    &current.up.token_id,
+                    generated_base - chrono::Duration::milliseconds(300),
+                    generated_base - chrono::Duration::milliseconds(100),
+                ),
+                sample_orderbook(
+                    &current.down.token_id,
+                    generated_base - chrono::Duration::milliseconds(500),
+                    generated_base - chrono::Duration::milliseconds(200),
+                ),
+                sample_orderbook(
+                    &next.up.token_id,
+                    generated_base - chrono::Duration::milliseconds(10_000),
+                    generated_base - chrono::Duration::milliseconds(9_000),
+                ),
+            ],
+            freshness: vec![],
+            health_flags: vec![],
+        };
+
+        let report = build_state_manager_report(StateManagerReportInput {
+            elapsed_ms: 10,
+            snapshot,
+            subscriptions: vec![],
+            websocket_status: vec![],
+            hot_decision_telemetry: None,
+        });
+        let by_name = report
+            .latency_marks
+            .iter()
+            .map(|mark| (mark.name.as_str(), mark.elapsed_ms))
+            .collect::<std::collections::BTreeMap<_, _>>();
+
+        assert_eq!(by_name["current_orderbook_observed_age_ms"], 200);
+        assert_eq!(by_name["current_orderbook_event_to_observed_ms"], 300);
+        assert_eq!(by_name["next_orderbook_observed_age_ms"], 9_000);
+        assert_eq!(by_name["next_orderbook_event_to_observed_ms"], 1_000);
+        assert_eq!(by_name["orderbook_observed_age_ms"], 9_000);
+    }
+
+    #[test]
     fn state_manager_report_preserves_snapshot_health_flags() {
         let observed_ts = Utc.timestamp_opt(1_780_302_400, 0).unwrap();
         let snapshot = WarmStateSnapshot {
@@ -471,5 +565,37 @@ mod tests {
             ),
         )
         .unwrap()
+    }
+
+    fn sample_orderbook(
+        token_id: &str,
+        event_ts: chrono::DateTime<Utc>,
+        observed_ts: chrono::DateTime<Utc>,
+    ) -> NormalizedOrderBook {
+        NormalizedOrderBook {
+            venue: "polymarket".to_owned(),
+            source_key: "polymarket_rust_sdk".to_owned(),
+            market_slug: "btc-updown-5m-1780302400".to_owned(),
+            contract_id: "0xabc".to_owned(),
+            token_id: token_id.to_owned(),
+            asset: "BTC".to_owned(),
+            side: "UP".to_owned(),
+            event_ts,
+            observed_ts,
+            best_bid: Some(Decimal::new(50, 2)),
+            best_ask: Some(Decimal::new(52, 2)),
+            spread: Some(Decimal::new(2, 2)),
+            bid_size_top: None,
+            ask_size_top: None,
+            bids: vec![BookLevel {
+                price: Decimal::new(50, 2),
+                size: Decimal::new(100, 0),
+            }],
+            asks: vec![BookLevel {
+                price: Decimal::new(52, 2),
+                size: Decimal::new(90, 0),
+            }],
+            depth_json: serde_json::json!({}),
+        }
     }
 }

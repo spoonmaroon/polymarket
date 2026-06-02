@@ -26,6 +26,8 @@ STATE_SNAPSHOT_STREAMS = (
 class RustEventNormalizeResult:
     path: Path
     file_id: str
+    start_byte_offset: int
+    end_byte_offset: int
     rows_read: int
     price_ticks_written: int
     orderbooks_written: int
@@ -36,6 +38,7 @@ def normalize_rust_event_tree(
     raw_root: Path,
     store: DuckDbIngestStore,
     include_state_snapshots: bool = False,
+    reprocess_all: bool = False,
 ) -> tuple[RustEventNormalizeResult, ...]:
     results: list[RustEventNormalizeResult] = []
     streams = RUST_JSONL_STREAMS + (STATE_SNAPSHOT_STREAMS if include_state_snapshots else ())
@@ -44,7 +47,9 @@ def normalize_rust_event_tree(
         if not stream_root.exists():
             continue
         for path in sorted(stream_root.rglob("*.jsonl")):
-            results.append(normalize_rust_event_file(path=path, store=store))
+            results.append(
+                normalize_rust_event_file(path=path, store=store, reprocess_all=reprocess_all)
+            )
     return tuple(results)
 
 
@@ -52,9 +57,16 @@ def normalize_rust_event_file(
     *,
     path: Path,
     store: DuckDbIngestStore,
+    reprocess_all: bool = False,
 ) -> RustEventNormalizeResult:
-    read_limit = path.stat().st_size
-    file_id = _file_id(path, byte_limit=read_limit)
+    file_size = path.stat().st_size
+    checkpoint = None if reprocess_all else store.raw_file_checkpoint(path)
+    start_byte_offset = 0 if checkpoint is None else checkpoint
+    if start_byte_offset > file_size:
+        start_byte_offset = 0
+    end_byte_offset = _complete_jsonl_byte_limit(path, start_byte_offset, file_size)
+    read_limit = end_byte_offset - start_byte_offset
+    file_id = _file_id(path, start_byte_offset=start_byte_offset, byte_limit=read_limit)
     rows_read = 0
     price_ticks_written = 0
     orderbooks_written = 0
@@ -63,7 +75,7 @@ def normalize_rust_event_file(
     orderbooks: list[OrderBookObservation] = []
     source_key, stream_key = _source_stream_from_path(path)
 
-    for row in _iter_jsonl(path, byte_limit=read_limit):
+    for row in _iter_jsonl(path, start_byte_offset=start_byte_offset, byte_limit=read_limit):
         rows_read += 1
         for tick in _price_ticks_from_row(row):
             price_ticks.append(tick)
@@ -76,6 +88,18 @@ def normalize_rust_event_file(
 
     store.insert_price_ticks(price_ticks, raw_file_id=file_id)
     store.insert_orderbook_snapshots(orderbooks, raw_file_id=file_id)
+
+    if end_byte_offset > start_byte_offset:
+        store.upsert_raw_file_checkpoint(
+            path=path,
+            source_key=source_key,
+            stream_key=stream_key,
+            byte_offset=end_byte_offset,
+            file_size_bytes=file_size,
+            rows_read=rows_read,
+            first_event_ts=min(event_times) if event_times else None,
+            last_event_ts=max(event_times) if event_times else None,
+        )
 
     if rows_read > 0:
         first_event_ts = min(event_times) if event_times else _fallback_file_timestamp(path)
@@ -96,14 +120,22 @@ def normalize_rust_event_file(
     return RustEventNormalizeResult(
         path=path,
         file_id=file_id,
+        start_byte_offset=start_byte_offset,
+        end_byte_offset=end_byte_offset,
         rows_read=rows_read,
         price_ticks_written=price_ticks_written,
         orderbooks_written=orderbooks_written,
     )
 
 
-def _iter_jsonl(path: Path, byte_limit: int | None = None) -> Iterator[dict[str, Any]]:
+def _iter_jsonl(
+    path: Path,
+    byte_limit: int | None = None,
+    start_byte_offset: int = 0,
+) -> Iterator[dict[str, Any]]:
     with path.open("rb") as handle:
+        if start_byte_offset:
+            handle.seek(start_byte_offset)
         bytes_read = 0
         for line_number, raw_line in enumerate(handle, start=1):
             if byte_limit is not None:
@@ -112,6 +144,8 @@ def _iter_jsonl(path: Path, byte_limit: int | None = None) -> Iterator[dict[str,
                 if bytes_read + len(raw_line) > byte_limit:
                     break
             bytes_read += len(raw_line)
+            if not raw_line.endswith(b"\n"):
+                break
             line = raw_line.decode("utf-8")
             if not line.strip():
                 continue
@@ -119,6 +153,18 @@ def _iter_jsonl(path: Path, byte_limit: int | None = None) -> Iterator[dict[str,
             if not isinstance(value, dict):
                 raise ValueError(f"{path}:{line_number} JSONL row must be an object")
             yield value
+
+
+def _complete_jsonl_byte_limit(path: Path, start_byte_offset: int, file_size: int) -> int:
+    if file_size <= start_byte_offset:
+        return start_byte_offset
+    with path.open("rb") as handle:
+        handle.seek(start_byte_offset)
+        chunk = handle.read(file_size - start_byte_offset)
+    last_newline = chunk.rfind(b"\n")
+    if last_newline < 0:
+        return start_byte_offset
+    return start_byte_offset + last_newline + 1
 
 
 def _price_ticks_from_row(row: dict[str, Any]) -> tuple[PriceObservation, ...]:
@@ -346,10 +392,22 @@ def _json_scalar(value: object) -> object:
     return str(value)
 
 
-def _file_id(path: Path, byte_limit: int | None = None) -> str:
+def _file_id(
+    path: Path,
+    byte_limit: int | None = None,
+    start_byte_offset: int = 0,
+) -> str:
     hasher = hashlib.sha256()
+    hasher.update(str(path).encode("utf-8"))
+    hasher.update(b"\0")
+    hasher.update(str(start_byte_offset).encode("ascii"))
+    hasher.update(b"\0")
+    hasher.update(str(byte_limit).encode("ascii"))
+    hasher.update(b"\0")
     bytes_read = 0
     with path.open("rb") as handle:
+        if start_byte_offset:
+            handle.seek(start_byte_offset)
         while True:
             chunk_size = 1024 * 1024
             if byte_limit is not None:

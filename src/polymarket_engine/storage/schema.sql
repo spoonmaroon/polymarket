@@ -47,6 +47,18 @@ CREATE TABLE IF NOT EXISTS ops.ingest_checkpoints (
     PRIMARY KEY (source_key, stream_key, symbol)
 );
 
+CREATE TABLE IF NOT EXISTS ops.raw_file_checkpoints (
+    path VARCHAR PRIMARY KEY,
+    source_key VARCHAR NOT NULL,
+    stream_key VARCHAR NOT NULL,
+    byte_offset UBIGINT NOT NULL,
+    file_size_bytes UBIGINT NOT NULL,
+    rows_read UBIGINT NOT NULL,
+    first_event_ts TIMESTAMPTZ,
+    last_event_ts TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS core.contracts (
     contract_id VARCHAR PRIMARY KEY,
     venue VARCHAR NOT NULL,
