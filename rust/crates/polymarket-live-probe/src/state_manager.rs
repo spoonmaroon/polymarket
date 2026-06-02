@@ -3,10 +3,10 @@ use chrono::{DateTime, Utc};
 use polymarket_runtime_types::{
     FeedFreshness, NormalizedOrderBook, NormalizedPriceTick, WarmStateSnapshot, WarmedContract,
 };
-use std::collections::HashSet;
-use std::sync::{Arc, RwLock};
 #[cfg(test)]
 use std::cell::Cell;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, RwLock};
 use std::time::Duration as StdDuration;
 use tokio::task::JoinHandle;
 
@@ -24,6 +24,7 @@ type SharedWarmedContracts = Arc<RwLock<Vec<WarmedContract>>>;
 #[cfg(test)]
 thread_local! {
     static MISSING_ORDERBOOK_SCAN_COUNT: Cell<usize> = const { Cell::new(0) };
+    static SNAPSHOT_WARMED_SCAN_COUNT: Cell<usize> = const { Cell::new(0) };
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -345,15 +346,17 @@ pub fn build_snapshot_from_warmed(
     let mut next = Vec::new();
     let mut next_next = Vec::new();
     let mut health_flags = Vec::new();
+    let active_contracts_by_asset = active_warmed_contracts_by_asset(now, warmed_contracts);
+    let mut current_refs = Vec::new();
+    let mut next_refs = Vec::new();
+    let mut next_next_refs = Vec::new();
 
     for asset in &config.assets {
-        let mut asset_contracts = warmed_contracts
-            .iter()
-            .filter(|contract| contract.window.asset == asset.to_ascii_uppercase())
-            .filter(|contract| contract.window.end_ts > now)
-            .cloned()
-            .collect::<Vec<_>>();
-        asset_contracts.sort_by_key(|contract| contract.window.start_ts);
+        let asset_key = asset.to_ascii_uppercase();
+        let asset_contracts = active_contracts_by_asset
+            .get(asset_key.as_str())
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
 
         if let Some(contract) = asset_contracts.first() {
             let remaining_ms = contract
@@ -369,13 +372,16 @@ pub fn build_snapshot_from_warmed(
         }
 
         if let Some(contract) = asset_contracts.first() {
-            current.push(contract.clone());
+            current_refs.push(*contract);
+            current.push((*contract).clone());
         }
         if let Some(contract) = asset_contracts.get(1) {
-            next.push(contract.clone());
+            next_refs.push(*contract);
+            next.push((*contract).clone());
         }
         if let Some(contract) = asset_contracts.get(2) {
-            next_next.push(contract.clone());
+            next_next_refs.push(*contract);
+            next_next.push((*contract).clone());
         }
     }
 
@@ -389,9 +395,10 @@ pub fn build_snapshot_from_warmed(
     add_missing_feed_flags(
         config,
         &chainlink_prices,
-        [&current, &next, &next_next]
+        [&current_refs, &next_refs, &next_next_refs]
             .into_iter()
             .flat_map(|contracts| contracts.iter())
+            .copied()
             .collect::<Vec<_>>()
             .as_slice(),
         &orderbooks,
@@ -624,6 +631,26 @@ fn add_missing_feed_flags(
     }
 }
 
+fn active_warmed_contracts_by_asset(
+    now: DateTime<Utc>,
+    warmed_contracts: &[WarmedContract],
+) -> HashMap<&str, Vec<&WarmedContract>> {
+    let mut contracts_by_asset: HashMap<&str, Vec<&WarmedContract>> = HashMap::new();
+    for contract in warmed_contracts {
+        record_snapshot_warmed_scan();
+        if contract.window.end_ts > now {
+            contracts_by_asset
+                .entry(contract.window.asset.as_str())
+                .or_default()
+                .push(contract);
+        }
+    }
+    for asset_contracts in contracts_by_asset.values_mut() {
+        asset_contracts.sort_by_key(|contract| contract.window.start_ts);
+    }
+    contracts_by_asset
+}
+
 fn orderbook_token_id_set(orderbooks: &[NormalizedOrderBook]) -> HashSet<&str> {
     let mut token_ids = HashSet::with_capacity(orderbooks.len());
     for book in orderbooks {
@@ -650,6 +677,21 @@ fn reset_missing_orderbook_scan_count() {
 #[cfg(test)]
 fn missing_orderbook_scan_count() -> usize {
     MISSING_ORDERBOOK_SCAN_COUNT.with(Cell::get)
+}
+
+fn record_snapshot_warmed_scan() {
+    #[cfg(test)]
+    SNAPSHOT_WARMED_SCAN_COUNT.with(|count| count.set(count.get() + 1));
+}
+
+#[cfg(test)]
+fn reset_snapshot_warmed_scan_count() {
+    SNAPSHOT_WARMED_SCAN_COUNT.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+fn snapshot_warmed_scan_count() -> usize {
+    SNAPSHOT_WARMED_SCAN_COUNT.with(Cell::get)
 }
 
 #[allow(dead_code)]
@@ -812,6 +854,32 @@ mod tests {
                 .health_flags
                 .contains(&"next_contract_not_warmed:BTC".to_owned())
         );
+    }
+
+    #[test]
+    fn snapshot_scans_warmed_contracts_once_across_assets() {
+        let start = 1_780_302_400;
+        let now = Utc.timestamp_opt(start + 10, 0).unwrap();
+        let config = StateManagerConfig {
+            assets: vec!["BTC".to_owned(), "ETH".to_owned()],
+            ..config()
+        };
+        let warmed = vec![
+            warmed("BTC", start, "btc-current"),
+            warmed("BTC", start + 300, "btc-next"),
+            warmed("ETH", start, "eth-current"),
+            warmed("ETH", start + 300, "eth-next"),
+        ];
+        let expected_scans = warmed.len();
+
+        reset_snapshot_warmed_scan_count();
+        let snapshot = build_snapshot_from_warmed(now, &config, &warmed, vec![], vec![]).unwrap();
+
+        assert_eq!(snapshot.current[0].up.token_id, "btc-current-up");
+        assert_eq!(snapshot.current[1].up.token_id, "eth-current-up");
+        assert_eq!(snapshot.next[0].up.token_id, "btc-next-up");
+        assert_eq!(snapshot.next[1].up.token_id, "eth-next-up");
+        assert_eq!(snapshot_warmed_scan_count(), expected_scans);
     }
 
     #[tokio::test]
