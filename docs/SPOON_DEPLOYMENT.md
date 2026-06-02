@@ -111,6 +111,24 @@ python3 /home/spoon/polymarket/scripts/verify_state_manager_report.py /home/spoo
 du -sh /home/spoon/polymarket-data/*
 ```
 
+## No-Auth Latency Probe
+
+Measure hypothetical order-submit network timing separately from hot decision
+construction. This no-auth probe builds a synthetic payload, hashes it to
+approximate local signing work, performs HTTP GET round trips, and writes a
+report. It does not place orders and does not load private keys.
+
+```bash
+cd /home/spoon/polymarket
+docker compose -f deploy/collector/docker-compose.yml run --rm \
+  --entrypoint /usr/local/bin/polymarket-live-probe \
+  collector \
+  --mode latency-probe \
+  --order-latency-probe-url https://clob-v2.polymarket.com \
+  --order-latency-probe-iterations 10 \
+  --out /var/lib/polymarket/live/order_latency_probe.json
+```
+
 ## Mac-To-Spoon Migration
 
 Run this only after the CLOB WebSocket collector passes local smoke checks and the spoon deploy workflow exists.

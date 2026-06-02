@@ -45,3 +45,20 @@ def test_spoon_docs_describe_three_window_runtime_and_normalizer_sidecar() -> No
     assert "core.contract_rules remains empty" in part_two
     assert "features.decision_snapshots remains empty until probability" in part_two
     assert "origin/codex/rust-raw-normalizer" in deployment
+
+
+def test_live_docs_keep_hot_decisions_inside_rust_state_manager() -> None:
+    text = (ROOT / "docs" / "PART_TWO_LIVE_COLLECTORS.md").read_text(encoding="utf-8")
+
+    assert "--decision-snapshot-dir" in text
+    assert "hot decision" in text.lower()
+    assert "DuckDB owns normalized replay/research" in text
+    assert "must not sit on the live decision path" in text
+
+
+def test_spoon_docs_include_latency_probe_without_order_placement() -> None:
+    text = (ROOT / "docs" / "SPOON_DEPLOYMENT.md").read_text(encoding="utf-8")
+
+    assert "--mode latency-probe" in text
+    assert "no-auth" in text.lower()
+    assert "does not place orders" in text

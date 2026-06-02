@@ -22,6 +22,8 @@ services:
       POLYMARKET_STATE_SNAPSHOT_DIR: /var/lib/polymarket/raw/polymarket_state_manager/state_snapshot
       POLYMARKET_RAW_EVENT_DIR: /var/lib/polymarket/raw
       POLYMARKET_RAW_EVENT_BUFFER_SIZE: ${POLYMARKET_RAW_EVENT_BUFFER_SIZE:-16384}
+      POLYMARKET_DECISION_SNAPSHOT_DIR: /var/lib/polymarket/raw
+      POLYMARKET_DECISION_EVENT_BUFFER_SIZE: ${POLYMARKET_DECISION_EVENT_BUFFER_SIZE:-16384}
     volumes:
       - ${POLYMARKET_DATA_DIR:-/home/spoon/polymarket-data}/raw:/var/lib/polymarket/raw
       - ${POLYMARKET_DATA_DIR:-/home/spoon/polymarket-data}/db:/var/lib/polymarket/db

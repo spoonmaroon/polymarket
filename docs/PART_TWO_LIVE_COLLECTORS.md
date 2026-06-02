@@ -20,6 +20,7 @@ cargo run -p polymarket-live-probe -- \
   --assets BTC,ETH \
   --interval 5m \
   --prewarm-windows 3 \
+  --decision-snapshot-dir ../data/raw \
   --run-for-seconds 30 \
   --out ../reports/live_probe/state_manager.json
 ```
@@ -43,6 +44,7 @@ polymarket-live-probe \
   --prewarm-windows 3 \
   --forever \
   --state-snapshot-dir /var/lib/polymarket/raw/polymarket_state_manager/state_snapshot \
+  --decision-snapshot-dir /var/lib/polymarket/raw \
   --out /var/lib/polymarket/live/status.json
 ```
 
@@ -65,15 +67,20 @@ The Rust state-manager status file records:
 - WebSocket connection status for Chainlink and CLOB streams.
 - First-class `latency_marks` for Chainlink and order-book observed age plus
   event-to-observed lag.
+- `hot_decision_telemetry` when hot decision journaling is enabled.
 - Health flags that force the checker to fail closed.
 - Append-only raw Chainlink RTDS and Polymarket CLOB WebSocket journals under
   `/var/lib/polymarket/raw/polymarket_rtds_chainlink/price_update` and
   `/var/lib/polymarket/raw/polymarket_clob_market_ws/best_bid_ask`.
 - Append-only UTC-hour state snapshots under
   `/var/lib/polymarket/raw/polymarket_state_manager/state_snapshot`.
+- Append-only hot decision `DecisionState` snapshots under
+  `/var/lib/polymarket/raw/polymarket_decision_state/hot_state`.
 
 Durable boundary: the Rust state-manager owns hot read-only collection and
-append-only raw journals. DuckDB owns normalized replay/research tables. Use
+append-only raw journals. Hot decision construction stays inside the Rust
+state-manager in memory; DuckDB owns normalized replay/research tables and
+must not sit on the live decision path. Use
 `polymarket-engine normalize-rust-events` to convert Rust raw journals into
 `core.price_ticks`, `core.orderbook_snapshots`, and ingest manifests. Probability
 work remains blocked until normalized replay rows are current and reproducible

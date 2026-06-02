@@ -71,6 +71,20 @@ def test_collector_entrypoint_enables_raw_event_journal() -> None:
     assert '"$RAW_EVENT_DIR"' in entrypoint
 
 
+def test_collector_entrypoint_enables_hot_decision_journal() -> None:
+    compose = (ROOT / "deploy" / "collector" / "docker-compose.yml").read_text(
+        encoding="utf-8"
+    )
+    entrypoint = (
+        ROOT / "deploy" / "collector" / "collector-entrypoint.sh"
+    ).read_text(encoding="utf-8")
+
+    assert "POLYMARKET_DECISION_SNAPSHOT_DIR" in compose
+    assert "DECISION_SNAPSHOT_DIR=" in entrypoint
+    assert "--decision-snapshot-dir" in entrypoint
+    assert '"$DECISION_SNAPSHOT_DIR"' in entrypoint
+
+
 def test_collector_defaults_to_three_prewarm_windows() -> None:
     env_example = (ROOT / "deploy" / "collector" / ".env.example").read_text(
         encoding="utf-8"
