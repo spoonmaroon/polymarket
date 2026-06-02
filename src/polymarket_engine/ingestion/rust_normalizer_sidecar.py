@@ -226,7 +226,15 @@ def run_rust_normalizer_loop(
                     previous=previous_raw_signature,
                     current=raw_signature,
                 )
+                status_changed = (
+                    status_mtime_ns is not None
+                    and status_mtime_ns != previous_status_mtime_ns
+                )
                 if changed_raw_signature:
+                    write_health = _idle_health_write_due(
+                        last_health_write_monotonic=last_health_write_monotonic,
+                        cycle_started=cycle_started,
+                    ) or status_changed
                     result = _run_changed_rust_normalizer_cycle_with_store(
                         changed_raw_signature=changed_raw_signature,
                         store=store,
@@ -235,13 +243,11 @@ def run_rust_normalizer_loop(
                         include_next=include_next,
                         previous_status_mtime_ns=previous_status_mtime_ns,
                         status_mtime_ns=status_mtime_ns,
+                        write_health=write_health,
                     )
-                    last_health_write_monotonic = cycle_started
+                    if not result.health_skipped:
+                        last_health_write_monotonic = cycle_started
                 else:
-                    status_changed = (
-                        status_mtime_ns is not None
-                        and status_mtime_ns != previous_status_mtime_ns
-                    )
                     write_health = _idle_health_write_due(
                         last_health_write_monotonic=last_health_write_monotonic,
                         cycle_started=cycle_started,
@@ -291,6 +297,7 @@ def _run_changed_rust_normalizer_cycle_with_store(
     include_next: bool,
     previous_status_mtime_ns: int | None = None,
     status_mtime_ns: int | None = None,
+    write_health: bool = True,
 ) -> RustNormalizerCycleResult:
     cycle_started = time.perf_counter()
     results = tuple(
@@ -324,7 +331,9 @@ def _run_changed_rust_normalizer_cycle_with_store(
         unavailable = state_result.unavailable
     state_at = time.perf_counter()
 
-    write_normalized_health_status(store=store, out_path=normalized_health_path)
+    health_skipped = not write_health
+    if write_health:
+        write_normalized_health_status(store=store, out_path=normalized_health_path)
     health_at = time.perf_counter()
 
     return RustNormalizerCycleResult(
@@ -336,8 +345,8 @@ def _run_changed_rust_normalizer_cycle_with_store(
         elapsed_ms=_elapsed_ms(cycle_started, health_at),
         normalize_ms=_elapsed_ms(cycle_started, normalized_at),
         state_ms=_elapsed_ms(normalized_at, state_at),
-        health_ms=_elapsed_ms(state_at, health_at),
-        health_skipped=False,
+        health_ms=0 if health_skipped else _elapsed_ms(state_at, health_at),
+        health_skipped=health_skipped,
     )
 
 

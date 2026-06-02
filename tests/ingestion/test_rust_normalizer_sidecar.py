@@ -332,6 +332,74 @@ def test_sidecar_loop_normalizes_only_changed_raw_files(
         assert conn.execute("select count(*) from core.orderbook_snapshots").fetchone() == (3,)
 
 
+def test_sidecar_loop_throttles_changed_cycle_normalized_health_writes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_root = tmp_path / "raw"
+    db_path = tmp_path / "state.duckdb"
+    status_path = tmp_path / "live" / "status.json"
+    health_path = tmp_path / "live" / "normalized_health.json"
+    start_ts = datetime(2026, 6, 2, 6, 0, tzinfo=timezone.utc)
+    asof_ts = start_ts + timedelta(minutes=2)
+    _write_raw_tree(raw_root=raw_root, start_ts=start_ts, asof_ts=asof_ts)
+    _write_status(status_path, start_ts=start_ts, asof_ts=asof_ts)
+    changed_path = (
+        raw_root
+        / "polymarket_clob_market_ws"
+        / "best_bid_ask"
+        / "date=2026-06-02"
+        / "hour=06"
+        / "events.jsonl"
+    )
+    real_write_health = getattr(rust_normalizer_sidecar, "write_normalized_health_status")
+    health_writes = 0
+
+    def counting_write_health(*args: Any, **kwargs: Any) -> Any:
+        nonlocal health_writes
+        health_writes += 1
+        return real_write_health(*args, **kwargs)
+
+    def append_raw_row(_: float) -> None:
+        with changed_path.open("a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(
+                    _orderbook_row(
+                        "up-token",
+                        asof_ts,
+                        asof_ts,
+                        0.62,
+                        0.65,
+                    ),
+                    separators=(",", ":"),
+                )
+                + "\n"
+            )
+
+    monkeypatch.setattr(
+        "polymarket_engine.ingestion.rust_normalizer_sidecar.write_normalized_health_status",
+        counting_write_health,
+    )
+    monkeypatch.setattr(
+        "polymarket_engine.ingestion.rust_normalizer_sidecar.time.sleep",
+        append_raw_row,
+    )
+
+    run_rust_normalizer_loop(
+        raw_root=raw_root,
+        db_path=db_path,
+        status_path=status_path,
+        normalized_health_path=health_path,
+        interval_seconds=0.0,
+        include_next=False,
+        max_cycles=2,
+    )
+
+    assert health_writes == 1
+    with duckdb.connect(str(db_path), read_only=True) as conn:
+        assert conn.execute("select count(*) from core.orderbook_snapshots").fetchone() == (3,)
+
+
 def test_sidecar_loop_uses_active_signature_between_full_scans(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
