@@ -22,6 +22,7 @@ from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
 
 
 FULL_RAW_TREE_SCAN_INTERVAL_CYCLES = 240
+IDLE_NORMALIZED_HEALTH_WRITE_INTERVAL_SECONDS = 5.0
 
 
 @dataclass(frozen=True)
@@ -49,6 +50,7 @@ class RustNormalizerCycleResult:
     normalize_ms: int
     state_ms: int
     health_ms: int
+    health_skipped: bool
 
     def to_json_dict(self) -> dict[str, Any]:
         return {
@@ -75,6 +77,7 @@ class RustNormalizerCycleResult:
             "normalize_ms": self.normalize_ms,
             "state_ms": self.state_ms,
             "health_ms": self.health_ms,
+            "health_skipped": self.health_skipped,
         }
 
 
@@ -161,6 +164,7 @@ def _run_rust_normalizer_cycle_with_store(
         normalize_ms=_elapsed_ms(cycle_started, normalized_at),
         state_ms=_elapsed_ms(normalized_at, state_at),
         health_ms=_elapsed_ms(state_at, health_at),
+        health_skipped=False,
     )
 
 
@@ -180,6 +184,7 @@ def run_rust_normalizer_loop(
         cycles_run = 0
         previous_status_mtime_ns: int | None = None
         previous_raw_signature: tuple[RawTreeFileSignature, ...] | None = None
+        last_health_write_monotonic: float | None = None
         while True:
             cycle_started = time.monotonic()
             status_mtime_ns = _file_mtime_ns(status_path)
@@ -215,6 +220,7 @@ def run_rust_normalizer_loop(
                     status_mtime_ns=status_mtime_ns,
                     force_state_build=cycles_run == 0,
                 )
+                last_health_write_monotonic = cycle_started
             else:
                 changed_raw_signature = _changed_raw_signature(
                     previous=previous_raw_signature,
@@ -230,7 +236,16 @@ def run_rust_normalizer_loop(
                         previous_status_mtime_ns=previous_status_mtime_ns,
                         status_mtime_ns=status_mtime_ns,
                     )
+                    last_health_write_monotonic = cycle_started
                 else:
+                    status_changed = (
+                        status_mtime_ns is not None
+                        and status_mtime_ns != previous_status_mtime_ns
+                    )
+                    write_health = _idle_health_write_due(
+                        last_health_write_monotonic=last_health_write_monotonic,
+                        cycle_started=cycle_started,
+                    ) or status_changed
                     result = _run_idle_rust_normalizer_cycle_with_store(
                         raw_signature=previous_raw_signature,
                         store=store,
@@ -241,7 +256,10 @@ def run_rust_normalizer_loop(
                         previous_status_mtime_ns=previous_status_mtime_ns,
                         status_mtime_ns=status_mtime_ns,
                         force_state_build=cycles_run == 0,
+                        write_health=write_health,
                     )
+                    if not result.health_skipped:
+                        last_health_write_monotonic = cycle_started
             print(_cycle_log_line(result), flush=True)
             previous_status_mtime_ns = status_mtime_ns
             if full_scan_due:
@@ -319,6 +337,7 @@ def _run_changed_rust_normalizer_cycle_with_store(
         normalize_ms=_elapsed_ms(cycle_started, normalized_at),
         state_ms=_elapsed_ms(normalized_at, state_at),
         health_ms=_elapsed_ms(state_at, health_at),
+        health_skipped=False,
     )
 
 
@@ -333,6 +352,7 @@ def _run_idle_rust_normalizer_cycle_with_store(
     previous_status_mtime_ns: int | None = None,
     status_mtime_ns: int | None = None,
     force_state_build: bool = False,
+    write_health: bool = True,
 ) -> RustNormalizerCycleResult:
     cycle_started = time.perf_counter()
     if status_mtime_ns is None:
@@ -357,7 +377,9 @@ def _run_idle_rust_normalizer_cycle_with_store(
         unavailable = state_result.unavailable
     state_at = time.perf_counter()
 
-    write_normalized_health_status(store=store, out_path=normalized_health_path)
+    health_skipped = not write_health
+    if write_health:
+        write_normalized_health_status(store=store, out_path=normalized_health_path)
     health_at = time.perf_counter()
 
     return RustNormalizerCycleResult(
@@ -369,7 +391,8 @@ def _run_idle_rust_normalizer_cycle_with_store(
         elapsed_ms=_elapsed_ms(cycle_started, health_at),
         normalize_ms=0,
         state_ms=_elapsed_ms(cycle_started, state_at),
-        health_ms=_elapsed_ms(state_at, health_at),
+        health_ms=0 if health_skipped else _elapsed_ms(state_at, health_at),
+        health_skipped=health_skipped,
     )
 
 
@@ -474,6 +497,18 @@ def _merge_raw_signatures(
     return tuple(by_path[path] for path in sorted(by_path))
 
 
+def _idle_health_write_due(
+    *,
+    last_health_write_monotonic: float | None,
+    cycle_started: float,
+    interval_seconds: float = IDLE_NORMALIZED_HEALTH_WRITE_INTERVAL_SECONDS,
+) -> bool:
+    return (
+        last_health_write_monotonic is None
+        or cycle_started - last_health_write_monotonic >= interval_seconds
+    )
+
+
 def _elapsed_ms(start: float, end: float) -> int:
     return max(0, int(round((end - start) * 1000)))
 
@@ -501,6 +536,7 @@ def _cycle_log_line(result: RustNormalizerCycleResult) -> str:
         f"normalize_ms={result.normalize_ms} "
         f"state_ms={result.state_ms} "
         f"health_ms={result.health_ms} "
+        f"health_skipped={str(result.health_skipped).lower()} "
         f"files={result.files} "
         f"rows_read={result.rows_read} "
         f"bytes_read={result.bytes_read} "
