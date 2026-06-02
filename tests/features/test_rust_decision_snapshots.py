@@ -327,6 +327,67 @@ def test_include_next_skips_prestart_decision_state_builds(tmp_path: Path) -> No
     ]
 
 
+def test_current_decision_states_use_status_orderbooks_without_duckdb_lookup(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "state.duckdb"
+    store = _CountingIngestStore(db_path)
+    store.apply_schema()
+    status_path = tmp_path / "status.json"
+    start_ts = datetime(2026, 6, 2, 6, 0, tzinfo=timezone.utc)
+    asof_ts = start_ts + timedelta(minutes=2)
+    _write_multi_asset_status_with_orderbooks(
+        status_path,
+        start_ts=start_ts,
+        asof_ts=asof_ts,
+    )
+    for asset, base_price in (("BTC", 70_000.0), ("ETH", 2_000.0)):
+        symbol = f"{asset}/USD"
+        store.insert_price_tick(
+            PriceObservation(
+                "polymarket_rtds_chainlink",
+                symbol,
+                start_ts,
+                start_ts,
+                base_price,
+            )
+        )
+        store.insert_price_tick(
+            PriceObservation(
+                "polymarket_rtds_chainlink",
+                symbol,
+                asof_ts,
+                asof_ts,
+                base_price + 10.0,
+            )
+        )
+
+    result = build_current_decision_state_snapshots(
+        status_path=status_path,
+        store=store,
+        include_next=True,
+    )
+
+    assert result.contracts_upserted == 8
+    assert result.states_written == 4
+    assert result.unavailable == ()
+    assert store.latest_orderbook_snapshots_calls == 0
+    with duckdb.connect(str(db_path), read_only=True) as conn:
+        rows = conn.execute(
+            """
+            select asset, side, best_bid, best_ask, spread
+            from features.asof_state_inputs
+            order by asset, side
+            """
+        ).fetchall()
+    assert rows == [
+        ("BTC", "DOWN", 0.36, 0.39, 0.03),
+        ("BTC", "UP", 0.61, 0.64, 0.03),
+        ("ETH", "DOWN", 0.36, 0.39, 0.03),
+        ("ETH", "UP", 0.61, 0.64, 0.03),
+    ]
+
+
 def _write_status(path: Path, *, start_ts: datetime, asof_ts: datetime) -> None:
     end_ts = start_ts.replace(minute=start_ts.minute + 5)
     slug = f"btc-updown-5m-{int(start_ts.timestamp())}"
@@ -382,6 +443,35 @@ def _write_multi_asset_status(path: Path, *, start_ts: datetime, asof_ts: dateti
     path.write_text(json.dumps(payload), encoding="utf-8")
 
 
+def _write_multi_asset_status_with_orderbooks(
+    path: Path,
+    *,
+    start_ts: datetime,
+    asof_ts: datetime,
+) -> None:
+    payload = {
+        "schema_version": "rust-live-probe-state-manager-v1",
+        "mode": "state-manager",
+        "generated_at": asof_ts.isoformat(),
+        "current": _status_windows(start_ts=start_ts, window_offset_minutes=0),
+        "next": _status_windows(start_ts=start_ts, window_offset_minutes=5),
+        "orderbooks": [
+            _status_orderbook_row(
+                asset=asset,
+                side=side,
+                token_id=f"{asset.lower()}-current-{side.lower()}-token",
+                contract_id=f"0x{asset.lower()}current",
+                asof_ts=asof_ts,
+                best_bid=bid,
+                best_ask=ask,
+            )
+            for asset in ("BTC", "ETH")
+            for side, bid, ask in (("UP", 0.61, 0.64), ("DOWN", 0.36, 0.39))
+        ],
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
 def _status_windows(*, start_ts: datetime, window_offset_minutes: int) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     window_start = start_ts + timedelta(minutes=window_offset_minutes)
@@ -410,6 +500,36 @@ def _status_windows(*, start_ts: datetime, window_offset_minutes: int) -> list[d
             }
         )
     return rows
+
+
+def _status_orderbook_row(
+    *,
+    asset: str,
+    side: str,
+    token_id: str,
+    contract_id: str,
+    asof_ts: datetime,
+    best_bid: float,
+    best_ask: float,
+) -> dict[str, object]:
+    return {
+        "venue": "polymarket",
+        "source_key": "polymarket_rust_sdk",
+        "market_slug": f"{asset.lower()}-updown-5m-1780380000",
+        "contract_id": contract_id,
+        "token_id": token_id,
+        "asset": asset,
+        "side": side,
+        "event_ts": asof_ts.isoformat(),
+        "observed_ts": asof_ts.isoformat(),
+        "best_bid": str(best_bid),
+        "best_ask": str(best_ask),
+        "bid_size_top": "50",
+        "ask_size_top": "40",
+        "spread": str(round(best_ask - best_bid, 10)),
+        "bids": [{"price": str(best_bid), "size": "50"}],
+        "asks": [{"price": str(best_ask), "size": "40"}],
+    }
 
 
 class _CountingIngestStore(DuckDbIngestStore):

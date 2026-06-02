@@ -50,6 +50,7 @@ def build_current_decision_state_snapshots(
     payload = _read_status(status_path)
     asof_ts = _parse_ts(payload["generated_at"])
     token_metadata = _token_metadata(payload.get("orderbooks", []))
+    status_orderbooks = _orderbooks_from_status(payload.get("orderbooks", []))
     contracts = _contracts_from_status(
         payload,
         token_metadata=token_metadata,
@@ -73,6 +74,7 @@ def build_current_decision_state_snapshots(
         asof_ts=asof_ts,
         limit=VOLATILITY_LOOKBACK_LIMIT,
     )
+    read_store.seed_latest_orderbooks(status_orderbooks, asof_ts=asof_ts)
     read_store.prime_latest_orderbooks(state_contracts, asof_ts=asof_ts)
     volatilities = _volatility_snapshots_for_contracts(
         state_contracts,
@@ -232,6 +234,46 @@ def _token_metadata(rows: object) -> dict[str, dict[str, str]]:
     return metadata
 
 
+def _orderbooks_from_status(rows: object) -> tuple[OrderBookObservation, ...]:
+    if not isinstance(rows, list):
+        return ()
+    orderbooks: list[OrderBookObservation] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if "event_ts" not in row or "observed_ts" not in row:
+            continue
+        token_id = row.get("token_id")
+        contract_id = row.get("contract_id")
+        if not isinstance(token_id, str) or not token_id:
+            continue
+        if not isinstance(contract_id, str) or not contract_id:
+            continue
+        orderbooks.append(
+            OrderBookObservation(
+                venue=str(row.get("venue") or "polymarket"),
+                contract_id=contract_id,
+                token_id=token_id,
+                event_ts=_parse_ts(row["event_ts"]),
+                observed_ts=_parse_ts(row["observed_ts"]),
+                best_bid=_optional_float(row.get("best_bid")),
+                best_ask=_optional_float(row.get("best_ask")),
+                bid_size_top=_optional_float(row.get("bid_size_top")),
+                ask_size_top=_optional_float(row.get("ask_size_top")),
+                spread=_optional_float(row.get("spread")),
+                depth_json=json.dumps(
+                    {
+                        "bids": row.get("bids") if isinstance(row.get("bids"), list) else [],
+                        "asks": row.get("asks") if isinstance(row.get("asks"), list) else [],
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+            )
+        )
+    return tuple(orderbooks)
+
+
 def _mapping(value: object, name: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError(f"{name} must be an object")
@@ -253,6 +295,14 @@ def _parse_ts(value: object) -> datetime:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def _optional_float(value: object) -> float | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, str | int | float):
+        return float(value)
+    raise ValueError(f"status numeric field must be string or number, got {type(value).__name__}")
 
 
 def _slug(asset: Asset, interval: str, start_ts: datetime) -> str:
@@ -457,6 +507,23 @@ class _CachedStateReadStore:
                 asof_ts=asof_ts,
             )
         return self._latest_orderbook[key]
+
+    def seed_latest_orderbooks(
+        self,
+        orderbooks: Sequence[OrderBookObservation],
+        *,
+        asof_ts: datetime,
+    ) -> None:
+        for book in orderbooks:
+            if book.event_ts > asof_ts or book.observed_ts > asof_ts:
+                continue
+            key = (book.venue, book.token_id, asof_ts)
+            current = self._latest_orderbook.get(key)
+            if current is None or (book.event_ts, book.observed_ts) > (
+                current.event_ts,
+                current.observed_ts,
+            ):
+                self._latest_orderbook[key] = book
 
     def prime_threshold_prices(
         self,
