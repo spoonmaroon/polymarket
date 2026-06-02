@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -48,6 +49,7 @@ def build_current_decision_state_snapshots(
         include_next=include_next,
     )
     read_store = _CachedStateReadStore(store)
+    read_store.prime_latest_orderbooks(contracts, asof_ts=asof_ts)
     store.upsert_contract_specs(contracts)
     states: list[DecisionState] = []
     unavailable: list[UnavailableDecisionState] = []
@@ -294,3 +296,26 @@ class _CachedStateReadStore:
                 asof_ts=asof_ts,
             )
         return self._latest_orderbook[key]
+
+    def prime_latest_orderbooks(
+        self,
+        contracts: Sequence[ContractSpec],
+        *,
+        asof_ts: datetime,
+    ) -> None:
+        token_ids_by_venue: dict[str, list[str]] = {}
+        for contract in contracts:
+            if asof_ts < contract.start_ts:
+                continue
+            key = (contract.venue, contract.token_id, asof_ts)
+            if key in self._latest_orderbook:
+                continue
+            token_ids_by_venue.setdefault(contract.venue, []).append(contract.token_id)
+        for venue, token_ids in token_ids_by_venue.items():
+            snapshots = self._store.latest_orderbook_snapshots(
+                venue=venue,
+                token_ids=token_ids,
+                asof_ts=asof_ts,
+            )
+            for token_id in token_ids:
+                self._latest_orderbook[(venue, token_id, asof_ts)] = snapshots.get(token_id)

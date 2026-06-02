@@ -230,7 +230,8 @@ def test_current_decision_states_reuse_asset_level_store_reads(tmp_path: Path) -
     assert store.latest_price_tick_before_calls <= 6
     assert store.latest_price_tick_calls <= 2
     assert store.price_ticks_before_calls <= 2
-    assert store.latest_orderbook_snapshot_calls == 4
+    assert store.latest_orderbook_snapshots_calls == 1
+    assert store.latest_orderbook_snapshot_calls == 0
     assert store.upsert_contract_specs_calls == 1
     assert store.upsert_contract_spec_calls == 0
     assert store.upsert_asof_state_inputs_calls == 1
@@ -328,6 +329,7 @@ class _CountingIngestStore(DuckDbIngestStore):
         self.latest_price_tick_before_calls = 0
         self.latest_price_tick_calls = 0
         self.price_ticks_before_calls = 0
+        self.latest_orderbook_snapshots_calls = 0
         self.latest_orderbook_snapshot_calls = 0
         self.upsert_contract_specs_calls = 0
         self.upsert_contract_spec_calls = 0
@@ -401,3 +403,17 @@ class _CountingIngestStore(DuckDbIngestStore):
     ) -> OrderBookObservation | None:
         self.latest_orderbook_snapshot_calls += 1
         return super().latest_orderbook_snapshot(venue=venue, token_id=token_id, asof_ts=asof_ts)
+
+    def latest_orderbook_snapshots(
+        self,
+        *,
+        venue: str,
+        token_ids: Sequence[str],
+        asof_ts: datetime,
+    ) -> dict[str, OrderBookObservation]:
+        self.latest_orderbook_snapshots_calls += 1
+        return super().latest_orderbook_snapshots(
+            venue=venue,
+            token_ids=token_ids,
+            asof_ts=asof_ts,
+        )

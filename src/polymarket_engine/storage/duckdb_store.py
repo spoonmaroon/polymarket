@@ -696,6 +696,56 @@ class DuckDbIngestStore:
             depth_json=row[10],
         )
 
+    def latest_orderbook_snapshots(
+        self,
+        *,
+        venue: str,
+        token_ids: Sequence[str],
+        asof_ts: datetime,
+    ) -> dict[str, OrderBookObservation]:
+        unique_token_ids = tuple(dict.fromkeys(token_ids))
+        if not unique_token_ids:
+            return {}
+        token_frame = pl.DataFrame({"token_id": list(unique_token_ids)})
+        with self._connection() as conn:
+            conn.register("latest_orderbook_token_ids", token_frame)
+            rows = conn.execute(
+                """
+                select venue, contract_id, token_id, event_ts::VARCHAR, observed_ts::VARCHAR,
+                       best_bid, best_ask, bid_size_top, ask_size_top, spread, depth_json
+                from (
+                    select snapshots.*,
+                           row_number() over (
+                               partition by snapshots.token_id
+                               order by snapshots.event_ts desc, snapshots.observed_ts desc
+                           ) as row_number
+                    from core.orderbook_snapshots as snapshots
+                    join latest_orderbook_token_ids as ids using (token_id)
+                    where snapshots.venue = ?
+                      and snapshots.event_ts <= ?
+                      and snapshots.observed_ts <= ?
+                ) as ranked_snapshots
+                where row_number = 1
+                """,
+                [venue, asof_ts, asof_ts],
+            ).fetchall()
+        return {
+            row[2]: OrderBookObservation(
+                venue=row[0],
+                contract_id=row[1],
+                token_id=row[2],
+                event_ts=_parse_duckdb_timestamptz(row[3]),
+                observed_ts=_parse_duckdb_timestamptz(row[4]),
+                best_bid=row[5],
+                best_ask=row[6],
+                bid_size_top=row[7],
+                ask_size_top=row[8],
+                spread=row[9],
+                depth_json=row[10],
+            )
+            for row in rows
+        }
+
 
 def _parse_duckdb_timestamptz(value: str) -> datetime:
     parsed = datetime.fromisoformat(value.replace(" ", "T"))
