@@ -29,7 +29,8 @@ DEPLOY_REF="${POLYMARKET_DEPLOY_REF:-origin/main}"
 git fetch --quiet origin || { LOG "git fetch failed"; exit 1; }
 LOCAL="$(git rev-parse HEAD)"
 REMOTE="$(git rev-parse "$DEPLOY_REF")"
-if [ "$LOCAL" = "$REMOTE" ] && [ "${DEPLOY_FORCE:-0}" != "1" ]; then
+DEPLOYED_SHA="$(cat "$DEPLOYED_MARKER" 2>/dev/null || true)"
+if [ "$LOCAL" = "$REMOTE" ] && [ "$DEPLOYED_SHA" = "$REMOTE" ] && [ "${DEPLOY_FORCE:-0}" != "1" ]; then
   if python3 "$REPO/scripts/check_collector_status.py" \
     --status-path "$STATUS_PATH" \
     --max-status-age-seconds 30 \
@@ -39,6 +40,8 @@ if [ "$LOCAL" = "$REMOTE" ] && [ "${DEPLOY_FORCE:-0}" != "1" ]; then
     exit 0
   fi
   LOG "target commit already checked out but collector is unhealthy; redeploying"
+elif [ "$LOCAL" = "$REMOTE" ] && [ "$DEPLOYED_SHA" != "$REMOTE" ] && [ "${DEPLOY_FORCE:-0}" != "1" ]; then
+  LOG "deployed marker differs from target commit; redeploying"
 fi
 
 if ! git diff --quiet || ! git diff --cached --quiet; then

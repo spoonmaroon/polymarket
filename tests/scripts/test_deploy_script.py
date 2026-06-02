@@ -11,6 +11,15 @@ def test_deploy_script_has_configurable_long_smoke_window() -> None:
     assert 'seq 1 "$DEPLOY_SMOKE_ATTEMPTS"' in text
 
 
+def test_deploy_skip_requires_deployed_marker_to_match_target_commit() -> None:
+    script = ROOT / "scripts" / "deploy.sh"
+    text = script.read_text(encoding="utf-8")
+
+    assert 'DEPLOYED_SHA="$(cat "$DEPLOYED_MARKER" 2>/dev/null || true)"' in text
+    assert '[ "$DEPLOYED_SHA" = "$REMOTE" ]' in text
+    assert "deployed marker differs from target commit; redeploying" in text
+
+
 def test_collector_container_healthcheck_uses_status_validator() -> None:
     dockerfile = (ROOT / "deploy" / "collector" / "Dockerfile").read_text(
         encoding="utf-8"

@@ -35,7 +35,7 @@ Install a cron entry on spoon:
 */5 * * * * /home/spoon/polymarket/scripts/deploy.sh >> /home/spoon/polymarket/logs/deploy.cron.log 2>&1
 ```
 
-The deploy script fetches the configured deploy ref, refuses dirty server worktrees, fast-forwards only, rebuilds the Rust collector image, restarts the collector, and smoke-checks the status file.
+The deploy script fetches the configured deploy ref, refuses dirty server worktrees, fast-forwards only, rebuilds the Rust collector image, restarts the collector, and smoke-checks the status file. It only skips a rebuild when both the checked-out commit and the deployed marker match the target commit, so a manual `git pull` cannot accidentally leave an older healthy container running.
 If `deploy/collector/.env` exists, the deploy script uses it explicitly. The collector is read-only and runs Chainlink RTDS plus Polymarket CLOB WebSocket state-manager mode with `POLYMARKET_INTERVAL=5m`.
 
 For branch testing before merge:
