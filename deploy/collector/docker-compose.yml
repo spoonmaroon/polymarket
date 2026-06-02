@@ -7,7 +7,6 @@ services:
       dockerfile: deploy/collector/Dockerfile
     image: polymarket-rust-collector:latest
     restart: unless-stopped
-    init: true
     user: "${POLYMARKET_UID:-1000}:${POLYMARKET_GID:-1000}"
     environment:
       TZ: ${POLYMARKET_DISPLAY_TZ:-America/Chicago}

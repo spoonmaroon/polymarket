@@ -778,7 +778,7 @@ Expected: deploy stops known legacy Python collector containers, fast-forwards t
 
 Expected: checker accepts the new Rust state-manager report while preserving old status compatibility.
 
-- [ ] **Step 6: Verify local Docker build and smoke**
+- [x] **Step 6: Verify Docker build and smoke**
 
 ```bash
 docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml build collector
@@ -786,32 +786,32 @@ docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compo
 python3 scripts/check_collector_status.py --status-path <data-dir>/live/status.json
 ```
 
-Expected: Rust collector writes fresh Chainlink BTC/ETH and CLOB order-book status.
+Expected: Rust collector writes fresh Chainlink BTC/ETH and CLOB order-book status. Local Mac Docker was unavailable, so this was verified on Spoon, where the service actually runs.
 
 ## Task 9: Spoon Verification
 
 **Files:**
 - No source edits unless deployment docs need a discovered correction.
 
-- [ ] **Step 1: Push branch**
+- [x] **Step 1: Push branch**
 
 ```bash
 git push -u origin codex/ws-state-manager
 ```
 
-- [ ] **Step 2: Update Spoon test checkout**
+- [x] **Step 2: Update Spoon test checkout**
 
 ```bash
 ssh spoon 'cd /home/spoon/polymarket && git fetch origin codex/ws-state-manager && git checkout codex/ws-state-manager && git pull --ff-only'
 ```
 
-- [ ] **Step 3: Build on Spoon**
+- [x] **Step 3: Build on Spoon**
 
 ```bash
 ssh spoon 'set -euo pipefail; cd /home/spoon/polymarket/rust; . "$HOME/.cargo/env"; cargo build -p polymarket-live-probe'
 ```
 
-- [ ] **Step 4: Run Spoon state-manager smoke**
+- [x] **Step 4: Run Spoon state-manager smoke**
 
 ```bash
 ssh spoon 'set -euo pipefail; cd /home/spoon/polymarket/rust; . "$HOME/.cargo/env"; cargo run -q -p polymarket-live-probe -- --mode state-manager --assets BTC,ETH --interval 5m --run-for-seconds 30 --out /tmp/state_manager_spoon.json; cd /home/spoon/polymarket; python3 scripts/verify_state_manager_report.py /tmp/state_manager_spoon.json'
@@ -819,7 +819,7 @@ ssh spoon 'set -euo pipefail; cd /home/spoon/polymarket/rust; . "$HOME/.cargo/en
 
 Expected: current and next contracts are warmed, Chainlink BTC/USD and ETH/USD are present, CLOB order books are present, and any health flags are explicit.
 
-- [ ] **Step 5: Measure path latency**
+- [x] **Step 5: Measure path latency**
 
 Record:
 
