@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import duckdb
 
+from polymarket_engine.domain.contracts import ContractSpec
+from polymarket_engine.domain.market_state import DecisionState
 from polymarket_engine.domain.market_state import OrderBookObservation, PriceObservation
 from polymarket_engine.features.rust_decision_snapshots import (
     build_current_decision_state_snapshots,
@@ -228,6 +231,10 @@ def test_current_decision_states_reuse_asset_level_store_reads(tmp_path: Path) -
     assert store.latest_price_tick_calls <= 2
     assert store.price_ticks_before_calls <= 2
     assert store.latest_orderbook_snapshot_calls == 4
+    assert store.upsert_contract_specs_calls == 1
+    assert store.upsert_contract_spec_calls == 0
+    assert store.upsert_asof_state_inputs_calls == 1
+    assert store.upsert_asof_state_input_calls == 0
 
 
 def _write_status(path: Path, *, start_ts: datetime, asof_ts: datetime) -> None:
@@ -322,6 +329,26 @@ class _CountingIngestStore(DuckDbIngestStore):
         self.latest_price_tick_calls = 0
         self.price_ticks_before_calls = 0
         self.latest_orderbook_snapshot_calls = 0
+        self.upsert_contract_specs_calls = 0
+        self.upsert_contract_spec_calls = 0
+        self.upsert_asof_state_inputs_calls = 0
+        self.upsert_asof_state_input_calls = 0
+
+    def upsert_contract_specs(self, contracts: Sequence[ContractSpec]) -> None:
+        self.upsert_contract_specs_calls += 1
+        super().upsert_contract_specs(contracts)
+
+    def upsert_contract_spec(self, contract: ContractSpec) -> None:
+        self.upsert_contract_spec_calls += 1
+        super().upsert_contract_spec(contract)
+
+    def upsert_asof_state_inputs(self, states: Sequence[DecisionState]) -> None:
+        self.upsert_asof_state_inputs_calls += 1
+        super().upsert_asof_state_inputs(states)
+
+    def upsert_asof_state_input(self, state: DecisionState) -> None:
+        self.upsert_asof_state_input_calls += 1
+        super().upsert_asof_state_input(state)
 
     def latest_price_tick_before(
         self,

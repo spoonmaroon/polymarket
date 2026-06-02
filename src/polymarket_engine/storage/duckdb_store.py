@@ -209,13 +209,59 @@ class DuckDbIngestStore:
             )
 
     def upsert_contract_spec(self, contract: ContractSpec) -> None:
+        self.upsert_contract_specs((contract,))
+
+    def upsert_contract_specs(self, contracts: Sequence[ContractSpec]) -> None:
+        if not contracts:
+            return
         now = datetime.now(timezone.utc)
+        ids_frame = pl.DataFrame({"contract_id": [contract.contract_id for contract in contracts]})
         with self._connection() as conn:
-            existing = conn.execute(
-                "select first_seen_ts from core.contracts where contract_id = ?",
-                [contract.contract_id],
-            ).fetchone()
-            first_seen_ts = now if existing is None else existing[0]
+            conn.register("contract_spec_ids", ids_frame)
+            existing = {
+                row[0]: row[1]
+                for row in conn.execute(
+                    """
+                    select contracts.contract_id, contracts.first_seen_ts
+                    from core.contracts as contracts
+                    join contract_spec_ids as ids using (contract_id)
+                    """
+                ).fetchall()
+            }
+            rows_frame = pl.DataFrame(
+                {
+                    "contract_id": [contract.contract_id for contract in contracts],
+                    "venue": [contract.venue for contract in contracts],
+                    "market_id": [contract.market_id for contract in contracts],
+                    "condition_id": [contract.condition_id for contract in contracts],
+                    "slug": [contract.slug for contract in contracts],
+                    "asset": [contract.asset for contract in contracts],
+                    "side": [contract.side for contract in contracts],
+                    "token_id": [contract.token_id for contract in contracts],
+                    "threshold_type": [contract.threshold_type for contract in contracts],
+                    "threshold_price": [contract.threshold_price for contract in contracts],
+                    "comparison_operator": [
+                        contract.comparison_operator for contract in contracts
+                    ],
+                    "start_ts": [contract.start_ts for contract in contracts],
+                    "expiry_ts": [contract.expiry_ts for contract in contracts],
+                    "settlement_source_name": [
+                        contract.settlement_source_name for contract in contracts
+                    ],
+                    "settlement_source_url": [
+                        contract.settlement_source_url for contract in contracts
+                    ],
+                    "settlement_symbol": [contract.settlement_symbol for contract in contracts],
+                    "rule_text": [contract.rule_text for contract in contracts],
+                    "rule_hash": [contract.rule_hash for contract in contracts],
+                    "parser_version": [contract.parser_version for contract in contracts],
+                    "first_seen_ts": [
+                        existing.get(contract.contract_id, now) for contract in contracts
+                    ],
+                    "last_seen_ts": [now for _ in contracts],
+                }
+            )
+            conn.register("contract_spec_rows", rows_frame)
             conn.execute(
                 """
                 insert or replace into core.contracts
@@ -223,31 +269,12 @@ class DuckDbIngestStore:
                  threshold_type, threshold_price, comparison_operator, start_ts, expiry_ts,
                  settlement_source_name, settlement_source_url, settlement_symbol, rule_text,
                  rule_hash, parser_version, first_seen_ts, last_seen_ts)
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                select contract_id, venue, market_id, condition_id, slug, asset, side, token_id,
+                       threshold_type, threshold_price, comparison_operator, start_ts, expiry_ts,
+                       settlement_source_name, settlement_source_url, settlement_symbol, rule_text,
+                       rule_hash, parser_version, first_seen_ts, last_seen_ts
+                from contract_spec_rows
                 """,
-                [
-                    contract.contract_id,
-                    contract.venue,
-                    contract.market_id,
-                    contract.condition_id,
-                    contract.slug,
-                    contract.asset,
-                    contract.side,
-                    contract.token_id,
-                    contract.threshold_type,
-                    contract.threshold_price,
-                    contract.comparison_operator,
-                    contract.start_ts,
-                    contract.expiry_ts,
-                    contract.settlement_source_name,
-                    contract.settlement_source_url,
-                    contract.settlement_symbol,
-                    contract.rule_text,
-                    contract.rule_hash,
-                    contract.parser_version,
-                    first_seen_ts,
-                    now,
-                ],
             )
 
     def insert_price_tick(self, tick: PriceObservation, raw_file_id: str | None = None) -> None:
@@ -328,7 +355,61 @@ class DuckDbIngestStore:
             )
 
     def upsert_asof_state_input(self, state: DecisionState) -> None:
+        self.upsert_asof_state_inputs((state,))
+
+    def upsert_asof_state_inputs(self, states: Sequence[DecisionState]) -> None:
+        if not states:
+            return
+        now = datetime.now(timezone.utc)
+        frame = pl.DataFrame(
+            {
+                "state_id": [state.state_id for state in states],
+                "contract_id": [state.contract.contract_id for state in states],
+                "asof_ts": [state.asof_ts for state in states],
+                "asset": [state.contract.asset for state in states],
+                "side": [state.contract.side for state in states],
+                "threshold": [state.threshold for state in states],
+                "threshold_source_key": [state.threshold_source_key for state in states],
+                "threshold_event_ts": [state.threshold_event_ts for state in states],
+                "threshold_observed_ts": [state.threshold_observed_ts for state in states],
+                "seconds_left": [state.seconds_left for state in states],
+                "settlement_price": [state.settlement_price for state in states],
+                "settlement_source_key": [state.settlement_source_key for state in states],
+                "settlement_event_ts": [state.settlement_event_ts for state in states],
+                "settlement_observed_ts": [state.settlement_observed_ts for state in states],
+                "proxy_prices_json": [_json(state.proxy_prices) for state in states],
+                "source_disagreement_bps": [
+                    state.source_disagreement_bps for state in states
+                ],
+                "best_bid": [state.best_bid for state in states],
+                "best_ask": [state.best_ask for state in states],
+                "executable_price": [state.executable_price for state in states],
+                "spread": [state.spread for state in states],
+                "book_event_ts": [state.book_event_ts for state in states],
+                "book_observed_ts": [state.book_observed_ts for state in states],
+                "quote_age_ms": [state.quote_age_ms for state in states],
+                "source_age_ms": [state.source_age_ms for state in states],
+                "source_observed_lag_ms": [
+                    state.source_observed_lag_ms for state in states
+                ],
+                "book_age_ms": [state.book_age_ms for state in states],
+                "book_observed_lag_ms": [state.book_observed_lag_ms for state in states],
+                "realized_returns_json": [
+                    _json(list(state.realized_returns)) for state in states
+                ],
+                "short_realized_vol": [state.short_realized_vol for state in states],
+                "medium_realized_vol": [state.medium_realized_vol for state in states],
+                "long_realized_vol": [state.long_realized_vol for state in states],
+                "sigma_tau": [state.sigma_tau for state in states],
+                "volatility_regime": [state.volatility_regime for state in states],
+                "data_quality_flags_json": [
+                    _json(list(state.data_quality_flags)) for state in states
+                ],
+                "created_at": [now for _ in states],
+            }
+        )
         with self._connection() as conn:
+            conn.register("asof_state_input_rows", frame)
             conn.execute(
                 """
                 insert or replace into features.asof_state_inputs
@@ -342,45 +423,18 @@ class DuckDbIngestStore:
                  realized_returns_json, short_realized_vol, medium_realized_vol,
                  long_realized_vol, sigma_tau, volatility_regime, data_quality_flags_json,
                  created_at)
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                select state_id, contract_id, asof_ts, asset, side, threshold,
+                       threshold_source_key, threshold_event_ts, threshold_observed_ts,
+                       seconds_left, settlement_price, settlement_source_key,
+                       settlement_event_ts, settlement_observed_ts, proxy_prices_json,
+                       source_disagreement_bps, best_bid, best_ask, executable_price, spread,
+                       book_event_ts, book_observed_ts, quote_age_ms, source_age_ms,
+                       source_observed_lag_ms, book_age_ms, book_observed_lag_ms,
+                       realized_returns_json, short_realized_vol, medium_realized_vol,
+                       long_realized_vol, sigma_tau, volatility_regime,
+                       data_quality_flags_json, created_at
+                from asof_state_input_rows
                 """,
-                [
-                    state.state_id,
-                    state.contract.contract_id,
-                    state.asof_ts,
-                    state.contract.asset,
-                    state.contract.side,
-                    state.threshold,
-                    state.threshold_source_key,
-                    state.threshold_event_ts,
-                    state.threshold_observed_ts,
-                    state.seconds_left,
-                    state.settlement_price,
-                    state.settlement_source_key,
-                    state.settlement_event_ts,
-                    state.settlement_observed_ts,
-                    _json(state.proxy_prices),
-                    state.source_disagreement_bps,
-                    state.best_bid,
-                    state.best_ask,
-                    state.executable_price,
-                    state.spread,
-                    state.book_event_ts,
-                    state.book_observed_ts,
-                    state.quote_age_ms,
-                    state.source_age_ms,
-                    state.source_observed_lag_ms,
-                    state.book_age_ms,
-                    state.book_observed_lag_ms,
-                    _json(list(state.realized_returns)),
-                    state.short_realized_vol,
-                    state.medium_realized_vol,
-                    state.long_realized_vol,
-                    state.sigma_tau,
-                    state.volatility_regime,
-                    _json(list(state.data_quality_flags)),
-                    datetime.now(timezone.utc),
-                ],
             )
 
     def insert_decision_snapshot(

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from polymarket_engine.domain.contracts import Asset, ContractSide, ContractSpec
-from polymarket_engine.domain.market_state import OrderBookObservation, PriceObservation
+from polymarket_engine.domain.market_state import DecisionState, OrderBookObservation, PriceObservation
 from polymarket_engine.features.state_builder import DecisionStateUnavailable
 from polymarket_engine.features.state_replay import build_decision_state_from_store
 from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
@@ -48,10 +48,10 @@ def build_current_decision_state_snapshots(
         include_next=include_next,
     )
     read_store = _CachedStateReadStore(store)
-    states_written = 0
+    store.upsert_contract_specs(contracts)
+    states: list[DecisionState] = []
     unavailable: list[UnavailableDecisionState] = []
     for contract in contracts:
-        store.upsert_contract_spec(contract)
         try:
             state = build_decision_state_from_store(
                 store=cast(DuckDbIngestStore, read_store),
@@ -75,12 +75,12 @@ def build_current_decision_state_snapshots(
                 )
             )
             continue
-        store.upsert_asof_state_input(state)
-        states_written += 1
+        states.append(state)
+    store.upsert_asof_state_inputs(states)
     return CurrentDecisionStateSnapshotResult(
         asof_ts=asof_ts,
         contracts_upserted=len(contracts),
-        states_written=states_written,
+        states_written=len(states),
         unavailable=tuple(unavailable),
     )
 
