@@ -254,7 +254,7 @@ fn write_json_report<T: Serialize>(path: &Path, report: &T) -> Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     let tmp_path = path.with_extension("json.tmp");
-    std::fs::write(&tmp_path, serde_json::to_vec_pretty(report)?)?;
+    std::fs::write(&tmp_path, serde_json::to_vec(report)?)?;
     std::fs::rename(tmp_path, path)?;
     Ok(())
 }
@@ -361,6 +361,37 @@ mod tests {
         assert_eq!(value["websocket_status"][0]["ended_stream_count"], 0);
         assert_eq!(value["websocket_status"][0]["stream_error_count"], 0);
         assert_eq!(value["websocket_status"][0]["last_event_age_ms"], 25);
+    }
+
+    #[test]
+    fn writes_state_manager_report_as_compact_json_for_fast_status_updates() {
+        let observed_ts = Utc.timestamp_opt(1_780_302_400, 0).unwrap();
+        let path = temp_status_path("compact-status");
+        let report = build_state_manager_report(StateManagerReportInput {
+            elapsed_ms: 250,
+            snapshot: WarmStateSnapshot {
+                observed_ts,
+                current: vec![sample_warmed_contract("BTC", 1_780_302_400)],
+                next: vec![],
+                next_next: vec![],
+                chainlink_prices: vec![],
+                proxy_prices: vec![],
+                orderbooks: vec![],
+                freshness: vec![],
+                health_flags: vec![],
+            },
+            subscriptions: vec![],
+            websocket_status: vec![],
+            hot_decision_telemetry: None,
+        });
+
+        write_state_manager_report(&path, &report).unwrap();
+
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(raw.lines().count(), 1);
+        assert!(!raw.contains("\n  "));
+        let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(value["schema_version"], "rust-live-probe-state-manager-v1");
     }
 
     #[test]
@@ -565,6 +596,18 @@ mod tests {
             ),
         )
         .unwrap()
+    }
+
+    fn temp_status_path(label: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "polymarket-report-{label}-{}-{}",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap()
+        ));
+        if root.exists() {
+            std::fs::remove_dir_all(&root).unwrap();
+        }
+        root.join("status.json")
     }
 
     fn sample_orderbook(
