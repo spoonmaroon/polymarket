@@ -54,6 +54,23 @@ class _TopOfBookRow:
     payload: dict[str, Any]
 
 
+class _TopOfBookPayload(msgspec.Struct):
+    contract_id: Any
+    token_id: Any = None
+    best_bid: Any = None
+    best_ask: Any = None
+    spread: Any = None
+
+
+class _TopOfBookRawRow(msgspec.Struct):
+    source_key: str
+    stream_key: str
+    event_ts: Any
+    observed_ts: Any
+    payload: _TopOfBookPayload
+    symbol: Any = None
+
+
 @dataclass(frozen=True)
 class _PriceTickRow:
     symbol_key: tuple[str, str]
@@ -182,43 +199,59 @@ def normalize_rust_event_file(
     )
     source_key, stream_key = _source_stream_from_path(path)
 
-    for row in _iter_jsonl(
-        path,
-        start_byte_offset=start_byte_offset,
-        byte_limit=read_limit,
-        raw_line_handler=file_id_hasher.update,
-    ):
-        rows_read += 1
-        if (
-            row.get("source_key") == "polymarket_rtds_chainlink"
-            and row.get("stream_key") == "price_update"
+    if source_key == "polymarket_clob_market_ws" and stream_key == "best_bid_ask":
+        for typed_row in _iter_top_of_book_jsonl(
+            path,
+            start_byte_offset=start_byte_offset,
+            byte_limit=read_limit,
+            raw_line_handler=file_id_hasher.update,
         ):
-            price_tick = _price_tick_row_from_raw(row)
-            assert price_tick is not None
-            if price_state_cache.get(price_tick.symbol_key) == price_tick.state_key:
+            rows_read += 1
+            _append_top_of_book_typed_row(
+                row=typed_row,
+                orderbook_state_cache=orderbook_state_cache,
+                orderbooks=orderbooks,
+                event_time_bounds=event_time_bounds,
+            )
+            orderbooks_written = len(orderbooks)
+    else:
+        for generic_row in _iter_jsonl(
+            path,
+            start_byte_offset=start_byte_offset,
+            byte_limit=read_limit,
+            raw_line_handler=file_id_hasher.update,
+        ):
+            rows_read += 1
+            if (
+                generic_row.get("source_key") == "polymarket_rtds_chainlink"
+                and generic_row.get("stream_key") == "price_update"
+            ):
+                price_tick = _price_tick_row_from_raw(generic_row)
+                assert price_tick is not None
+                if price_state_cache.get(price_tick.symbol_key) == price_tick.state_key:
+                    continue
+                price_state_cache[price_tick.symbol_key] = price_tick.state_key
+                tick = _price_observation_from_price_tick_row(price_tick)
+                price_ticks.append(tick)
+                event_time_bounds.record(tick.event_ts)
+                price_ticks_written += 1
                 continue
-            price_state_cache[price_tick.symbol_key] = price_tick.state_key
-            tick = _price_observation_from_price_tick_row(price_tick)
-            price_ticks.append(tick)
-            event_time_bounds.record(tick.event_ts)
-            price_ticks_written += 1
-            continue
-        if row.get("schema_version") == STATE_MANAGER_SCHEMA_VERSION:
-            for tick in _price_ticks_from_row(row):
-                symbol_key = (tick.source_key, tick.symbol)
-                state_key = _price_state_key(tick)
-                if price_state_cache.get(symbol_key) != state_key:
-                    price_state_cache[symbol_key] = state_key
-                    price_ticks.append(tick)
-                    event_time_bounds.record(tick.event_ts)
-                    price_ticks_written += 1
-        _append_orderbooks_from_row(
-            row=row,
-            orderbook_state_cache=orderbook_state_cache,
-            orderbooks=orderbooks,
-            event_time_bounds=event_time_bounds,
-        )
-        orderbooks_written = len(orderbooks)
+            if generic_row.get("schema_version") == STATE_MANAGER_SCHEMA_VERSION:
+                for tick in _price_ticks_from_row(generic_row):
+                    symbol_key = (tick.source_key, tick.symbol)
+                    state_key = _price_state_key(tick)
+                    if price_state_cache.get(symbol_key) != state_key:
+                        price_state_cache[symbol_key] = state_key
+                        price_ticks.append(tick)
+                        event_time_bounds.record(tick.event_ts)
+                        price_ticks_written += 1
+            _append_orderbooks_from_row(
+                row=generic_row,
+                orderbook_state_cache=orderbook_state_cache,
+                orderbooks=orderbooks,
+                event_time_bounds=event_time_bounds,
+            )
+            orderbooks_written = len(orderbooks)
 
     file_id = _file_id_from_hasher(file_id_hasher)
     if price_ticks:
@@ -323,6 +356,34 @@ def _iter_jsonl(
             if not isinstance(value, dict):
                 raise ValueError(f"{path}:{line_number} JSONL row must be an object")
             yield value
+
+
+def _iter_top_of_book_jsonl(
+    path: Path,
+    byte_limit: int | None = None,
+    start_byte_offset: int = 0,
+    raw_line_handler: Callable[[bytes], None] | None = None,
+) -> Iterator[_TopOfBookRawRow]:
+    if byte_limit is not None and byte_limit <= 0:
+        return
+    with path.open("rb") as handle:
+        if start_byte_offset:
+            handle.seek(start_byte_offset)
+        bytes_read = 0
+        for raw_line in handle:
+            if byte_limit is not None:
+                if bytes_read >= byte_limit:
+                    break
+                if bytes_read + len(raw_line) > byte_limit:
+                    break
+            bytes_read += len(raw_line)
+            if raw_line_handler is not None:
+                raw_line_handler(raw_line)
+            if not raw_line.endswith(b"\n"):
+                break
+            if raw_line[0] <= 32 and not raw_line.strip():
+                continue
+            yield msgspec.json.decode(raw_line, type=_TopOfBookRawRow)
 
 
 def _complete_jsonl_byte_limit(path: Path, start_byte_offset: int, file_size: int) -> int:
@@ -487,6 +548,63 @@ def _append_top_of_book_from_raw(
     return True
 
 
+def _append_top_of_book_typed_row(
+    *,
+    row: _TopOfBookRawRow,
+    orderbook_state_cache: dict[tuple[str, str], tuple[object, ...]],
+    orderbooks: OrderBookSnapshotBatch,
+    event_time_bounds: _EventTimeBounds,
+) -> bool:
+    if row.source_key != "polymarket_clob_market_ws":
+        return False
+    if row.stream_key != "best_bid_ask":
+        return False
+    payload = row.payload
+    best_bid = _optional_probability_float(payload.best_bid, "best_bid")
+    best_ask = _optional_probability_float(payload.best_ask, "best_ask")
+    spread_fallback = (
+        None
+        if best_bid is not None and best_ask is not None
+        else _optional_probability_float(payload.spread, "spread")
+    )
+    spread = _canonical_spread(best_bid, best_ask, spread_fallback)
+    if best_bid is not None and best_ask is not None and best_bid > best_ask:
+        raise ValueError("best_bid must be less than or equal to best_ask")
+    token_id = str(payload.token_id or row.symbol)
+    contract_id = str(payload.contract_id)
+    event_ts = str(row.event_ts)
+    token_key = ("polymarket", token_id)
+    state_key = (
+        "top_of_book",
+        "polymarket",
+        contract_id,
+        token_id,
+        event_ts,
+        best_bid,
+        best_ask,
+        None,
+        None,
+        spread,
+    )
+    if orderbook_state_cache.get(token_key) != state_key:
+        orderbook_state_cache[token_key] = state_key
+        orderbooks.append(
+            venue="polymarket",
+            contract_id=contract_id,
+            token_id=token_id,
+            event_ts=event_ts,
+            observed_ts=str(row.observed_ts),
+            best_bid=best_bid,
+            best_ask=best_ask,
+            bid_size_top=None,
+            ask_size_top=None,
+            spread=spread,
+            depth_json=_top_of_book_typed_depth_json(payload),
+        )
+        event_time_bounds.record_raw_utc(event_ts)
+    return True
+
+
 def _top_of_book_row_from_raw(row: dict[str, Any]) -> _TopOfBookRow | None:
     if row.get("source_key") != "polymarket_clob_market_ws":
         return None
@@ -553,6 +671,18 @@ def _top_of_book_depth_json(payload: dict[str, Any]) -> str:
         f'"best_ask":{_json_scalar_literal(payload.get("best_ask"))},'
         f'"best_bid":{_json_scalar_literal(payload.get("best_bid"))},'
         f'"spread":{_json_scalar_literal(payload.get("spread"))}'
+        "}}"
+    )
+
+
+def _top_of_book_typed_depth_json(payload: _TopOfBookPayload) -> str:
+    return (
+        '{"source_key":"polymarket_clob_market_ws",'
+        '"stream_key":"best_bid_ask",'
+        '"top_of_book":{'
+        f'"best_ask":{_json_scalar_literal(payload.best_ask)},'
+        f'"best_bid":{_json_scalar_literal(payload.best_bid)},'
+        f'"spread":{_json_scalar_literal(payload.spread)}'
         "}}"
     )
 

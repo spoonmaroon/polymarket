@@ -291,6 +291,48 @@ def test_top_of_book_rows_skip_orderbook_observation_materialization(
     assert orderbook_observation_calls == 0
 
 
+def test_top_of_book_file_uses_typed_json_decoder(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "state.duckdb"
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    raw_path = (
+        tmp_path
+        / "raw"
+        / "polymarket_clob_market_ws"
+        / "best_bid_ask"
+        / "date=2026-06-02"
+        / "hour=05"
+        / "events.jsonl"
+    )
+    _write_jsonl(
+        raw_path,
+        _orderbook_row(
+            "token-1",
+            "2026-06-02T05:33:54Z",
+            "2026-06-02T05:33:55Z",
+            0.61,
+            0.64,
+        ),
+    )
+    decode_types: list[object] = []
+    real_decode = msgspec.json.decode
+
+    def tracking_decode(value: Any, *args: Any, **kwargs: Any) -> Any:
+        decode_types.append(kwargs.get("type"))
+        return real_decode(value, *args, **kwargs)
+
+    monkeypatch.setattr("msgspec.json.decode", tracking_decode)
+
+    result = normalize_rust_event_file(path=raw_path, store=store)
+
+    assert result.orderbooks_written == 1
+    assert decode_types
+    assert all(decoded_type is not None for decoded_type in decode_types)
+
+
 def test_top_of_book_rows_defer_observed_timestamp_parsing_to_duckdb(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
