@@ -454,7 +454,7 @@ def _append_top_of_book_from_raw(
             contract_id=contract_id,
             token_id=token_id,
             event_ts=event_ts,
-            observed_ts=_parse_ts(row["observed_ts"]),
+            observed_ts=str(row["observed_ts"]),
             best_bid=best_bid,
             best_ask=best_ask,
             bid_size_top=None,

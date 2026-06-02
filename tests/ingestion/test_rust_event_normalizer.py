@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import builtins
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Sequence, cast
@@ -288,6 +288,59 @@ def test_top_of_book_rows_skip_orderbook_observation_materialization(
     assert row[:4] == ("0xabc", "token-1", 0.61, 0.64)
     assert round(float(row[4]), 2) == 0.03
     assert orderbook_observation_calls == 0
+
+
+def test_top_of_book_rows_defer_observed_timestamp_parsing_to_duckdb(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "state.duckdb"
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    raw_path = (
+        tmp_path
+        / "raw"
+        / "polymarket_clob_market_ws"
+        / "best_bid_ask"
+        / "date=2026-06-02"
+        / "hour=05"
+        / "events.jsonl"
+    )
+    _write_jsonl(
+        raw_path,
+        _orderbook_row(
+            "token-1",
+            "2026-06-02T05:33:54.100Z",
+            "2026-06-02T05:33:55.239695967Z",
+            0.61,
+            0.64,
+        ),
+    )
+    parse_ts_calls = 0
+    real_parse_ts = rust_event_normalizer._parse_ts
+
+    def counting_parse_ts(value: object) -> datetime:
+        nonlocal parse_ts_calls
+        parse_ts_calls += 1
+        return real_parse_ts(value)
+
+    monkeypatch.setattr(
+        "polymarket_engine.ingestion.rust_event_normalizer._parse_ts",
+        counting_parse_ts,
+    )
+
+    result = normalize_rust_event_file(path=raw_path, store=store)
+
+    assert result.orderbooks_written == 1
+    with duckdb.connect(str(db_path), read_only=True) as conn:
+        row = conn.execute(
+            """
+            select observed_ts
+            from core.orderbook_snapshots
+            """
+        ).fetchone()
+    assert row == (datetime(2026, 6, 2, 5, 33, 55, 239695, tzinfo=timezone.utc),)
+    assert parse_ts_calls == 1
 
 
 def test_normalizes_clob_spread_from_bid_ask_when_payload_spread_is_stale(tmp_path: Path) -> None:

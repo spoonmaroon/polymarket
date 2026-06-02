@@ -61,7 +61,7 @@ class OrderBookSnapshotBatch:
     contract_ids: list[str] = field(default_factory=list)
     token_ids: list[str] = field(default_factory=list)
     event_timestamps: list[datetime] = field(default_factory=list)
-    observed_timestamps: list[datetime] = field(default_factory=list)
+    observed_timestamps: list[datetime | str] = field(default_factory=list)
     best_bids: list[float | None] = field(default_factory=list)
     best_asks: list[float | None] = field(default_factory=list)
     bid_sizes_top: list[float | None] = field(default_factory=list)
@@ -79,7 +79,7 @@ class OrderBookSnapshotBatch:
         contract_id: str,
         token_id: str,
         event_ts: datetime,
-        observed_ts: datetime,
+        observed_ts: datetime | str,
         best_bid: float | None,
         best_ask: float | None,
         bid_size_top: float | None,
@@ -514,7 +514,7 @@ class DuckDbIngestStore:
                 insert or replace into core.orderbook_snapshots
                 (venue, contract_id, token_id, event_ts, observed_ts, best_bid, best_ask,
                  bid_size_top, ask_size_top, spread, depth_json, raw_file_id)
-                select venue, contract_id, token_id, event_ts, observed_ts, best_bid, best_ask,
+                select venue, contract_id, token_id, event_ts, observed_ts::TIMESTAMPTZ, best_bid, best_ask,
                        bid_size_top, ask_size_top, spread, depth_json, raw_file_id
                 from orderbook_snapshot_rows
                 """
