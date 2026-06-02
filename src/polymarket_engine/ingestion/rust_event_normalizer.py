@@ -292,10 +292,9 @@ def _iter_jsonl(
                 raw_line_handler(raw_line)
             if not raw_line.endswith(b"\n"):
                 break
-            line = raw_line.decode("utf-8")
-            if not line.strip():
+            if not raw_line.strip():
                 continue
-            value = json.loads(line)
+            value = json.loads(raw_line)
             if not isinstance(value, dict):
                 raise ValueError(f"{path}:{line_number} JSONL row must be an object")
             yield value

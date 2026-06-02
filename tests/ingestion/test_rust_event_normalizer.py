@@ -879,6 +879,28 @@ def test_jsonl_iterator_stops_at_initial_byte_limit(tmp_path: Path) -> None:
     assert rows == ({"source_key": "one"},)
 
 
+def test_jsonl_iterator_loads_raw_bytes_without_text_decode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_path = _FakeBinaryPath(b'{"source_key":"one"}\n')
+    seen_input_types: list[type[object]] = []
+    real_json_loads = json.loads
+
+    def tracking_json_loads(value: Any, *args: Any, **kwargs: Any) -> Any:
+        seen_input_types.append(type(value))
+        return real_json_loads(value, *args, **kwargs)
+
+    monkeypatch.setattr(
+        "polymarket_engine.ingestion.rust_event_normalizer.json.loads",
+        tracking_json_loads,
+    )
+
+    rows = tuple(_iter_jsonl(cast(Path, raw_path)))
+
+    assert rows == ({"source_key": "one"},)
+    assert seen_input_types == [bytes]
+
+
 def test_complete_jsonl_byte_limit_does_not_scan_complete_tail() -> None:
     raw_bytes = (b'{"source_key":"one"}\n' * 10_000)
     path = _FakeBinaryPath(raw_bytes)
