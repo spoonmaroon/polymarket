@@ -1,6 +1,7 @@
 use crate::report::StateManagerReport;
 use anyhow::Result;
 use chrono::{Datelike, Timelike};
+use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
 
@@ -14,19 +15,16 @@ impl StateSnapshotJournal {
         Self { root }
     }
 
-    pub fn append(&self, report: &StateManagerReport) -> Result<PathBuf> {
-        let path = self.partition_path(report);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+    pub fn writer(&self) -> StateSnapshotJournalWriter {
+        StateSnapshotJournalWriter {
+            journal: self.clone(),
+            open_path: None,
+            file: None,
         }
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)?;
-        serde_json::to_writer(&mut file, report)?;
-        file.write_all(b"\n")?;
-        file.sync_data()?;
-        Ok(path)
+    }
+
+    pub fn append(&self, report: &StateManagerReport) -> Result<PathBuf> {
+        self.writer().append(report)
     }
 
     fn partition_path(&self, report: &StateManagerReport) -> PathBuf {
@@ -40,6 +38,42 @@ impl StateSnapshotJournal {
             ))
             .join(format!("hour={:02}", generated_at.hour()))
             .join("state-manager.jsonl")
+    }
+}
+
+pub struct StateSnapshotJournalWriter {
+    journal: StateSnapshotJournal,
+    open_path: Option<PathBuf>,
+    file: Option<File>,
+}
+
+impl StateSnapshotJournalWriter {
+    pub fn append(&mut self, report: &StateManagerReport) -> Result<PathBuf> {
+        let path = self.partition_path(report);
+        if self.open_path.as_ref() != Some(&path) {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            self.file = Some(
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&path)?,
+            );
+            self.open_path = Some(path.clone());
+        }
+
+        let file = self
+            .file
+            .as_mut()
+            .expect("state snapshot journal writer opened file");
+        serde_json::to_writer(&mut *file, report)?;
+        file.write_all(b"\n")?;
+        Ok(path)
+    }
+
+    fn partition_path(&self, report: &StateManagerReport) -> PathBuf {
+        self.journal.partition_path(report)
     }
 }
 
@@ -93,6 +127,24 @@ mod tests {
         assert_ne!(first, second);
         assert!(first.ends_with("date=2026-06-01/hour=08/state-manager.jsonl"));
         assert!(second.ends_with("date=2026-06-01/hour=09/state-manager.jsonl"));
+    }
+
+    #[test]
+    fn streaming_writer_reuses_current_partition_and_rolls_hours() {
+        let root = temp_root("streaming-writer");
+        let journal = StateSnapshotJournal::new(root.clone());
+        let mut writer = journal.writer();
+
+        let first = writer.append(&sample_report(1_780_302_400)).unwrap();
+        let second = writer.append(&sample_report(1_780_302_401)).unwrap();
+        let next_hour = writer.append(&sample_report(1_780_306_000)).unwrap();
+
+        assert_eq!(first, second);
+        assert_ne!(first, next_hour);
+        let first_hour_lines = std::fs::read_to_string(first).unwrap();
+        assert_eq!(first_hour_lines.lines().count(), 2);
+        let next_hour_lines = std::fs::read_to_string(next_hour).unwrap();
+        assert_eq!(next_hour_lines.lines().count(), 1);
     }
 
     fn sample_report(epoch: i64) -> crate::report::StateManagerReport {

@@ -225,10 +225,10 @@ async fn run_state_manager(args: Args) -> Result<()> {
         decision_sink,
     )
     .await?;
-    let snapshot_journal = args
+    let mut snapshot_journal = args
         .state_snapshot_dir
         .clone()
-        .map(snapshot_journal::StateSnapshotJournal::new);
+        .map(|dir| snapshot_journal::StateSnapshotJournal::new(dir).writer());
     let mut last_state_snapshot_elapsed_ms: Option<u128> = None;
     let interval = Duration::from_millis(args.status_interval_ms);
     let deadline = if args.forever {
@@ -253,7 +253,7 @@ async fn run_state_manager(args: Args) -> Result<()> {
             hot_decision_telemetry,
         });
         report::write_state_manager_report(&args.out, &report)?;
-        if let Some(journal) = &snapshot_journal {
+        if let Some(journal) = &mut snapshot_journal {
             if state_snapshot_due(
                 elapsed_ms,
                 last_state_snapshot_elapsed_ms,
