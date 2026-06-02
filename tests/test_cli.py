@@ -413,6 +413,12 @@ async def test_run_verify_hot_decision_replay_command_writes_report(
         / "decision-state.jsonl",
         [
             _hot_decision_row(start_ts, asof_ts),
+            {
+                **_hot_decision_row(start_ts, asof_ts + timedelta(seconds=1)),
+                "threshold_price": None,
+                "threshold_event_ts": None,
+                "data_quality_flags": ["MissingThreshold"],
+            },
             _hot_decision_row(start_ts, asof_ts + timedelta(minutes=2)),
         ],
     )
@@ -440,9 +446,10 @@ async def test_run_verify_hot_decision_replay_command_writes_report(
     file_payload = json.loads(report_path.read_text(encoding="utf-8"))
     assert stdout_payload == file_payload
     assert file_payload["ok"] is True
-    assert file_payload["rows_scanned"] == 2
+    assert file_payload["rows_scanned"] == 3
     assert file_payload["rows_checked"] == 1
     assert file_payload["rows_skipped_not_replay_ready"] == 1
+    assert file_payload["rows_skipped_quality_blocked"] == 1
     assert file_payload["mismatch_count"] == 0
     assert file_payload["mismatches"] == []
 

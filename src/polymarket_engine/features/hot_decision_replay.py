@@ -27,6 +27,11 @@ RUST_FLAG_MAP = {
     "StaleSource": "stale_source",
     "StaleOrderbook": "stale_orderbook",
 }
+REPLAY_BLOCKING_HOT_FLAGS = {
+    "MissingThreshold",
+    "MissingSettlementPrice",
+    "MissingOrderbook",
+}
 
 
 @dataclass(frozen=True)
@@ -66,6 +71,7 @@ class HotDecisionReplaySelection:
     rows: tuple[dict[str, Any], ...]
     rows_scanned: int
     rows_skipped_not_replay_ready: int
+    rows_skipped_quality_blocked: int
     price_observed_watermark: datetime | None
     orderbook_observed_watermark: datetime | None
 
@@ -95,9 +101,10 @@ def replay_ready_hot_decision_rows(
     if limit <= 0:
         raise ValueError("limit must be positive")
     price_watermark, orderbook_watermark = _duckdb_observed_watermarks(store)
+    quality_ready = tuple(row for row in rows if not _is_quality_blocked(row))
     eligible = tuple(
         row
-        for row in rows
+        for row in quality_ready
         if _is_replay_ready(
             row,
             price_observed_watermark=price_watermark,
@@ -108,7 +115,8 @@ def replay_ready_hot_decision_rows(
     return HotDecisionReplaySelection(
         rows=selected,
         rows_scanned=len(rows),
-        rows_skipped_not_replay_ready=len(rows) - len(eligible),
+        rows_skipped_not_replay_ready=len(quality_ready) - len(eligible),
+        rows_skipped_quality_blocked=len(rows) - len(quality_ready),
         price_observed_watermark=price_watermark,
         orderbook_observed_watermark=orderbook_watermark,
     )
@@ -157,6 +165,10 @@ def _is_replay_ready(
         if book_observed_ts > orderbook_observed_watermark:
             return False
     return True
+
+
+def _is_quality_blocked(row: dict[str, Any]) -> bool:
+    return any(flag in REPLAY_BLOCKING_HOT_FLAGS for flag in _string_list(row.get("data_quality_flags")))
 
 
 def _observed_ts_from_age(row: dict[str, Any], age_field: str) -> datetime | None:
