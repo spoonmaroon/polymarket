@@ -118,6 +118,52 @@ def test_normalizes_clob_best_bid_ask_raw_event_into_orderbooks(tmp_path: Path) 
     assert row[7] == result.file_id
 
 
+def test_normalizes_clob_spread_from_bid_ask_when_payload_spread_is_stale(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.duckdb"
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    raw_path = (
+        tmp_path
+        / "raw"
+        / "polymarket_clob_market_ws"
+        / "best_bid_ask"
+        / "date=2026-06-02"
+        / "hour=05"
+        / "events.jsonl"
+    )
+    _write_jsonl(
+        raw_path,
+        {
+            "source_key": "polymarket_clob_market_ws",
+            "stream_key": "best_bid_ask",
+            "symbol": "token-1",
+            "event_type": "best_bid_ask",
+            "event_ts": "2026-06-02T05:33:54.100Z",
+            "observed_ts": "2026-06-02T05:33:54.200Z",
+            "payload": {
+                "contract_id": "0xabc",
+                "token_id": "token-1",
+                "best_bid": "0.61",
+                "best_ask": "0.64",
+                "spread": "0.02",
+            },
+        },
+    )
+
+    normalize_rust_event_file(path=raw_path, store=store)
+
+    with duckdb.connect(str(db_path), read_only=True) as conn:
+        row = conn.execute(
+            """
+            select spread, depth_json
+            from core.orderbook_snapshots
+            """
+        ).fetchone()
+    assert row is not None
+    assert round(float(row[0]), 2) == 0.03
+    assert json.loads(row[1])["top_of_book"]["spread"] == "0.02"
+
+
 def test_normalizes_state_manager_snapshot_into_prices_and_orderbooks(tmp_path: Path) -> None:
     db_path = tmp_path / "state.duckdb"
     store = DuckDbIngestStore(db_path)

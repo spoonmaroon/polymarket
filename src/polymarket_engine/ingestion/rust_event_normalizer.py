@@ -153,9 +153,11 @@ def _orderbooks_from_row(row: dict[str, Any]) -> tuple[OrderBookObservation, ...
     payload = _payload(row)
     best_bid = _optional_probability_float(payload.get("best_bid"), "best_bid")
     best_ask = _optional_probability_float(payload.get("best_ask"), "best_ask")
-    spread = _optional_probability_float(payload.get("spread"), "spread")
-    if spread is None and best_bid is not None and best_ask is not None:
-        spread = best_ask - best_bid
+    spread = _canonical_spread(
+        best_bid,
+        best_ask,
+        _optional_probability_float(payload.get("spread"), "spread"),
+    )
     token_id = str(payload.get("token_id") or row.get("symbol"))
     return (
         OrderBookObservation(
@@ -191,9 +193,11 @@ def _orderbook_from_state_row(row: object) -> OrderBookObservation:
         raise ValueError("state-manager orderbook row must be an object")
     best_bid = _optional_probability_float(row.get("best_bid"), "best_bid")
     best_ask = _optional_probability_float(row.get("best_ask"), "best_ask")
-    spread = _optional_probability_float(row.get("spread"), "spread")
-    if spread is None and best_bid is not None and best_ask is not None:
-        spread = best_ask - best_bid
+    spread = _canonical_spread(
+        best_bid,
+        best_ask,
+        _optional_probability_float(row.get("spread"), "spread"),
+    )
     return OrderBookObservation(
         venue=str(row.get("venue") or "polymarket"),
         contract_id=str(row["contract_id"]),
@@ -305,6 +309,16 @@ def _optional_probability_float(value: object, field_name: str) -> float | None:
     if isinstance(value, str) and not value:
         return None
     return _probability_float(value, field_name)
+
+
+def _canonical_spread(
+    best_bid: float | None,
+    best_ask: float | None,
+    fallback: float | None,
+) -> float | None:
+    if best_bid is not None and best_ask is not None:
+        return best_ask - best_bid
+    return fallback
 
 
 def _optional_nonnegative_float(value: object, field_name: str) -> float | None:
