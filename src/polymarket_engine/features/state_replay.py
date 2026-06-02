@@ -26,6 +26,8 @@ def build_decision_state_from_store(
     volatility_source_key: str | None = None,
     volatility_lookback_limit: int = 180,
     volatility_config: VolatilityConfig | None = None,
+    stale_source_after_ms: int = 2_000,
+    stale_book_after_ms: int = 2_000,
 ) -> DecisionState:
     threshold = None
     if contract.threshold_type == "start_price":
@@ -85,6 +87,8 @@ def build_decision_state_from_store(
         orderbooks=orderbooks,
         volatility=selected_volatility,
         threshold_observation=threshold,
+        stale_source_after_ms=stale_source_after_ms,
+        stale_book_after_ms=stale_book_after_ms,
     )
 
 

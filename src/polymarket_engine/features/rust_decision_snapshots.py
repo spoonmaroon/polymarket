@@ -14,6 +14,7 @@ from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
 
 
 SETTLEMENT_SOURCE_KEY = "polymarket_rtds_chainlink"
+LIVE_HEALTH_FRESHNESS_MS = 30_000
 
 
 @dataclass(frozen=True)
@@ -60,6 +61,8 @@ def build_current_decision_state_snapshots(
                 volatility=None,
                 volatility_source_key=SETTLEMENT_SOURCE_KEY,
                 volatility_lookback_limit=180,
+                stale_source_after_ms=LIVE_HEALTH_FRESHNESS_MS,
+                stale_book_after_ms=LIVE_HEALTH_FRESHNESS_MS,
             )
         except DecisionStateUnavailable as exc:
             unavailable.append(
