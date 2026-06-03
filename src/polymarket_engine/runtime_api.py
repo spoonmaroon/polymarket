@@ -12,6 +12,7 @@ import duckdb
 from fastapi import APIRouter, HTTPException
 
 from polymarket_engine.monitor import MonitorSnapshot, fetch_monitor_snapshot
+from polymarket_engine.probability.runtime import ProbabilityRuntimeCache
 from polymarket_engine.runtime_gates import evaluate_runtime_gates
 
 
@@ -27,6 +28,7 @@ def build_runtime_router(
     enable_container_status: bool = False,
 ) -> APIRouter:
     router = APIRouter(prefix="/api/runtime")
+    probability_cache = ProbabilityRuntimeCache()
 
     @router.get("/status")
     def runtime_status() -> dict[str, Any]:
@@ -143,6 +145,23 @@ def build_runtime_router(
             status_path=status_path,
             normalized_health_path=normalized_health_path,
         )
+
+    @router.get("/probabilities")
+    def runtime_probabilities(limit: int = 8) -> dict[str, Any]:
+        try:
+            return probability_cache.payload(duckdb_path=duckdb_path, limit=limit)
+        except ValueError as exc:
+            return {
+                "ok": False,
+                "state": "INVALID",
+                "error": str(exc),
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "cached": False,
+                "model_version": None,
+                "rows": [],
+                "skipped": 0,
+                "errors": [str(exc)],
+            }
 
     @router.get("/storage")
     def storage() -> dict[str, Any]:

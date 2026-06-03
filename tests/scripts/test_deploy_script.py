@@ -158,6 +158,30 @@ def test_normalizer_sidecar_is_deployed_and_health_checked() -> None:
     assert "$DATA_DIR/live/normalized_health.json" in script
 
 
+def test_runtime_api_service_is_deployed_with_engine_compose() -> None:
+    compose = (ROOT / "deploy" / "collector" / "docker-compose.yml").read_text(
+        encoding="utf-8"
+    )
+    env_example = (ROOT / "deploy" / "collector" / ".env.example").read_text(
+        encoding="utf-8"
+    )
+    script = (ROOT / "scripts" / "deploy.sh").read_text(encoding="utf-8")
+    pc_script = (ROOT / "scripts" / "deploy_pc.sh").read_text(encoding="utf-8")
+
+    assert "api:" in compose
+    assert "uvicorn" in compose
+    assert "polymarket_engine.app:app" in compose
+    assert "POLYMARKET_STATUS_PATH: /var/lib/polymarket/live/status.json" in compose
+    assert "POLYMARKET_DUCKDB_PATH: /var/lib/polymarket/db/polymarket.duckdb" in compose
+    assert "${POLYMARKET_API_PORT:-8000}:8000" in compose
+    assert "POLYMARKET_API_PORT=8000" in env_example
+    assert "POLYMARKET_ENABLE_CONTAINER_STATUS=1" in env_example
+    assert "up -d collector normalizer api" in script
+    assert "up -d --build collector normalizer api" in script
+    assert "logs --tail=80 collector normalizer api" in script
+    assert "docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml ps" in pc_script
+
+
 def test_compose_and_env_support_prebuilt_image_overrides() -> None:
     compose = (ROOT / "deploy" / "collector" / "docker-compose.yml").read_text(
         encoding="utf-8"

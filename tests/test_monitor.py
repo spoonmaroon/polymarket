@@ -251,6 +251,89 @@ def test_monitor_snapshot_reads_rust_state_manager_status(tmp_path: Path) -> Non
     assert "states_built=4890" in output
 
 
+def test_monitor_snapshot_shapes_state_manager_books_to_active_current_and_next_rows(
+    tmp_path: Path,
+) -> None:
+    status_path = tmp_path / "status.json"
+    current_start = datetime(2026, 6, 3, 22, 0, tzinfo=timezone.utc)
+    next_start = datetime(2026, 6, 3, 22, 5, tzinfo=timezone.utc)
+    next_next_start = datetime(2026, 6, 3, 22, 10, tzinfo=timezone.utc)
+    expired_start = datetime(2026, 6, 3, 21, 55, tzinfo=timezone.utc)
+    observed_ts = "2026-06-03T22:04:30Z"
+    status_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "rust-live-probe-state-manager-v1",
+                "mode": "state-manager",
+                "generated_at": observed_ts,
+                "current": [
+                    _state_manager_contract("BTC", current_start, "btc-current"),
+                    _state_manager_contract("ETH", current_start, "eth-current"),
+                ],
+                "next": [
+                    _state_manager_contract("BTC", next_start, "btc-next"),
+                    _state_manager_contract("ETH", next_start, "eth-next"),
+                ],
+                "next_next": [
+                    _state_manager_contract("BTC", next_next_start, "btc-next-next"),
+                    _state_manager_contract("ETH", next_next_start, "eth-next-next"),
+                ],
+                "chainlink_prices": [],
+                "orderbooks": [
+                    _status_orderbook("ETH", "UP", "eth-current-up", observed_ts, bid=0.0, ask=0.75),
+                    _status_orderbook("BTC", "DOWN", "btc-next-down", observed_ts, bid=0.49, ask=0.50),
+                    _status_orderbook("BTC", "UP", "btc-expired-up", observed_ts, bid=0.91, ask=0.92),
+                    _status_orderbook("BTC", "UP", "btc-current-up", observed_ts, bid=0.88, ask=0.89),
+                    _status_orderbook("ETH", "DOWN", "eth-next-down", observed_ts, bid=0.24, ask=0.25),
+                ],
+                "freshness": [],
+                "latency_marks": [],
+                "health_flags": [],
+                "websocket_status": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    expired_contract_id = "btc-updown-5m-" + str(int(expired_start.timestamp()))
+
+    snapshot = _snapshot_from_status(
+        status_path,
+        limit=12,
+        now=datetime(2026, 6, 3, 22, 4, 30, tzinfo=timezone.utc),
+    )
+
+    assert [
+        (row["asset"], row["window"], row["side"])
+        for row in snapshot.orderbooks
+    ] == [
+        ("BTC", "current", "UP"),
+        ("BTC", "current", "DOWN"),
+        ("BTC", "next", "UP"),
+        ("BTC", "next", "DOWN"),
+        ("ETH", "current", "UP"),
+        ("ETH", "current", "DOWN"),
+        ("ETH", "next", "UP"),
+        ("ETH", "next", "DOWN"),
+    ]
+    assert all(row["contract_id"] != expired_contract_id for row in snapshot.orderbooks)
+    btc_current_down = next(
+        row
+        for row in snapshot.orderbooks
+        if row["asset"] == "BTC" and row["window"] == "current" and row["side"] == "DOWN"
+    )
+    eth_current_up = next(
+        row
+        for row in snapshot.orderbooks
+        if row["asset"] == "ETH" and row["window"] == "current" and row["side"] == "UP"
+    )
+    assert btc_current_down["best_bid"] is None
+    assert btc_current_down["best_ask"] is None
+    assert btc_current_down["book_state"] == "missing"
+    assert eth_current_up["best_bid"] is None
+    assert eth_current_up["best_ask"] == pytest.approx(0.75)
+    assert eth_current_up["book_state"] == "no_bid"
+
+
 def test_monitor_snapshot_recomputes_status_freshness_against_wall_time(tmp_path: Path) -> None:
     status_path = tmp_path / "status.json"
     status_path.write_text(
@@ -317,6 +400,53 @@ def test_monitor_snapshot_recomputes_status_freshness_against_wall_time(tmp_path
     assert snapshot.source_disagreements[0]["block_reason"] == "stale_reference_source"
     assert snapshot.orderbook_freshness[0]["stale"] is True
     assert snapshot.orderbook_freshness[0]["age_ms"] == 10_000
+
+
+def _state_manager_contract(
+    asset: str,
+    start_ts: datetime,
+    token_prefix: str,
+) -> dict[str, Any]:
+    end_ts = start_ts.replace(minute=start_ts.minute + 5)
+    return {
+        "window": {
+            "asset": asset,
+            "interval": "5m",
+            "start_ts": start_ts.isoformat(),
+            "end_ts": end_ts.isoformat(),
+        },
+        "up": {"asset": asset, "side": "Up", "token_id": f"{token_prefix}-up"},
+        "down": {"asset": asset, "side": "Down", "token_id": f"{token_prefix}-down"},
+    }
+
+
+def _status_orderbook(
+    asset: str,
+    side: str,
+    token_id: str,
+    observed_ts: str,
+    *,
+    bid: float,
+    ask: float,
+) -> dict[str, Any]:
+    return {
+        "venue": "polymarket",
+        "source_key": "polymarket_rust_sdk",
+        "market_slug": f"{asset.lower()}-updown-5m-1780524000",
+        "contract_id": f"{asset.lower()}-contract-{token_id}",
+        "token_id": token_id,
+        "asset": asset,
+        "side": side,
+        "event_ts": observed_ts,
+        "observed_ts": observed_ts,
+        "best_bid": bid,
+        "best_ask": ask,
+        "spread": ask - bid,
+        "bid_size_top": 100.0,
+        "ask_size_top": 120.0,
+        "bids": [{"price": bid, "size": 100.0}],
+        "asks": [{"price": ask, "size": 120.0}],
+    }
 
 
 def test_monitor_snapshot_rejects_naive_status_timestamp(tmp_path: Path) -> None:

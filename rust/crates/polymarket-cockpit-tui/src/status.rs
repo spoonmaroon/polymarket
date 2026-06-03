@@ -43,6 +43,27 @@ pub struct RuntimeMonitor {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct RuntimeProbabilities {
+    pub generated_at: String,
+    #[serde(default)]
+    pub cached: bool,
+    #[serde(default)]
+    pub rows: Vec<RuntimeProbabilityRow>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct RuntimeProbabilityRow {
+    pub contract: String,
+    pub p_finish: f64,
+    pub p_no_touch: f64,
+    pub z_path: f64,
+    pub sigma_tau: f64,
+    pub age_ms: u64,
+    #[serde(default)]
+    pub flags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct RuntimePriceRow {
     #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
     pub source_key: Option<String>,
@@ -126,7 +147,7 @@ impl RuntimeStatus {
 
 #[cfg(test)]
 mod tests {
-    use super::{RuntimeGates, RuntimeMonitor, RuntimeStatus};
+    use super::{RuntimeGates, RuntimeMonitor, RuntimeProbabilities, RuntimeStatus};
 
     #[test]
     fn status_payload_parses_and_labels_ok() {
@@ -249,5 +270,29 @@ mod tests {
         assert_eq!(monitor.orderbooks[0].best_ask, None);
         assert!(monitor.orderbooks[0].market_slug.is_none());
         assert!(monitor.orderbooks[0].bids.is_empty());
+    }
+
+    #[test]
+    fn probabilities_payload_parses_cached_rows() {
+        let payload = r#"{
+            "generated_at": "2026-06-03T21:43:20.744215+00:00",
+            "cached": true,
+            "rows": [{
+                "contract": "BTC 5m UP",
+                "p_finish": 0.57,
+                "p_no_touch": 0.31,
+                "z_path": 0.42,
+                "sigma_tau": 0.0123,
+                "age_ms": 850,
+                "flags": ["OK"]
+            }]
+        }"#;
+
+        let probabilities: RuntimeProbabilities = serde_json::from_str(payload).unwrap();
+
+        assert!(probabilities.cached);
+        assert_eq!(probabilities.rows[0].contract, "BTC 5m UP");
+        assert_eq!(probabilities.rows[0].p_finish, 0.57);
+        assert_eq!(probabilities.rows[0].flags, vec!["OK"]);
     }
 }

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timezone
 from pathlib import Path
 from typing import NoReturn
 import json
@@ -11,6 +11,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 from polymarket_engine.app import create_app
+from polymarket_engine.app import create_app_from_env
+from polymarket_engine.domain.contracts import ContractSpec
+from polymarket_engine.domain.market_state import DecisionState
+from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
 
 
 def _write_status(path: Path) -> None:
@@ -65,6 +69,27 @@ def test_runtime_status_reads_state_manager_file(tmp_path: Path) -> None:
     assert payload["mode"] == "state-manager"
     assert payload["counts"]["prices"] == 1
     assert payload["counts"]["orderbooks"] == 1
+
+
+def test_create_app_from_env_uses_runtime_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    status_path = tmp_path / "live" / "status.json"
+    status_path.parent.mkdir()
+    _write_status(status_path)
+    duckdb_path = tmp_path / "db" / "polymarket.duckdb"
+    normalized_health_path = tmp_path / "live" / "normalized_health.json"
+    data_dir = tmp_path / "data"
+    monkeypatch.setenv("POLYMARKET_STATUS_PATH", str(status_path))
+    monkeypatch.setenv("POLYMARKET_DUCKDB_PATH", str(duckdb_path))
+    monkeypatch.setenv("POLYMARKET_NORMALIZED_HEALTH_PATH", str(normalized_health_path))
+    monkeypatch.setenv("POLYMARKET_DATA_DIR", str(data_dir))
+
+    response = TestClient(create_app_from_env()).get("/api/runtime/status")
+
+    assert response.status_code == 200
+    assert response.json()["status_path"] == str(status_path)
 
 
 def test_runtime_status_malformed_json_returns_controlled_state(tmp_path: Path) -> None:
@@ -425,6 +450,147 @@ def test_runtime_containers_disabled_by_default() -> None:
 
     assert response.status_code == 403
     assert response.json()["detail"] == "container status disabled"
+
+
+def test_runtime_probabilities_runs_cached_read_only_mc_and_persists_output(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "polymarket.duckdb"
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    state = _decision_state()
+    store.upsert_contract_spec(state.contract)
+    store.upsert_asof_state_input(state)
+    app = create_app(
+        status_path=tmp_path / "missing-status.json",
+        duckdb_path=db_path,
+    )
+    client = TestClient(app)
+
+    first = client.get("/api/runtime/probabilities?limit=4")
+    second = client.get("/api/runtime/probabilities?limit=4")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    first_payload = first.json()
+    second_payload = second.json()
+    assert first_payload["ok"] is True
+    assert first_payload["cached"] is False
+    assert second_payload["cached"] is True
+    assert len(first_payload["rows"]) == 1
+    row = first_payload["rows"][0]
+    assert row["contract"] == "BTC 5m UP"
+    assert 0.0 <= row["p_finish"] <= 1.0
+    assert 0.0 <= row["p_no_touch"] <= 1.0
+    assert row["sigma_tau"] == pytest.approx(0.01)
+    assert row["flags"] == ["OK"]
+    with duckdb.connect(str(db_path)) as conn:
+        assert conn.execute("select count(*) from features.probability_outputs").fetchone() == (1,)
+
+
+def test_runtime_probabilities_returns_empty_envelope_for_missing_duckdb(
+    tmp_path: Path,
+) -> None:
+    app = create_app(
+        status_path=tmp_path / "missing-status.json",
+        duckdb_path=tmp_path / "missing.duckdb",
+    )
+
+    response = TestClient(app).get("/api/runtime/probabilities")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["state"] == "MISSING"
+    assert payload["rows"] == []
+
+
+def test_runtime_probabilities_skips_quality_blocked_asof_states(tmp_path: Path) -> None:
+    db_path = tmp_path / "polymarket.duckdb"
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    state = _decision_state(data_quality_flags=("stale_source",))
+    store.upsert_contract_spec(state.contract)
+    store.upsert_asof_state_input(state)
+    app = create_app(
+        status_path=tmp_path / "missing-status.json",
+        duckdb_path=db_path,
+    )
+
+    response = TestClient(app).get("/api/runtime/probabilities")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["state"] == "OK"
+    assert payload["rows"] == []
+    assert payload["skipped"] == 1
+
+
+def _contract() -> ContractSpec:
+    return ContractSpec(
+        contract_id="btc-market:UP",
+        venue="polymarket",
+        market_id="btc-market",
+        condition_id="0xbtc",
+        slug="btc-updown-5m-1780264500",
+        asset="BTC",
+        side="UP",
+        token_id="btc-up-token",
+        threshold_type="start_price",
+        threshold_price=None,
+        comparison_operator=">=",
+        start_ts=datetime(2026, 6, 3, 20, 0, tzinfo=timezone.utc),
+        expiry_ts=datetime(2026, 6, 3, 20, 5, tzinfo=timezone.utc),
+        settlement_source_name="chainlink_data_streams",
+        settlement_source_url="https://data.chain.link/streams/btc-usd",
+        settlement_symbol="BTC/USD",
+        rule_text="fixture",
+        rule_hash="hash",
+        parser_version="test",
+    )
+
+
+def _decision_state(
+    *,
+    data_quality_flags: tuple[str, ...] = (),
+) -> DecisionState:
+    contract = _contract()
+    asof_ts = datetime(2026, 6, 3, 20, 3, tzinfo=timezone.utc)
+    return DecisionState(
+        state_id="state-btc-up",
+        asof_ts=asof_ts,
+        contract=contract,
+        threshold=100.0,
+        threshold_source_key="polymarket_rtds_chainlink",
+        threshold_event_ts=datetime(2026, 6, 3, 20, 0, tzinfo=timezone.utc),
+        threshold_observed_ts=datetime(2026, 6, 3, 20, 0, 1, tzinfo=timezone.utc),
+        seconds_left=2.0,
+        settlement_price=101.0,
+        settlement_source_key="polymarket_rtds_chainlink",
+        settlement_event_ts=asof_ts,
+        settlement_observed_ts=asof_ts,
+        proxy_prices={"coinbase_advanced_ws": 101.01},
+        source_disagreement_bps=0.1,
+        best_bid=0.61,
+        best_ask=0.64,
+        executable_price=0.64,
+        spread=0.03,
+        book_event_ts=asof_ts,
+        book_observed_ts=asof_ts,
+        quote_age_ms=100,
+        source_age_ms=100,
+        source_observed_lag_ms=0,
+        book_age_ms=120,
+        book_observed_lag_ms=0,
+        realized_returns=(0.001, -0.0005),
+        short_realized_vol=0.01,
+        medium_realized_vol=0.01,
+        long_realized_vol=0.01,
+        sigma_tau=0.01,
+        volatility_regime="normal",
+        data_quality_flags=data_quality_flags,
+    )
 
 
 def test_runtime_containers_enabled_missing_docker_returns_controlled_state(

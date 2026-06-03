@@ -96,14 +96,24 @@ def _score_validated_paths(
     no_touch_wins = 0
     for path in paths:
         final_price = path[-1]
-        remaining_prices = path[1:]
-        if probability_input.side == "UP":
-            terminal_wins += int(final_price >= probability_input.threshold)
-            no_touch_wins += int(all(price >= probability_input.threshold for price in remaining_prices))
-        else:
-            terminal_wins += int(final_price < probability_input.threshold)
-            no_touch_wins += int(all(price < probability_input.threshold for price in remaining_prices))
+        terminal_wins += int(_price_satisfies_contract(probability_input, final_price))
+        no_touch_wins += int(
+            all(_price_satisfies_contract(probability_input, price) for price in path)
+        )
     return {"terminal_wins": terminal_wins, "no_touch_wins": no_touch_wins}
+
+
+def _price_satisfies_contract(probability_input: ProbabilityInput, price: float) -> bool:
+    threshold = probability_input.threshold
+    if probability_input.comparison_operator == ">":
+        return price > threshold
+    if probability_input.comparison_operator == ">=":
+        return price >= threshold
+    if probability_input.comparison_operator == "<":
+        return price < threshold
+    if probability_input.comparison_operator == "<=":
+        return price <= threshold
+    raise ValueError("unsupported comparison_operator")
 
 
 def _require_positive_int(value: int, field_name: str) -> None:

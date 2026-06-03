@@ -188,7 +188,7 @@ def _snapshot_from_status(
     generated_at = _parse_datetime(payload["generated_at"])
     wall_time = datetime.now(timezone.utc) if now is None else _to_utc(now)
     price_rows = _status_price_rows(payload)
-    orderbooks = tuple(dict(row) for row in payload.get("orderbooks", ())[:limit])
+    orderbooks = _status_orderbook_rows(payload, limit=limit)
     contracts = _status_contract_rows(payload, limit=limit)
     ingest_counts = tuple(dict(row) for row in payload.get("ingest_counts", ()))
     normalized_health = tuple(dict(row) for row in payload.get("normalized_health", ()))
@@ -239,6 +239,182 @@ def _status_contract_rows(payload: dict[str, Any], *, limit: int) -> tuple[dict[
     if "contracts" in payload:
         return tuple(dict(row) for row in payload.get("contracts", ())[:limit])
     return _state_manager_contract_rows(payload, limit=limit)
+
+
+def _status_orderbook_rows(payload: dict[str, Any], *, limit: int) -> tuple[dict[str, Any], ...]:
+    if any(payload.get(group) for group in ("current", "next")):
+        return _state_manager_orderbook_rows(payload, limit=limit)
+    return tuple(_normalize_orderbook_row(dict(row)) for row in payload.get("orderbooks", ())[:limit])
+
+
+def _state_manager_orderbook_rows(
+    payload: dict[str, Any],
+    *,
+    limit: int,
+) -> tuple[dict[str, Any], ...]:
+    contracts = _state_manager_book_contract_rows(payload, limit=limit)
+    raw_books_by_token = {
+        str(row.get("token_id", "")): dict(row)
+        for row in payload.get("orderbooks", ())
+        if isinstance(row, dict) and row.get("token_id")
+    }
+
+    rows: list[dict[str, Any]] = []
+    for contract in contracts:
+        raw = raw_books_by_token.get(str(contract["token_id"]))
+        row = _normalize_orderbook_row({} if raw is None else raw)
+        for key, value in contract.items():
+            row[key] = value
+        if raw is None:
+            row.update(
+                {
+                    "venue": "polymarket",
+                    "source_key": "polymarket_rust_sdk",
+                    "event_ts": None,
+                    "observed_ts": None,
+                    "best_bid": None,
+                    "best_ask": None,
+                    "spread": None,
+                    "bid_size_top": None,
+                    "ask_size_top": None,
+                    "bids": [],
+                    "asks": [],
+                    "book_state": "missing",
+                }
+            )
+        else:
+            row["book_state"] = _book_state(row)
+        rows.append(row)
+        if len(rows) >= limit:
+            break
+    return tuple(rows)
+
+
+def _state_manager_book_contract_rows(
+    payload: dict[str, Any],
+    *,
+    limit: int,
+) -> tuple[dict[str, Any], ...]:
+    rows: list[dict[str, Any]] = []
+    group_order = {"current": 0, "next": 1}
+    side_order = {"UP": 0, "DOWN": 1}
+    asset_order = {"BTC": 0, "ETH": 1}
+    for group in ("current", "next"):
+        for raw_contract in payload.get(group, ()):
+            contract = dict(raw_contract)
+            window = dict(contract.get("window", {}))
+            asset = str(window.get("asset", "")).upper()
+            interval = str(window.get("interval", ""))
+            start_ts = str(window.get("start_ts", ""))
+            expiry_ts = str(window.get("end_ts", ""))
+            contract_id = _state_manager_contract_id(
+                asset=asset,
+                interval=interval,
+                start_ts=start_ts,
+            )
+            market_slug = contract_id
+            for token_key in ("up", "down"):
+                token = dict(contract.get(token_key, {}))
+                side = str(token.get("side", token_key)).upper()
+                rows.append(
+                    {
+                        "contract_id": contract_id,
+                        "market_slug": market_slug,
+                        "asset": asset,
+                        "side": side,
+                        "token_id": token.get("token_id", ""),
+                        "start_ts": start_ts,
+                        "expiry_ts": expiry_ts,
+                        "window": group,
+                        "_sort": (
+                            asset_order.get(asset, len(asset_order)),
+                            _sort_datetime(start_ts),
+                            group_order[group],
+                            side_order.get(side, len(side_order)),
+                        ),
+                    }
+                )
+    rows.sort(key=lambda row: row["_sort"])
+    shaped = []
+    for row in rows[:limit]:
+        shaped.append({key: value for key, value in row.items() if key != "_sort"})
+    return tuple(shaped)
+
+
+def _normalize_orderbook_row(row: dict[str, Any]) -> dict[str, Any]:
+    bid = _positive_number_or_none(row.get("best_bid"))
+    ask = _positive_number_or_none(row.get("best_ask"))
+    normalized = dict(row)
+    normalized["best_bid"] = bid
+    normalized["best_ask"] = ask
+    normalized["bid_size_top"] = (
+        _positive_number_or_none(row.get("bid_size_top")) if bid is not None else None
+    )
+    normalized["ask_size_top"] = (
+        _positive_number_or_none(row.get("ask_size_top")) if ask is not None else None
+    )
+    normalized["spread"] = _positive_spread(row.get("spread"), bid=bid, ask=ask)
+    normalized["bids"] = _positive_book_levels(row.get("bids", ()))
+    normalized["asks"] = _positive_book_levels(row.get("asks", ()))
+    return normalized
+
+
+def _book_state(row: dict[str, Any]) -> str:
+    has_bid = row.get("best_bid") is not None
+    has_ask = row.get("best_ask") is not None
+    if has_bid and has_ask:
+        return "ok"
+    if not has_bid and not has_ask:
+        return "no_bid_ask"
+    if not has_bid:
+        return "no_bid"
+    return "no_ask"
+
+
+def _positive_book_levels(rows: Any) -> list[dict[str, Any]]:
+    levels: list[dict[str, Any]] = []
+    raw_rows = rows if isinstance(rows, (list, tuple)) else ()
+    for raw_level in raw_rows:
+        if not isinstance(raw_level, dict):
+            continue
+        price = _positive_number_or_none(raw_level.get("price"))
+        size = _positive_number_or_none(raw_level.get("size"))
+        if price is None or size is None:
+            continue
+        level = dict(raw_level)
+        level["price"] = price
+        level["size"] = size
+        levels.append(level)
+    return levels
+
+
+def _positive_spread(value: object, *, bid: float | None, ask: float | None) -> float | None:
+    spread = _positive_number_or_none(value)
+    if spread is not None:
+        return spread
+    if bid is None or ask is None:
+        return None
+    computed = ask - bid
+    return computed if computed > 0 else None
+
+
+def _positive_number_or_none(value: object) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number <= 0:
+        return None
+    return number
+
+
+def _sort_datetime(value: str) -> datetime:
+    try:
+        return _parse_datetime(value)
+    except ValueError:
+        return datetime.max.replace(tzinfo=timezone.utc)
 
 
 def _state_manager_contract_rows(

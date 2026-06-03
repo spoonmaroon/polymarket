@@ -14,6 +14,7 @@ PC_DATA_DIR="${PC_DATA_DIR:-/home/ender/polymarket-data}"
 PC_DIST_DIR="${PC_DIST_DIR:-/home/ender/polymarket-image-artifacts}"
 PC_NORMALIZER_INTERVAL_SECONDS="${PC_NORMALIZER_INTERVAL_SECONDS:-0.1}"
 PC_REST_BACKUP_INTERVAL_MS="${PC_REST_BACKUP_INTERVAL_MS:-1000}"
+PC_API_PORT="${PC_API_PORT:-8000}"
 PC_DEPLOY_BUILD_IMAGES="${PC_DEPLOY_BUILD_IMAGES:-1}"
 PC_BRANCH="${PC_BRANCH:-$(git -C "$ROOT" branch --show-current)}"
 
@@ -104,6 +105,7 @@ PC_DATA_DIR=$(shell_quote "$PC_DATA_DIR")
 PC_DIST_DIR=$(shell_quote "$PC_DIST_DIR")
 PC_NORMALIZER_INTERVAL_SECONDS=$(shell_quote "$PC_NORMALIZER_INTERVAL_SECONDS")
 PC_REST_BACKUP_INTERVAL_MS=$(shell_quote "$PC_REST_BACKUP_INTERVAL_MS")
+PC_API_PORT=$(shell_quote "$PC_API_PORT")
 COLLECTOR_IMAGE=$(shell_quote "$COLLECTOR_IMAGE")
 NORMALIZER_IMAGE=$(shell_quote "$NORMALIZER_IMAGE")
 COLLECTOR_TAR=$(shell_quote "$PC_DIST_DIR/$(basename "$COLLECTOR_TAR")")
@@ -159,6 +161,7 @@ set_env POLYMARKET_GID "\$(id -g)" deploy/collector/.env
 set_env POLYMARKET_DATA_DIR "\$PC_DATA_DIR" deploy/collector/.env
 set_env POLYMARKET_NORMALIZER_INTERVAL_SECONDS "\$PC_NORMALIZER_INTERVAL_SECONDS" deploy/collector/.env
 set_env POLYMARKET_REST_BACKUP_INTERVAL_MS "\$PC_REST_BACKUP_INTERVAL_MS" deploy/collector/.env
+set_env POLYMARKET_API_PORT "\$PC_API_PORT" deploy/collector/.env
 set_env POLYMARKET_COLLECTOR_IMAGE "\$COLLECTOR_IMAGE" deploy/collector/.env
 set_env POLYMARKET_NORMALIZER_IMAGE "\$NORMALIZER_IMAGE" deploy/collector/.env
 

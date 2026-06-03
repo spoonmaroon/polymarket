@@ -28,9 +28,11 @@ pub fn book_rows(app: &AppState) -> Vec<BookDisplayRow> {
     };
 
     let mut bids = orderbook.bids.iter().collect::<Vec<_>>();
+    bids.retain(|level| level_price(level).is_some() && level_size(level).is_some());
     bids.sort_by(|left, right| compare_level_price_desc(left, right));
     let bids = bids.into_iter().take(6).collect::<Vec<_>>();
     let mut asks = orderbook.asks.iter().collect::<Vec<_>>();
+    asks.retain(|level| level_price(level).is_some() && level_size(level).is_some());
     asks.sort_by(|left, right| compare_level_price_asc(left, right));
     let asks = asks.into_iter().take(6).collect::<Vec<_>>();
     let row_count = bids.len().max(asks.len());
@@ -56,14 +58,14 @@ pub fn book_rows(app: &AppState) -> Vec<BookDisplayRow> {
 }
 
 fn price_size(price: Option<&str>, size: Option<&str>) -> String {
-    let Some(price) = price.filter(|value| !value.is_empty()) else {
+    let Some(price) = positive_scalar(price) else {
         return "-".to_string();
     };
 
-    if let Some(size) = size.filter(|value| !value.is_empty()) {
+    if let Some(size) = positive_scalar(size) {
         format!("{price} x{size}")
     } else {
-        price.to_string()
+        price
     }
 }
 
@@ -86,7 +88,31 @@ fn compare_level_price_desc(left: &RuntimeBookLevel, right: &RuntimeBookLevel) -
 }
 
 fn level_price(level: &RuntimeBookLevel) -> Option<f64> {
-    level.price.as_deref()?.parse::<f64>().ok()
+    positive_number(level.price.as_deref())
+}
+
+fn level_size(level: &RuntimeBookLevel) -> Option<f64> {
+    positive_number(level.size.as_deref())
+}
+
+fn positive_scalar(value: Option<&str>) -> Option<String> {
+    let value = value?.trim();
+    if value.is_empty() {
+        return None;
+    }
+    let Ok(number) = value.parse::<f64>() else {
+        return Some(value.to_string());
+    };
+    if number <= 0.0 {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
+fn positive_number(value: Option<&str>) -> Option<f64> {
+    let number = value?.trim().parse::<f64>().ok()?;
+    if number > 0.0 { Some(number) } else { None }
 }
 
 pub fn render(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
@@ -125,6 +151,8 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
 
 #[cfg(test)]
 mod tests {
+    use chrono::{Local, TimeZone, Utc};
+
     use crate::{
         state::AppState,
         status::{RuntimeBookLevel, RuntimeMonitor, RuntimeOrderbookRow},
@@ -241,6 +269,53 @@ mod tests {
     }
 
     #[test]
+    fn book_rows_hide_nonpositive_levels() {
+        let app = AppState {
+            runtime_monitor: Some(RuntimeMonitor {
+                generated_at: "2026-06-03T21:22:15Z".to_string(),
+                price_rows: Vec::new(),
+                orderbooks: vec![RuntimeOrderbookRow {
+                    venue: Some("polymarket".to_string()),
+                    source_key: Some("polymarket_rust_sdk".to_string()),
+                    market_slug: Some("btc-updown-5m-1780521900".to_string()),
+                    contract_id: "btc-up".to_string(),
+                    token_id: Some("btc-up-token".to_string()),
+                    asset: Some("BTC".to_string()),
+                    side: Some("UP".to_string()),
+                    event_ts: None,
+                    observed_ts: Some("2026-06-03T21:22:15Z".to_string()),
+                    best_bid: Some("0".to_string()),
+                    best_ask: Some("0.51".to_string()),
+                    spread: None,
+                    bid_size_top: Some("100".to_string()),
+                    ask_size_top: Some("603.36".to_string()),
+                    bids: vec![
+                        RuntimeBookLevel {
+                            price: Some("0".to_string()),
+                            size: Some("100".to_string()),
+                        },
+                        RuntimeBookLevel {
+                            price: Some("0.49".to_string()),
+                            size: Some("0".to_string()),
+                        },
+                    ],
+                    asks: vec![RuntimeBookLevel {
+                        price: Some("0.51".to_string()),
+                        size: Some("603.36".to_string()),
+                    }],
+                }],
+            }),
+            ..Default::default()
+        };
+
+        let rows = book_rows(&app);
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].bid, "-");
+        assert_eq!(rows[0].ask, "0.51 x603.36");
+    }
+
+    #[test]
     fn book_rows_and_title_follow_selected_market_contract() {
         let mut app = AppState {
             runtime_monitor: Some(RuntimeMonitor {
@@ -303,9 +378,21 @@ mod tests {
 
         let rows = book_rows(&app);
 
-        assert_eq!(book_title(&app), "Book: BTC DOWN 21:10Z");
+        assert_eq!(
+            book_title(&app),
+            format!("Book: BTC DOWN {}", local_epoch_label(1_780_521_000))
+        );
         assert_eq!(rows[0].contract, "BTC DOWN");
         assert_eq!(rows[0].bid, "0.49 x1256.68");
         assert_eq!(rows[0].ask, "0.50 x702.96");
+    }
+
+    fn local_epoch_label(epoch_seconds: i64) -> String {
+        Utc.timestamp_opt(epoch_seconds, 0)
+            .single()
+            .unwrap()
+            .with_timezone(&Local)
+            .format("%H:%M %Z")
+            .to_string()
     }
 }

@@ -5,6 +5,7 @@ pub mod logs;
 pub mod market;
 pub mod orderbook;
 pub mod price;
+pub mod probability;
 pub mod systems;
 
 use ratatui::Frame;
@@ -30,6 +31,10 @@ pub fn render(frame: &mut Frame<'_>, app: &AppState) {
         }
         MainTab::Market => {
             market::render(frame, body.primary, app);
+            systems::render(frame, body.secondary, app);
+        }
+        MainTab::Probability => {
+            probability::render(frame, body.primary, app);
             systems::render(frame, body.secondary, app);
         }
         MainTab::Logs => {

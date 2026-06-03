@@ -32,7 +32,7 @@ cd /home/spoon/polymarket
 cp deploy/collector/.env.example deploy/collector/.env
 sed -i "s/^POLYMARKET_UID=.*/POLYMARKET_UID=$(id -u)/" deploy/collector/.env
 sed -i "s/^POLYMARKET_GID=.*/POLYMARKET_GID=$(id -g)/" deploy/collector/.env
-docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml up -d --build collector normalizer
+docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml up -d --build collector normalizer api
 python3 scripts/check_collector_status.py --status-path /home/spoon/polymarket-data/live/status.json --max-status-age-seconds 30 --max-price-age-ms 30000 --max-orderbook-age-ms 30000 --max-websocket-event-age-ms 30000
 ```
 
@@ -205,25 +205,27 @@ du -sh /home/spoon/polymarket-data/*
 ## Read-Only Cockpit TUI
 
 The `polymarket-cockpit-tui` is read-only. It polls the engine API for runtime
-status, gate failures, freshness, latency, health, storage, and optional
-container state. It must not place orders, deploy containers, rebuild images,
-write collector state, restart services, or access auth secrets.
+status, gate failures, freshness, latency, health, market books, and cached
+probability outputs. It must not place orders, deploy containers, rebuild
+images, write collector state, restart services, or access auth secrets.
 
 Local API:
 
 ```bash
 uv run uvicorn polymarket_engine.app:app --host 127.0.0.1 --port 8000
-cargo run --manifest-path rust/Cargo.toml -p polymarket-cockpit-tui -- --engine-api-url http://127.0.0.1:8000 --poll-interval-ms 250
+cargo run --manifest-path rust/Cargo.toml -p polymarket-cockpit-tui -- --engine-api-url http://127.0.0.1:8000 --poll-interval-ms 1000
 ```
 
 THEPC over Tailscale, using a configurable URL:
 
 ```bash
-cargo run --manifest-path rust/Cargo.toml -p polymarket-cockpit-tui -- --engine-api-url http://100.72.104.49:8000 --poll-interval-ms 250
+cargo run --manifest-path rust/Cargo.toml -p polymarket-cockpit-tui -- --engine-api-url http://100.72.104.49:8000 --poll-interval-ms 1000
 ```
 
-Container status is an operator-only API-side feature. Leave it disabled unless
-the API process is deliberately started with
+The deploy compose file runs `collector`, `normalizer`, and `api` with
+`restart: unless-stopped`, so the API should come back with Docker after a host
+restart. Container status is an operator-only API-side feature; enable it only
+for an API process that has Docker CLI access and
 `POLYMARKET_ENABLE_CONTAINER_STATUS=1`.
 
 ## No-Auth Latency Probe

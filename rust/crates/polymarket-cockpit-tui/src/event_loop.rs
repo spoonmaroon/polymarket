@@ -14,7 +14,7 @@ use crate::{
     client::EngineClient,
     render,
     state::{AppState, MainTab},
-    status::{RuntimeGates, RuntimeMonitor, RuntimeStatus},
+    status::{RuntimeGates, RuntimeMonitor, RuntimeProbabilities, RuntimeStatus},
 };
 
 type Tui = Terminal<CrosstermBackend<Stdout>>;
@@ -82,10 +82,17 @@ fn run_loop(
     app: &mut AppState,
     runtime_rx: &mut mpsc::UnboundedReceiver<RuntimeUpdate>,
 ) -> Result<()> {
-    loop {
-        drain_runtime_updates(app, runtime_rx);
+    let mut redraw_needed = true;
 
-        terminal.draw(|frame| render::render(frame, app))?;
+    loop {
+        if drain_runtime_updates(app, runtime_rx) {
+            redraw_needed = true;
+        }
+
+        if redraw_needed {
+            terminal.draw(|frame| render::render(frame, app))?;
+            redraw_needed = false;
+        }
 
         if !event::poll(Duration::from_millis(250))? {
             continue;
@@ -102,6 +109,7 @@ fn run_loop(
         if apply_key(app, key.code) {
             return Ok(());
         }
+        redraw_needed = true;
     }
 }
 
@@ -133,6 +141,7 @@ struct RuntimeUpdate {
     status: Option<RuntimeStatus>,
     gates: Option<RuntimeGates>,
     monitor: Option<RuntimeMonitor>,
+    probabilities: Option<RuntimeProbabilities>,
     error: Option<String>,
 }
 
@@ -176,27 +185,54 @@ impl Drop for RuntimePollTask {
 fn drain_runtime_updates(
     app: &mut AppState,
     runtime_rx: &mut mpsc::UnboundedReceiver<RuntimeUpdate>,
-) {
+) -> bool {
+    let mut changed = false;
     while let Ok(update) = runtime_rx.try_recv() {
-        apply_runtime_update(app, update);
+        changed |= apply_runtime_update(app, update);
     }
+    changed
 }
 
-fn apply_runtime_update(app: &mut AppState, update: RuntimeUpdate) {
+fn apply_runtime_update(app: &mut AppState, update: RuntimeUpdate) -> bool {
+    let mut changed = false;
+
     if let Some(status) = update.status {
-        app.runtime_status = Some(status);
+        changed |= replace_if_changed(&mut app.runtime_status, status);
     }
 
     if let Some(gates) = update.gates {
-        app.runtime_gates = Some(gates);
+        changed |= replace_if_changed(&mut app.runtime_gates, gates);
     }
 
     if let Some(monitor) = update.monitor {
-        app.runtime_monitor = Some(monitor);
-        app.sync_market_selection();
+        if replace_if_changed(&mut app.runtime_monitor, monitor) {
+            app.sync_market_selection();
+            changed = true;
+        }
     }
 
-    app.runtime_error = update.error;
+    if let Some(probabilities) = update.probabilities {
+        changed |= replace_if_changed(&mut app.runtime_probabilities, probabilities);
+    }
+
+    if app.runtime_error != update.error {
+        app.runtime_error = update.error;
+        changed = true;
+    }
+
+    changed
+}
+
+fn replace_if_changed<T>(slot: &mut Option<T>, next: T) -> bool
+where
+    T: PartialEq,
+{
+    if slot.as_ref() == Some(&next) {
+        false
+    } else {
+        *slot = Some(next);
+        true
+    }
 }
 
 async fn poll_runtime(client: &EngineClient) -> RuntimeUpdate {
@@ -204,9 +240,14 @@ async fn poll_runtime(client: &EngineClient) -> RuntimeUpdate {
     let mut status = None;
     let mut gates = None;
     let mut monitor = None;
+    let mut probabilities = None;
 
-    let (status_result, gates_result, monitor_result) =
-        tokio::join!(client.status(), client.gates(), client.monitor(8));
+    let (status_result, gates_result, monitor_result, probabilities_result) = tokio::join!(
+        client.status(),
+        client.gates(),
+        client.monitor(8),
+        client.probabilities(8)
+    );
 
     match status_result {
         Ok(next_status) => status = Some(next_status),
@@ -223,10 +264,16 @@ async fn poll_runtime(client: &EngineClient) -> RuntimeUpdate {
         Err(error) => errors.push(format!("monitor: {error}")),
     }
 
+    match probabilities_result {
+        Ok(next_probabilities) => probabilities = Some(next_probabilities),
+        Err(error) => errors.push(format!("probabilities: {error}")),
+    }
+
     RuntimeUpdate {
         status,
         gates,
         monitor,
+        probabilities,
         error: if errors.is_empty() {
             None
         } else {
@@ -255,7 +302,7 @@ mod tests {
         state::{AppState, MainTab},
         status::{
             RuntimeCounts, RuntimeGates, RuntimeMonitor, RuntimeOrderbookRow, RuntimePriceRow,
-            RuntimeStatus,
+            RuntimeProbabilities, RuntimeProbabilityRow, RuntimeStatus,
         },
     };
 
@@ -289,6 +336,22 @@ mod tests {
                 price: Some(price.to_string()),
             }],
             orderbooks: Vec::new(),
+        }
+    }
+
+    fn probabilities() -> RuntimeProbabilities {
+        RuntimeProbabilities {
+            generated_at: "2026-06-03T21:06:00Z".to_string(),
+            cached: true,
+            rows: vec![RuntimeProbabilityRow {
+                contract: "BTC 5m UP".to_string(),
+                p_finish: 0.57,
+                p_no_touch: 0.31,
+                z_path: 0.42,
+                sigma_tau: 0.0123,
+                age_ms: 850,
+                flags: vec!["OK".to_string()],
+            }],
         }
     }
 
@@ -333,6 +396,7 @@ mod tests {
         assert!(update.status.is_some());
         assert!(update.gates.is_some());
         assert!(update.monitor.is_some());
+        assert!(update.probabilities.is_some());
         assert_eq!(update.error, None);
     }
 
@@ -343,6 +407,7 @@ mod tests {
             status: Some(status("first")),
             gates: None,
             monitor: Some(monitor("65000.00")),
+            probabilities: None,
             error: Some("status: timeout".to_string()),
         })
         .unwrap();
@@ -353,13 +418,14 @@ mod tests {
                 failures: vec!["stale orderbook".to_string()],
             }),
             monitor: Some(monitor("65185.18")),
+            probabilities: Some(probabilities()),
             error: None,
         })
         .unwrap();
 
         let mut app = AppState::default();
 
-        drain_runtime_updates(&mut app, &mut rx);
+        assert!(drain_runtime_updates(&mut app, &mut rx));
 
         assert_eq!(app.runtime_status.as_ref().unwrap().mode, "second");
         assert_eq!(
@@ -372,7 +438,41 @@ mod tests {
                 .as_deref(),
             Some("65185.18")
         );
+        assert_eq!(
+            app.runtime_probabilities.as_ref().unwrap().rows[0].contract,
+            "BTC 5m UP"
+        );
         assert_eq!(app.runtime_error, None);
+    }
+
+    #[test]
+    fn drain_runtime_updates_ignores_unchanged_payloads() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        tx.send(RuntimeUpdate {
+            status: Some(status("state-manager")),
+            gates: Some(RuntimeGates {
+                ok: true,
+                failures: Vec::new(),
+            }),
+            monitor: Some(monitor("65000.00")),
+            probabilities: Some(probabilities()),
+            error: None,
+        })
+        .unwrap();
+
+        let mut app = AppState {
+            runtime_status: Some(status("state-manager")),
+            runtime_gates: Some(RuntimeGates {
+                ok: true,
+                failures: Vec::new(),
+            }),
+            runtime_monitor: Some(monitor("65000.00")),
+            runtime_probabilities: Some(probabilities()),
+            runtime_error: None,
+            ..Default::default()
+        };
+
+        assert!(!drain_runtime_updates(&mut app, &mut rx));
     }
 
     #[test]
@@ -399,7 +499,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         thread::spawn(move || {
-            for _ in 0..3 {
+            for _ in 0..4 {
                 let Ok((mut stream, _peer)) = listener.accept() else {
                     return;
                 };
@@ -440,6 +540,20 @@ mod tests {
             }"#
         } else if path.starts_with("/api/runtime/gates") {
             r#"{"ok": true, "failures": []}"#
+        } else if path.starts_with("/api/runtime/probabilities") {
+            r#"{
+                "generated_at": "2026-06-03T21:06:00Z",
+                "cached": true,
+                "rows": [{
+                    "contract": "BTC 5m UP",
+                    "p_finish": 0.57,
+                    "p_no_touch": 0.31,
+                    "z_path": 0.42,
+                    "sigma_tau": 0.0123,
+                    "age_ms": 850,
+                    "flags": ["OK"]
+                }]
+            }"#
         } else {
             r#"{
                 "generated_at": "2026-06-03T20:43:20.744215+00:00",

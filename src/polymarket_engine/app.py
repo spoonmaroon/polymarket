@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -35,4 +36,21 @@ def create_app(
     return app
 
 
-app = create_app()
+def create_app_from_env() -> FastAPI:
+    return create_app(
+        status_path=_env_path("POLYMARKET_STATUS_PATH", Path("data/live/status.json")),
+        duckdb_path=_env_path("POLYMARKET_DUCKDB_PATH", Path("data/db/polymarket.duckdb")),
+        normalized_health_path=_env_path(
+            "POLYMARKET_NORMALIZED_HEALTH_PATH",
+            Path("data/live/normalized_health.json"),
+        ),
+        data_dir=_env_path("POLYMARKET_DATA_DIR", Path("data")),
+    )
+
+
+def _env_path(name: str, default: Path) -> Path:
+    value = os.getenv(name)
+    return default if value is None or value == "" else Path(value)
+
+
+app = create_app_from_env()

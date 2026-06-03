@@ -98,3 +98,41 @@ services:
       timeout: 5s
       retries: 3
       start_period: 30s
+
+  api:
+    image: ${POLYMARKET_NORMALIZER_IMAGE:-polymarket-normalizer:latest}
+    restart: unless-stopped
+    user: "${POLYMARKET_UID:-1000}:${POLYMARKET_GID:-1000}"
+    depends_on:
+      - collector
+      - normalizer
+    entrypoint: ["/usr/bin/tini", "--"]
+    command:
+      [
+        "uvicorn",
+        "polymarket_engine.app:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8000",
+      ]
+    environment:
+      TZ: ${POLYMARKET_DISPLAY_TZ:-America/Chicago}
+      POLYMARKET_STATUS_PATH: /var/lib/polymarket/live/status.json
+      POLYMARKET_DUCKDB_PATH: /var/lib/polymarket/db/polymarket.duckdb
+      POLYMARKET_NORMALIZED_HEALTH_PATH: /var/lib/polymarket/live/normalized_health.json
+      POLYMARKET_DATA_DIR: /var/lib/polymarket
+      POLYMARKET_ENABLE_CONTAINER_STATUS: ${POLYMARKET_ENABLE_CONTAINER_STATUS:-0}
+    ports:
+      - "${POLYMARKET_API_PORT:-8000}:8000"
+    volumes:
+      - ${POLYMARKET_DATA_DIR:-/home/spoon/polymarket-data}/raw:/var/lib/polymarket/raw
+      - ${POLYMARKET_DATA_DIR:-/home/spoon/polymarket-data}/db:/var/lib/polymarket/db
+      - ${POLYMARKET_DATA_DIR:-/home/spoon/polymarket-data}/live:/var/lib/polymarket/live
+      - ${POLYMARKET_DATA_DIR:-/home/spoon/polymarket-data}/logs:/var/lib/polymarket/logs
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s

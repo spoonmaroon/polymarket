@@ -142,12 +142,13 @@ impl StateManagerRuntime {
             .read()
             .expect("warmed contracts lock poisoned")
             .clone();
+        let snapshot_now = Utc::now();
         let chainlink_prices = self.latest_prices.snapshot().await;
+        let token_ids = active_orderbook_token_ids(snapshot_now, &warmed);
         let orderbooks = self
             .book_state
-            .snapshot_for_token_ids(self.token_ids.iter().map(String::as_str))
+            .snapshot_for_token_ids(token_ids.iter().map(String::as_str))
             .await;
-        let snapshot_now = Utc::now();
         build_snapshot_from_warmed(
             snapshot_now,
             &self.config,
@@ -381,11 +382,21 @@ pub fn build_snapshot_from_warmed(
         }
     }
 
+    let active_token_ids = [&current_refs, &next_refs, &next_next_refs]
+        .into_iter()
+        .flat_map(|contracts| contracts.iter())
+        .flat_map(|contract| contract_token_ids(contract))
+        .collect::<HashSet<_>>();
+    let active_orderbooks = orderbooks
+        .into_iter()
+        .filter(|book| active_token_ids.contains(book.token_id.as_str()))
+        .collect::<Vec<_>>();
+
     let freshness = feed_freshness(
         now,
         config,
         &chainlink_prices,
-        &orderbooks,
+        &active_orderbooks,
         &mut health_flags,
     );
     add_missing_feed_flags(
@@ -397,7 +408,7 @@ pub fn build_snapshot_from_warmed(
             .copied()
             .collect::<Vec<_>>()
             .as_slice(),
-        &orderbooks,
+        &active_orderbooks,
         &mut health_flags,
     );
 
@@ -408,7 +419,7 @@ pub fn build_snapshot_from_warmed(
         next_next,
         chainlink_prices,
         proxy_prices: vec![],
-        orderbooks,
+        orderbooks: active_orderbooks,
         freshness,
         health_flags,
     })
@@ -669,6 +680,21 @@ fn contract_token_ids(contract: &WarmedContract) -> [&str; 2] {
     ]
 }
 
+fn active_orderbook_token_ids(
+    now: DateTime<Utc>,
+    warmed_contracts: &[WarmedContract],
+) -> Vec<String> {
+    let mut token_ids = warmed_contracts
+        .iter()
+        .filter(|contract| contract.window.end_ts > now)
+        .flat_map(|contract| contract_token_ids(contract))
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    token_ids.sort();
+    token_ids.dedup();
+    token_ids
+}
+
 fn record_missing_orderbook_scan() {
     #[cfg(test)]
     MISSING_ORDERBOOK_SCAN_COUNT.with(|count| count.set(count.get() + 1));
@@ -839,6 +865,50 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_filters_orderbooks_to_active_warmed_tokens() {
+        let start = 1_780_302_400;
+        let now = Utc.timestamp_opt(start + 10, 0).unwrap();
+        let config = StateManagerConfig {
+            windows: 2,
+            ..config()
+        };
+        let warmed = vec![
+            warmed("BTC", start - 300, "expired"),
+            warmed("BTC", start, "current"),
+            warmed("BTC", start + 300, "next"),
+        ];
+
+        let snapshot = build_snapshot_from_warmed(
+            now,
+            &config,
+            &warmed,
+            vec![],
+            vec![
+                book("BTC", "UP", "expired-up", now.timestamp_millis()),
+                book("BTC", "UP", "current-up", now.timestamp_millis()),
+                book("BTC", "DOWN", "next-down", now.timestamp_millis()),
+                book("ETH", "UP", "unrelated-up", now.timestamp_millis()),
+            ],
+        )
+        .unwrap();
+
+        let token_ids = snapshot
+            .orderbooks
+            .iter()
+            .map(|book| book.token_id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(token_ids, vec!["current-up", "next-down"]);
+        assert!(
+            !snapshot
+                .health_flags
+                .iter()
+                .any(|flag| flag.contains("expired-up") || flag.contains("unrelated-up")),
+            "unexpected health flags: {:?}",
+            snapshot.health_flags
+        );
+    }
+
+    #[test]
     fn missing_next_contract_before_cutoff_adds_health_flag() {
         let start = 1_780_302_400;
         let warmed = vec![warmed("BTC", start, "current")];
@@ -980,7 +1050,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn runtime_snapshot_uses_cached_orderbook_token_ids() {
+    async fn runtime_snapshot_uses_active_warmed_orderbook_token_ids() {
         let observed = Utc::now();
         let start = observed.timestamp() - 60;
         let book_state = LiveBookState::default();
@@ -1012,7 +1082,13 @@ mod tests {
         let snapshot = runtime.snapshot(observed).await.unwrap();
 
         assert_eq!(snapshot.orderbooks.len(), 1);
-        assert_eq!(snapshot.orderbooks[0].token_id, "cached-up");
+        assert_eq!(snapshot.orderbooks[0].token_id, "current-up");
+        assert!(
+            !snapshot
+                .orderbooks
+                .iter()
+                .any(|book| book.token_id == "cached-up")
+        );
     }
 
     #[tokio::test]

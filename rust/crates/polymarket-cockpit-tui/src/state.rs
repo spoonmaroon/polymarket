@@ -1,10 +1,13 @@
-use crate::status::{RuntimeGates, RuntimeMonitor, RuntimeOrderbookRow, RuntimeStatus};
+use crate::status::{
+    RuntimeGates, RuntimeMonitor, RuntimeOrderbookRow, RuntimeProbabilities, RuntimeStatus,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MainTab {
     Live,
     Systems,
     Market,
+    Probability,
     Logs,
 }
 
@@ -14,6 +17,7 @@ impl MainTab {
             MainTab::Live,
             MainTab::Systems,
             MainTab::Market,
+            MainTab::Probability,
             MainTab::Logs,
         ]
     }
@@ -23,6 +27,7 @@ impl MainTab {
             MainTab::Live => "Live",
             MainTab::Systems => "Systems",
             MainTab::Market => "Market",
+            MainTab::Probability => "Probability",
             MainTab::Logs => "Logs",
         }
     }
@@ -35,6 +40,7 @@ pub struct AppState {
     pub runtime_status: Option<RuntimeStatus>,
     pub runtime_gates: Option<RuntimeGates>,
     pub runtime_monitor: Option<RuntimeMonitor>,
+    pub runtime_probabilities: Option<RuntimeProbabilities>,
     pub runtime_error: Option<String>,
     pub selected_market_key: Option<String>,
 }
@@ -47,6 +53,7 @@ impl Default for AppState {
             runtime_status: None,
             runtime_gates: None,
             runtime_monitor: None,
+            runtime_probabilities: None,
             runtime_error: None,
             selected_market_key: None,
         }
@@ -215,7 +222,10 @@ mod tests {
     fn cockpit_tabs_are_operator_surfaces() {
         let labels: Vec<&'static str> = MainTab::all().iter().map(MainTab::label).collect();
 
-        assert_eq!(labels, vec!["Live", "Systems", "Market", "Logs"]);
+        assert_eq!(
+            labels,
+            vec!["Live", "Systems", "Market", "Probability", "Logs"]
+        );
     }
 
     #[test]

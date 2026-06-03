@@ -15,6 +15,7 @@ class ProbabilityInput:
     asof_ts: datetime
     asset: str
     side: str
+    comparison_operator: str
     seconds_left: float
     settlement_price: float
     threshold: float
@@ -61,6 +62,7 @@ class ProbabilityInput:
             asof_ts=state.asof_ts,
             asset=state.contract.asset,
             side=state.contract.side,
+            comparison_operator=state.contract.comparison_operator,
             seconds_left=state.seconds_left,
             settlement_price=state.settlement_price,
             threshold=state.threshold,
@@ -75,6 +77,7 @@ class ProbabilityInput:
         _require_utc(self.asof_ts, "asof_ts")
         _require_supported(self.asset, "asset", {"BTC", "ETH"})
         _require_supported(self.side, "side", {"UP", "DOWN"})
+        _require_comparison_operator(self.comparison_operator, self.side)
         _require_nonnegative(self.seconds_left, "seconds_left")
         _require_positive(self.settlement_price, "settlement_price")
         _require_positive(self.threshold, "threshold")
@@ -128,6 +131,17 @@ def _require_probability(value: float, field_name: str) -> None:
 def _require_supported(value: str, field_name: str, supported: set[str]) -> None:
     if not isinstance(value, str) or value not in supported:
         raise ValueError(f"{field_name} must be one of {', '.join(sorted(supported))}")
+
+
+def _require_comparison_operator(value: str, side: str) -> None:
+    if side == "UP":
+        supported = {">", ">="}
+    elif side == "DOWN":
+        supported = {"<", "<="}
+    else:
+        supported = set()
+    if not isinstance(value, str) or value not in supported:
+        raise ValueError("comparison_operator is incompatible with side")
 
 
 def _require_finite(value: float, field_name: str) -> None:

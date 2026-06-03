@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crate::status::{RuntimeGates, RuntimeMonitor, RuntimeStatus};
+use crate::status::{RuntimeGates, RuntimeMonitor, RuntimeProbabilities, RuntimeStatus};
 
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -35,6 +35,11 @@ impl EngineClient {
 
     pub async fn monitor(&self, limit: usize) -> anyhow::Result<RuntimeMonitor> {
         self.get_json(&format!("/api/runtime/monitor?limit={limit}"))
+            .await
+    }
+
+    pub async fn probabilities(&self, limit: usize) -> anyhow::Result<RuntimeProbabilities> {
+        self.get_json(&format!("/api/runtime/probabilities?limit={limit}"))
             .await
     }
 

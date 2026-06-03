@@ -84,6 +84,7 @@ def test_probability_input_from_ready_decision_state_calculates_z_path() -> None
     assert probability_input.asof_ts == state.asof_ts
     assert probability_input.asset == "BTC"
     assert probability_input.side == "UP"
+    assert probability_input.comparison_operator == ">="
     assert probability_input.seconds_left == 120.0
     assert probability_input.settlement_price == 104_000.0
     assert probability_input.threshold == 103_950.0
@@ -141,6 +142,7 @@ def test_probability_input_constructor_rejects_invalid_domain_values() -> None:
         "asof_ts": datetime(2026, 5, 31, 20, 3, tzinfo=timezone.utc),
         "asset": "BTC",
         "side": "UP",
+        "comparison_operator": ">=",
         "seconds_left": 120.0,
         "settlement_price": 104_000.0,
         "threshold": 103_950.0,
@@ -166,6 +168,7 @@ def test_probability_input_constructor_rejects_invalid_domain_values() -> None:
         ("book_age_ms", 1.5),
         ("book_age_ms", -1),
         ("z_path", True),
+        ("comparison_operator", "<"),
     )
     for field_name, invalid_value in invalid_cases:
         with pytest.raises(ValueError, match=field_name):
@@ -178,6 +181,7 @@ def test_probability_input_constructor_rejects_unsupported_side() -> None:
         "asof_ts": datetime(2026, 5, 31, 20, 3, tzinfo=timezone.utc),
         "asset": "BTC",
         "side": "SIDEWAYS",
+        "comparison_operator": ">=",
         "seconds_left": 120.0,
         "settlement_price": 104_000.0,
         "threshold": 103_950.0,
@@ -198,6 +202,7 @@ def test_probability_input_constructor_rejects_unsupported_asset() -> None:
         "asof_ts": datetime(2026, 5, 31, 20, 3, tzinfo=timezone.utc),
         "asset": "DOGE",
         "side": "UP",
+        "comparison_operator": ">=",
         "seconds_left": 120.0,
         "settlement_price": 104_000.0,
         "threshold": 103_950.0,
@@ -210,6 +215,69 @@ def test_probability_input_constructor_rejects_unsupported_asset() -> None:
 
     with pytest.raises(ValueError, match="asset"):
         ProbabilityInput(**base)
+
+
+@pytest.mark.parametrize(
+    ("side", "comparison_operator"),
+    (
+        ("UP", ">"),
+        ("UP", ">="),
+        ("DOWN", "<"),
+        ("DOWN", "<="),
+    ),
+)
+def test_probability_input_constructor_accepts_side_compatible_comparison_operators(
+    side: str,
+    comparison_operator: str,
+) -> None:
+    probability_input = ProbabilityInput(
+        state_id="state-1",
+        asof_ts=datetime(2026, 5, 31, 20, 3, tzinfo=timezone.utc),
+        asset="BTC",
+        side=side,
+        comparison_operator=comparison_operator,
+        seconds_left=120.0,
+        settlement_price=104_000.0,
+        threshold=103_950.0,
+        sigma_tau=0.002,
+        executable_price=0.64,
+        source_age_ms=1000,
+        book_age_ms=1000,
+        z_path=0.24,
+    )
+
+    assert probability_input.comparison_operator == comparison_operator
+
+
+@pytest.mark.parametrize(
+    ("side", "comparison_operator"),
+    (
+        ("UP", "<"),
+        ("UP", "<="),
+        ("DOWN", ">"),
+        ("DOWN", ">="),
+    ),
+)
+def test_probability_input_constructor_rejects_side_incompatible_comparison_operators(
+    side: str,
+    comparison_operator: str,
+) -> None:
+    with pytest.raises(ValueError, match="comparison_operator"):
+        ProbabilityInput(
+            state_id="state-1",
+            asof_ts=datetime(2026, 5, 31, 20, 3, tzinfo=timezone.utc),
+            asset="BTC",
+            side=side,
+            comparison_operator=comparison_operator,
+            seconds_left=120.0,
+            settlement_price=104_000.0,
+            threshold=103_950.0,
+            sigma_tau=0.002,
+            executable_price=0.64,
+            source_age_ms=1000,
+            book_age_ms=1000,
+            z_path=0.24,
+        )
 
 
 def test_probability_output_rejects_invalid_probabilities() -> None:
