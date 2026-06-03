@@ -1,6 +1,8 @@
+pub mod client;
 mod event_loop;
 mod layout;
 mod render;
+pub mod status;
 mod state;
 
 use anyhow::Result;
