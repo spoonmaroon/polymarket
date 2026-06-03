@@ -32,6 +32,7 @@ from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
 FULL_RAW_TREE_SCAN_INTERVAL_CYCLES = 240
 IDLE_NORMALIZED_HEALTH_WRITE_INTERVAL_SECONDS = 5.0
 PROBABILITY_OUTPUT_LIMIT = 8
+PROBABILITY_MAX_STATE_AGE_SECONDS = 600.0
 
 
 @dataclass(frozen=True)
@@ -615,11 +616,13 @@ def _compute_probability_outputs(*, store: DuckDbIngestStore, out_path: Path) ->
     written, skipped, errors = compute_and_persist_probability_outputs(
         store=store,
         limit=PROBABILITY_OUTPUT_LIMIT,
+        max_state_age_seconds=PROBABILITY_MAX_STATE_AGE_SECONDS,
     )
     with store._connection() as conn:
         rows = latest_probability_output_rows_from_connection(
             conn=conn,
             limit=PROBABILITY_OUTPUT_LIMIT,
+            max_state_age_seconds=PROBABILITY_MAX_STATE_AGE_SECONDS,
         )
     _write_probability_status(
         out_path=out_path,

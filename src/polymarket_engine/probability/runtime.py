@@ -18,6 +18,7 @@ from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
 
 DEFAULT_PROBABILITY_CACHE_SECONDS = 1.0
 DEFAULT_PROBABILITY_PATH_COUNT = 1024
+DEFAULT_PROBABILITY_MAX_STATE_AGE_SECONDS = 600.0
 
 
 @dataclass(frozen=True)
@@ -110,22 +111,29 @@ def latest_probability_inputs(
     *,
     duckdb_path: Path,
     limit: int,
+    max_state_age_seconds: float | None = None,
 ) -> tuple[tuple[ProbabilityRuntimeInput, ...], int]:
     if limit <= 0:
         raise ValueError("limit must be positive")
 
     with _connect_read_only_with_retry(duckdb_path, lock_retry_seconds=2.0) as conn:
-        return latest_probability_inputs_from_connection(conn=conn, limit=limit)
+        return latest_probability_inputs_from_connection(
+            conn=conn,
+            limit=limit,
+            max_state_age_seconds=max_state_age_seconds,
+        )
 
 
 def latest_probability_inputs_from_connection(
     *,
     conn: duckdb.DuckDBPyConnection,
     limit: int,
+    max_state_age_seconds: float | None = None,
 ) -> tuple[tuple[ProbabilityRuntimeInput, ...], int]:
     if limit <= 0:
         raise ValueError("limit must be positive")
 
+    cutoff = _cutoff_timestamp(max_state_age_seconds)
     rows = conn.execute(
         """
         select
@@ -156,13 +164,14 @@ def latest_probability_inputs_from_connection(
         ) as state
         join core.contracts as contracts using (contract_id)
         where row_number = 1
+          and (? is null or asof_ts >= ?)
         order by
             case state.asset when 'BTC' then 0 when 'ETH' then 1 else 2 end,
             contracts.start_ts,
             case state.side when 'UP' then 0 when 'DOWN' then 1 else 2 end
         limit ?
         """,
-        [limit],
+        [cutoff, cutoff, limit],
     ).fetchall()
 
     inputs: list[ProbabilityRuntimeInput] = []
@@ -198,20 +207,27 @@ def latest_probability_output_rows(
     *,
     duckdb_path: Path,
     limit: int,
+    max_state_age_seconds: float | None = None,
 ) -> list[dict[str, Any]]:
     if limit <= 0:
         raise ValueError("limit must be positive")
     with _connect_read_only_with_retry(duckdb_path, lock_retry_seconds=2.0) as conn:
-        return latest_probability_output_rows_from_connection(conn=conn, limit=limit)
+        return latest_probability_output_rows_from_connection(
+            conn=conn,
+            limit=limit,
+            max_state_age_seconds=max_state_age_seconds,
+        )
 
 
 def latest_probability_output_rows_from_connection(
     *,
     conn: duckdb.DuckDBPyConnection,
     limit: int,
+    max_state_age_seconds: float | None = None,
 ) -> list[dict[str, Any]]:
     if limit <= 0:
         raise ValueError("limit must be positive")
+    cutoff = _cutoff_timestamp(max_state_age_seconds)
     rows = conn.execute(
         """
         select
@@ -251,13 +267,14 @@ def latest_probability_output_rows_from_connection(
             join core.contracts as contracts using (contract_id)
         )
         where row_number = 1
+          and (? is null or asof_ts >= ?)
         order by
             case asset when 'BTC' then 0 when 'ETH' then 1 else 2 end,
             start_ts,
             case side when 'UP' then 0 when 'DOWN' then 1 else 2 end
         limit ?
         """,
-        [limit],
+        [cutoff, cutoff, limit],
     ).fetchall()
     return [_persisted_runtime_row(row) for row in rows]
 
@@ -266,9 +283,14 @@ def compute_and_persist_probability_outputs(
     *,
     store: DuckDbIngestStore,
     limit: int,
+    max_state_age_seconds: float | None = None,
 ) -> tuple[int, int, tuple[str, ...]]:
     with store._connection() as conn:
-        inputs, skipped = latest_probability_inputs_from_connection(conn=conn, limit=limit)
+        inputs, skipped = latest_probability_inputs_from_connection(
+            conn=conn,
+            limit=limit,
+            max_state_age_seconds=max_state_age_seconds,
+        )
     _, errors = _compute_and_persist_rows(store=store, inputs=inputs)
     return len(inputs) - len(errors), skipped, tuple(errors)
 
@@ -483,3 +505,11 @@ def _connect_read_only_with_retry(
             if "Could not set lock" not in str(exc) or time.monotonic() >= deadline:
                 raise
             time.sleep(0.1)
+
+
+def _cutoff_timestamp(max_state_age_seconds: float | None) -> datetime | None:
+    if max_state_age_seconds is None:
+        return None
+    if max_state_age_seconds <= 0 or not math.isfinite(max_state_age_seconds):
+        raise ValueError("max_state_age_seconds must be positive and finite")
+    return datetime.fromtimestamp(time.time() - max_state_age_seconds, tz=timezone.utc)

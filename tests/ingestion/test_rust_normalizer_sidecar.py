@@ -28,8 +28,8 @@ def test_sidecar_cycle_normalizes_builds_states_and_writes_health(tmp_path: Path
     db_path = tmp_path / "state.duckdb"
     status_path = tmp_path / "live" / "status.json"
     health_path = tmp_path / "live" / "normalized_health.json"
-    start_ts = datetime(2026, 6, 2, 6, 0, tzinfo=timezone.utc)
-    asof_ts = start_ts + timedelta(minutes=2)
+    asof_ts = datetime.now(timezone.utc).replace(microsecond=0)
+    start_ts = asof_ts - timedelta(minutes=2)
     _write_probability_ready_raw_tree(raw_root=raw_root, start_ts=start_ts, asof_ts=asof_ts)
     _write_status(status_path, start_ts=start_ts, asof_ts=asof_ts)
 
