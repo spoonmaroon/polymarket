@@ -90,6 +90,15 @@ def test_spoon_docs_include_latency_probe_without_order_placement() -> None:
     assert "does not place orders" in text
 
 
+def test_spoon_docs_record_vps_cadence_revisit() -> None:
+    text = (ROOT / "docs" / "SPOON_DEPLOYMENT.md").read_text(encoding="utf-8")
+
+    assert "POLYMARKET_NORMALIZER_INTERVAL_SECONDS=0.25" in text
+    assert "home-server CPU compromise" in text
+    assert "After VPS migration" in text
+    assert "POLYMARKET_NORMALIZER_INTERVAL_SECONDS=0.1" in text
+
+
 def test_spoon_docs_pin_safe_hot_replay_gate_command() -> None:
     deployment = (ROOT / "docs" / "SPOON_DEPLOYMENT.md").read_text(encoding="utf-8")
     part_two = (ROOT / "docs" / "PART_TWO_LIVE_COLLECTORS.md").read_text(

@@ -34,6 +34,10 @@ python3 scripts/check_collector_status.py --status-path /home/spoon/polymarket-d
 Set `POLYMARKET_PREWARM_WINDOWS=2` or rely on the compose default so spoon warms
 BTC/ETH current and next 5m windows.
 The normalizer sidecar defaults to `POLYMARKET_NORMALIZER_INTERVAL_SECONDS=0.25`.
+That cadence is a home-server CPU compromise for spoon. After VPS migration,
+re-test the normalizer on the new host and consider returning to
+`POLYMARKET_NORMALIZER_INTERVAL_SECONDS=0.1` if CPU headroom, DuckDB freshness,
+and status latency stay healthy.
 
 ## Production Image Deploy
 
