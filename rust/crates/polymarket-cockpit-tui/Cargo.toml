@@ -1,0 +1,19 @@
+[package]
+name = "polymarket-cockpit-tui"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Read-only terminal cockpit for the Polymarket binary engine"
+
+[[bin]]
+name = "polymarket-cockpit-tui"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+crossterm = { workspace = true }
+ratatui = { workspace = true }
+tokio = { workspace = true }
+tracing-subscriber = { workspace = true }
+unicode-width = { workspace = true }
