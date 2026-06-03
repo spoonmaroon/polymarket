@@ -12,6 +12,7 @@ import duckdb
 from fastapi import APIRouter, HTTPException
 
 from polymarket_engine.monitor import MonitorSnapshot, fetch_monitor_snapshot
+from polymarket_engine.runtime_gates import evaluate_runtime_gates
 
 
 NORMALIZED_HEALTH_SCHEMA_VERSION = "polymarket-normalized-health-v1"
@@ -135,6 +136,13 @@ def build_runtime_router(
             "generated_at": payload.get("generated_at"),
             "tables": payload.get("tables", []),
         }
+
+    @router.get("/gates")
+    def runtime_gates() -> dict[str, Any]:
+        return evaluate_runtime_gates(
+            status_path=status_path,
+            normalized_health_path=normalized_health_path,
+        )
 
     @router.get("/storage")
     def storage() -> dict[str, Any]:
