@@ -45,9 +45,8 @@ normalizer_running() {
 }
 
 normalizer_uses_sidecar() {
-  compose -f "$COMPOSE_FILE" exec -T normalizer sh -c \
-    'command="$1"; ps -eo args | grep "$command" | grep -v grep' \
-    sh "$NORMALIZER_SIDECAR_COMMAND" >> "$LOG_FILE" 2>&1
+  compose -f "$COMPOSE_FILE" top normalizer 2>> "$LOG_FILE" \
+    | grep "$NORMALIZER_SIDECAR_COMMAND" >> "$LOG_FILE" 2>&1
 }
 
 required_image_available() {

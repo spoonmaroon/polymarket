@@ -320,4 +320,6 @@ def test_deploy_script_rejects_old_normalize_rust_events_normalizer() -> None:
 
     assert "normalizer_uses_sidecar()" in script
     assert "run-rust-normalizer-sidecar" in script
+    assert 'compose -f "$COMPOSE_FILE" top normalizer' in script
+    assert "ps -eo args" not in script
     assert "normalizer_running && normalizer_uses_sidecar && python3" in script
