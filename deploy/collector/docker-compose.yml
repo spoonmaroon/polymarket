@@ -80,6 +80,7 @@ services:
       POLYMARKET_LIVE_DIR: /var/lib/polymarket/live
       POLYMARKET_STATUS_PATH: /var/lib/polymarket/live/status.json
       POLYMARKET_NORMALIZED_HEALTH_PATH: /var/lib/polymarket/live/normalized_health.json
+      POLYMARKET_PROBABILITY_STATUS_PATH: /var/lib/polymarket/live/probabilities.json
       POLYMARKET_NORMALIZER_INTERVAL_SECONDS: ${POLYMARKET_NORMALIZER_INTERVAL_SECONDS:-0.25}
     volumes:
       - ${POLYMARKET_DATA_DIR:-/home/spoon/polymarket-data}/raw:/var/lib/polymarket/raw
@@ -121,6 +122,7 @@ services:
       POLYMARKET_STATUS_PATH: /var/lib/polymarket/live/status.json
       POLYMARKET_DUCKDB_PATH: /var/lib/polymarket/db/polymarket.duckdb
       POLYMARKET_NORMALIZED_HEALTH_PATH: /var/lib/polymarket/live/normalized_health.json
+      POLYMARKET_PROBABILITY_STATUS_PATH: /var/lib/polymarket/live/probabilities.json
       POLYMARKET_DATA_DIR: /var/lib/polymarket
       POLYMARKET_ENABLE_CONTAINER_STATUS: ${POLYMARKET_ENABLE_CONTAINER_STATUS:-0}
     ports:

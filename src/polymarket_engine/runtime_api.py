@@ -24,6 +24,7 @@ def build_runtime_router(
     status_path: Path = Path("data/live/status.json"),
     duckdb_path: Path = Path("data/db/polymarket.duckdb"),
     normalized_health_path: Path = Path("data/live/normalized_health.json"),
+    probability_status_path: Path = Path("data/live/probabilities.json"),
     data_dir: Path = Path("data"),
     enable_container_status: bool = False,
 ) -> APIRouter:
@@ -148,6 +149,37 @@ def build_runtime_router(
 
     @router.get("/probabilities")
     def runtime_probabilities(limit: int = 8) -> dict[str, Any]:
+        if probability_status_path.exists():
+            payload, read_error = _read_json_or_error(probability_status_path)
+            if payload is None:
+                return {
+                    "ok": False,
+                    "state": read_error["state"],
+                    "error": read_error["error"],
+                    "generated_at": datetime.now(timezone.utc).isoformat(),
+                    "cached": False,
+                    "model_version": None,
+                    "rows": [],
+                    "skipped": 0,
+                    "errors": [read_error["error"]],
+                }
+            rows = payload.get("rows")
+            if not isinstance(rows, list):
+                return {
+                    "ok": False,
+                    "state": "INVALID",
+                    "error": "probability status shape invalid: rows must be a list",
+                    "generated_at": datetime.now(timezone.utc).isoformat(),
+                    "cached": False,
+                    "model_version": None,
+                    "rows": [],
+                    "skipped": 0,
+                    "errors": ["probability status shape invalid: rows must be a list"],
+                }
+            limited = dict(payload)
+            limited["rows"] = rows[:limit]
+            limited["cached"] = False
+            return limited
         try:
             return probability_cache.payload(duckdb_path=duckdb_path, limit=limit)
         except ValueError as exc:

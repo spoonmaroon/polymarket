@@ -23,11 +23,15 @@ from polymarket_engine.ingestion.rust_event_normalizer import (
     normalize_rust_event_file,
     normalize_rust_event_tree,
 )
+from polymarket_engine.probability.runtime import compute_and_persist_probability_outputs
+from polymarket_engine.probability.runtime import latest_probability_output_rows_from_connection
+from polymarket_engine.storage.atomic import durable_replace
 from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
 
 
 FULL_RAW_TREE_SCAN_INTERVAL_CYCLES = 240
 IDLE_NORMALIZED_HEALTH_WRITE_INTERVAL_SECONDS = 5.0
+PROBABILITY_OUTPUT_LIMIT = 8
 
 
 @dataclass(frozen=True)
@@ -61,6 +65,7 @@ class RustNormalizerCycleResult:
     orderbooks_written: int
     contracts_upserted: int
     states_written: int
+    probability_outputs_written: int
     state_skipped: bool
     unavailable: tuple[UnavailableDecisionState, ...]
     elapsed_ms: int
@@ -81,6 +86,7 @@ class RustNormalizerCycleResult:
             "orderbooks_written": self.orderbooks_written,
             "contracts_upserted": self.contracts_upserted,
             "states_written": self.states_written,
+            "probability_outputs_written": self.probability_outputs_written,
             "state_skipped": self.state_skipped,
             "unavailable": [
                 {
@@ -104,16 +110,21 @@ def run_rust_normalizer_cycle(
     db_path: Path,
     status_path: Path,
     normalized_health_path: Path,
+    probability_status_path: Path | None = None,
     include_next: bool = False,
     reprocess_all: bool = False,
     apply_schema: bool = True,
 ) -> RustNormalizerCycleResult:
+    probability_status_path = probability_status_path or normalized_health_path.with_name(
+        "probabilities.json"
+    )
     with DuckDbIngestStore(db_path) as store:
         return _run_rust_normalizer_cycle_with_store(
             raw_root=raw_root,
             store=store,
             status_path=status_path,
             normalized_health_path=normalized_health_path,
+            probability_status_path=probability_status_path,
             include_next=include_next,
             reprocess_all=reprocess_all,
             apply_schema=apply_schema,
@@ -133,8 +144,12 @@ def _run_rust_normalizer_cycle_with_store(
     status_mtime_ns: int | None = None,
     force_state_build: bool = True,
     state_read_cache: CurrentDecisionStateReadCache | None = None,
+    probability_status_path: Path | None = None,
 ) -> RustNormalizerCycleResult:
     cycle_started = time.perf_counter()
+    probability_status_path = probability_status_path or normalized_health_path.with_name(
+        "probabilities.json"
+    )
     if apply_schema:
         store.apply_schema()
 
@@ -159,6 +174,7 @@ def _run_rust_normalizer_cycle_with_store(
 
     contracts_upserted = 0
     states_written = 0
+    probability_outputs_written = 0
     unavailable: tuple[UnavailableDecisionState, ...] = ()
     if build_state:
         state_result = build_current_decision_state_snapshots(
@@ -170,6 +186,10 @@ def _run_rust_normalizer_cycle_with_store(
         contracts_upserted = state_result.contracts_upserted
         states_written = state_result.states_written
         unavailable = state_result.unavailable
+        probability_outputs_written = _compute_probability_outputs(
+            store=store,
+            out_path=probability_status_path,
+        )
     state_at = time.perf_counter()
 
     write_normalized_health_status(store=store, out_path=normalized_health_path)
@@ -179,6 +199,7 @@ def _run_rust_normalizer_cycle_with_store(
         **summary,
         contracts_upserted=contracts_upserted,
         states_written=states_written,
+        probability_outputs_written=probability_outputs_written,
         state_skipped=status_mtime_ns is not None and not build_state,
         unavailable=unavailable,
         elapsed_ms=_elapsed_ms(cycle_started, health_at),
@@ -195,11 +216,15 @@ def run_rust_normalizer_loop(
     db_path: Path,
     status_path: Path,
     normalized_health_path: Path,
+    probability_status_path: Path | None = None,
     interval_seconds: float = 1.0,
     include_next: bool = False,
     reprocess_all: bool = False,
     max_cycles: int | None = None,
 ) -> None:
+    probability_status_path = probability_status_path or normalized_health_path.with_name(
+        "probabilities.json"
+    )
     with DuckDbIngestStore(db_path) as store:
         store.apply_schema()
         cycles_run = 0
@@ -248,6 +273,7 @@ def run_rust_normalizer_loop(
                     store=store,
                     status_path=status_path,
                     normalized_health_path=normalized_health_path,
+                    probability_status_path=probability_status_path,
                     include_next=include_next,
                     reprocess_all=reprocess_all,
                     apply_schema=False,
@@ -265,6 +291,7 @@ def run_rust_normalizer_loop(
                         store=store,
                         status_path=status_path,
                         normalized_health_path=normalized_health_path,
+                        probability_status_path=probability_status_path,
                         include_next=include_next,
                         previous_status_mtime_ns=effective_previous_status_mtime_ns,
                         status_mtime_ns=status_mtime_ns,
@@ -280,6 +307,7 @@ def run_rust_normalizer_loop(
                         store=store,
                         status_path=status_path,
                         normalized_health_path=normalized_health_path,
+                        probability_status_path=probability_status_path,
                         include_next=include_next,
                         reprocess_all=reprocess_all,
                         apply_schema=False,
@@ -305,6 +333,7 @@ def run_rust_normalizer_loop(
                         store=store,
                         status_path=status_path,
                         normalized_health_path=normalized_health_path,
+                        probability_status_path=probability_status_path,
                         include_next=include_next,
                         previous_status_mtime_ns=effective_previous_status_mtime_ns,
                         status_mtime_ns=status_mtime_ns,
@@ -327,6 +356,7 @@ def run_rust_normalizer_loop(
                         store=store,
                         status_path=status_path,
                         normalized_health_path=normalized_health_path,
+                        probability_status_path=probability_status_path,
                         include_next=include_next,
                         reprocess_all=reprocess_all,
                         previous_status_mtime_ns=effective_previous_status_mtime_ns,
@@ -377,8 +407,12 @@ def _run_changed_rust_normalizer_cycle_with_store(
     price_state_cache: dict[tuple[str, str], tuple[object, ...]] | None = None,
     orderbook_state_cache: dict[tuple[str, str], tuple[object, ...]] | None = None,
     state_read_cache: CurrentDecisionStateReadCache | None = None,
+    probability_status_path: Path | None = None,
 ) -> RustNormalizerCycleResult:
     cycle_started = time.perf_counter()
+    probability_status_path = probability_status_path or normalized_health_path.with_name(
+        "probabilities.json"
+    )
     changed_paths = tuple(row.path for row in changed_raw_signature)
     if checkpoint_cache is None:
         checkpoints = store.raw_file_checkpoints(changed_paths)
@@ -425,6 +459,7 @@ def _run_changed_rust_normalizer_cycle_with_store(
 
     contracts_upserted = 0
     states_written = 0
+    probability_outputs_written = 0
     unavailable: tuple[UnavailableDecisionState, ...] = ()
     if build_state:
         state_result = build_current_decision_state_snapshots(
@@ -436,6 +471,10 @@ def _run_changed_rust_normalizer_cycle_with_store(
         contracts_upserted = state_result.contracts_upserted
         states_written = state_result.states_written
         unavailable = state_result.unavailable
+        probability_outputs_written = _compute_probability_outputs(
+            store=store,
+            out_path=probability_status_path,
+        )
     state_at = time.perf_counter()
 
     health_skipped = not write_health
@@ -447,6 +486,7 @@ def _run_changed_rust_normalizer_cycle_with_store(
         **summary,
         contracts_upserted=contracts_upserted,
         states_written=states_written,
+        probability_outputs_written=probability_outputs_written,
         state_skipped=status_mtime_ns is not None and not build_state,
         unavailable=unavailable,
         elapsed_ms=_elapsed_ms(cycle_started, health_at),
@@ -471,8 +511,12 @@ def _run_idle_rust_normalizer_cycle_with_store(
     force_state_build: bool = False,
     write_health: bool = True,
     state_read_cache: CurrentDecisionStateReadCache | None = None,
+    probability_status_path: Path | None = None,
 ) -> RustNormalizerCycleResult:
     cycle_started = time.perf_counter()
+    probability_status_path = probability_status_path or normalized_health_path.with_name(
+        "probabilities.json"
+    )
     if status_mtime_ns is None:
         status_mtime_ns = _file_mtime_ns(status_path)
     build_state = status_mtime_ns is not None and (
@@ -483,6 +527,7 @@ def _run_idle_rust_normalizer_cycle_with_store(
 
     contracts_upserted = 0
     states_written = 0
+    probability_outputs_written = 0
     unavailable: tuple[UnavailableDecisionState, ...] = ()
     if build_state:
         state_result = build_current_decision_state_snapshots(
@@ -494,6 +539,10 @@ def _run_idle_rust_normalizer_cycle_with_store(
         contracts_upserted = state_result.contracts_upserted
         states_written = state_result.states_written
         unavailable = state_result.unavailable
+        probability_outputs_written = _compute_probability_outputs(
+            store=store,
+            out_path=probability_status_path,
+        )
     state_at = time.perf_counter()
 
     health_skipped = not write_health
@@ -508,6 +557,7 @@ def _run_idle_rust_normalizer_cycle_with_store(
         ),
         contracts_upserted=contracts_upserted,
         states_written=states_written,
+        probability_outputs_written=probability_outputs_written,
         state_skipped=status_mtime_ns is not None and not build_state,
         unavailable=unavailable,
         elapsed_ms=_elapsed_ms(cycle_started, health_at),
@@ -559,6 +609,57 @@ def _cached_checkpoint_result(
 
 def _observations_written(summary: dict[str, int]) -> bool:
     return summary["price_ticks_written"] > 0 or summary["orderbooks_written"] > 0
+
+
+def _compute_probability_outputs(*, store: DuckDbIngestStore, out_path: Path) -> int:
+    written, skipped, errors = compute_and_persist_probability_outputs(
+        store=store,
+        limit=PROBABILITY_OUTPUT_LIMIT,
+    )
+    with store._connection() as conn:
+        rows = latest_probability_output_rows_from_connection(
+            conn=conn,
+            limit=PROBABILITY_OUTPUT_LIMIT,
+        )
+    _write_probability_status(
+        out_path=out_path,
+        rows=rows,
+        skipped=skipped,
+        errors=errors,
+    )
+    if errors:
+        print(
+            "probability_output_errors " + json.dumps(list(errors), separators=(",", ":")),
+            flush=True,
+        )
+    return written
+
+
+def _write_probability_status(
+    *,
+    out_path: Path,
+    rows: list[dict[str, Any]],
+    skipped: int,
+    errors: tuple[str, ...],
+) -> None:
+    payload = {
+        "schema_version": "polymarket-probability-runtime-v1",
+        "ok": not errors,
+        "state": "OK" if not errors else "PARTIAL",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "cached": False,
+        "model_version": rows[0]["model_version"] if rows else None,
+        "rows": rows,
+        "skipped": skipped,
+        "errors": list(errors),
+    }
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = out_path.with_suffix(f"{out_path.suffix}.tmp")
+    tmp_path.write_text(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    durable_replace(tmp_path, out_path)
 
 
 def _status_state_signature(status_path: Path) -> StatusStateSignature | None:
@@ -762,5 +863,6 @@ def _cycle_log_line(result: RustNormalizerCycleResult) -> str:
         f"files={result.files} "
         f"rows_read={result.rows_read} "
         f"bytes_read={result.bytes_read} "
+        f"probability_outputs_written={result.probability_outputs_written} "
         f"state_skipped={str(result.state_skipped).lower()}"
     )

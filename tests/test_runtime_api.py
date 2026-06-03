@@ -14,6 +14,7 @@ from polymarket_engine.app import create_app
 from polymarket_engine.app import create_app_from_env
 from polymarket_engine.domain.contracts import ContractSpec
 from polymarket_engine.domain.market_state import DecisionState
+from polymarket_engine.probability.schema import ProbabilityInput, ProbabilityOutput
 from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
 
 
@@ -525,6 +526,90 @@ def test_runtime_probabilities_skips_quality_blocked_asof_states(tmp_path: Path)
     assert payload["state"] == "OK"
     assert payload["rows"] == []
     assert payload["skipped"] == 1
+
+
+def test_runtime_probabilities_reads_live_probability_status_file(tmp_path: Path) -> None:
+    probability_status_path = tmp_path / "live" / "probabilities.json"
+    probability_status_path.parent.mkdir()
+    probability_status_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "polymarket-probability-runtime-v1",
+                "ok": True,
+                "state": "OK",
+                "generated_at": datetime.now(UTC).isoformat(),
+                "cached": False,
+                "model_version": "fixture-mc-v1",
+                "rows": [
+                    {"contract": "BTC 5m UP", "output_id": "btc-up"},
+                    {"contract": "BTC 5m DOWN", "output_id": "btc-down"},
+                ],
+                "skipped": 0,
+                "errors": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    app = create_app(
+        status_path=tmp_path / "missing-status.json",
+        duckdb_path=tmp_path / "missing.duckdb",
+        probability_status_path=probability_status_path,
+    )
+
+    response = TestClient(app).get("/api/runtime/probabilities?limit=1")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["rows"] == [{"contract": "BTC 5m UP", "output_id": "btc-up"}]
+
+
+def test_runtime_probabilities_prefers_persisted_outputs_without_recomputing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "polymarket.duckdb"
+    state = _decision_state()
+    probability_input = ProbabilityInput.from_decision_state(state)
+    output = ProbabilityOutput(
+        state_id=probability_input.state_id,
+        asof_ts=probability_input.asof_ts,
+        p_finish=0.62,
+        p_no_touch=0.58,
+        z_path=probability_input.z_path,
+        model_version="fixture-mc-v1",
+        seed=123,
+        diagnostics={"path_count": 1, "steps": 1},
+    )
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    store.upsert_contract_spec(state.contract)
+    store.upsert_asof_state_input(state)
+    store.insert_probability_output(
+        output_id="prob-fixture",
+        probability_input=probability_input,
+        output=output,
+    )
+
+    def fail_compute(*_: object, **__: object) -> NoReturn:
+        raise AssertionError("probability API should read persisted rows first")
+
+    monkeypatch.setattr(
+        "polymarket_engine.probability.runtime._compute_and_persist_rows",
+        fail_compute,
+    )
+    app = create_app(
+        status_path=tmp_path / "missing-status.json",
+        duckdb_path=db_path,
+    )
+    response = TestClient(app).get("/api/runtime/probabilities?limit=4")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["state"] == "OK"
+    assert payload["rows"][0]["output_id"] == "prob-fixture"
+    assert payload["rows"][0]["p_finish"] == pytest.approx(0.62)
 
 
 def _contract() -> ContractSpec:

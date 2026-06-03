@@ -13,6 +13,7 @@ def create_app(
     status_path: Path = Path("data/live/status.json"),
     duckdb_path: Path = Path("data/db/polymarket.duckdb"),
     normalized_health_path: Path = Path("data/live/normalized_health.json"),
+    probability_status_path: Path = Path("data/live/probabilities.json"),
     data_dir: Path = Path("data"),
     enable_container_status: bool | None = None,
 ) -> FastAPI:
@@ -27,6 +28,7 @@ def create_app(
             status_path=status_path,
             duckdb_path=duckdb_path,
             normalized_health_path=normalized_health_path,
+            probability_status_path=probability_status_path,
             data_dir=data_dir,
             enable_container_status=container_status_enabled_from_env()
             if enable_container_status is None
@@ -43,6 +45,10 @@ def create_app_from_env() -> FastAPI:
         normalized_health_path=_env_path(
             "POLYMARKET_NORMALIZED_HEALTH_PATH",
             Path("data/live/normalized_health.json"),
+        ),
+        probability_status_path=_env_path(
+            "POLYMARKET_PROBABILITY_STATUS_PATH",
+            Path("data/live/probabilities.json"),
         ),
         data_dir=_env_path("POLYMARKET_DATA_DIR", Path("data")),
     )

@@ -63,6 +63,18 @@ def build_probability_payload(*, duckdb_path: Path, limit: int) -> dict[str, Any
         )
 
     try:
+        persisted_rows = latest_probability_output_rows(duckdb_path=duckdb_path, limit=limit)
+        if persisted_rows:
+            return {
+                "ok": True,
+                "state": "OK",
+                "generated_at": generated_at.isoformat(),
+                "cached": False,
+                "model_version": persisted_rows[0]["model_version"],
+                "rows": persisted_rows,
+                "skipped": 0,
+                "errors": [],
+            }
         inputs, skipped = latest_probability_inputs(duckdb_path=duckdb_path, limit=limit)
     except duckdb.Error as exc:
         return _empty_payload(
@@ -80,27 +92,7 @@ def build_probability_payload(*, duckdb_path: Path, limit: int) -> dict[str, Any
     rows: list[dict[str, Any]] = []
     errors: list[str] = []
     store = DuckDbIngestStore(duckdb_path)
-    for runtime_input in inputs:
-        probability_input = runtime_input.probability_input
-        seed = _seed_for_input(probability_input)
-        steps = _steps_for_input(probability_input)
-        try:
-            output = run_seeded_monte_carlo(
-                probability_input,
-                path_count=DEFAULT_PROBABILITY_PATH_COUNT,
-                steps=steps,
-                seed=seed,
-            )
-            output_id = _output_id(probability_input, output)
-            store.insert_probability_output(
-                output_id=output_id,
-                probability_input=probability_input,
-                output=output,
-            )
-        except (duckdb.Error, ValueError) as exc:
-            errors.append(f"{probability_input.state_id}: {type(exc).__name__}: {exc}")
-            continue
-        rows.append(_runtime_row(runtime_input, output=output, output_id=output_id))
+    rows, errors = _compute_and_persist_rows(store=store, inputs=inputs)
 
     return {
         "ok": not errors,
@@ -122,45 +114,56 @@ def latest_probability_inputs(
     if limit <= 0:
         raise ValueError("limit must be positive")
 
-    with duckdb.connect(str(duckdb_path)) as conn:
-        rows = conn.execute(
-            """
+    with _connect_read_only_with_retry(duckdb_path, lock_retry_seconds=2.0) as conn:
+        return latest_probability_inputs_from_connection(conn=conn, limit=limit)
+
+
+def latest_probability_inputs_from_connection(
+    *,
+    conn: duckdb.DuckDBPyConnection,
+    limit: int,
+) -> tuple[tuple[ProbabilityRuntimeInput, ...], int]:
+    if limit <= 0:
+        raise ValueError("limit must be positive")
+
+    rows = conn.execute(
+        """
+        select
+            state_id,
+            state.contract_id,
+            cast(asof_ts as varchar) as asof_ts,
+            state.asset,
+            state.side,
+            contracts.comparison_operator,
+            seconds_left,
+            settlement_price,
+            threshold,
+            sigma_tau,
+            executable_price,
+            source_age_ms,
+            book_age_ms,
+            data_quality_flags_json,
+            contracts.start_ts::varchar as start_ts,
+            contracts.expiry_ts::varchar as expiry_ts
+        from (
             select
-                state_id,
-                state.contract_id,
-                cast(asof_ts as varchar) as asof_ts,
-                state.asset,
-                state.side,
-                contracts.comparison_operator,
-                seconds_left,
-                settlement_price,
-                threshold,
-                sigma_tau,
-                executable_price,
-                source_age_ms,
-                book_age_ms,
-                data_quality_flags_json,
-                contracts.start_ts::varchar as start_ts,
-                contracts.expiry_ts::varchar as expiry_ts
-            from (
-                select
-                    state_inputs.*,
-                    row_number() over (
-                        partition by contract_id
-                        order by asof_ts desc, created_at desc
-                    ) as row_number
-                from features.asof_state_inputs as state_inputs
-            ) as state
-            join core.contracts as contracts using (contract_id)
-            where row_number = 1
-            order by
-                case state.asset when 'BTC' then 0 when 'ETH' then 1 else 2 end,
-                contracts.start_ts,
-                case state.side when 'UP' then 0 when 'DOWN' then 1 else 2 end
-            limit ?
-            """,
-            [limit],
-        ).fetchall()
+                state_inputs.*,
+                row_number() over (
+                    partition by contract_id
+                    order by asof_ts desc, created_at desc
+                ) as row_number
+            from features.asof_state_inputs as state_inputs
+        ) as state
+        join core.contracts as contracts using (contract_id)
+        where row_number = 1
+        order by
+            case state.asset when 'BTC' then 0 when 'ETH' then 1 else 2 end,
+            contracts.start_ts,
+            case state.side when 'UP' then 0 when 'DOWN' then 1 else 2 end
+        limit ?
+        """,
+        [limit],
+    ).fetchall()
 
     inputs: list[ProbabilityRuntimeInput] = []
     skipped = 0
@@ -189,6 +192,116 @@ def latest_probability_inputs(
         )
 
     return tuple(inputs), skipped
+
+
+def latest_probability_output_rows(
+    *,
+    duckdb_path: Path,
+    limit: int,
+) -> list[dict[str, Any]]:
+    if limit <= 0:
+        raise ValueError("limit must be positive")
+    with _connect_read_only_with_retry(duckdb_path, lock_retry_seconds=2.0) as conn:
+        return latest_probability_output_rows_from_connection(conn=conn, limit=limit)
+
+
+def latest_probability_output_rows_from_connection(
+    *,
+    conn: duckdb.DuckDBPyConnection,
+    limit: int,
+) -> list[dict[str, Any]]:
+    if limit <= 0:
+        raise ValueError("limit must be positive")
+    rows = conn.execute(
+        """
+        select
+            output_id,
+            state_id,
+            cast(asof_ts as varchar) as asof_ts,
+            model_version,
+            p_finish,
+            p_no_touch,
+            z_path,
+            seed,
+            input_json,
+            output_json,
+            contract_id,
+            asset,
+            side,
+            sigma_tau,
+            cast(start_ts as varchar) as start_ts,
+            cast(expiry_ts as varchar) as expiry_ts,
+            data_quality_flags_json
+        from (
+            select
+                outputs.*,
+                state.contract_id,
+                state.asset,
+                state.side,
+                state.sigma_tau,
+                state.data_quality_flags_json,
+                contracts.start_ts,
+                contracts.expiry_ts,
+                row_number() over (
+                    partition by state.contract_id
+                    order by outputs.asof_ts desc, outputs.created_at desc
+                ) as row_number
+            from features.probability_outputs as outputs
+            join features.asof_state_inputs as state using (state_id)
+            join core.contracts as contracts using (contract_id)
+        )
+        where row_number = 1
+        order by
+            case asset when 'BTC' then 0 when 'ETH' then 1 else 2 end,
+            start_ts,
+            case side when 'UP' then 0 when 'DOWN' then 1 else 2 end
+        limit ?
+        """,
+        [limit],
+    ).fetchall()
+    return [_persisted_runtime_row(row) for row in rows]
+
+
+def compute_and_persist_probability_outputs(
+    *,
+    store: DuckDbIngestStore,
+    limit: int,
+) -> tuple[int, int, tuple[str, ...]]:
+    with store._connection() as conn:
+        inputs, skipped = latest_probability_inputs_from_connection(conn=conn, limit=limit)
+    _, errors = _compute_and_persist_rows(store=store, inputs=inputs)
+    return len(inputs) - len(errors), skipped, tuple(errors)
+
+
+def _compute_and_persist_rows(
+    *,
+    store: DuckDbIngestStore,
+    inputs: tuple[ProbabilityRuntimeInput, ...],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    rows: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for runtime_input in inputs:
+        probability_input = runtime_input.probability_input
+        seed = _seed_for_input(probability_input)
+        steps = _steps_for_input(probability_input)
+        try:
+            output = run_seeded_monte_carlo(
+                probability_input,
+                path_count=DEFAULT_PROBABILITY_PATH_COUNT,
+                steps=steps,
+                seed=seed,
+            )
+            output_id = _output_id(probability_input, output)
+            store.insert_probability_output(
+                output_id=output_id,
+                probability_input=probability_input,
+                output=output,
+            )
+        except (duckdb.Error, ValueError) as exc:
+            errors.append(f"{probability_input.state_id}: {type(exc).__name__}: {exc}")
+            continue
+        rows.append(_runtime_row(runtime_input, output=output, output_id=output_id))
+    return rows, errors
 
 
 def _probability_input_from_row(row: tuple[Any, ...]) -> ProbabilityInput:
@@ -244,6 +357,36 @@ def _runtime_row(
         "model_version": output.model_version,
         "seed": output.seed,
         "output_id": output_id,
+    }
+
+
+def _persisted_runtime_row(row: tuple[Any, ...]) -> dict[str, Any]:
+    asof_ts = _parse_datetime(row[2])
+    start_ts = _parse_datetime(row[14])
+    expiry_ts = _parse_datetime(row[15])
+    flags = tuple(str(flag) for flag in json.loads(row[16]))
+    age_ms = max(0, int((datetime.now(timezone.utc) - asof_ts).total_seconds() * 1000))
+    return {
+        "contract": _contract_label(
+            asset=str(row[11]),
+            side=str(row[12]),
+            start_ts=start_ts,
+            expiry_ts=expiry_ts,
+        ),
+        "contract_id": str(row[10]),
+        "asset": str(row[11]),
+        "side": str(row[12]),
+        "asof_ts": asof_ts.isoformat(),
+        "expiry_ts": expiry_ts.isoformat(),
+        "p_finish": float(row[4]),
+        "p_no_touch": float(row[5]),
+        "z_path": float(row[6]),
+        "sigma_tau": _float(row[13], "sigma_tau"),
+        "age_ms": age_ms,
+        "flags": list(flags) if flags else ["OK"],
+        "model_version": str(row[3]),
+        "seed": _optional_int(row[7]),
+        "output_id": str(row[0]),
     }
 
 
@@ -311,6 +454,12 @@ def _int(value: object, field_name: str) -> int:
     return int(number)
 
 
+def _optional_int(value: object) -> int | None:
+    if value is None:
+        return None
+    return _int(value, "seed")
+
+
 def _parse_datetime(value: object) -> datetime:
     if isinstance(value, datetime):
         parsed = value
@@ -319,3 +468,18 @@ def _parse_datetime(value: object) -> datetime:
     if parsed.tzinfo is None:
         raise ValueError("probability timestamps must be timezone-aware")
     return parsed.astimezone(timezone.utc)
+
+
+def _connect_read_only_with_retry(
+    duckdb_path: Path,
+    *,
+    lock_retry_seconds: float,
+) -> duckdb.DuckDBPyConnection:
+    deadline = time.monotonic() + lock_retry_seconds
+    while True:
+        try:
+            return duckdb.connect(str(duckdb_path), read_only=True)
+        except duckdb.IOException as exc:
+            if "Could not set lock" not in str(exc) or time.monotonic() >= deadline:
+                raise
+            time.sleep(0.1)

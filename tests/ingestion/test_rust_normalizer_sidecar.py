@@ -30,7 +30,7 @@ def test_sidecar_cycle_normalizes_builds_states_and_writes_health(tmp_path: Path
     health_path = tmp_path / "live" / "normalized_health.json"
     start_ts = datetime(2026, 6, 2, 6, 0, tzinfo=timezone.utc)
     asof_ts = start_ts + timedelta(minutes=2)
-    _write_raw_tree(raw_root=raw_root, start_ts=start_ts, asof_ts=asof_ts)
+    _write_probability_ready_raw_tree(raw_root=raw_root, start_ts=start_ts, asof_ts=asof_ts)
     _write_status(status_path, start_ts=start_ts, asof_ts=asof_ts)
 
     result = run_rust_normalizer_cycle(
@@ -42,9 +42,9 @@ def test_sidecar_cycle_normalizes_builds_states_and_writes_health(tmp_path: Path
     )
 
     assert result.files == 2
-    assert result.rows_read == 4
+    assert result.rows_read == 7
     assert result.bytes_read > 0
-    assert result.price_ticks_written == 2
+    assert result.price_ticks_written == 5
     assert result.orderbooks_written == 2
     assert result.contracts_upserted == 2
     assert result.states_written == 2
@@ -55,9 +55,14 @@ def test_sidecar_cycle_normalizes_builds_states_and_writes_health(tmp_path: Path
     assert health_path.exists()
     health_payload = json.loads(health_path.read_text(encoding="utf-8"))
     assert health_payload["schema_version"] == "polymarket-normalized-health-v1"
+    probability_path = health_path.with_name("probabilities.json")
+    probability_payload = json.loads(probability_path.read_text(encoding="utf-8"))
+    assert probability_payload["schema_version"] == "polymarket-probability-runtime-v1"
+    assert len(probability_payload["rows"]) == 2
     with duckdb.connect(str(db_path), read_only=True) as conn:
-        assert conn.execute("select count(*) from core.price_ticks").fetchone() == (2,)
+        assert conn.execute("select count(*) from core.price_ticks").fetchone() == (5,)
         assert conn.execute("select count(*) from core.orderbook_snapshots").fetchone() == (2,)
+        assert conn.execute("select count(*) from features.probability_outputs").fetchone() == (2,)
         assert conn.execute("select count(*) from features.asof_state_inputs").fetchone() == (2,)
 
 
@@ -1280,6 +1285,39 @@ def _write_raw_tree(*, raw_root: Path, start_ts: datetime, asof_ts: datetime) ->
         / "events.jsonl",
         _chainlink_row("BTC/USD", start_ts, start_ts, 70_000.0),
         _chainlink_row("BTC/USD", asof_ts - timedelta(seconds=2), asof_ts - timedelta(seconds=1), 70_125.0),
+    )
+    _write_jsonl(
+        raw_root
+        / "polymarket_clob_market_ws"
+        / "best_bid_ask"
+        / "date=2026-06-02"
+        / "hour=06"
+        / "events.jsonl",
+        _orderbook_row("up-token", asof_ts - timedelta(seconds=2), asof_ts - timedelta(seconds=1), 0.61, 0.64),
+        _orderbook_row("down-token", asof_ts - timedelta(seconds=2), asof_ts - timedelta(seconds=1), 0.36, 0.39),
+    )
+
+
+def _write_probability_ready_raw_tree(
+    *,
+    raw_root: Path,
+    start_ts: datetime,
+    asof_ts: datetime,
+) -> None:
+    raw_root.mkdir(parents=True, exist_ok=True)
+    (raw_root / ".polymarket_archive_root").write_text("", encoding="utf-8")
+    _write_jsonl(
+        raw_root
+        / "polymarket_rtds_chainlink"
+        / "price_update"
+        / "date=2026-06-02"
+        / "hour=06"
+        / "events.jsonl",
+        _chainlink_row("BTC/USD", start_ts, start_ts, 70_000.0),
+        _chainlink_row("BTC/USD", asof_ts - timedelta(seconds=4), asof_ts - timedelta(seconds=4), 70_000.0),
+        _chainlink_row("BTC/USD", asof_ts - timedelta(seconds=3), asof_ts - timedelta(seconds=3), 70_050.0),
+        _chainlink_row("BTC/USD", asof_ts - timedelta(seconds=2), asof_ts - timedelta(seconds=2), 70_125.0),
+        _chainlink_row("BTC/USD", asof_ts - timedelta(seconds=1), asof_ts - timedelta(seconds=1), 70_150.0),
     )
     _write_jsonl(
         raw_root
