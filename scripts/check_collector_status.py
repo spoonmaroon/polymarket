@@ -34,7 +34,7 @@ def main() -> int:
     parser.add_argument("--max-raw-event-age-ms", type=int, default=30_000)
     parser.add_argument("--normalized-health-path", type=Path)
     parser.add_argument("--max-normalized-health-age-ms", type=int, default=30_000)
-    parser.add_argument("--expected-prewarm-windows", type=int, default=3)
+    parser.add_argument("--expected-prewarm-windows", type=int, default=2)
     args = parser.parse_args()
 
     payload = json.loads(args.status_path.read_text(encoding="utf-8"))

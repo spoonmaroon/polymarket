@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import os
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -38,6 +41,12 @@ class RawTreeFileSignature:
 class RawTreeIdleSummary:
     files: int
     file_size_bytes: int
+
+
+@dataclass(frozen=True)
+class StatusStateSignature:
+    mtime_ns: int
+    semantic_hash: str
 
 
 @dataclass(frozen=True)
@@ -195,6 +204,7 @@ def run_rust_normalizer_loop(
         store.apply_schema()
         cycles_run = 0
         previous_status_mtime_ns: int | None = None
+        previous_status_signature: StatusStateSignature | None = None
         previous_raw_signature: tuple[RawTreeFileSignature, ...] | None = None
         previous_raw_summary: RawTreeIdleSummary | None = None
         raw_checkpoint_cache: dict[Path, int] = {}
@@ -204,7 +214,17 @@ def run_rust_normalizer_loop(
         last_health_write_monotonic: float | None = None
         while True:
             cycle_started = time.monotonic()
-            status_mtime_ns = _file_mtime_ns(status_path)
+            status_signature = _status_state_signature(status_path)
+            status_mtime_ns = (
+                status_signature.mtime_ns if status_signature is not None else None
+            )
+            status_changed = _status_signature_changed(
+                previous_status_signature,
+                status_signature,
+            )
+            effective_previous_status_mtime_ns = (
+                previous_status_mtime_ns if status_changed else status_mtime_ns
+            )
             full_scan_due = (
                 reprocess_all
                 or previous_raw_signature is None
@@ -231,7 +251,7 @@ def run_rust_normalizer_loop(
                     include_next=include_next,
                     reprocess_all=reprocess_all,
                     apply_schema=False,
-                    previous_status_mtime_ns=previous_status_mtime_ns,
+                    previous_status_mtime_ns=effective_previous_status_mtime_ns,
                     status_mtime_ns=status_mtime_ns,
                     force_state_build=cycles_run == 0,
                     state_read_cache=state_read_cache,
@@ -246,7 +266,7 @@ def run_rust_normalizer_loop(
                         status_path=status_path,
                         normalized_health_path=normalized_health_path,
                         include_next=include_next,
-                        previous_status_mtime_ns=previous_status_mtime_ns,
+                        previous_status_mtime_ns=effective_previous_status_mtime_ns,
                         status_mtime_ns=status_mtime_ns,
                         write_health=True,
                         checkpoint_cache=raw_checkpoint_cache,
@@ -263,7 +283,7 @@ def run_rust_normalizer_loop(
                         include_next=include_next,
                         reprocess_all=reprocess_all,
                         apply_schema=False,
-                        previous_status_mtime_ns=previous_status_mtime_ns,
+                        previous_status_mtime_ns=effective_previous_status_mtime_ns,
                         status_mtime_ns=status_mtime_ns,
                         force_state_build=True,
                         state_read_cache=state_read_cache,
@@ -275,10 +295,6 @@ def run_rust_normalizer_loop(
                     current=raw_signature,
                 )
                 raw_signature_changed = bool(changed_raw_signature)
-                status_changed = (
-                    status_mtime_ns is not None
-                    and status_mtime_ns != previous_status_mtime_ns
-                )
                 if changed_raw_signature:
                     write_health = _idle_health_write_due(
                         last_health_write_monotonic=last_health_write_monotonic,
@@ -290,7 +306,7 @@ def run_rust_normalizer_loop(
                         status_path=status_path,
                         normalized_health_path=normalized_health_path,
                         include_next=include_next,
-                        previous_status_mtime_ns=previous_status_mtime_ns,
+                        previous_status_mtime_ns=effective_previous_status_mtime_ns,
                         status_mtime_ns=status_mtime_ns,
                         write_health=write_health,
                         checkpoint_cache=raw_checkpoint_cache,
@@ -313,7 +329,7 @@ def run_rust_normalizer_loop(
                         normalized_health_path=normalized_health_path,
                         include_next=include_next,
                         reprocess_all=reprocess_all,
-                        previous_status_mtime_ns=previous_status_mtime_ns,
+                        previous_status_mtime_ns=effective_previous_status_mtime_ns,
                         status_mtime_ns=status_mtime_ns,
                         force_state_build=cycles_run == 0,
                         write_health=write_health,
@@ -323,6 +339,7 @@ def run_rust_normalizer_loop(
                         last_health_write_monotonic = cycle_started
             print(_cycle_log_line(result), flush=True)
             previous_status_mtime_ns = status_mtime_ns
+            previous_status_signature = status_signature
             if full_scan_due:
                 previous_raw_signature = raw_signature
                 previous_raw_summary = _raw_tree_idle_summary(previous_raw_signature)
@@ -542,6 +559,46 @@ def _cached_checkpoint_result(
 
 def _observations_written(summary: dict[str, int]) -> bool:
     return summary["price_ticks_written"] > 0 or summary["orderbooks_written"] > 0
+
+
+def _status_state_signature(status_path: Path) -> StatusStateSignature | None:
+    try:
+        with status_path.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+            mtime_ns = os.fstat(handle.fileno()).st_mtime_ns
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    state_inputs = {
+        "schema_version": payload.get("schema_version"),
+        "generated_at": payload.get("generated_at"),
+        "current": payload.get("current", []),
+        "next": payload.get("next", []),
+        "orderbooks": payload.get("orderbooks", []),
+        "chainlink_prices": payload.get("chainlink_prices", []),
+        "prices": payload.get("prices", []),
+    }
+    semantic_payload = json.dumps(
+        state_inputs,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return StatusStateSignature(
+        mtime_ns=mtime_ns,
+        semantic_hash=hashlib.sha256(semantic_payload.encode("utf-8")).hexdigest(),
+    )
+
+
+def _status_signature_changed(
+    previous: StatusStateSignature | None,
+    current: StatusStateSignature | None,
+) -> bool:
+    if current is None:
+        return False
+    if previous is None:
+        return True
+    return current.semantic_hash != previous.semantic_hash
 
 
 def _raw_tree_idle_summary(

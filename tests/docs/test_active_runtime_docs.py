@@ -8,7 +8,7 @@ def test_part_two_docs_describe_active_5m_rust_state_manager() -> None:
     text = (ROOT / "docs" / "PART_TWO_LIVE_COLLECTORS.md").read_text(encoding="utf-8")
 
     assert "active live path is the Rust SDK state-manager runtime" in text
-    assert "BTC/ETH 5m current, next, and next-next windows" in text
+    assert "BTC/ETH 5m current and next windows" in text
     assert "--mode state-manager" in text
     assert "--interval 5m" in text
     assert "--state-snapshot-dir" in text
@@ -32,14 +32,14 @@ def test_readme_points_to_state_manager_not_legacy_collector() -> None:
     assert "build-current-decision-states" in text
 
 
-def test_spoon_docs_describe_three_window_runtime_and_normalizer_sidecar() -> None:
+def test_spoon_docs_describe_two_window_runtime_and_normalizer_sidecar() -> None:
     part_two = (ROOT / "docs" / "PART_TWO_LIVE_COLLECTORS.md").read_text(
         encoding="utf-8"
     )
     deployment = (ROOT / "docs" / "SPOON_DEPLOYMENT.md").read_text(encoding="utf-8")
 
-    assert "current, next, and next-next 5m windows" in part_two
-    assert "POLYMARKET_PREWARM_WINDOWS=3" in deployment
+    assert "current and next 5m windows" in part_two
+    assert "POLYMARKET_PREWARM_WINDOWS=2" in deployment
     assert "normalizer sidecar" in part_two
     assert "normalized_health.json" in part_two
     assert "core.contract_rules remains empty" in part_two
@@ -61,7 +61,7 @@ def test_engine_plan_reflects_active_runtime_boundary() -> None:
         encoding="utf-8"
     )
 
-    assert "BTC/ETH 5-minute current, next, and next-next contract windows" in text
+    assert "BTC/ETH 5-minute current and next contract windows" in text
     assert "Rust owns hot read-only state" in text
     assert "append-only hot `DecisionState` snapshots" in text
     assert "DuckDB/Python own raw-journal normalization, replay" in text

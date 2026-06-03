@@ -3,7 +3,7 @@
 The Python collector runbook below is retired design context. The legacy Docker
 entrypoint and systemd unit now fail closed; do not use this runbook to restart
 Python collection. The active read-only runtime is the Rust SDK state manager.
-It is intentionally scoped to BTC/ETH 5m current, next, and next-next windows
+It is intentionally scoped to BTC/ETH 5m current and next windows
 until the warm-state path and durable persistence are stable.
 
 Persistent data lives outside the repo at `/home/spoon/polymarket-data`.
@@ -31,18 +31,50 @@ docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compo
 python3 scripts/check_collector_status.py --status-path /home/spoon/polymarket-data/live/status.json --max-status-age-seconds 30 --max-price-age-ms 30000 --max-orderbook-age-ms 30000 --max-websocket-event-age-ms 30000
 ```
 
-Set `POLYMARKET_PREWARM_WINDOWS=3` or rely on the compose default so spoon warms
-BTC/ETH current, next, and next-next 5m windows.
+Set `POLYMARKET_PREWARM_WINDOWS=2` or rely on the compose default so spoon warms
+BTC/ETH current and next 5m windows.
+The normalizer sidecar defaults to `POLYMARKET_NORMALIZER_INTERVAL_SECONDS=0.25`.
+
+## Production Image Deploy
+
+Normal live deploys should load prebuilt images on spoon and restart them without
+compiling Rust on the server.
+
+Build images on the Mac. The default target platform is
+`TARGET_PLATFORM=linux/amd64`, matching spoon's Linux runtime:
+
+```bash
+cd /Users/goon/polymarket
+./scripts/build_images_pc.sh
+```
+
+Ship and start the matching images on spoon:
+
+```bash
+cd /Users/goon/polymarket
+./scripts/deploy_prebuilt_images.sh
+```
+
+The deploy helper copies the collector and normalizer tarballs to
+`/home/spoon/polymarket-image-artifacts`, runs `docker load`, then calls
+`scripts/deploy.sh` with `POLYMARKET_DEPLOY_USE_PREBUILT=1`,
+`POLYMARKET_DEPLOY_REF` and `POLYMARKET_EXPECTED_DEPLOY_SHA` pinned to the
+exact full commit SHA,
+`POLYMARKET_COLLECTOR_IMAGE`, `POLYMARKET_NORMALIZER_IMAGE`,
+`POLYMARKET_DATA_DIR=/home/spoon/polymarket-data`, and `DEPLOY_FORCE=1`.
+It finishes with the collector status gate for the active status, raw, and
+normalized-health paths.
 
 ## Auto Deploy
 
-Install a cron entry on spoon:
+Install a cron entry on spoon only after deciding how images reach the host:
 
 ```cron
 */5 * * * * /home/spoon/polymarket/scripts/deploy.sh >> /home/spoon/polymarket/logs/deploy.cron.log 2>&1
 ```
 
-The deploy script fetches the configured deploy ref, refuses dirty server worktrees, fast-forwards only, rebuilds the Rust collector image, restarts the collector, and smoke-checks the status file. It only skips a rebuild when both the checked-out commit and the deployed marker match the target commit, so a manual `git pull` cannot accidentally leave an older healthy container running.
+The deploy script fetches the configured deploy ref, refuses dirty server worktrees, fast-forwards only, restarts the collector and normalizer, and smoke-checks the status file. A bare cron entry does not compile Rust by default. With `POLYMARKET_DEPLOY_USE_PREBUILT=1`, deploy requires `POLYMARKET_EXPECTED_DEPLOY_SHA` and SHA-tagged collector and normalizer images that exactly match the deploy ref. Host builds are available only when explicitly enabled with `POLYMARKET_DEPLOY_ALLOW_SPOON_BUILD=1`, and that fallback limits Rust build pressure with `CARGO_BUILD_JOBS=1` by default.
+It only skips a rebuild/restart when both the checked-out commit and the deployed marker match the target commit, so a manual `git pull` cannot accidentally leave an older healthy container running.
 If `deploy/collector/.env` exists, the deploy script uses it explicitly. The collector is read-only and runs Chainlink RTDS plus Polymarket CLOB WebSocket state-manager mode with `POLYMARKET_INTERVAL=5m`.
 
 For branch testing before merge:

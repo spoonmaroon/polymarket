@@ -154,21 +154,21 @@ def _report() -> dict[str, object]:
     }
 
 
-def test_verifier_rejects_missing_next_next_assets() -> None:
+def test_verifier_accepts_missing_next_next_by_default() -> None:
+    script = _load_script()
+    payload = _report()
+    payload["next_next"] = []
+
+    assert script.validate(payload) == []
+
+
+def test_verifier_rejects_missing_next_next_when_three_windows_expected() -> None:
     script = _load_script()
     payload = _report()
     payload["next_next"] = []
 
     with pytest.raises(SystemExit, match="next_next missing assets"):
-        script.validate(payload)
-
-
-def test_verifier_accepts_missing_next_next_for_two_window_experiment() -> None:
-    script = _load_script()
-    payload = _report()
-    payload["next_next"] = []
-
-    assert script.validate(payload, expected_prewarm_windows=2) == []
+        script.validate(payload, expected_prewarm_windows=3)
 
 
 def test_verifier_accepts_next_next_assets(

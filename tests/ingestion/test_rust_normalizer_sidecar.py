@@ -965,7 +965,7 @@ def test_sidecar_loop_does_not_full_scan_when_active_signature_is_empty(
     assert full_signature_calls == 1
 
 
-def test_sidecar_loop_rebuilds_state_when_status_changes_without_raw_rows(
+def test_sidecar_loop_skips_state_build_for_ops_only_status_refresh(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -976,7 +976,12 @@ def test_sidecar_loop_rebuilds_state_when_status_changes_without_raw_rows(
     start_ts = datetime(2026, 6, 2, 6, 0, tzinfo=timezone.utc)
     asof_ts = start_ts + timedelta(minutes=2)
     _write_raw_tree(raw_root=raw_root, start_ts=start_ts, asof_ts=asof_ts)
-    _write_status(status_path, start_ts=start_ts, asof_ts=asof_ts)
+    _write_status(
+        status_path,
+        start_ts=start_ts,
+        asof_ts=asof_ts,
+        monitor_counter=1,
+    )
     real_build = getattr(
         rust_normalizer_sidecar,
         "build_current_decision_state_snapshots",
@@ -992,7 +997,8 @@ def test_sidecar_loop_rebuilds_state_when_status_changes_without_raw_rows(
         _write_status(
             status_path,
             start_ts=start_ts,
-            asof_ts=asof_ts + timedelta(seconds=1),
+            asof_ts=asof_ts,
+            monitor_counter=2,
         )
         next_mtime = time.time() + 1
         os.utime(status_path, (next_mtime, next_mtime))
@@ -1017,10 +1023,111 @@ def test_sidecar_loop_rebuilds_state_when_status_changes_without_raw_rows(
         max_cycles=2,
     )
 
+    assert build_calls == 1
+
+
+def test_sidecar_loop_rebuilds_state_when_generated_at_only_changes_without_raw_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_root = tmp_path / "raw"
+    db_path = tmp_path / "state.duckdb"
+    status_path = tmp_path / "live" / "status.json"
+    health_path = tmp_path / "live" / "normalized_health.json"
+    start_ts = datetime(2026, 6, 2, 6, 0, tzinfo=timezone.utc)
+    asof_ts = start_ts + timedelta(minutes=2)
+    _write_raw_tree(raw_root=raw_root, start_ts=start_ts, asof_ts=asof_ts)
+    _write_status(status_path, start_ts=start_ts, asof_ts=asof_ts)
+    build_calls = 0
+
+    def counting_build(*args: Any, **kwargs: Any) -> Any:
+        nonlocal build_calls
+        build_calls += 1
+        return SimpleNamespace(contracts_upserted=0, states_written=0, unavailable=())
+
+    def change_generated_at(_: float) -> None:
+        _write_status(
+            status_path,
+            start_ts=start_ts,
+            asof_ts=asof_ts + timedelta(seconds=1),
+        )
+        next_mtime = time.time() + 1
+        os.utime(status_path, (next_mtime, next_mtime))
+
+    monkeypatch.setattr(
+        "polymarket_engine.ingestion.rust_normalizer_sidecar."
+        "build_current_decision_state_snapshots",
+        counting_build,
+    )
+    monkeypatch.setattr(
+        "polymarket_engine.ingestion.rust_normalizer_sidecar.time.sleep",
+        change_generated_at,
+    )
+
+    run_rust_normalizer_loop(
+        raw_root=raw_root,
+        db_path=db_path,
+        status_path=status_path,
+        normalized_health_path=health_path,
+        interval_seconds=0.0,
+        include_next=False,
+        max_cycles=2,
+    )
+
     assert build_calls == 2
 
 
-def test_sidecar_loop_reuses_state_read_cache_across_status_only_builds(
+def test_sidecar_loop_rebuilds_state_when_status_inputs_change_without_raw_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_root = tmp_path / "raw"
+    db_path = tmp_path / "state.duckdb"
+    status_path = tmp_path / "live" / "status.json"
+    health_path = tmp_path / "live" / "normalized_health.json"
+    start_ts = datetime(2026, 6, 2, 6, 0, tzinfo=timezone.utc)
+    asof_ts = start_ts + timedelta(minutes=2)
+    _write_raw_tree(raw_root=raw_root, start_ts=start_ts, asof_ts=asof_ts)
+    _write_status(status_path, start_ts=start_ts, asof_ts=asof_ts)
+    build_calls = 0
+
+    def counting_build(*args: Any, **kwargs: Any) -> Any:
+        nonlocal build_calls
+        build_calls += 1
+        return SimpleNamespace(contracts_upserted=0, states_written=0, unavailable=())
+
+    def change_status_inputs(_: float) -> None:
+        payload = json.loads(status_path.read_text(encoding="utf-8"))
+        payload["current"][0]["up"]["token_id"] = "new-up-token"
+        payload["generated_at"] = (asof_ts + timedelta(seconds=1)).isoformat()
+        status_path.write_text(json.dumps(payload), encoding="utf-8")
+        next_mtime = time.time() + 1
+        os.utime(status_path, (next_mtime, next_mtime))
+
+    monkeypatch.setattr(
+        "polymarket_engine.ingestion.rust_normalizer_sidecar."
+        "build_current_decision_state_snapshots",
+        counting_build,
+    )
+    monkeypatch.setattr(
+        "polymarket_engine.ingestion.rust_normalizer_sidecar.time.sleep",
+        change_status_inputs,
+    )
+
+    run_rust_normalizer_loop(
+        raw_root=raw_root,
+        db_path=db_path,
+        status_path=status_path,
+        normalized_health_path=health_path,
+        interval_seconds=0.0,
+        include_next=False,
+        max_cycles=2,
+    )
+
+    assert build_calls == 2
+
+
+def test_sidecar_loop_reuses_state_read_cache_across_status_input_builds(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1039,11 +1146,10 @@ def test_sidecar_loop_reuses_state_read_cache_across_status_only_builds(
         return SimpleNamespace(contracts_upserted=0, states_written=0, unavailable=())
 
     def change_status(_: float) -> None:
-        _write_status(
-            status_path,
-            start_ts=start_ts,
-            asof_ts=asof_ts + timedelta(seconds=1),
-        )
+        payload = json.loads(status_path.read_text(encoding="utf-8"))
+        payload["current"][0]["up"]["token_id"] = "new-up-token"
+        payload["generated_at"] = (asof_ts + timedelta(seconds=1)).isoformat()
+        status_path.write_text(json.dumps(payload), encoding="utf-8")
         next_mtime = time.time() + 1
         os.utime(status_path, (next_mtime, next_mtime))
 
@@ -1072,7 +1178,7 @@ def test_sidecar_loop_reuses_state_read_cache_across_status_only_builds(
     assert read_caches[0] is read_caches[1]
 
 
-def test_sidecar_loop_writes_health_when_status_changes_without_raw_rows(
+def test_sidecar_loop_writes_health_when_status_inputs_change_without_raw_rows(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1093,11 +1199,10 @@ def test_sidecar_loop_writes_health_when_status_changes_without_raw_rows(
         return real_write_health(*args, **kwargs)
 
     def change_status(_: float) -> None:
-        _write_status(
-            status_path,
-            start_ts=start_ts,
-            asof_ts=asof_ts + timedelta(seconds=1),
-        )
+        payload = json.loads(status_path.read_text(encoding="utf-8"))
+        payload["current"][0]["up"]["token_id"] = "new-up-token"
+        payload["generated_at"] = (asof_ts + timedelta(seconds=1)).isoformat()
+        status_path.write_text(json.dumps(payload), encoding="utf-8")
         next_mtime = time.time() + 1
         os.utime(status_path, (next_mtime, next_mtime))
 
@@ -1213,10 +1318,16 @@ def _write_current_hour_raw_tree(*, raw_root: Path, start_ts: datetime, asof_ts:
     )
 
 
-def _write_status(path: Path, *, start_ts: datetime, asof_ts: datetime) -> None:
+def _write_status(
+    path: Path,
+    *,
+    start_ts: datetime,
+    asof_ts: datetime,
+    monitor_counter: int | None = None,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     slug = f"btc-updown-5m-{int(start_ts.timestamp())}"
-    payload = {
+    payload: dict[str, Any] = {
         "schema_version": "rust-live-probe-state-manager-v1",
         "mode": "state-manager",
         "generated_at": asof_ts.isoformat(),
@@ -1245,6 +1356,15 @@ def _write_status(path: Path, *, start_ts: datetime, asof_ts: datetime) -> None:
             },
         ],
     }
+    if monitor_counter is not None:
+        payload["monitor"] = {
+            "cycles": monitor_counter,
+            "last_check_at": asof_ts.isoformat(),
+        }
+        payload["websockets"] = {
+            "events_seen": monitor_counter,
+            "reconnects": 0,
+        }
     path.write_text(json.dumps(payload), encoding="utf-8")
 
 
