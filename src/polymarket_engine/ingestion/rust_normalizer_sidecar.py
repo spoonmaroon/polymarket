@@ -617,12 +617,14 @@ def _compute_probability_outputs(*, store: DuckDbIngestStore, out_path: Path) ->
         store=store,
         limit=PROBABILITY_OUTPUT_LIMIT,
         max_state_age_seconds=PROBABILITY_MAX_STATE_AGE_SECONDS,
+        active_only=True,
     )
     with store._connection() as conn:
         rows = latest_probability_output_rows_from_connection(
             conn=conn,
             limit=PROBABILITY_OUTPUT_LIMIT,
             max_state_age_seconds=PROBABILITY_MAX_STATE_AGE_SECONDS,
+            active_only=True,
         )
     _write_probability_status(
         out_path=out_path,

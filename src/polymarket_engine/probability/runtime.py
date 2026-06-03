@@ -112,6 +112,7 @@ def latest_probability_inputs(
     duckdb_path: Path,
     limit: int,
     max_state_age_seconds: float | None = None,
+    active_only: bool = False,
 ) -> tuple[tuple[ProbabilityRuntimeInput, ...], int]:
     if limit <= 0:
         raise ValueError("limit must be positive")
@@ -121,6 +122,7 @@ def latest_probability_inputs(
             conn=conn,
             limit=limit,
             max_state_age_seconds=max_state_age_seconds,
+            active_only=active_only,
         )
 
 
@@ -129,11 +131,13 @@ def latest_probability_inputs_from_connection(
     conn: duckdb.DuckDBPyConnection,
     limit: int,
     max_state_age_seconds: float | None = None,
+    active_only: bool = False,
 ) -> tuple[tuple[ProbabilityRuntimeInput, ...], int]:
     if limit <= 0:
         raise ValueError("limit must be positive")
 
     cutoff = _cutoff_timestamp(max_state_age_seconds)
+    active_now = datetime.now(timezone.utc) if active_only else None
     rows = conn.execute(
         """
         select
@@ -165,13 +169,14 @@ def latest_probability_inputs_from_connection(
         join core.contracts as contracts using (contract_id)
         where row_number = 1
           and (? is null or asof_ts >= ?)
+          and (? is null or contracts.expiry_ts > ?)
         order by
             case state.asset when 'BTC' then 0 when 'ETH' then 1 else 2 end,
             contracts.start_ts,
             case state.side when 'UP' then 0 when 'DOWN' then 1 else 2 end
         limit ?
         """,
-        [cutoff, cutoff, limit],
+        [cutoff, cutoff, active_now, active_now, limit],
     ).fetchall()
 
     inputs: list[ProbabilityRuntimeInput] = []
@@ -208,6 +213,7 @@ def latest_probability_output_rows(
     duckdb_path: Path,
     limit: int,
     max_state_age_seconds: float | None = None,
+    active_only: bool = False,
 ) -> list[dict[str, Any]]:
     if limit <= 0:
         raise ValueError("limit must be positive")
@@ -216,6 +222,7 @@ def latest_probability_output_rows(
             conn=conn,
             limit=limit,
             max_state_age_seconds=max_state_age_seconds,
+            active_only=active_only,
         )
 
 
@@ -224,10 +231,12 @@ def latest_probability_output_rows_from_connection(
     conn: duckdb.DuckDBPyConnection,
     limit: int,
     max_state_age_seconds: float | None = None,
+    active_only: bool = False,
 ) -> list[dict[str, Any]]:
     if limit <= 0:
         raise ValueError("limit must be positive")
     cutoff = _cutoff_timestamp(max_state_age_seconds)
+    active_now = datetime.now(timezone.utc) if active_only else None
     rows = conn.execute(
         """
         select
@@ -268,13 +277,14 @@ def latest_probability_output_rows_from_connection(
         )
         where row_number = 1
           and (? is null or asof_ts >= ?)
+          and (? is null or expiry_ts > ?)
         order by
             case asset when 'BTC' then 0 when 'ETH' then 1 else 2 end,
             start_ts,
             case side when 'UP' then 0 when 'DOWN' then 1 else 2 end
         limit ?
         """,
-        [cutoff, cutoff, limit],
+        [cutoff, cutoff, active_now, active_now, limit],
     ).fetchall()
     return [_persisted_runtime_row(row) for row in rows]
 
@@ -284,12 +294,14 @@ def compute_and_persist_probability_outputs(
     store: DuckDbIngestStore,
     limit: int,
     max_state_age_seconds: float | None = None,
+    active_only: bool = False,
 ) -> tuple[int, int, tuple[str, ...]]:
     with store._connection() as conn:
         inputs, skipped = latest_probability_inputs_from_connection(
             conn=conn,
             limit=limit,
             max_state_age_seconds=max_state_age_seconds,
+            active_only=active_only,
         )
     _, errors = _compute_and_persist_rows(store=store, inputs=inputs)
     return len(inputs) - len(errors), skipped, tuple(errors)
