@@ -2,16 +2,20 @@ pub mod client;
 mod event_loop;
 mod layout;
 mod render;
-pub mod status;
 mod state;
+pub mod status;
 
 use anyhow::Result;
 use clap::Parser;
 use state::AppState;
 
-#[derive(Debug, Parser)]
+#[derive(Debug, Clone, Parser)]
 #[command(author, version, about)]
 struct Cli {
+    /// Engine API base URL for read-only runtime status polling.
+    #[arg(long, default_value = "http://127.0.0.1:8000")]
+    engine_api_url: String,
+
     /// Static preview mode for the first cockpit shell.
     #[arg(long, default_value_t = false)]
     once: bool,
@@ -31,5 +35,30 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    event_loop::run(app)
+    event_loop::run(app, cli.engine_api_url).await
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use clap::Parser;
+
+    use super::Cli;
+
+    #[test]
+    fn default_engine_api_url_is_localhost() {
+        let cli = Cli::parse_from(["polymarket-cockpit-tui"]);
+
+        assert_eq!(cli.engine_api_url, "http://127.0.0.1:8000");
+    }
+
+    #[test]
+    fn custom_engine_api_url_is_accepted() {
+        let cli = Cli::parse_from([
+            "polymarket-cockpit-tui",
+            "--engine-api-url",
+            "http://100.72.104.49:8000",
+        ]);
+
+        assert_eq!(cli.engine_api_url, "http://100.72.104.49:8000");
+    }
 }

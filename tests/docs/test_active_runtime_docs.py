@@ -93,10 +93,21 @@ def test_spoon_docs_include_latency_probe_without_order_placement() -> None:
 def test_spoon_docs_record_vps_cadence_revisit() -> None:
     text = (ROOT / "docs" / "SPOON_DEPLOYMENT.md").read_text(encoding="utf-8")
 
+    assert "THEPC" in text
+    assert "current normalizer cadence" in text
+    assert "POLYMARKET_NORMALIZER_INTERVAL_SECONDS=0.1" in text
     assert "POLYMARKET_NORMALIZER_INTERVAL_SECONDS=0.25" in text
     assert "home-server CPU compromise" in text
     assert "After VPS migration" in text
-    assert "POLYMARKET_NORMALIZER_INTERVAL_SECONDS=0.1" in text
+
+
+def test_spoon_docs_include_read_only_cockpit_tui() -> None:
+    text = (ROOT / "docs" / "SPOON_DEPLOYMENT.md").read_text(encoding="utf-8")
+
+    assert "polymarket-cockpit-tui" in text
+    assert "--engine-api-url" in text
+    assert "read-only" in text
+    assert "POLYMARKET_ENABLE_CONTAINER_STATUS=1" in text
 
 
 def test_spoon_docs_pin_safe_hot_replay_gate_command() -> None:

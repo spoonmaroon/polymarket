@@ -806,28 +806,31 @@ If reports do not prove the edge, there is no edge.
 
 Purpose:
 
-Make the engine inspectable while staying read-only or paper-only.
+Make the engine inspectable before any execution workflow exists.
 
-The first UI should be a local operator cockpit, not a trading arcade.
+The first TUI is an operator cockpit, not a trade terminal. It should show
+freshness, latency, health, storage, and block reasons before any paper or live
+execution workflow is introduced.
 
 Tabs:
 
-1. Live Monitor
+1. Live
    - active contracts;
    - venue;
    - time left;
    - threshold;
    - current settlement price;
-   - `p_finish`;
-   - `p_no_touch`;
-   - fair price;
-   - executable bid/ask;
-   - edge after costs;
-   - volatility trend;
-   - support/resistance block status;
    - stale-data warnings.
 
-2. Market Detail
+2. Systems
+   - runtime health;
+   - source freshness;
+   - orderbook freshness;
+   - API latency;
+   - storage health;
+   - gate failures and block reasons.
+
+3. Market
    - selected contract;
    - price path;
    - threshold line;
@@ -837,12 +840,10 @@ Tabs:
    - decision timeline;
    - block reasons.
 
-3. Reports
-   - calibration;
-   - Brier/log loss;
-   - paper PnL;
-   - false positives;
-   - blocked-signal review.
+4. Logs
+   - read-only runtime events;
+   - poll errors;
+   - operator notes surfaced by the API.
 
 Why it exists:
 
