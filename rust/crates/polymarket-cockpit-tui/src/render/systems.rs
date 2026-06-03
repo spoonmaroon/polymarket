@@ -59,27 +59,14 @@ mod tests {
 
     #[test]
     fn systems_summary_shows_counts_and_gate_failures() {
-        let mut app = AppState::default();
-        app.runtime_status = Some(RuntimeStatus {
-            ok: false,
-            schema_kind: "rust-live-probe-state-manager-v1".to_string(),
-            mode: "state-manager".to_string(),
-            age_ms: Some(42),
-            counts: RuntimeCounts {
-                prices: 2,
-                orderbooks: 4,
-                current: 2,
-                next: 2,
-                next_next: 0,
-                websocket_status: 2,
-            },
-            latency_marks: vec![],
-            health_flags: vec!["source stale".to_string()],
-        });
-        app.runtime_gates = Some(RuntimeGates {
-            ok: false,
-            failures: vec!["status file stale".to_string()],
-        });
+        let app = AppState {
+            runtime_status: Some(runtime_status(false, vec!["source stale".to_string()])),
+            runtime_gates: Some(RuntimeGates {
+                ok: false,
+                failures: vec!["status file stale".to_string()],
+            }),
+            ..Default::default()
+        };
 
         let text = systems_summary_lines(&app).join("\n");
 
@@ -91,9 +78,23 @@ mod tests {
 
     #[test]
     fn systems_summary_keeps_counts_without_gates() {
-        let mut app = AppState::default();
-        app.runtime_status = Some(RuntimeStatus {
-            ok: true,
+        let app = AppState {
+            runtime_status: Some(runtime_status(true, vec![])),
+            ..Default::default()
+        };
+
+        let text = systems_summary_lines(&app).join("\n");
+
+        assert!(text.contains("Engine API OK"));
+        assert!(text.contains("status_age_ms=42"));
+        assert!(text.contains("prices=2"));
+        assert!(text.contains("orderbooks=4"));
+        assert!(!text.contains("block="));
+    }
+
+    fn runtime_status(ok: bool, health_flags: Vec<String>) -> RuntimeStatus {
+        RuntimeStatus {
+            ok,
             schema_kind: "rust-live-probe-state-manager-v1".to_string(),
             mode: "state-manager".to_string(),
             age_ms: Some(42),
@@ -106,16 +107,7 @@ mod tests {
                 websocket_status: 2,
             },
             latency_marks: vec![],
-            health_flags: vec![],
-        });
-        app.runtime_gates = None;
-
-        let text = systems_summary_lines(&app).join("\n");
-
-        assert!(text.contains("Engine API OK"));
-        assert!(text.contains("status_age_ms=42"));
-        assert!(text.contains("prices=2"));
-        assert!(text.contains("orderbooks=4"));
-        assert!(!text.contains("block="));
+            health_flags,
+        }
     }
 }

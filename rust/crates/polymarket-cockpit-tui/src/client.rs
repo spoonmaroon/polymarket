@@ -10,40 +10,6 @@ pub struct EngineClient {
     client: reqwest::Client,
 }
 
-#[cfg(test)]
-mod tests {
-    use std::{
-        net::TcpListener,
-        thread,
-        time::{Duration, Instant},
-    };
-
-    use super::EngineClient;
-
-    #[tokio::test]
-    async fn status_request_times_out_on_half_open_api() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
-        let _server = thread::spawn(move || {
-            let Ok((_stream, _peer)) = listener.accept() else {
-                return;
-            };
-            thread::sleep(Duration::from_secs(2));
-        });
-
-        let client = EngineClient::with_request_timeout(
-            format!("http://{address}"),
-            Duration::from_millis(50),
-        );
-        let started = Instant::now();
-
-        let result = client.status().await;
-
-        assert!(result.is_err());
-        assert!(started.elapsed() < Duration::from_secs(1));
-    }
-}
-
 impl EngineClient {
     pub fn new(base_url: impl Into<String>) -> Self {
         Self::with_request_timeout(base_url, DEFAULT_REQUEST_TIMEOUT)
@@ -80,5 +46,39 @@ impl EngineClient {
             .error_for_status()?
             .json()
             .await?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        net::TcpListener,
+        thread,
+        time::{Duration, Instant},
+    };
+
+    use super::EngineClient;
+
+    #[tokio::test]
+    async fn status_request_times_out_on_half_open_api() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let _server = thread::spawn(move || {
+            let Ok((_stream, _peer)) = listener.accept() else {
+                return;
+            };
+            thread::sleep(Duration::from_secs(2));
+        });
+
+        let client = EngineClient::with_request_timeout(
+            format!("http://{address}"),
+            Duration::from_millis(50),
+        );
+        let started = Instant::now();
+
+        let result = client.status().await;
+
+        assert!(result.is_err());
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 }

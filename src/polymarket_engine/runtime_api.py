@@ -385,11 +385,11 @@ def _required_row_fields_error(
 
 
 def _list_field(payload: dict[str, Any], field: str) -> Sequence[Any]:
-    value = payload.get(field)
+    value: object = payload.get(field)
     if value is None:
         return ()
-    if _is_json_list(value):
-        return value
+    if isinstance(value, list):
+        return tuple(value)
     return ()
 
 

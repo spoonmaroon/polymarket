@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import NoReturn
 import json
 import subprocess
 
 import duckdb
+import pytest
 from fastapi.testclient import TestClient
 
 from polymarket_engine.app import create_app
@@ -426,9 +428,9 @@ def test_runtime_containers_disabled_by_default() -> None:
 
 
 def test_runtime_containers_enabled_missing_docker_returns_controlled_state(
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def missing_docker(*args, **kwargs):
+    def missing_docker(*_args: object, **_kwargs: object) -> NoReturn:
         raise FileNotFoundError("docker")
 
     monkeypatch.setattr(
@@ -447,8 +449,10 @@ def test_runtime_containers_enabled_missing_docker_returns_controlled_state(
     assert "FileNotFoundError" in payload["error"]
 
 
-def test_runtime_containers_enabled_timeout_returns_controlled_state(monkeypatch) -> None:
-    def timed_out(*args, **kwargs):
+def test_runtime_containers_enabled_timeout_returns_controlled_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def timed_out(*_args: object, **_kwargs: object) -> NoReturn:
         raise subprocess.TimeoutExpired(cmd=["docker", "compose", "ps"], timeout=5)
 
     monkeypatch.setattr(
