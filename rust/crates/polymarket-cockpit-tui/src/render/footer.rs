@@ -7,7 +7,7 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 pub fn render(frame: &mut Frame<'_>, area: Rect) {
-    let help = "Tab/Right: next  Shift-Tab/Left: previous  q/Esc: quit";
+    let help = "Tab/Right: next  Shift-Tab/Left: previous  Up/Down: select  q/Esc: quit";
     let display = if help.width() > area.width as usize {
         "Tab/Right: next  q/Esc: quit"
     } else {

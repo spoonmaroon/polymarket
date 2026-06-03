@@ -13,7 +13,7 @@ use tokio::{sync::mpsc, task::JoinHandle};
 use crate::{
     client::EngineClient,
     render,
-    state::AppState,
+    state::{AppState, MainTab},
     status::{RuntimeGates, RuntimeMonitor, RuntimeStatus},
 };
 
@@ -99,12 +99,32 @@ fn run_loop(
             continue;
         }
 
-        match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
-            KeyCode::Left | KeyCode::BackTab => app.previous_tab(),
-            KeyCode::Right | KeyCode::Tab => app.next_tab(),
-            _ => {}
+        if apply_key(app, key.code) {
+            return Ok(());
         }
+    }
+}
+
+fn apply_key(app: &mut AppState, key_code: KeyCode) -> bool {
+    match key_code {
+        KeyCode::Char('q') | KeyCode::Esc => true,
+        KeyCode::Left | KeyCode::BackTab => {
+            app.previous_tab();
+            false
+        }
+        KeyCode::Right | KeyCode::Tab => {
+            app.next_tab();
+            false
+        }
+        KeyCode::Up if app.active_tab == MainTab::Market => {
+            app.select_previous_market();
+            false
+        }
+        KeyCode::Down if app.active_tab == MainTab::Market => {
+            app.select_next_market();
+            false
+        }
+        _ => false,
     }
 }
 
@@ -173,6 +193,7 @@ fn apply_runtime_update(app: &mut AppState, update: RuntimeUpdate) {
 
     if let Some(monitor) = update.monitor {
         app.runtime_monitor = Some(monitor);
+        app.sync_market_selection();
     }
 
     app.runtime_error = update.error;
@@ -223,13 +244,19 @@ mod tests {
         time::{Duration, Instant},
     };
 
+    use crossterm::event::KeyCode;
     use tokio::sync::mpsc;
 
-    use super::{RuntimeUpdate, drain_runtime_updates, poll_interval_duration, poll_runtime};
+    use super::{
+        RuntimeUpdate, apply_key, drain_runtime_updates, poll_interval_duration, poll_runtime,
+    };
     use crate::client::EngineClient;
     use crate::{
-        state::AppState,
-        status::{RuntimeCounts, RuntimeGates, RuntimeMonitor, RuntimePriceRow, RuntimeStatus},
+        state::{AppState, MainTab},
+        status::{
+            RuntimeCounts, RuntimeGates, RuntimeMonitor, RuntimeOrderbookRow, RuntimePriceRow,
+            RuntimeStatus,
+        },
     };
 
     fn status(mode: &str) -> RuntimeStatus {
@@ -262,6 +289,30 @@ mod tests {
                 price: Some(price.to_string()),
             }],
             orderbooks: Vec::new(),
+        }
+    }
+
+    fn orderbook(asset: &str, side: &str) -> RuntimeOrderbookRow {
+        RuntimeOrderbookRow {
+            venue: Some("polymarket".to_string()),
+            source_key: Some("polymarket_rust_sdk".to_string()),
+            market_slug: Some(format!(
+                "{}-updown-5m-1780519500",
+                asset.to_ascii_lowercase()
+            )),
+            contract_id: format!("{asset}-{side}"),
+            token_id: Some(format!("{asset}-{side}-token")),
+            asset: Some(asset.to_string()),
+            side: Some(side.to_string()),
+            event_ts: None,
+            observed_ts: Some("2026-06-03T21:05:58Z".to_string()),
+            best_bid: None,
+            best_ask: None,
+            spread: None,
+            bid_size_top: None,
+            ask_size_top: None,
+            bids: Vec::new(),
+            asks: Vec::new(),
         }
     }
 
@@ -322,6 +373,26 @@ mod tests {
             Some("65185.18")
         );
         assert_eq!(app.runtime_error, None);
+    }
+
+    #[test]
+    fn apply_key_moves_market_selection_with_up_down() {
+        let mut app = AppState {
+            active_tab: MainTab::Market,
+            runtime_monitor: Some(RuntimeMonitor {
+                generated_at: "2026-06-03T21:06:00Z".to_string(),
+                price_rows: Vec::new(),
+                orderbooks: vec![orderbook("BTC", "UP"), orderbook("BTC", "DOWN")],
+            }),
+            ..Default::default()
+        };
+        app.sync_market_selection();
+
+        assert!(!apply_key(&mut app, KeyCode::Down));
+        assert_eq!(app.selected_market_index(), Some(1));
+
+        assert!(!apply_key(&mut app, KeyCode::Up));
+        assert_eq!(app.selected_market_index(), Some(0));
     }
 
     fn delayed_runtime_api_url(delay: Duration) -> String {

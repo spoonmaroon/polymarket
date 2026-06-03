@@ -9,15 +9,22 @@ use crate::{render::orderbook, state::AppState, status::RuntimeOrderbookRow};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MarketDisplayRow {
+    pub marker: String,
     pub contract: String,
     pub side: String,
     pub bid: String,
     pub ask: String,
     pub spread: String,
-    pub observed: String,
+    pub seen: String,
+}
+
+pub fn market_header_labels() -> [&'static str; 7] {
+    ["", "Contract", "Side", "Bid", "Ask", "Spread", "Seen"]
 }
 
 pub fn market_rows(app: &AppState) -> Vec<MarketDisplayRow> {
+    let selected_index = app.effective_market_index();
+
     app.runtime_monitor
         .as_ref()
         .map(|monitor| {
@@ -25,7 +32,14 @@ pub fn market_rows(app: &AppState) -> Vec<MarketDisplayRow> {
                 .orderbooks
                 .iter()
                 .take(8)
-                .map(|orderbook| MarketDisplayRow {
+                .enumerate()
+                .map(|(index, orderbook)| MarketDisplayRow {
+                    marker: if selected_index == Some(index) {
+                        ">"
+                    } else {
+                        " "
+                    }
+                    .to_string(),
                     contract: contract_label(orderbook),
                     side: optional_as_dash(orderbook.side.as_deref()),
                     bid: price_size(
@@ -37,11 +51,26 @@ pub fn market_rows(app: &AppState) -> Vec<MarketDisplayRow> {
                         orderbook.ask_size_top.as_deref(),
                     ),
                     spread: optional_as_dash(orderbook.spread.as_deref()),
-                    observed: compact_timestamp(orderbook.observed_ts.as_deref()),
+                    seen: compact_timestamp(orderbook.observed_ts.as_deref()),
                 })
                 .collect()
         })
         .unwrap_or_default()
+}
+
+pub(crate) fn book_contract_label(orderbook: &RuntimeOrderbookRow) -> String {
+    let label = match (orderbook.asset.as_deref(), orderbook.side.as_deref()) {
+        (Some(asset), Some(side)) if !asset.is_empty() && !side.is_empty() => {
+            format!("{asset} {side}")
+        }
+        _ if !orderbook.contract_id.is_empty() => orderbook.contract_id.clone(),
+        _ => "unknown".to_string(),
+    };
+
+    match market_slug_expiry_label(orderbook) {
+        Some(expiry) => format!("{label} {expiry}"),
+        None => label,
+    }
 }
 
 fn contract_label(orderbook: &RuntimeOrderbookRow) -> String {
@@ -71,6 +100,19 @@ fn contract_label(orderbook: &RuntimeOrderbookRow) -> String {
             .token_id
             .clone()
             .unwrap_or_else(|| "unknown contract".to_string())
+    }
+}
+
+fn market_slug_expiry_label(orderbook: &RuntimeOrderbookRow) -> Option<String> {
+    let market_slug = orderbook
+        .market_slug
+        .as_deref()
+        .filter(|slug| !slug.is_empty())?;
+    let parts = market_slug.split('-').collect::<Vec<_>>();
+    if parts.len() >= 4 && parts[1] == "updown" {
+        Some(expiry_label(parts[3]))
+    } else {
+        None
     }
 }
 
@@ -125,17 +167,19 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         .into_iter()
         .map(|row| {
             Row::new(vec![
+                Cell::from(row.marker),
                 Cell::from(row.contract),
                 Cell::from(row.side),
                 Cell::from(row.bid),
                 Cell::from(row.ask),
                 Cell::from(row.spread),
-                Cell::from(row.observed),
+                Cell::from(row.seen),
             ])
         })
         .collect::<Vec<_>>();
     let rows = if rows.is_empty() {
         vec![Row::new(vec![
+            Cell::from(" "),
             Cell::from("monitor pending"),
             Cell::from("-"),
             Cell::from("-"),
@@ -149,6 +193,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let table = Table::new(
         rows,
         [
+            Constraint::Length(2),
             Constraint::Length(22),
             Constraint::Length(6),
             Constraint::Length(14),
@@ -157,10 +202,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
             Constraint::Min(9),
         ],
     )
-    .header(
-        Row::new(vec!["Contract", "Side", "Bid", "Ask", "Spread", "Obs"])
-            .style(Style::default().fg(Color::Cyan)),
-    )
+    .header(Row::new(market_header_labels().to_vec()).style(Style::default().fg(Color::Cyan)))
     .block(Block::bordered().title("Market"));
 
     frame.render_widget(table, counts_area);
@@ -174,7 +216,7 @@ mod tests {
         status::{RuntimeBookLevel, RuntimeMonitor, RuntimeOrderbookRow},
     };
 
-    use super::market_rows;
+    use super::{market_header_labels, market_rows};
 
     #[test]
     fn market_rows_show_contract_identity_and_top_of_book() {
@@ -217,7 +259,7 @@ mod tests {
         assert_eq!(rows[0].bid, "0.86 x33");
         assert_eq!(rows[0].ask, "0.87 x14.46");
         assert_eq!(rows[0].spread, "0.01");
-        assert_eq!(rows[0].observed, "20:43:20Z");
+        assert_eq!(rows[0].seen, "20:43:20Z");
     }
 
     #[test]
@@ -255,5 +297,65 @@ mod tests {
         assert_eq!(rows[0].bid, "0.44");
         assert_eq!(rows[0].ask, "-");
         assert_eq!(rows[0].spread, "-");
+    }
+
+    #[test]
+    fn market_rows_label_seen_and_mark_selected_contract() {
+        let mut app = AppState {
+            runtime_monitor: Some(RuntimeMonitor {
+                generated_at: "2026-06-03T21:06:00Z".to_string(),
+                price_rows: Vec::new(),
+                orderbooks: vec![
+                    RuntimeOrderbookRow {
+                        venue: Some("polymarket".to_string()),
+                        source_key: Some("polymarket_rust_sdk".to_string()),
+                        market_slug: Some("eth-updown-5m-1780519500".to_string()),
+                        contract_id: "eth-up".to_string(),
+                        token_id: Some("eth-up-token".to_string()),
+                        asset: Some("ETH".to_string()),
+                        side: Some("UP".to_string()),
+                        event_ts: None,
+                        observed_ts: Some("2026-06-03T21:05:58Z".to_string()),
+                        best_bid: Some("0.88".to_string()),
+                        best_ask: Some("0.89".to_string()),
+                        spread: Some("0.01".to_string()),
+                        bid_size_top: Some("102".to_string()),
+                        ask_size_top: Some("26".to_string()),
+                        bids: Vec::new(),
+                        asks: Vec::new(),
+                    },
+                    RuntimeOrderbookRow {
+                        venue: Some("polymarket".to_string()),
+                        source_key: Some("polymarket_rust_sdk".to_string()),
+                        market_slug: Some("btc-updown-5m-1780519800".to_string()),
+                        contract_id: "btc-down".to_string(),
+                        token_id: Some("btc-down-token".to_string()),
+                        asset: Some("BTC".to_string()),
+                        side: Some("DOWN".to_string()),
+                        event_ts: None,
+                        observed_ts: Some("2026-06-03T21:05:47Z".to_string()),
+                        best_bid: Some("0.49".to_string()),
+                        best_ask: Some("0.50".to_string()),
+                        spread: Some("0.01".to_string()),
+                        bid_size_top: Some("1256.68".to_string()),
+                        ask_size_top: Some("702.96".to_string()),
+                        bids: Vec::new(),
+                        asks: Vec::new(),
+                    },
+                ],
+            }),
+            ..Default::default()
+        };
+        app.sync_market_selection();
+
+        let rows = market_rows(&app);
+
+        assert_eq!(
+            market_header_labels(),
+            ["", "Contract", "Side", "Bid", "Ask", "Spread", "Seen"]
+        );
+        assert_eq!(rows[0].marker, " ");
+        assert_eq!(rows[1].marker, ">");
+        assert_eq!(rows[1].seen, "21:05:47Z");
     }
 }

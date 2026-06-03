@@ -5,7 +5,7 @@ use ratatui::{
     widgets::{Block, Cell, Row, Table},
 };
 
-use crate::state::AppState;
+use crate::{render::market, state::AppState};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BookDisplayRow {
@@ -14,12 +14,14 @@ pub struct BookDisplayRow {
     pub ask: String,
 }
 
+pub fn book_title(app: &AppState) -> String {
+    app.selected_orderbook()
+        .map(|orderbook| format!("Book: {}", market::book_contract_label(orderbook)))
+        .unwrap_or_else(|| "Book".to_string())
+}
+
 pub fn book_rows(app: &AppState) -> Vec<BookDisplayRow> {
-    let Some(orderbook) = app
-        .runtime_monitor
-        .as_ref()
-        .and_then(|monitor| monitor.orderbooks.first())
-    else {
+    let Some(orderbook) = app.selected_orderbook() else {
         return Vec::new();
     };
 
@@ -88,7 +90,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         ],
     )
     .header(Row::new(vec!["Contract", "Bid", "Ask"]).style(Style::default().fg(Color::Cyan)))
-    .block(Block::bordered().title("Book"));
+    .block(Block::bordered().title(book_title(app)));
 
     frame.render_widget(table, area);
 }
@@ -100,7 +102,7 @@ mod tests {
         status::{RuntimeBookLevel, RuntimeMonitor, RuntimeOrderbookRow},
     };
 
-    use super::book_rows;
+    use super::{book_rows, book_title};
 
     #[test]
     fn book_rows_pair_best_bid_and_ask_levels_for_first_contract() {
@@ -155,5 +157,74 @@ mod tests {
         assert_eq!(rows[0].ask, "0.87 x14.46");
         assert_eq!(rows[1].bid, "0.84 x10");
         assert_eq!(rows[1].ask, "0.88 x20");
+    }
+
+    #[test]
+    fn book_rows_and_title_follow_selected_market_contract() {
+        let mut app = AppState {
+            runtime_monitor: Some(RuntimeMonitor {
+                generated_at: "2026-06-03T21:06:00Z".to_string(),
+                price_rows: Vec::new(),
+                orderbooks: vec![
+                    RuntimeOrderbookRow {
+                        venue: Some("polymarket".to_string()),
+                        source_key: Some("polymarket_rust_sdk".to_string()),
+                        market_slug: Some("eth-updown-5m-1780519500".to_string()),
+                        contract_id: "eth-up".to_string(),
+                        token_id: Some("eth-up-token".to_string()),
+                        asset: Some("ETH".to_string()),
+                        side: Some("UP".to_string()),
+                        event_ts: None,
+                        observed_ts: Some("2026-06-03T21:05:58Z".to_string()),
+                        best_bid: Some("0.88".to_string()),
+                        best_ask: Some("0.89".to_string()),
+                        spread: Some("0.01".to_string()),
+                        bid_size_top: Some("102".to_string()),
+                        ask_size_top: Some("26".to_string()),
+                        bids: vec![RuntimeBookLevel {
+                            price: Some("0.88".to_string()),
+                            size: Some("102".to_string()),
+                        }],
+                        asks: vec![RuntimeBookLevel {
+                            price: Some("0.89".to_string()),
+                            size: Some("26".to_string()),
+                        }],
+                    },
+                    RuntimeOrderbookRow {
+                        venue: Some("polymarket".to_string()),
+                        source_key: Some("polymarket_rust_sdk".to_string()),
+                        market_slug: Some("btc-updown-5m-1780521000".to_string()),
+                        contract_id: "btc-down".to_string(),
+                        token_id: Some("btc-down-token".to_string()),
+                        asset: Some("BTC".to_string()),
+                        side: Some("DOWN".to_string()),
+                        event_ts: None,
+                        observed_ts: Some("2026-06-03T21:05:47Z".to_string()),
+                        best_bid: Some("0.49".to_string()),
+                        best_ask: Some("0.50".to_string()),
+                        spread: Some("0.01".to_string()),
+                        bid_size_top: Some("1256.68".to_string()),
+                        ask_size_top: Some("702.96".to_string()),
+                        bids: vec![RuntimeBookLevel {
+                            price: Some("0.49".to_string()),
+                            size: Some("1256.68".to_string()),
+                        }],
+                        asks: vec![RuntimeBookLevel {
+                            price: Some("0.50".to_string()),
+                            size: Some("702.96".to_string()),
+                        }],
+                    },
+                ],
+            }),
+            ..Default::default()
+        };
+        app.sync_market_selection();
+
+        let rows = book_rows(&app);
+
+        assert_eq!(book_title(&app), "Book: BTC DOWN 21:10Z");
+        assert_eq!(rows[0].contract, "BTC DOWN");
+        assert_eq!(rows[0].bid, "0.49 x1256.68");
+        assert_eq!(rows[0].ask, "0.50 x702.96");
     }
 }
