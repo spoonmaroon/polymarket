@@ -16,6 +16,10 @@ struct Cli {
     #[arg(long, default_value = "http://127.0.0.1:8000")]
     engine_api_url: String,
 
+    /// Runtime API polling interval in milliseconds.
+    #[arg(long, default_value_t = 250)]
+    poll_interval_ms: u64,
+
     /// Static preview mode for the first cockpit shell.
     #[arg(long, default_value_t = false)]
     once: bool,
@@ -35,7 +39,7 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    event_loop::run(app, cli.engine_api_url).await
+    event_loop::run(app, cli.engine_api_url, cli.poll_interval_ms).await
 }
 
 #[cfg(test)]
@@ -52,6 +56,13 @@ mod cli_tests {
     }
 
     #[test]
+    fn default_poll_interval_is_quarter_second() {
+        let cli = Cli::parse_from(["polymarket-cockpit-tui"]);
+
+        assert_eq!(cli.poll_interval_ms, 250);
+    }
+
+    #[test]
     fn custom_engine_api_url_is_accepted() {
         let cli = Cli::parse_from([
             "polymarket-cockpit-tui",
@@ -60,5 +71,12 @@ mod cli_tests {
         ]);
 
         assert_eq!(cli.engine_api_url, "http://100.72.104.49:8000");
+    }
+
+    #[test]
+    fn custom_poll_interval_is_accepted() {
+        let cli = Cli::parse_from(["polymarket-cockpit-tui", "--poll-interval-ms", "100"]);
+
+        assert_eq!(cli.poll_interval_ms, 100);
     }
 }

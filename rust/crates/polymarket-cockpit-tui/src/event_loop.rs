@@ -19,10 +19,10 @@ use crate::{
 
 type Tui = Terminal<CrosstermBackend<Stdout>>;
 
-pub async fn run(mut app: AppState, engine_api_url: String) -> Result<()> {
+pub async fn run(mut app: AppState, engine_api_url: String, poll_interval_ms: u64) -> Result<()> {
     let mut terminal = TerminalGuard::enter()?;
     let (runtime_tx, mut runtime_rx) = mpsc::unbounded_channel();
-    let _poll_task = RuntimePollTask::spawn(engine_api_url, runtime_tx);
+    let _poll_task = RuntimePollTask::spawn(engine_api_url, poll_interval_ms, runtime_tx);
 
     run_loop(terminal.terminal_mut(), &mut app, &mut runtime_rx)
 }
@@ -121,10 +121,14 @@ struct RuntimePollTask {
 }
 
 impl RuntimePollTask {
-    fn spawn(engine_api_url: String, runtime_tx: mpsc::UnboundedSender<RuntimeUpdate>) -> Self {
+    fn spawn(
+        engine_api_url: String,
+        poll_interval_ms: u64,
+        runtime_tx: mpsc::UnboundedSender<RuntimeUpdate>,
+    ) -> Self {
         let handle = tokio::spawn(async move {
             let client = EngineClient::new(engine_api_url);
-            let mut interval = tokio::time::interval(Duration::from_secs(1));
+            let mut interval = tokio::time::interval(poll_interval_duration(poll_interval_ms));
 
             loop {
                 interval.tick().await;
@@ -137,6 +141,10 @@ impl RuntimePollTask {
 
         Self { handle }
     }
+}
+
+fn poll_interval_duration(poll_interval_ms: u64) -> Duration {
+    Duration::from_millis(poll_interval_ms.max(1))
 }
 
 impl Drop for RuntimePollTask {
@@ -176,17 +184,20 @@ async fn poll_runtime(client: &EngineClient) -> RuntimeUpdate {
     let mut gates = None;
     let mut monitor = None;
 
-    match client.status().await {
+    let (status_result, gates_result, monitor_result) =
+        tokio::join!(client.status(), client.gates(), client.monitor(8));
+
+    match status_result {
         Ok(next_status) => status = Some(next_status),
         Err(error) => errors.push(format!("status: {error}")),
     }
 
-    match client.gates().await {
+    match gates_result {
         Ok(next_gates) => gates = Some(next_gates),
         Err(error) => errors.push(format!("gates: {error}")),
     }
 
-    match client.monitor(8).await {
+    match monitor_result {
         Ok(next_monitor) => monitor = Some(next_monitor),
         Err(error) => errors.push(format!("monitor: {error}")),
     }
@@ -205,9 +216,17 @@ async fn poll_runtime(client: &EngineClient) -> RuntimeUpdate {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        thread,
+        time::{Duration, Instant},
+    };
+
     use tokio::sync::mpsc;
 
-    use super::{RuntimeUpdate, drain_runtime_updates};
+    use super::{RuntimeUpdate, drain_runtime_updates, poll_interval_duration, poll_runtime};
+    use crate::client::EngineClient;
     use crate::{
         state::AppState,
         status::{RuntimeCounts, RuntimeGates, RuntimeMonitor, RuntimePriceRow, RuntimeStatus},
@@ -247,6 +266,26 @@ mod tests {
     }
 
     #[test]
+    fn poll_interval_duration_uses_configured_milliseconds() {
+        assert_eq!(poll_interval_duration(250), Duration::from_millis(250));
+    }
+
+    #[tokio::test]
+    async fn poll_runtime_fetches_endpoints_concurrently() {
+        let engine_api_url = delayed_runtime_api_url(Duration::from_millis(200));
+        let client = EngineClient::new(engine_api_url);
+        let started = Instant::now();
+
+        let update = poll_runtime(&client).await;
+
+        assert!(started.elapsed() < Duration::from_millis(450));
+        assert!(update.status.is_some());
+        assert!(update.gates.is_some());
+        assert!(update.monitor.is_some());
+        assert_eq!(update.error, None);
+    }
+
+    #[test]
     fn drain_runtime_updates_applies_pending_status_gates_monitor_and_errors() {
         let (tx, mut rx) = mpsc::unbounded_channel();
         tx.send(RuntimeUpdate {
@@ -283,5 +322,64 @@ mod tests {
             Some("65185.18")
         );
         assert_eq!(app.runtime_error, None);
+    }
+
+    fn delayed_runtime_api_url(delay: Duration) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        thread::spawn(move || {
+            for _ in 0..3 {
+                let Ok((mut stream, _peer)) = listener.accept() else {
+                    return;
+                };
+                thread::spawn(move || {
+                    let mut buffer = [0; 1024];
+                    let bytes_read = stream.read(&mut buffer).unwrap_or(0);
+                    let request = String::from_utf8_lossy(&buffer[..bytes_read]).to_string();
+                    let path = request
+                        .lines()
+                        .next()
+                        .and_then(|line| line.split_whitespace().nth(1))
+                        .unwrap_or("/");
+                    thread::sleep(delay);
+                    let body = runtime_response_body(path);
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    stream.write_all(response.as_bytes()).unwrap();
+                });
+            }
+        });
+
+        format!("http://{address}")
+    }
+
+    fn runtime_response_body(path: &str) -> &'static str {
+        if path.starts_with("/api/runtime/status") {
+            r#"{
+                "ok": true,
+                "schema_kind": "rust-live-probe-state-manager-v1",
+                "mode": "state-manager",
+                "age_ms": 10,
+                "counts": {"prices": 2, "orderbooks": 4, "current": 2, "next": 2, "next_next": 0, "websocket_status": 2},
+                "latency_marks": [],
+                "health_flags": []
+            }"#
+        } else if path.starts_with("/api/runtime/gates") {
+            r#"{"ok": true, "failures": []}"#
+        } else {
+            r#"{
+                "generated_at": "2026-06-03T20:43:20.744215+00:00",
+                "price_rows": [{
+                    "source_key": "polymarket_rtds_chainlink",
+                    "symbol": "BTC/USD",
+                    "observed_ts": "2026-06-03T20:43:19.789163241Z",
+                    "price": "65000.00"
+                }],
+                "orderbooks": []
+            }"#
+        }
     }
 }

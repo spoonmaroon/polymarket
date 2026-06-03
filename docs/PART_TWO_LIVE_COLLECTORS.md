@@ -43,7 +43,8 @@ polymarket-live-probe \
   --interval 5m \
   --prewarm-windows 2 \
   --forever \
-  --status-interval-ms 250 \
+  --status-interval-ms 100 \
+  --rest-backup-interval-ms 1000 \
   --state-snapshot-interval-ms 5000 \
   --state-snapshot-dir /var/lib/polymarket/raw/polymarket_state_manager/state_snapshot \
   --decision-snapshot-dir /var/lib/polymarket/raw \
@@ -63,7 +64,7 @@ The Rust state-manager status file records:
 - BTC/ETH 5m current and next contract windows.
 - Up and Down token ids discovered before rollover.
 - Polymarket CLOB WebSocket top-of-book state for warmed token ids.
-- REST order-book backup snapshots during refresh.
+- One-second REST order-book backup snapshots during refresh.
 - Polymarket RTDS Chainlink BTC/USD and ETH/USD reference ticks.
 - Source/order-book freshness rows.
 - WebSocket connection status for Chainlink and CLOB streams.

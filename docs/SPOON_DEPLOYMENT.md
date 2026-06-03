@@ -213,13 +213,13 @@ Local API:
 
 ```bash
 uv run uvicorn polymarket_engine.app:app --host 127.0.0.1 --port 8000
-cargo run --manifest-path rust/Cargo.toml -p polymarket-cockpit-tui -- --engine-api-url http://127.0.0.1:8000
+cargo run --manifest-path rust/Cargo.toml -p polymarket-cockpit-tui -- --engine-api-url http://127.0.0.1:8000 --poll-interval-ms 250
 ```
 
 THEPC over Tailscale, using a configurable URL:
 
 ```bash
-cargo run --manifest-path rust/Cargo.toml -p polymarket-cockpit-tui -- --engine-api-url http://100.72.104.49:8000
+cargo run --manifest-path rust/Cargo.toml -p polymarket-cockpit-tui -- --engine-api-url http://100.72.104.49:8000 --poll-interval-ms 250
 ```
 
 Container status is an operator-only API-side feature. Leave it disabled unless
