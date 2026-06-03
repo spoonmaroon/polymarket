@@ -26,9 +26,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect) {
             ratatui::layout::Constraint::Min(12),
         ],
     )
-    .header(
-        Row::new(vec!["Side", "Price", "Depth"]).style(Style::default().fg(Color::Cyan)),
-    )
+    .header(Row::new(vec!["Side", "Price", "Depth"]).style(Style::default().fg(Color::Cyan)))
     .block(Block::bordered().title("Market"));
 
     frame.render_widget(table, area);

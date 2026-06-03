@@ -18,9 +18,14 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         .position(|tab| *tab == app.active_tab)
         .unwrap_or_default();
 
+    let title = match &app.runtime_status {
+        Some(status) => format!("Polymarket Engine Cockpit | {}", status.state_label()),
+        None => "Polymarket Engine Cockpit | WAITING".to_string(),
+    };
+
     let tabs = Tabs::new(titles)
         .select(selected)
-        .block(Block::bordered().title("Polymarket Engine Cockpit"))
+        .block(Block::bordered().title(title))
         .style(Style::default().fg(Color::Gray))
         .highlight_style(
             Style::default()

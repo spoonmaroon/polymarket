@@ -1,3 +1,5 @@
+use crate::status::{RuntimeGates, RuntimeStatus};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MainTab {
     Live,
@@ -26,10 +28,13 @@ impl MainTab {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct AppState {
     pub active_tab: MainTab,
     pub logs: Vec<String>,
+    pub runtime_status: Option<RuntimeStatus>,
+    pub runtime_gates: Option<RuntimeGates>,
+    pub runtime_error: Option<String>,
 }
 
 impl Default for AppState {
@@ -37,6 +42,9 @@ impl Default for AppState {
         Self {
             active_tab: MainTab::Live,
             logs: Vec::new(),
+            runtime_status: None,
+            runtime_gates: None,
+            runtime_error: None,
         }
     }
 }
