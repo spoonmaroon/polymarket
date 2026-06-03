@@ -4,6 +4,7 @@ pub mod live;
 pub mod logs;
 pub mod market;
 pub mod orderbook;
+pub mod price;
 pub mod systems;
 
 use ratatui::Frame;

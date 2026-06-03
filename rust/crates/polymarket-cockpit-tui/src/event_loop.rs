@@ -14,7 +14,7 @@ use crate::{
     client::EngineClient,
     render,
     state::AppState,
-    status::{RuntimeGates, RuntimeStatus},
+    status::{RuntimeGates, RuntimeMonitor, RuntimeStatus},
 };
 
 type Tui = Terminal<CrosstermBackend<Stdout>>;
@@ -112,6 +112,7 @@ fn run_loop(
 struct RuntimeUpdate {
     status: Option<RuntimeStatus>,
     gates: Option<RuntimeGates>,
+    monitor: Option<RuntimeMonitor>,
     error: Option<String>,
 }
 
@@ -162,6 +163,10 @@ fn apply_runtime_update(app: &mut AppState, update: RuntimeUpdate) {
         app.runtime_gates = Some(gates);
     }
 
+    if let Some(monitor) = update.monitor {
+        app.runtime_monitor = Some(monitor);
+    }
+
     app.runtime_error = update.error;
 }
 
@@ -169,6 +174,7 @@ async fn poll_runtime(client: &EngineClient) -> RuntimeUpdate {
     let mut errors = Vec::new();
     let mut status = None;
     let mut gates = None;
+    let mut monitor = None;
 
     match client.status().await {
         Ok(next_status) => status = Some(next_status),
@@ -180,9 +186,15 @@ async fn poll_runtime(client: &EngineClient) -> RuntimeUpdate {
         Err(error) => errors.push(format!("gates: {error}")),
     }
 
+    match client.monitor(8).await {
+        Ok(next_monitor) => monitor = Some(next_monitor),
+        Err(error) => errors.push(format!("monitor: {error}")),
+    }
+
     RuntimeUpdate {
         status,
         gates,
+        monitor,
         error: if errors.is_empty() {
             None
         } else {
@@ -198,7 +210,7 @@ mod tests {
     use super::{RuntimeUpdate, drain_runtime_updates};
     use crate::{
         state::AppState,
-        status::{RuntimeCounts, RuntimeGates, RuntimeStatus},
+        status::{RuntimeCounts, RuntimeGates, RuntimeMonitor, RuntimePriceRow, RuntimeStatus},
     };
 
     fn status(mode: &str) -> RuntimeStatus {
@@ -220,12 +232,27 @@ mod tests {
         }
     }
 
+    fn monitor(price: &str) -> RuntimeMonitor {
+        RuntimeMonitor {
+            generated_at: "2026-06-03T20:43:20.744215+00:00".to_string(),
+            price_rows: vec![RuntimePriceRow {
+                source_key: Some("polymarket_rtds_chainlink".to_string()),
+                symbol: "BTC/USD".to_string(),
+                event_ts: Some("2026-06-03T20:43:16Z".to_string()),
+                observed_ts: Some("2026-06-03T20:43:19.789163241Z".to_string()),
+                price: Some(price.to_string()),
+            }],
+            orderbooks: Vec::new(),
+        }
+    }
+
     #[test]
-    fn drain_runtime_updates_applies_pending_status_gates_and_errors() {
+    fn drain_runtime_updates_applies_pending_status_gates_monitor_and_errors() {
         let (tx, mut rx) = mpsc::unbounded_channel();
         tx.send(RuntimeUpdate {
             status: Some(status("first")),
             gates: None,
+            monitor: Some(monitor("65000.00")),
             error: Some("status: timeout".to_string()),
         })
         .unwrap();
@@ -235,6 +262,7 @@ mod tests {
                 ok: false,
                 failures: vec!["stale orderbook".to_string()],
             }),
+            monitor: Some(monitor("65185.18")),
             error: None,
         })
         .unwrap();
@@ -247,6 +275,12 @@ mod tests {
         assert_eq!(
             app.runtime_gates.as_ref().unwrap().failures,
             vec!["stale orderbook"]
+        );
+        assert_eq!(
+            app.runtime_monitor.as_ref().unwrap().price_rows[0]
+                .price
+                .as_deref(),
+            Some("65185.18")
         );
         assert_eq!(app.runtime_error, None);
     }

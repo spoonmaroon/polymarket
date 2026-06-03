@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crate::status::{RuntimeGates, RuntimeStatus};
+use crate::status::{RuntimeGates, RuntimeMonitor, RuntimeStatus};
 
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -33,6 +33,11 @@ impl EngineClient {
         self.get_json("/api/runtime/gates").await
     }
 
+    pub async fn monitor(&self, limit: usize) -> anyhow::Result<RuntimeMonitor> {
+        self.get_json(&format!("/api/runtime/monitor?limit={limit}"))
+            .await
+    }
+
     async fn get_json<T>(&self, path: &str) -> anyhow::Result<T>
     where
         T: serde::de::DeserializeOwned,
@@ -52,7 +57,9 @@ impl EngineClient {
 #[cfg(test)]
 mod tests {
     use std::{
+        io::{Read, Write},
         net::TcpListener,
+        sync::mpsc,
         thread,
         time::{Duration, Instant},
     };
@@ -80,5 +87,54 @@ mod tests {
 
         assert!(result.is_err());
         assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[tokio::test]
+    async fn monitor_request_includes_limit_and_parses_payload() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (request_tx, request_rx) = mpsc::channel();
+        let _server = thread::spawn(move || {
+            let Ok((mut stream, _peer)) = listener.accept() else {
+                return;
+            };
+
+            let mut buffer = [0; 512];
+            let bytes_read = stream.read(&mut buffer).unwrap();
+            let request = String::from_utf8_lossy(&buffer[..bytes_read]).to_string();
+            let first_line = request.lines().next().unwrap_or_default().to_string();
+            request_tx.send(first_line).unwrap();
+
+            let body = r#"{
+                "generated_at": "2026-06-03T20:43:20.744215+00:00",
+                "price_rows": [{
+                    "source_key": "polymarket_rtds_chainlink",
+                    "symbol": "BTC/USD",
+                    "event_ts": "2026-06-03T20:43:16Z",
+                    "observed_ts": "2026-06-03T20:43:19.789163241Z",
+                    "price": "65185.18675916348"
+                }],
+                "orderbooks": []
+            }"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+
+        let client = EngineClient::with_request_timeout(
+            format!("http://{address}"),
+            Duration::from_millis(500),
+        );
+
+        let monitor = client.monitor(8).await.unwrap();
+
+        assert_eq!(monitor.price_rows[0].symbol, "BTC/USD");
+        assert_eq!(
+            request_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            "GET /api/runtime/monitor?limit=8 HTTP/1.1"
+        );
     }
 }
