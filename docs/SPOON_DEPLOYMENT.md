@@ -47,8 +47,37 @@ freshness, and status latency stay healthy.
 
 ## Production Image Deploy
 
-Normal live deploys should load prebuilt images on spoon and restart them without
-compiling Rust on the server.
+Normal live deploys should load prebuilt images on the runtime host and restart
+them without compiling Rust on the host.
+
+### THEPC Deploy
+
+THEPC is the active runtime host. Do not use blind auto-pull for this lane. The
+Mac-side helper below builds pinned Linux images, creates a git bundle for the
+exact local commit, streams the bundle and image tarballs into THEPC's Ubuntu
+WSL environment, runs the existing prebuilt-image deploy gate, and finishes with
+the collector status check.
+
+```bash
+cd /Users/goon/polymarket
+./scripts/deploy_pc.sh
+```
+
+Defaults:
+
+- `PC_HOST=ender@100.72.104.49`
+- `PC_WSL_DISTRO=Ubuntu`
+- `PC_REPO=/home/ender/polymarket`
+- `PC_BUNDLE=/home/ender/polymarket.bundle`
+- `PC_DATA_DIR=/home/ender/polymarket-data`
+- `PC_NORMALIZER_INTERVAL_SECONDS=0.1`
+
+Set `PC_DEPLOY_BUILD_IMAGES=0` only when matching
+`dist/docker/polymarket-rust-collector-<sha>.tar` and
+`dist/docker/polymarket-normalizer-<sha>.tar` already exist for the checked-out
+commit.
+
+### Spoon Deploy
 
 Build images on the Mac. The default target platform is
 `TARGET_PLATFORM=linux/amd64`, matching spoon's Linux runtime:

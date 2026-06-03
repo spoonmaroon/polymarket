@@ -218,6 +218,40 @@ def test_prebuilt_image_deploy_script_loads_images_and_uses_deploy_fast_path() -
     assert "--build" not in script
 
 
+def test_pc_deploy_script_streams_bundle_and_images_into_wsl() -> None:
+    script = (ROOT / "scripts" / "deploy_pc.sh").read_text(encoding="utf-8")
+
+    assert 'PC_HOST="${PC_HOST:-ender@100.72.104.49}"' in script
+    assert 'PC_WSL_DISTRO="${PC_WSL_DISTRO:-Ubuntu}"' in script
+    assert 'PC_REPO="${PC_REPO:-/home/ender/polymarket}"' in script
+    assert 'PC_BUNDLE="${PC_BUNDLE:-/home/ender/polymarket.bundle}"' in script
+    assert 'PC_DATA_DIR="${PC_DATA_DIR:-/home/ender/polymarket-data}"' in script
+    assert 'git -C "$ROOT" bundle create' in script
+    assert "wsl_put_file()" in script
+    assert "cat >" in script
+    assert 'polymarket-rust-collector-${SHORT_SHA}.tar' in script
+    assert 'polymarket-normalizer-${SHORT_SHA}.tar' in script
+
+
+def test_pc_deploy_script_runs_prebuilt_deploy_gate_with_pc_cadence() -> None:
+    script = (ROOT / "scripts" / "deploy_pc.sh").read_text(encoding="utf-8")
+
+    assert 'PC_NORMALIZER_INTERVAL_SECONDS="${PC_NORMALIZER_INTERVAL_SECONDS:-0.1}"' in script
+    assert "POLYMARKET_DEPLOY_USE_PREBUILT=1" in script
+    assert 'POLYMARKET_DEPLOY_REF="\\$FULL_SHA"' in script
+    assert 'POLYMARKET_EXPECTED_DEPLOY_SHA="\\$FULL_SHA"' in script
+    assert 'POLYMARKET_COLLECTOR_IMAGE="\\$COLLECTOR_IMAGE"' in script
+    assert 'POLYMARKET_NORMALIZER_IMAGE="\\$NORMALIZER_IMAGE"' in script
+    assert 'POLYMARKET_DATA_DIR="\\$PC_DATA_DIR"' in script
+    assert 'DEPLOY_FORCE=1' in script
+    assert (
+        'POLYMARKET_NORMALIZER_INTERVAL_SECONDS="\\$PC_NORMALIZER_INTERVAL_SECONDS"'
+        in script
+    )
+    assert "scripts/check_collector_status.py" in script
+    assert "--expected-prewarm-windows 2" in script
+
+
 def test_deploy_script_supports_prebuilt_images_with_build_fallback() -> None:
     script = (ROOT / "scripts" / "deploy.sh").read_text(encoding="utf-8")
 
