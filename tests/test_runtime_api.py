@@ -94,6 +94,70 @@ def test_create_app_from_env_uses_runtime_paths(
     assert response.json()["status_path"] == str(status_path)
 
 
+def test_create_app_from_env_uses_status_sibling_target_cache_by_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    status_path = tmp_path / "live" / "status.json"
+    status_path.parent.mkdir()
+    start_ts = datetime(2026, 6, 4, 20, 0, tzinfo=timezone.utc)
+    status_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "rust-live-probe-state-manager-v1",
+                "mode": "state-manager",
+                "generated_at": "2026-06-04T20:02:00Z",
+                "current": [
+                    {
+                        "window": {
+                            "asset": "BTC",
+                            "interval": "5m",
+                            "start_ts": start_ts.isoformat(),
+                            "end_ts": (start_ts.replace(minute=start_ts.minute + 5)).isoformat(),
+                        },
+                        "up": {"asset": "BTC", "side": "Up", "token_id": "btc-up"},
+                        "down": {"asset": "BTC", "side": "Down", "token_id": "btc-down"},
+                    }
+                ],
+                "next": [],
+                "next_next": [],
+                "chainlink_prices": [],
+                "orderbooks": [],
+                "freshness": [],
+                "health_flags": [],
+                "websocket_status": [],
+                "latency_marks": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    status_path.with_name("targets.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "polymarket-target-cache-v1",
+                "generated_at": "2026-06-04T20:02:00Z",
+                "rows": [
+                    {
+                        "market_slug": "btc-updown-5m-1780603200",
+                        "threshold_price": "63500.12",
+                        "threshold_event_ts": "2026-06-04T20:00:00Z",
+                        "threshold_observed_ts": "2026-06-04T20:00:03Z",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("POLYMARKET_STATUS_PATH", str(status_path))
+    monkeypatch.delenv("POLYMARKET_TARGET_STATUS_PATH", raising=False)
+
+    response = TestClient(create_app_from_env()).get("/api/runtime/live?limit=8")
+
+    assert response.status_code == 200
+    rows = response.json()["monitor"]["orderbooks"]
+    assert [row["threshold_price"] for row in rows] == ["63500.12", "63500.12"]
+
+
 def test_runtime_status_malformed_json_returns_controlled_state(tmp_path: Path) -> None:
     status_path = tmp_path / "status.json"
     status_path.write_text("{not-json", encoding="utf-8")

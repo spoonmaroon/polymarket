@@ -57,8 +57,9 @@ def create_app(
 
 
 def create_app_from_env() -> FastAPI:
+    status_path = _env_path("POLYMARKET_STATUS_PATH", Path("data/live/status.json"))
     return create_app(
-        status_path=_env_path("POLYMARKET_STATUS_PATH", Path("data/live/status.json")),
+        status_path=status_path,
         duckdb_path=_env_path("POLYMARKET_DUCKDB_PATH", Path("data/db/polymarket.duckdb")),
         normalized_health_path=_env_path(
             "POLYMARKET_NORMALIZED_HEALTH_PATH",
@@ -74,7 +75,7 @@ def create_app_from_env() -> FastAPI:
         ),
         target_cache_path=_env_path(
             "POLYMARKET_TARGET_STATUS_PATH",
-            Path("data/live/targets.json"),
+            status_path.with_name("targets.json"),
         ),
         data_dir=_env_path("POLYMARKET_DATA_DIR", Path("data")),
     )
