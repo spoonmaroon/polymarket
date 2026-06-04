@@ -36,6 +36,7 @@ def build_runtime_router(
     outcome_status_path: Path = Path("data/live/outcomes.json"),
     data_dir: Path = Path("data"),
     enable_container_status: bool = False,
+    enable_runtime_probabilities: bool = False,
 ) -> APIRouter:
     router = APIRouter(prefix="/api/runtime")
     probability_cache = ProbabilityRuntimeCache()
@@ -173,6 +174,8 @@ def build_runtime_router(
 
     @router.get("/probabilities")
     def runtime_probabilities(limit: int = 8) -> dict[str, Any]:
+        if not enable_runtime_probabilities:
+            return _probabilities_disabled_payload()
         if probability_status_path.exists():
             payload, read_error = _read_json_or_error(probability_status_path)
             if payload is None:
@@ -258,6 +261,25 @@ def build_runtime_router(
 
 def container_status_enabled_from_env() -> bool:
     return os.getenv("POLYMARKET_ENABLE_CONTAINER_STATUS") == "1"
+
+
+def runtime_probabilities_enabled_from_env() -> bool:
+    return os.getenv("POLYMARKET_ENABLE_RUNTIME_PROBABILITIES") == "1"
+
+
+def _probabilities_disabled_payload() -> dict[str, Any]:
+    return {
+        "schema_version": "polymarket-probability-runtime-v1",
+        "ok": True,
+        "state": "DISABLED",
+        "error": None,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "cached": False,
+        "model_version": None,
+        "rows": [],
+        "skipped": 0,
+        "errors": [],
+    }
 
 
 def _runtime_live_payload(

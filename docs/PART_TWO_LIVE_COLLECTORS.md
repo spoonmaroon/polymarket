@@ -116,7 +116,10 @@ because no probability model or decision policy exists yet.
 The normalizer sidecar does not compute probability outputs by default. Runtime
 probability generation is opt-in via `--enable-probabilities`; the current live
 collector/normalizer lane should stay pre-probability unless that flag is
-deliberately enabled for a separate validation run.
+deliberately enabled for a separate validation run. The runtime API probability
+endpoint is also disabled by default and requires
+`POLYMARKET_ENABLE_RUNTIME_PROBABILITIES=1` before it will read or compute
+probability outputs for display.
 
 ## Runtime API And Cockpit Display
 

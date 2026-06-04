@@ -624,6 +624,39 @@ def test_runtime_containers_disabled_by_default() -> None:
     assert response.json()["detail"] == "container status disabled"
 
 
+def test_runtime_probabilities_disabled_by_default_returns_empty_envelope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "polymarket.duckdb"
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    state = _decision_state()
+    store.upsert_contract_spec(state.contract)
+    store.upsert_asof_state_input(state)
+
+    def fail_compute(*_: object, **__: object) -> NoReturn:
+        raise AssertionError("runtime probabilities should be disabled by default")
+
+    monkeypatch.setattr(
+        "polymarket_engine.probability.runtime._compute_and_persist_rows",
+        fail_compute,
+    )
+    app = create_app(
+        status_path=tmp_path / "missing-status.json",
+        duckdb_path=db_path,
+    )
+
+    response = TestClient(app).get("/api/runtime/probabilities?limit=4")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["state"] == "DISABLED"
+    assert payload["rows"] == []
+    assert payload["errors"] == []
+
+
 def test_runtime_probabilities_runs_cached_read_only_mc_and_persists_output(
     tmp_path: Path,
 ) -> None:
@@ -636,6 +669,7 @@ def test_runtime_probabilities_runs_cached_read_only_mc_and_persists_output(
     app = create_app(
         status_path=tmp_path / "missing-status.json",
         duckdb_path=db_path,
+        enable_runtime_probabilities=True,
     )
     client = TestClient(app)
 
@@ -666,6 +700,7 @@ def test_runtime_probabilities_returns_empty_envelope_for_missing_duckdb(
     app = create_app(
         status_path=tmp_path / "missing-status.json",
         duckdb_path=tmp_path / "missing.duckdb",
+        enable_runtime_probabilities=True,
     )
 
     response = TestClient(app).get("/api/runtime/probabilities")
@@ -687,6 +722,7 @@ def test_runtime_probabilities_skips_quality_blocked_asof_states(tmp_path: Path)
     app = create_app(
         status_path=tmp_path / "missing-status.json",
         duckdb_path=db_path,
+        enable_runtime_probabilities=True,
     )
 
     response = TestClient(app).get("/api/runtime/probabilities")
@@ -725,6 +761,7 @@ def test_runtime_probabilities_reads_live_probability_status_file(tmp_path: Path
         status_path=tmp_path / "missing-status.json",
         duckdb_path=tmp_path / "missing.duckdb",
         probability_status_path=probability_status_path,
+        enable_runtime_probabilities=True,
     )
 
     response = TestClient(app).get("/api/runtime/probabilities?limit=1")
@@ -772,6 +809,7 @@ def test_runtime_probabilities_prefers_persisted_outputs_without_recomputing(
     app = create_app(
         status_path=tmp_path / "missing-status.json",
         duckdb_path=db_path,
+        enable_runtime_probabilities=True,
     )
     response = TestClient(app).get("/api/runtime/probabilities?limit=4")
 

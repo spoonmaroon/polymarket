@@ -6,7 +6,11 @@ from typing import Optional
 
 from fastapi import FastAPI
 
-from polymarket_engine.runtime_api import build_runtime_router, container_status_enabled_from_env
+from polymarket_engine.runtime_api import (
+    build_runtime_router,
+    container_status_enabled_from_env,
+    runtime_probabilities_enabled_from_env,
+)
 
 
 def create_app(
@@ -18,6 +22,7 @@ def create_app(
     outcome_status_path: Optional[Path] = None,
     data_dir: Path = Path("data"),
     enable_container_status: bool | None = None,
+    enable_runtime_probabilities: bool | None = None,
 ) -> FastAPI:
     probability_status_path = probability_status_path or status_path.with_name(
         "probabilities.json"
@@ -40,6 +45,9 @@ def create_app(
             enable_container_status=container_status_enabled_from_env()
             if enable_container_status is None
             else enable_container_status,
+            enable_runtime_probabilities=runtime_probabilities_enabled_from_env()
+            if enable_runtime_probabilities is None
+            else enable_runtime_probabilities,
         )
     )
     return app
