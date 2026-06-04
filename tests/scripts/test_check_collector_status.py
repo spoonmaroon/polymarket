@@ -325,9 +325,10 @@ def test_state_manager_status_rejects_bad_websocket_health(
         script.main()
 
 
-def test_state_manager_status_rejects_missing_next_next_contracts(
+def test_state_manager_status_accepts_missing_next_next_by_default(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     script = _load_script()
     status = _fresh_state_manager_status()
@@ -339,17 +340,13 @@ def test_state_manager_status_rejects_missing_next_next_contracts(
         ["check_collector_status.py", "--status-path", str(status_path)],
     )
 
-    with pytest.raises(
-        SystemExit,
-        match="state-manager missing next_next BTC/ETH contracts",
-    ):
-        script.main()
+    assert script.main() == 0
+    assert "'ok': True" in capsys.readouterr().out
 
 
-def test_state_manager_status_accepts_missing_next_next_for_two_window_experiment(
+def test_state_manager_status_rejects_missing_next_next_when_three_windows_expected(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
 ) -> None:
     script = _load_script()
     status = _fresh_state_manager_status()
@@ -363,12 +360,15 @@ def test_state_manager_status_accepts_missing_next_next_for_two_window_experimen
             "--status-path",
             str(status_path),
             "--expected-prewarm-windows",
-            "2",
+            "3",
         ],
     )
 
-    assert script.main() == 0
-    assert "'ok': True" in capsys.readouterr().out
+    with pytest.raises(
+        SystemExit,
+        match="state-manager missing next_next BTC/ETH contracts",
+    ):
+        script.main()
 
 
 def test_state_manager_status_accepts_healthy_websocket_rows(

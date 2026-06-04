@@ -6,7 +6,7 @@ DB_PATH="${POLYMARKET_DUCKDB_PATH:-/var/lib/polymarket/db/polymarket.duckdb}"
 LIVE_DIR="${POLYMARKET_LIVE_DIR:-/var/lib/polymarket/live}"
 STATUS_PATH="${POLYMARKET_STATUS_PATH:-$LIVE_DIR/status.json}"
 NORMALIZED_HEALTH_PATH="${POLYMARKET_NORMALIZED_HEALTH_PATH:-$LIVE_DIR/normalized_health.json}"
-INTERVAL_SECONDS="${POLYMARKET_NORMALIZER_INTERVAL_SECONDS:-0.1}"
+INTERVAL_SECONDS="${POLYMARKET_NORMALIZER_INTERVAL_SECONDS:-0.25}"
 
 if [ ! -f "$RAW_DIR/.polymarket_archive_root" ]; then
   echo "missing archive sentinel: $RAW_DIR/.polymarket_archive_root" >&2

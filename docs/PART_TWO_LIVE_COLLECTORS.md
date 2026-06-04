@@ -8,7 +8,7 @@ systemd unit fail closed so the old framework cannot be restarted by accident.
 
 ## Active 5m State-Manager Command
 
-The current operational scope is BTC/ETH 5m current, next, and next-next windows.
+The current operational scope is BTC/ETH 5m current and next windows.
 15m support remains a planned modeling horizon, but the active
 always-on runtime is intentionally 5m-only until the warm-state path and
 durable persistence are stable.
@@ -19,7 +19,7 @@ cargo run -p polymarket-live-probe -- \
   --mode state-manager \
   --assets BTC,ETH \
   --interval 5m \
-  --prewarm-windows 3 \
+  --prewarm-windows 2 \
   --decision-snapshot-dir ../data/raw \
   --run-for-seconds 30 \
   --out ../reports/live_probe/state_manager.json
@@ -41,29 +41,30 @@ polymarket-live-probe \
   --mode state-manager \
   --assets BTC,ETH \
   --interval 5m \
-  --prewarm-windows 3 \
+  --prewarm-windows 2 \
   --forever \
-  --status-interval-ms 250 \
+  --status-interval-ms 100 \
+  --rest-backup-interval-ms 1000 \
   --state-snapshot-interval-ms 5000 \
   --state-snapshot-dir /var/lib/polymarket/raw/polymarket_state_manager/state_snapshot \
   --decision-snapshot-dir /var/lib/polymarket/raw \
   --out /var/lib/polymarket/live/status.json
 ```
 
-The runtime remains read-only. It keeps the current, next, and next-next 5m
+The runtime remains read-only. It keeps the current and next 5m
 contracts warm so rollover does not require contract discovery on the hot path.
-The spoon deployment tracks current, next, and next-next 5m windows with
-`POLYMARKET_PREWARM_WINDOWS=3`. The collector process owns live WebSocket state
+The spoon deployment tracks current and next 5m windows with
+`POLYMARKET_PREWARM_WINDOWS=2`. The collector process owns live WebSocket state
 and append-only raw JSONL journals. A normalizer sidecar reads those raw
 journals, writes normalized DuckDB rows, builds current/next `DecisionState`
 snapshots, and refreshes `data/live/normalized_health.json`.
 
 The Rust state-manager status file records:
 
-- BTC/ETH 5m current, next, and next-next contract windows.
+- BTC/ETH 5m current and next contract windows.
 - Up and Down token ids discovered before rollover.
 - Polymarket CLOB WebSocket top-of-book state for warmed token ids.
-- REST order-book backup snapshots during refresh.
+- One-second REST order-book backup snapshots during refresh.
 - Polymarket RTDS Chainlink BTC/USD and ETH/USD reference ticks.
 - Source/order-book freshness rows.
 - WebSocket connection status for Chainlink and CLOB streams.

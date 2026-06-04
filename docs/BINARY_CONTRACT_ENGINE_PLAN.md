@@ -26,7 +26,7 @@ Outputs:
 
 Purpose: reconstruct what the model could see at every decision timestamp. Historical future movement is a label, not a feature. Live mode should collect settlement-source prices, proxy prices, order-book snapshots, WebSocket events, source-quality flags, and market metadata.
 
-The active live runtime tracks BTC/ETH 5-minute current, next, and next-next contract windows. The Rust state-manager owns this hot read-only state: warmed contract windows, Chainlink reference ticks, CLOB top-of-book state, source freshness, raw WebSocket journals, and append-only hot `DecisionState` snapshots. 15-minute contracts remain a research horizon, not current always-on collector scope, until warm-state rollover and replay verification are stable.
+The active live runtime tracks BTC/ETH 5-minute current and next contract windows. The Rust state-manager owns this hot read-only state: warmed contract windows, Chainlink reference ticks, CLOB top-of-book state, source freshness, raw WebSocket journals, and append-only hot `DecisionState` snapshots. 15-minute contracts remain a research horizon, not current always-on collector scope, until warm-state rollover and replay verification are stable.
 
 State groups:
 - contract state
@@ -221,7 +221,7 @@ Retention defaults:
 Deployment boundary:
 
 - `polymarket-engine collect` is retired and must fail closed; it is not the live collector.
-- Rust owns hot read-only collection, in-memory state management, warmed BTC/ETH 5m current/next/next-next windows, and append-only hot `DecisionState` snapshots.
+- Rust owns hot read-only collection, in-memory state management, warmed BTC/ETH 5m current/next windows, and append-only hot `DecisionState` snapshots.
 - DuckDB/Python own raw-journal normalization, replay, hot-state equivalence verification, operator health summaries, research tables, and backtests; DuckDB must not sit on the live decision path.
 - probability work starts only after sampled hot `DecisionState` snapshots can be rebuilt from normalized DuckDB rows with no replay-equivalence mismatches.
 - `paper` mode can later start simulated decisions/orders from verified as-of state.
@@ -871,7 +871,7 @@ The UI should not have live-trading buttons in v1.
 Build in this order:
 
 0. Active Rust state-manager and hot-state replay boundary.
-   - Acceptance: BTC/ETH 5m current, next, and next-next windows stay warm; append-only hot `DecisionState` snapshots are persisted; sampled hot snapshots rebuild from normalized DuckDB rows with zero replay-equivalence mismatches.
+   - Acceptance: BTC/ETH 5m current and next windows stay warm; append-only hot `DecisionState` snapshots are persisted; sampled hot snapshots rebuild from normalized DuckDB rows with zero replay-equivalence mismatches.
 1. Contract parser and `ContractSpec`.
    - Acceptance: tests prove supported contracts normalize and ambiguous contracts reject.
 2. DuckDB schema and store.

@@ -44,7 +44,7 @@ uv run polymarket-engine monitor --refresh 1 --limit 8
 ## Rust State Manager
 
 The Rust state-manager is the active read-only runtime. It uses the official
-Polymarket Rust SDK to keep BTC/ETH 5m current, next, and next-next contract
+Polymarket Rust SDK to keep BTC/ETH 5m current and next contract
 windows warm, subscribe to CLOB WebSocket top-of-book updates, collect
 Chainlink RTDS BTC/USD and ETH/USD reference ticks, track WebSocket status, and
 write an atomic health/status report plus append-only raw event journals.
@@ -60,7 +60,7 @@ cargo run -p polymarket-live-probe -- \
   --mode state-manager \
   --assets BTC,ETH \
   --interval 5m \
-  --prewarm-windows 3 \
+  --prewarm-windows 2 \
   --run-for-seconds 30 \
   --out ../reports/live_probe/state_manager.json
 ```

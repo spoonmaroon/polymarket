@@ -3,8 +3,13 @@
 The Python collector runbook below is retired design context. The legacy Docker
 entrypoint and systemd unit now fail closed; do not use this runbook to restart
 Python collection. The active read-only runtime is the Rust SDK state manager.
-It is intentionally scoped to BTC/ETH 5m current, next, and next-next windows
+It is intentionally scoped to BTC/ETH 5m current and next windows
 until the warm-state path and durable persistence are stable.
+
+Current live runtime note, 2026-06-03: the active runtime moved from spoon to
+THEPC over Tailscale. The known operator API host is configurable; THEPC is
+reachable as user `ender` at `100.72.104.49`, but this runbook section should
+not be read as an instruction to SSH, deploy, restart, or manage the PC.
 
 Persistent data lives outside the repo at `/home/spoon/polymarket-data`.
 The Rust collector writes raw WebSocket journals and state snapshots under
@@ -31,18 +36,84 @@ docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compo
 python3 scripts/check_collector_status.py --status-path /home/spoon/polymarket-data/live/status.json --max-status-age-seconds 30 --max-price-age-ms 30000 --max-orderbook-age-ms 30000 --max-websocket-event-age-ms 30000
 ```
 
-Set `POLYMARKET_PREWARM_WINDOWS=3` or rely on the compose default so spoon warms
-BTC/ETH current, next, and next-next 5m windows.
+Set `POLYMARKET_PREWARM_WINDOWS=2` or rely on the compose default so spoon warms
+BTC/ETH current and next 5m windows.
+On THEPC, the current normalizer cadence is
+`POLYMARKET_NORMALIZER_INTERVAL_SECONDS=0.1`. The older spoon sidecar used
+`POLYMARKET_NORMALIZER_INTERVAL_SECONDS=0.25` as a home-server CPU compromise.
+After VPS migration, re-test the normalizer on the new host and keep or return
+to `POLYMARKET_NORMALIZER_INTERVAL_SECONDS=0.1` only if CPU headroom, DuckDB
+freshness, and status latency stay healthy.
+
+## Production Image Deploy
+
+Normal live deploys should load prebuilt images on the runtime host and restart
+them without compiling Rust on the host.
+
+### THEPC Deploy
+
+THEPC is the active runtime host. Do not use blind auto-pull for this lane. The
+Mac-side helper below builds pinned Linux images, creates a git bundle for the
+exact local commit, streams the bundle and image tarballs into THEPC's Ubuntu
+WSL environment, runs the existing prebuilt-image deploy gate, and finishes with
+the collector status check.
+
+```bash
+cd /Users/goon/polymarket
+./scripts/deploy_pc.sh
+```
+
+Defaults:
+
+- `PC_HOST=ender@100.72.104.49`
+- `PC_WSL_DISTRO=Ubuntu`
+- `PC_REPO=/home/ender/polymarket`
+- `PC_BUNDLE=/home/ender/polymarket.bundle`
+- `PC_DATA_DIR=/home/ender/polymarket-data`
+- `PC_NORMALIZER_INTERVAL_SECONDS=0.1`
+
+Set `PC_DEPLOY_BUILD_IMAGES=0` only when matching
+`dist/docker/polymarket-rust-collector-<sha>.tar` and
+`dist/docker/polymarket-normalizer-<sha>.tar` already exist for the checked-out
+commit.
+
+### Spoon Deploy
+
+Build images on the Mac. The default target platform is
+`TARGET_PLATFORM=linux/amd64`, matching spoon's Linux runtime:
+
+```bash
+cd /Users/goon/polymarket
+./scripts/build_images_pc.sh
+```
+
+Ship and start the matching images on spoon:
+
+```bash
+cd /Users/goon/polymarket
+./scripts/deploy_prebuilt_images.sh
+```
+
+The deploy helper copies the collector and normalizer tarballs to
+`/home/spoon/polymarket-image-artifacts`, runs `docker load`, then calls
+`scripts/deploy.sh` with `POLYMARKET_DEPLOY_USE_PREBUILT=1`,
+`POLYMARKET_DEPLOY_REF` and `POLYMARKET_EXPECTED_DEPLOY_SHA` pinned to the
+exact full commit SHA,
+`POLYMARKET_COLLECTOR_IMAGE`, `POLYMARKET_NORMALIZER_IMAGE`,
+`POLYMARKET_DATA_DIR=/home/spoon/polymarket-data`, and `DEPLOY_FORCE=1`.
+It finishes with the collector status gate for the active status, raw, and
+normalized-health paths.
 
 ## Auto Deploy
 
-Install a cron entry on spoon:
+Install a cron entry on spoon only after deciding how images reach the host:
 
 ```cron
 */5 * * * * /home/spoon/polymarket/scripts/deploy.sh >> /home/spoon/polymarket/logs/deploy.cron.log 2>&1
 ```
 
-The deploy script fetches the configured deploy ref, refuses dirty server worktrees, fast-forwards only, rebuilds the Rust collector image, restarts the collector, and smoke-checks the status file. It only skips a rebuild when both the checked-out commit and the deployed marker match the target commit, so a manual `git pull` cannot accidentally leave an older healthy container running.
+The deploy script fetches the configured deploy ref, refuses dirty server worktrees, fast-forwards only, restarts the collector and normalizer, and smoke-checks the status file. A bare cron entry does not compile Rust by default. With `POLYMARKET_DEPLOY_USE_PREBUILT=1`, deploy requires `POLYMARKET_EXPECTED_DEPLOY_SHA` and SHA-tagged collector and normalizer images that exactly match the deploy ref. Host builds are available only when explicitly enabled with `POLYMARKET_DEPLOY_ALLOW_SPOON_BUILD=1`, and that fallback limits Rust build pressure with `CARGO_BUILD_JOBS=1` by default.
+It only skips a rebuild/restart when both the checked-out commit and the deployed marker match the target commit, so a manual `git pull` cannot accidentally leave an older healthy container running.
 If `deploy/collector/.env` exists, the deploy script uses it explicitly. The collector is read-only and runs Chainlink RTDS plus Polymarket CLOB WebSocket state-manager mode with `POLYMARKET_INTERVAL=5m`.
 
 For branch testing before merge:
@@ -130,6 +201,30 @@ python3 /home/spoon/polymarket/scripts/check_collector_status.py --status-path /
 python3 /home/spoon/polymarket/scripts/verify_state_manager_report.py /home/spoon/polymarket-data/live/status.json
 du -sh /home/spoon/polymarket-data/*
 ```
+
+## Read-Only Cockpit TUI
+
+The `polymarket-cockpit-tui` is read-only. It polls the engine API for runtime
+status, gate failures, freshness, latency, health, storage, and optional
+container state. It must not place orders, deploy containers, rebuild images,
+write collector state, restart services, or access auth secrets.
+
+Local API:
+
+```bash
+uv run uvicorn polymarket_engine.app:app --host 127.0.0.1 --port 8000
+cargo run --manifest-path rust/Cargo.toml -p polymarket-cockpit-tui -- --engine-api-url http://127.0.0.1:8000 --poll-interval-ms 250
+```
+
+THEPC over Tailscale, using a configurable URL:
+
+```bash
+cargo run --manifest-path rust/Cargo.toml -p polymarket-cockpit-tui -- --engine-api-url http://100.72.104.49:8000 --poll-interval-ms 250
+```
+
+Container status is an operator-only API-side feature. Leave it disabled unless
+the API process is deliberately started with
+`POLYMARKET_ENABLE_CONTAINER_STATUS=1`.
 
 ## No-Auth Latency Probe
 

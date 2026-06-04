@@ -5,19 +5,19 @@ services:
     build:
       context: ../..
       dockerfile: deploy/collector/Dockerfile
-    image: polymarket-rust-collector:latest
+    image: ${POLYMARKET_COLLECTOR_IMAGE:-polymarket-rust-collector:latest}
     restart: unless-stopped
     user: "${POLYMARKET_UID:-1000}:${POLYMARKET_GID:-1000}"
     environment:
       TZ: ${POLYMARKET_DISPLAY_TZ:-America/Chicago}
       POLYMARKET_ASSETS: ${POLYMARKET_ASSETS:-BTC,ETH}
       POLYMARKET_INTERVAL: ${POLYMARKET_INTERVAL:-5m}
-      POLYMARKET_PREWARM_WINDOWS: ${POLYMARKET_PREWARM_WINDOWS:-3}
+      POLYMARKET_PREWARM_WINDOWS: ${POLYMARKET_PREWARM_WINDOWS:-2}
       POLYMARKET_STATUS_INTERVAL_MS: ${POLYMARKET_STATUS_INTERVAL_MS:-100}
       POLYMARKET_PREWARM_BEFORE_EXPIRY_MS: ${POLYMARKET_PREWARM_BEFORE_EXPIRY_MS:-30000}
       POLYMARKET_STALE_CHAINLINK_AFTER_MS: ${POLYMARKET_STALE_CHAINLINK_AFTER_MS:-5000}
       POLYMARKET_STALE_ORDERBOOK_AFTER_MS: ${POLYMARKET_STALE_ORDERBOOK_AFTER_MS:-30000}
-      POLYMARKET_REST_BACKUP_INTERVAL_MS: ${POLYMARKET_REST_BACKUP_INTERVAL_MS:-15000}
+      POLYMARKET_REST_BACKUP_INTERVAL_MS: ${POLYMARKET_REST_BACKUP_INTERVAL_MS:-1000}
       POLYMARKET_STATUS_PATH: /var/lib/polymarket/live/status.json
       POLYMARKET_STATE_SNAPSHOT_DIR: /var/lib/polymarket/raw/polymarket_state_manager/state_snapshot
       POLYMARKET_STATE_SNAPSHOT_INTERVAL_MS: ${POLYMARKET_STATE_SNAPSHOT_INTERVAL_MS:-5000}
@@ -55,7 +55,7 @@ services:
           "--max-normalized-health-age-ms",
           "30000",
           "--expected-prewarm-windows",
-          "${POLYMARKET_PREWARM_WINDOWS:-3}",
+          "${POLYMARKET_PREWARM_WINDOWS:-2}",
         ]
       interval: 30s
       timeout: 5s
@@ -68,7 +68,7 @@ services:
     build:
       context: ../..
       dockerfile: deploy/normalizer/Dockerfile
-    image: polymarket-normalizer:latest
+    image: ${POLYMARKET_NORMALIZER_IMAGE:-polymarket-normalizer:latest}
     restart: unless-stopped
     user: "${POLYMARKET_UID:-1000}:${POLYMARKET_GID:-1000}"
     depends_on:
@@ -80,7 +80,7 @@ services:
       POLYMARKET_LIVE_DIR: /var/lib/polymarket/live
       POLYMARKET_STATUS_PATH: /var/lib/polymarket/live/status.json
       POLYMARKET_NORMALIZED_HEALTH_PATH: /var/lib/polymarket/live/normalized_health.json
-      POLYMARKET_NORMALIZER_INTERVAL_SECONDS: ${POLYMARKET_NORMALIZER_INTERVAL_SECONDS:-0.1}
+      POLYMARKET_NORMALIZER_INTERVAL_SECONDS: ${POLYMARKET_NORMALIZER_INTERVAL_SECONDS:-0.25}
     volumes:
       - ${POLYMARKET_DATA_DIR:-/home/spoon/polymarket-data}/raw:/var/lib/polymarket/raw
       - ${POLYMARKET_DATA_DIR:-/home/spoon/polymarket-data}/db:/var/lib/polymarket/db
