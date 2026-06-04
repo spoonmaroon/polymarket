@@ -1,7 +1,11 @@
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Utc};
 
+use crate::outcome_view::{
+    OutcomeExpansion, OutcomeToggleTarget, default_outcome_section_key, latest_outcome_day_key,
+    outcome_display_items, outcome_toggle_target_at,
+};
 use crate::status::{
     RuntimeDisplayLag, RuntimeGates, RuntimeMonitor, RuntimeOrderbookRow, RuntimeOutcomeRow,
     RuntimeOutcomes, RuntimePriceRow, RuntimeProbabilities, RuntimeStatus,
@@ -68,7 +72,7 @@ pub struct AppState {
     pub runtime_error: Option<String>,
     pub selected_market_key: Option<String>,
     pub selected_outcome_index: Option<usize>,
-    pub expanded_outcome_days: BTreeSet<String>,
+    pub outcome_expansion: OutcomeExpansion,
     pub display_now: Option<String>,
     pub price_history: Vec<PriceHistoryPoint>,
 }
@@ -88,7 +92,7 @@ impl Default for AppState {
             runtime_error: None,
             selected_market_key: None,
             selected_outcome_index: None,
-            expanded_outcome_days: BTreeSet::new(),
+            outcome_expansion: OutcomeExpansion::default(),
             display_now: None,
             price_history: Vec::new(),
         }
@@ -209,6 +213,7 @@ impl AppState {
 
         if self.runtime_outcomes.as_ref() != Some(&next) {
             self.runtime_outcomes = Some(next);
+            self.sync_outcome_expansion_defaults();
             changed = true;
         }
 
@@ -301,6 +306,26 @@ impl AppState {
         );
     }
 
+    pub fn sync_outcome_expansion_defaults(&mut self) {
+        let Some(outcomes) = self.runtime_outcomes.as_ref() else {
+            return;
+        };
+        let Some(day_key) = latest_outcome_day_key(outcomes) else {
+            return;
+        };
+
+        if self
+            .outcome_expansion
+            .initialized_days
+            .insert(day_key.clone())
+        {
+            self.outcome_expansion.expanded_days.insert(day_key.clone());
+        }
+        if self.outcome_expansion.expanded_days.contains(&day_key) {
+            self.open_default_outcome_section_once(&day_key);
+        }
+    }
+
     pub fn effective_outcome_index(&self) -> Option<usize> {
         let count = self.outcome_count().filter(|count| *count > 0)?;
         Some(
@@ -328,21 +353,43 @@ impl AppState {
         self.selected_outcome_index = Some((current + count - 1) % count);
     }
 
-    pub fn toggle_selected_outcome_day(&mut self) -> bool {
+    pub fn toggle_selected_outcome(&mut self) -> bool {
         let Some(index) = self.effective_outcome_index() else {
             return false;
         };
-        let Some(day_key) = crate::outcome_view::outcome_day_key_at(
+        let Some(target) = outcome_toggle_target_at(
             self.runtime_outcomes.as_ref(),
-            &self.expanded_outcome_days,
+            &self.outcome_expansion,
             index,
         ) else {
             return false;
         };
-        if !self.expanded_outcome_days.insert(day_key.clone()) {
-            self.expanded_outcome_days.remove(&day_key);
+        match &target {
+            OutcomeToggleTarget::Day(day_key) => {
+                if self.outcome_expansion.expanded_days.insert(day_key.clone()) {
+                    self.outcome_expansion
+                        .initialized_days
+                        .insert(day_key.clone());
+                    self.open_default_outcome_section_once(day_key);
+                } else {
+                    self.outcome_expansion.expanded_days.remove(day_key);
+                }
+            }
+            OutcomeToggleTarget::Section(section_key) => {
+                if !self
+                    .outcome_expansion
+                    .expanded_sections
+                    .insert(section_key.clone())
+                {
+                    self.outcome_expansion.expanded_sections.remove(section_key);
+                }
+                self.outcome_expansion
+                    .initialized_sections
+                    .insert(section_key.clone());
+            }
         }
         self.sync_outcome_selection();
+        self.select_outcome_toggle_target(&target);
         true
     }
 
@@ -376,12 +423,41 @@ impl AppState {
 
     fn outcome_count(&self) -> Option<usize> {
         self.runtime_outcomes.as_ref().map(|_| {
-            crate::outcome_view::outcome_display_items(
-                self.runtime_outcomes.as_ref(),
-                &self.expanded_outcome_days,
-            )
-            .len()
+            outcome_display_items(self.runtime_outcomes.as_ref(), &self.outcome_expansion).len()
         })
+    }
+
+    fn open_default_outcome_section_once(&mut self, day_key: &str) {
+        let Some(section_key) =
+            default_outcome_section_key(self.runtime_outcomes.as_ref(), day_key)
+        else {
+            return;
+        };
+        if self
+            .outcome_expansion
+            .initialized_sections
+            .insert(section_key.clone())
+        {
+            self.outcome_expansion.expanded_sections.insert(section_key);
+        }
+    }
+
+    fn select_outcome_toggle_target(&mut self, target: &OutcomeToggleTarget) {
+        let items = outcome_display_items(self.runtime_outcomes.as_ref(), &self.outcome_expansion);
+        let index = items.iter().position(|item| match (target, item) {
+            (
+                OutcomeToggleTarget::Day(target_key),
+                crate::outcome_view::OutcomeDisplayItem::Day { key, .. },
+            ) => key == target_key,
+            (
+                OutcomeToggleTarget::Section(target_key),
+                crate::outcome_view::OutcomeDisplayItem::Section { key, .. },
+            ) => key == target_key,
+            _ => false,
+        });
+        if let Some(index) = index {
+            self.selected_outcome_index = Some(index);
+        }
     }
 
     fn default_market_index(&self) -> Option<usize> {
@@ -720,8 +796,12 @@ fn is_btc_group(group: &crate::market_view::MarketGroup<'_>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{AppState, MainTab};
-    use crate::status::{
-        RuntimeMonitor, RuntimeOrderbookRow, RuntimeOutcomeRow, RuntimeOutcomes, RuntimePriceRow,
+    use crate::{
+        outcome_view::outcome_section_key,
+        status::{
+            RuntimeMonitor, RuntimeOrderbookRow, RuntimeOutcomeRow, RuntimeOutcomes,
+            RuntimePriceRow,
+        },
     };
 
     #[test]
@@ -886,6 +966,7 @@ mod tests {
             ..Default::default()
         };
 
+        app.sync_outcome_expansion_defaults();
         app.sync_outcome_selection();
         assert_eq!(app.selected_outcome_index, Some(0));
 
@@ -905,14 +986,62 @@ mod tests {
             runtime_outcomes: Some(outcomes(vec!["BTC 5m 16:25", "ETH 5m 16:25"])),
             ..Default::default()
         };
+        app.sync_outcome_expansion_defaults();
         app.sync_outcome_selection();
         app.select_next_outcome();
         app.select_next_outcome();
 
         app.runtime_outcomes = Some(outcomes(vec!["BTC 5m 16:25"]));
+        app.sync_outcome_expansion_defaults();
         app.sync_outcome_selection();
 
-        assert_eq!(app.selected_outcome_index, Some(1));
+        assert_eq!(app.selected_outcome_index, Some(2));
+        assert!(app.selected_outcome_display_row_is_visible());
+    }
+
+    #[test]
+    fn outcome_expansion_defaults_expand_latest_day_once() {
+        let mut app = AppState {
+            runtime_outcomes: Some(outcomes(vec!["BTC 5m 16:25", "ETH 5m 16:25"])),
+            ..Default::default()
+        };
+
+        app.sync_outcome_expansion_defaults();
+
+        assert!(app.outcome_expansion.expanded_days.contains("2026-06-03"));
+        assert!(
+            app.outcome_expansion
+                .expanded_sections
+                .contains(&outcome_section_key("2026-06-03", "afternoon"))
+        );
+
+        app.outcome_expansion.expanded_days.remove("2026-06-03");
+        app.outcome_expansion
+            .expanded_sections
+            .remove(&outcome_section_key("2026-06-03", "afternoon"));
+        app.sync_outcome_expansion_defaults();
+
+        assert!(!app.outcome_expansion.expanded_days.contains("2026-06-03"));
+        assert!(
+            !app.outcome_expansion
+                .expanded_sections
+                .contains(&outcome_section_key("2026-06-03", "afternoon"))
+        );
+    }
+
+    #[test]
+    fn collapse_selected_day_keeps_selection_on_visible_header() {
+        let mut app = AppState {
+            runtime_outcomes: Some(outcomes(vec!["BTC 5m 16:25", "ETH 5m 16:25"])),
+            ..Default::default()
+        };
+        app.sync_outcome_expansion_defaults();
+        app.selected_outcome_index = Some(2);
+
+        app.outcome_expansion.expanded_days.remove("2026-06-03");
+        app.sync_outcome_selection();
+
+        assert_eq!(app.selected_outcome_index, Some(0));
         assert!(app.selected_outcome_display_row_is_visible());
     }
 

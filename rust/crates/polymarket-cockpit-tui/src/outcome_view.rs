@@ -1,13 +1,34 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 
-use chrono::{DateTime, Local, Utc};
+use chrono::{DateTime, Local, Timelike, Utc};
 
 use crate::status::{RuntimeOutcomeRow, RuntimeOutcomes};
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OutcomeExpansion {
+    pub expanded_days: BTreeSet<String>,
+    pub initialized_days: BTreeSet<String>,
+    pub expanded_sections: BTreeSet<String>,
+    pub initialized_sections: BTreeSet<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OutcomeToggleTarget {
+    Day(String),
+    Section(String),
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum OutcomeDisplayItem<'a> {
     Day {
         key: String,
+        label: String,
+        count: usize,
+        expanded: bool,
+    },
+    Section {
+        key: String,
+        day_key: String,
         label: String,
         count: usize,
         expanded: bool,
@@ -19,73 +40,191 @@ pub enum OutcomeDisplayItem<'a> {
 
 pub fn outcome_display_items<'a>(
     outcomes: Option<&'a RuntimeOutcomes>,
-    expanded_days: &BTreeSet<String>,
+    expansion: &OutcomeExpansion,
 ) -> Vec<OutcomeDisplayItem<'a>> {
     let Some(outcomes) = outcomes else {
         return Vec::new();
     };
     let groups = grouped_outcomes(&outcomes.rows);
-    let default_expanded = groups.first().map(|group| group.key.clone());
     let mut items = Vec::new();
     for group in groups {
-        let expanded = default_expanded.as_deref() == Some(group.key.as_str())
-            || expanded_days.contains(&group.key);
+        let expanded = expansion.expanded_days.contains(&group.key);
         items.push(OutcomeDisplayItem::Day {
-            key: group.key,
+            key: group.key.clone(),
             label: group.label,
-            count: group.rows.len(),
+            count: group.count,
             expanded,
         });
         if expanded {
-            items.extend(
-                group
-                    .rows
-                    .into_iter()
-                    .map(|row| OutcomeDisplayItem::Outcome { row }),
-            );
+            for section in group.sections {
+                let expanded = expansion.expanded_sections.contains(&section.key);
+                items.push(OutcomeDisplayItem::Section {
+                    key: section.key.clone(),
+                    day_key: group.key.clone(),
+                    label: section.label.to_string(),
+                    count: section.rows.len(),
+                    expanded,
+                });
+                if expanded {
+                    items.extend(
+                        section
+                            .rows
+                            .into_iter()
+                            .map(|row| OutcomeDisplayItem::Outcome { row }),
+                    );
+                }
+            }
         }
     }
     items
 }
 
-pub fn outcome_day_key_at(
+pub fn outcome_toggle_target_at(
     outcomes: Option<&RuntimeOutcomes>,
-    expanded_days: &BTreeSet<String>,
+    expansion: &OutcomeExpansion,
     index: usize,
-) -> Option<String> {
-    match outcome_display_items(outcomes, expanded_days).get(index)? {
-        OutcomeDisplayItem::Day { key, .. } => Some(key.clone()),
+) -> Option<OutcomeToggleTarget> {
+    match outcome_display_items(outcomes, expansion).get(index)? {
+        OutcomeDisplayItem::Day { key, .. } => Some(OutcomeToggleTarget::Day(key.clone())),
+        OutcomeDisplayItem::Section { key, .. } => Some(OutcomeToggleTarget::Section(key.clone())),
         OutcomeDisplayItem::Outcome { .. } => None,
     }
+}
+
+pub fn latest_outcome_day_key(outcomes: &RuntimeOutcomes) -> Option<String> {
+    grouped_outcomes(&outcomes.rows)
+        .first()
+        .map(|group| group.key.clone())
+}
+
+pub fn default_outcome_section_key(
+    outcomes: Option<&RuntimeOutcomes>,
+    day_key: &str,
+) -> Option<String> {
+    let outcomes = outcomes?;
+    grouped_outcomes(&outcomes.rows)
+        .into_iter()
+        .find(|group| group.key == day_key)?
+        .sections
+        .into_iter()
+        .rev()
+        .find(|section| !section.rows.is_empty())
+        .map(|section| section.key)
+}
+
+pub fn outcome_section_key(day_key: &str, section_key: &str) -> String {
+    format!("{day_key}#{section_key}")
 }
 
 struct OutcomeDayGroup<'a> {
     key: String,
     label: String,
+    count: usize,
+    sections: Vec<OutcomeSectionGroup<'a>>,
+}
+
+struct OutcomeSectionGroup<'a> {
+    key: String,
+    label: &'static str,
     rows: Vec<&'a RuntimeOutcomeRow>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct OutcomeSection {
+    key: &'static str,
+    label: &'static str,
+    start_hour: u32,
+    end_hour: u32,
+}
+
+const OUTCOME_SECTIONS: [OutcomeSection; 4] = [
+    OutcomeSection {
+        key: "overnight",
+        label: "Overnight 00:00-05:59",
+        start_hour: 0,
+        end_hour: 5,
+    },
+    OutcomeSection {
+        key: "morning",
+        label: "Morning 06:00-11:59",
+        start_hour: 6,
+        end_hour: 11,
+    },
+    OutcomeSection {
+        key: "afternoon",
+        label: "Afternoon 12:00-17:59",
+        start_hour: 12,
+        end_hour: 17,
+    },
+    OutcomeSection {
+        key: "evening",
+        label: "Evening 18:00-23:59",
+        start_hour: 18,
+        end_hour: 23,
+    },
+];
+
 fn grouped_outcomes(rows: &[RuntimeOutcomeRow]) -> Vec<OutcomeDayGroup<'_>> {
-    let mut groups: Vec<OutcomeDayGroup<'_>> = Vec::new();
-    let mut index_by_key: HashMap<String, usize> = HashMap::new();
+    let mut groups_by_key: BTreeMap<String, Vec<&RuntimeOutcomeRow>> = BTreeMap::new();
     for row in rows {
         let key = outcome_day_key(row);
-        let index = if let Some(index) = index_by_key.get(&key).copied() {
-            index
-        } else {
-            let label = outcome_day_label(row).unwrap_or_else(|| key.clone());
-            groups.push(OutcomeDayGroup {
-                key: key.clone(),
-                label,
-                rows: Vec::new(),
-            });
-            let index = groups.len() - 1;
-            index_by_key.insert(key, index);
-            index
-        };
-        groups[index].rows.push(row);
+        groups_by_key.entry(key).or_default().push(row);
     }
-    groups
+
+    groups_by_key
+        .into_iter()
+        .rev()
+        .map(|(key, rows)| {
+            let label = rows
+                .iter()
+                .find_map(|row| outcome_day_label(row))
+                .unwrap_or_else(|| key.clone());
+            let count = rows.len();
+            OutcomeDayGroup {
+                sections: grouped_sections(&key, rows),
+                key,
+                label,
+                count,
+            }
+        })
+        .collect()
+}
+
+fn grouped_sections<'a>(
+    day_key: &str,
+    rows: Vec<&'a RuntimeOutcomeRow>,
+) -> Vec<OutcomeSectionGroup<'a>> {
+    OUTCOME_SECTIONS
+        .iter()
+        .filter_map(|section| {
+            let mut section_rows = rows
+                .iter()
+                .copied()
+                .filter(|row| {
+                    parse_local_expiry(row)
+                        .map(section_for_local_expiry)
+                        .is_some_and(|row_section| row_section.key == section.key)
+                })
+                .collect::<Vec<_>>();
+            if section_rows.is_empty() {
+                return None;
+            }
+            section_rows.sort_by(|left, right| right.expiry_ts.cmp(&left.expiry_ts));
+            Some(OutcomeSectionGroup {
+                key: outcome_section_key(day_key, section.key),
+                label: section.label,
+                rows: section_rows,
+            })
+        })
+        .collect()
+}
+
+fn section_for_local_expiry(timestamp: DateTime<Local>) -> OutcomeSection {
+    let hour = timestamp.hour();
+    OUTCOME_SECTIONS
+        .into_iter()
+        .find(|section| (section.start_hour..=section.end_hour).contains(&hour))
+        .unwrap_or(OUTCOME_SECTIONS[0])
 }
 
 fn outcome_day_key(row: &RuntimeOutcomeRow) -> String {
@@ -105,15 +244,17 @@ fn parse_local_expiry(row: &RuntimeOutcomeRow) -> Option<DateTime<Local>> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
-
     use crate::{
-        outcome_view::{OutcomeDisplayItem, outcome_day_key_at, outcome_display_items},
+        outcome_view::{
+            OutcomeDisplayItem, OutcomeExpansion, OutcomeToggleTarget, default_outcome_section_key,
+            latest_outcome_day_key, outcome_display_items, outcome_section_key,
+            outcome_toggle_target_at,
+        },
         status::{RuntimeOutcomeRow, RuntimeOutcomes},
     };
 
     #[test]
-    fn outcome_display_items_expand_latest_day_by_default() {
+    fn outcome_display_items_allows_latest_day_to_be_closed() {
         let outcomes = RuntimeOutcomes {
             ok: true,
             state: "OK".to_string(),
@@ -123,42 +264,146 @@ mod tests {
                 outcome("ETH 5m", "2026-06-03T20:00:00Z"),
             ],
         };
+        let mut expansion = OutcomeExpansion::default();
+        expansion.initialized_days.insert("2026-06-04".to_string());
 
-        let items = outcome_display_items(Some(&outcomes), &BTreeSet::new());
+        let items = outcome_display_items(Some(&outcomes), &expansion);
 
         assert!(matches!(
             &items[0],
             OutcomeDisplayItem::Day {
                 label,
-                expanded: true,
+                expanded: false,
                 ..
             } if label.contains("Jun 04")
         ));
-        assert!(matches!(&items[1], OutcomeDisplayItem::Outcome { row } if row.market == "BTC 5m"));
-        assert!(matches!(
-            &items[2],
-            OutcomeDisplayItem::Day {
-                label,
-                expanded: false,
-                ..
-            } if label.contains("Jun 03")
-        ));
-        assert_eq!(items.len(), 3);
+        assert!(!items.iter().any(|item| {
+            matches!(item, OutcomeDisplayItem::Outcome { row } if row.market == "BTC 5m")
+        }));
     }
 
     #[test]
-    fn outcome_day_key_at_returns_only_selectable_day_headers() {
+    fn outcome_display_items_splits_expanded_day_into_large_sections() {
+        let outcomes = RuntimeOutcomes {
+            ok: true,
+            state: "OK".to_string(),
+            generated_at: Some("2026-06-04T20:00:00Z".to_string()),
+            rows: vec![
+                outcome("BTC 5m overnight", "2026-06-04T10:05:00Z"),
+                outcome("BTC 5m afternoon", "2026-06-04T18:05:00Z"),
+            ],
+        };
+        let mut expansion = OutcomeExpansion::default();
+        expansion.initialized_days.insert("2026-06-04".to_string());
+        expansion.expanded_days.insert("2026-06-04".to_string());
+        expansion
+            .initialized_sections
+            .insert("2026-06-04#afternoon".to_string());
+        expansion
+            .expanded_sections
+            .insert("2026-06-04#afternoon".to_string());
+
+        let items = outcome_display_items(Some(&outcomes), &expansion);
+
+        assert!(matches!(
+            &items[0],
+            OutcomeDisplayItem::Day { expanded: true, .. }
+        ));
+        assert!(items.iter().any(|item| {
+            matches!(
+                item,
+                OutcomeDisplayItem::Section {
+                    key,
+                    label,
+                    count: 1,
+                    expanded: false,
+                    ..
+                } if key == "2026-06-04#overnight" && label.contains("Overnight")
+            )
+        }));
+        assert!(items.iter().any(|item| {
+            matches!(
+                item,
+                OutcomeDisplayItem::Section {
+                    key,
+                    label,
+                    count: 1,
+                    expanded: true,
+                    ..
+                } if key == "2026-06-04#afternoon" && label.contains("Afternoon")
+            )
+        }));
+        assert!(items.iter().any(|item| {
+            matches!(item, OutcomeDisplayItem::Outcome { row } if row.market == "BTC 5m afternoon")
+        }));
+        assert!(!items.iter().any(|item| {
+            matches!(item, OutcomeDisplayItem::Outcome { row } if row.market == "BTC 5m overnight")
+        }));
+    }
+
+    #[test]
+    fn outcome_toggle_target_at_returns_only_selectable_headers() {
         let outcomes = RuntimeOutcomes {
             ok: true,
             state: "OK".to_string(),
             generated_at: Some("2026-06-04T20:00:00Z".to_string()),
             rows: vec![outcome("BTC 5m", "2026-06-04T20:00:00Z")],
         };
+        let mut expansion = OutcomeExpansion::default();
+        expansion.expanded_days.insert("2026-06-04".to_string());
+        expansion
+            .expanded_sections
+            .insert(outcome_section_key("2026-06-04", "afternoon"));
 
-        assert!(outcome_day_key_at(Some(&outcomes), &BTreeSet::new(), 0).is_some());
         assert_eq!(
-            outcome_day_key_at(Some(&outcomes), &BTreeSet::new(), 1),
+            outcome_toggle_target_at(Some(&outcomes), &expansion, 0),
+            Some(OutcomeToggleTarget::Day("2026-06-04".to_string()))
+        );
+        assert_eq!(
+            outcome_toggle_target_at(Some(&outcomes), &expansion, 1),
+            Some(OutcomeToggleTarget::Section(
+                "2026-06-04#afternoon".to_string()
+            ))
+        );
+        assert_eq!(
+            outcome_toggle_target_at(Some(&outcomes), &expansion, 2),
             None
+        );
+    }
+
+    #[test]
+    fn latest_outcome_day_key_returns_newest_local_day() {
+        let outcomes = RuntimeOutcomes {
+            ok: true,
+            state: "OK".to_string(),
+            generated_at: Some("2026-06-04T20:00:00Z".to_string()),
+            rows: vec![
+                outcome("ETH 5m", "2026-06-03T20:00:00Z"),
+                outcome("BTC 5m", "2026-06-04T20:00:00Z"),
+            ],
+        };
+
+        assert_eq!(
+            latest_outcome_day_key(&outcomes).as_deref(),
+            Some("2026-06-04")
+        );
+    }
+
+    #[test]
+    fn default_outcome_section_key_returns_newest_section_for_day() {
+        let outcomes = RuntimeOutcomes {
+            ok: true,
+            state: "OK".to_string(),
+            generated_at: Some("2026-06-04T20:00:00Z".to_string()),
+            rows: vec![
+                outcome("BTC 5m morning", "2026-06-04T08:05:00Z"),
+                outcome("BTC 5m evening", "2026-06-05T02:05:00Z"),
+            ],
+        };
+
+        assert_eq!(
+            default_outcome_section_key(Some(&outcomes), "2026-06-04").as_deref(),
+            Some("2026-06-04#evening")
         );
     }
 

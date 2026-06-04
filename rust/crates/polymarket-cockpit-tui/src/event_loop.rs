@@ -152,7 +152,7 @@ fn apply_key(app: &mut AppState, key_code: KeyCode) -> bool {
             false
         }
         KeyCode::Enter | KeyCode::Char(' ') if app.active_tab == MainTab::Outcomes => {
-            app.toggle_selected_outcome_day();
+            app.toggle_selected_outcome();
             false
         }
         _ => false,
@@ -1042,6 +1042,7 @@ mod tests {
             }),
             ..Default::default()
         };
+        app.sync_outcome_expansion_defaults();
         app.sync_outcome_selection();
 
         assert!(!apply_key(&mut app, KeyCode::Down));

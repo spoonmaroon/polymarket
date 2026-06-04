@@ -36,40 +36,57 @@ pub fn outcome_rows_for_visible_count(
 ) -> Vec<OutcomeDisplayRow> {
     let selected_index = app.effective_outcome_index();
     let visible_rows = visible_rows.max(1);
-    let display_rows =
-        outcome_display_items(app.runtime_outcomes.as_ref(), &app.expanded_outcome_days)
-            .into_iter()
-            .enumerate()
-            .map(|(index, item)| match item {
-                OutcomeDisplayItem::Day {
-                    label,
-                    count,
-                    expanded,
-                    ..
-                } => OutcomeDisplayRow {
-                    marker: marker(selected_index, index),
-                    market: format!("{} {label} ({count})", if expanded { "-" } else { "+" }),
-                    expiry: String::new(),
-                    k: String::new(),
-                    winner: String::new(),
-                    token: String::new(),
-                    status: if expanded {
-                        "expanded".to_string()
-                    } else {
-                        "collapsed".to_string()
-                    },
+    let display_rows = outcome_display_items(app.runtime_outcomes.as_ref(), &app.outcome_expansion)
+        .into_iter()
+        .enumerate()
+        .map(|(index, item)| match item {
+            OutcomeDisplayItem::Day {
+                label,
+                count,
+                expanded,
+                ..
+            } => OutcomeDisplayRow {
+                marker: marker(selected_index, index),
+                market: format!("{} {label} ({count})", if expanded { "-" } else { "+" }),
+                expiry: String::new(),
+                k: String::new(),
+                winner: String::new(),
+                token: String::new(),
+                status: if expanded {
+                    "expanded".to_string()
+                } else {
+                    "collapsed".to_string()
                 },
-                OutcomeDisplayItem::Outcome { row } => OutcomeDisplayRow {
-                    marker: marker(selected_index, index),
-                    market: row.market.clone(),
-                    expiry: compact_timestamp(row.expiry_ts.as_deref()),
-                    k: format_k(row.threshold_price.as_deref()),
-                    winner: optional_as_dash(row.official_winner.as_deref()),
-                    token: optional_as_dash(row.winning_token_id.as_deref()),
-                    status: row.official_resolution_status.clone(),
+            },
+            OutcomeDisplayItem::Section {
+                label,
+                count,
+                expanded,
+                ..
+            } => OutcomeDisplayRow {
+                marker: marker(selected_index, index),
+                market: format!("  {} {label} ({count})", if expanded { "-" } else { "+" }),
+                expiry: String::new(),
+                k: String::new(),
+                winner: String::new(),
+                token: String::new(),
+                status: if expanded {
+                    "expanded".to_string()
+                } else {
+                    "collapsed".to_string()
                 },
-            })
-            .collect::<Vec<_>>();
+            },
+            OutcomeDisplayItem::Outcome { row } => OutcomeDisplayRow {
+                marker: marker(selected_index, index),
+                market: format!("    {}", row.market),
+                expiry: compact_timestamp(row.expiry_ts.as_deref()),
+                k: format_k(row.threshold_price.as_deref()),
+                winner: optional_as_dash(row.official_winner.as_deref()),
+                token: optional_as_dash(row.winning_token_id.as_deref()),
+                status: row.official_resolution_status.clone(),
+            },
+        })
+        .collect::<Vec<_>>();
     let selected_display_index = display_rows.iter().position(|row| row.marker == ">");
     let start = visible_outcome_start(display_rows.len(), selected_display_index, visible_rows);
     display_rows
@@ -112,7 +129,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         rows,
         [
             Constraint::Length(2),
-            Constraint::Length(22),
+            Constraint::Length(36),
             Constraint::Length(12),
             Constraint::Length(12),
             Constraint::Length(8),
@@ -196,14 +213,14 @@ mod tests {
 
         let rows = outcome_rows(&app);
 
-        assert_eq!(rows[1].winner, "UP");
-        assert_eq!(rows[1].token, "up-token");
-        assert_eq!(rows[1].status, "resolved");
-        assert_eq!(rows[1].k, "63500.12");
+        assert_eq!(rows[2].winner, "UP");
+        assert_eq!(rows[2].token, "up-token");
+        assert_eq!(rows[2].status, "resolved");
+        assert_eq!(rows[2].k, "63500.12");
     }
 
     #[test]
-    fn outcome_rows_group_by_local_day_with_latest_day_expanded() {
+    fn outcome_rows_render_day_and_section_headers() {
         let app = app_with_expiry_days(vec![
             ("BTC 5m", "2026-06-04T20:00:00Z"),
             ("ETH 5m", "2026-06-03T20:00:00Z"),
@@ -212,9 +229,10 @@ mod tests {
         let rows = outcome_rows(&app);
 
         assert!(rows[0].market.contains("Jun 04"));
-        assert_eq!(rows[1].market, "BTC 5m");
-        assert!(rows[2].market.contains("Jun 03"));
-        assert!(!rows.iter().any(|row| row.market == "ETH 5m"));
+        assert!(rows[1].market.contains("Afternoon"));
+        assert_eq!(rows[2].market, "    BTC 5m");
+        assert!(rows[3].market.contains("Jun 03"));
+        assert!(!rows.iter().any(|row| row.market == "    ETH 5m"));
     }
 
     #[test]
@@ -230,7 +248,7 @@ mod tests {
     }
 
     #[test]
-    fn outcome_rows_keep_selected_outcome_visible() {
+    fn outcome_rows_keep_selected_section_visible() {
         let mut app = app_with_market_names(vec![
             "BTC 5m 16:20",
             "BTC 5m 16:25",
@@ -238,12 +256,13 @@ mod tests {
             "ETH 5m 16:25",
         ]);
         app.sync_outcome_selection();
-        app.select_previous_outcome();
+        app.select_next_outcome();
 
-        let rows = outcome_rows_for_visible_count(&app, 2);
+        let rows = outcome_rows_for_visible_count(&app, 1);
 
-        assert_eq!(rows.len(), 2);
+        assert_eq!(rows.len(), 1);
         assert_eq!(rows.last().map(|row| row.marker.as_str()), Some(">"));
+        assert!(rows[0].market.contains("Afternoon"));
     }
 
     fn app_with_outcomes(
@@ -251,7 +270,7 @@ mod tests {
         winning_token_id: Option<&str>,
         official_resolution_status: &str,
     ) -> AppState {
-        AppState {
+        let mut app = AppState {
             runtime_outcomes: Some(RuntimeOutcomes {
                 ok: true,
                 state: "OK".to_string(),
@@ -266,11 +285,13 @@ mod tests {
                 )],
             }),
             ..Default::default()
-        }
+        };
+        app.sync_outcome_expansion_defaults();
+        app
     }
 
     fn app_with_market_names(markets: Vec<&str>) -> AppState {
-        AppState {
+        let mut app = AppState {
             runtime_outcomes: Some(RuntimeOutcomes {
                 ok: true,
                 state: "OK".to_string(),
@@ -291,11 +312,13 @@ mod tests {
                     .collect(),
             }),
             ..Default::default()
-        }
+        };
+        app.sync_outcome_expansion_defaults();
+        app
     }
 
     fn app_with_expiry_days(markets: Vec<(&str, &str)>) -> AppState {
-        AppState {
+        let mut app = AppState {
             runtime_outcomes: Some(RuntimeOutcomes {
                 ok: true,
                 state: "OK".to_string(),
@@ -316,7 +339,9 @@ mod tests {
                     .collect(),
             }),
             ..Default::default()
-        }
+        };
+        app.sync_outcome_expansion_defaults();
+        app
     }
 
     fn runtime_outcome(
