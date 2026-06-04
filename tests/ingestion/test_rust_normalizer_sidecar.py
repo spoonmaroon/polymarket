@@ -192,6 +192,41 @@ def test_upsert_market_outcomes_limits_official_refresh_from_env(
     assert captured_limits == [2]
 
 
+def test_upsert_market_outcomes_uses_pending_sweep_limit_from_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_limits: list[int | None] = []
+
+    def fake_upsert_official_market_outcomes(**kwargs: Any) -> int:
+        captured_limits.append(kwargs["pending_sweep_limit"])
+        return 0
+
+    monkeypatch.setenv("POLYMARKET_OFFICIAL_OUTCOME_PENDING_SWEEP_LIMIT", "7")
+    monkeypatch.setattr(
+        rust_normalizer_sidecar,
+        "upsert_official_market_outcomes",
+        fake_upsert_official_market_outcomes,
+    )
+    monkeypatch.setattr(
+        rust_normalizer_sidecar,
+        "latest_market_outcome_rows_from_connection",
+        lambda *, conn, limit: [],
+    )
+    monkeypatch.setattr(
+        rust_normalizer_sidecar,
+        "write_outcome_history_status",
+        lambda *, out_path, rows: None,
+    )
+
+    rust_normalizer_sidecar._upsert_market_outcomes(
+        store=cast(DuckDbIngestStore, _FakeConnectionStore()),
+        out_path=tmp_path / "outcomes.json",
+    )
+
+    assert captured_limits == [7]
+
+
 def test_cadence_sleep_subtracts_cycle_elapsed_time() -> None:
     assert _cadence_sleep_seconds(
         cycle_started=10.0,

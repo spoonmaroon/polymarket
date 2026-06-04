@@ -89,6 +89,8 @@ pub struct RuntimeOutcomeRow {
     pub market: String,
     pub market_id: String,
     #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub market_slug: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
     pub asset: Option<String>,
     #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
     pub start_ts: Option<String>,
@@ -409,7 +411,10 @@ mod tests {
 
         assert_eq!(outcomes.rows[0].computed_winner.as_deref(), None);
         assert_eq!(outcomes.rows[0].official_winner.as_deref(), Some("UP"));
-        assert_eq!(outcomes.rows[0].winning_token_id.as_deref(), Some("up-token"));
+        assert_eq!(
+            outcomes.rows[0].winning_token_id.as_deref(),
+            Some("up-token")
+        );
         assert_eq!(outcomes.rows[0].official_resolution_status, "resolved");
     }
 }

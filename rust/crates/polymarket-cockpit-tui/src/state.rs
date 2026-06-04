@@ -547,6 +547,7 @@ mod tests {
                 .map(|(index, market)| RuntimeOutcomeRow {
                     market: market.to_string(),
                     market_id: format!("market-{index}"),
+                    market_slug: Some(format!("market-{index}")),
                     asset: Some("BTC".to_string()),
                     start_ts: None,
                     expiry_ts: Some("2026-06-03T21:25:00Z".to_string()),

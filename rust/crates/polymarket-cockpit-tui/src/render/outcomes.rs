@@ -113,7 +113,11 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     frame.render_widget(table, area);
 }
 
-fn visible_outcome_start(count: usize, selected_index: Option<usize>, visible_rows: usize) -> usize {
+fn visible_outcome_start(
+    count: usize,
+    selected_index: Option<usize>,
+    visible_rows: usize,
+) -> usize {
     if count <= visible_rows {
         return 0;
     }
@@ -208,6 +212,7 @@ mod tests {
                 rows: vec![RuntimeOutcomeRow {
                     market: "BTC 5m".to_string(),
                     market_id: "btc-updown-5m-1780521900".to_string(),
+                    market_slug: Some("btc-updown-5m-1780521900".to_string()),
                     asset: Some("BTC".to_string()),
                     start_ts: None,
                     expiry_ts: Some("2026-06-03T21:25:00Z".to_string()),
@@ -234,6 +239,7 @@ mod tests {
                     .map(|(index, market)| RuntimeOutcomeRow {
                         market: market.to_string(),
                         market_id: format!("market-{index}"),
+                        market_slug: Some(format!("market-{index}")),
                         asset: Some("BTC".to_string()),
                         start_ts: None,
                         expiry_ts: Some("2026-06-03T21:25:00Z".to_string()),

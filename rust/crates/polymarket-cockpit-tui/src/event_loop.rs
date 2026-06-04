@@ -546,6 +546,7 @@ mod tests {
             rows: vec![RuntimeOutcomeRow {
                 market: "BTC 5m".to_string(),
                 market_id: "btc-updown-5m-1780521900".to_string(),
+                market_slug: Some("btc-updown-5m-1780521900".to_string()),
                 asset: Some("BTC".to_string()),
                 start_ts: None,
                 expiry_ts: Some("2026-06-03T21:25:00Z".to_string()),
@@ -835,6 +836,7 @@ mod tests {
                     RuntimeOutcomeRow {
                         market: "BTC 5m".to_string(),
                         market_id: "btc-updown-5m-1780521900".to_string(),
+                        market_slug: Some("btc-updown-5m-1780521900".to_string()),
                         asset: Some("BTC".to_string()),
                         start_ts: None,
                         expiry_ts: Some("2026-06-03T21:25:00Z".to_string()),
@@ -847,6 +849,7 @@ mod tests {
                     RuntimeOutcomeRow {
                         market: "ETH 5m".to_string(),
                         market_id: "eth-updown-5m-1780521900".to_string(),
+                        market_slug: Some("eth-updown-5m-1780521900".to_string()),
                         asset: Some("ETH".to_string()),
                         start_ts: None,
                         expiry_ts: Some("2026-06-03T21:25:00Z".to_string()),

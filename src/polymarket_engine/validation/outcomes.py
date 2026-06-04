@@ -132,6 +132,7 @@ def upsert_official_market_outcomes(
     asof_ts: datetime,
     market_payload_source: MarketPayloadSource | None = None,
     max_markets: int | None = None,
+    pending_sweep_limit: int | None = None,
 ) -> int:
     if max_markets is not None and max_markets <= 0:
         return 0
@@ -144,8 +145,13 @@ def upsert_official_market_outcomes(
         key=_market_group_expiry_ts,
         reverse=True,
     )
-    if max_markets is not None:
-        market_groups = market_groups[:max_markets]
+    market_groups = _selected_market_groups(
+        market_groups=market_groups,
+        store=store,
+        asof_ts=asof_ts,
+        max_markets=max_markets,
+        pending_sweep_limit=pending_sweep_limit,
+    )
     for market_rows in market_groups:
         up = market_rows.get("UP")
         down = market_rows.get("DOWN")
@@ -529,6 +535,70 @@ def _market_group_expiry_ts(rows: dict[str, _ContractRow]) -> datetime:
     if not expiries:
         return datetime.min.replace(tzinfo=timezone.utc)
     return max(expiries)
+
+
+def _selected_market_groups(
+    *,
+    market_groups: list[dict[str, _ContractRow]],
+    store: DuckDbIngestStore,
+    asof_ts: datetime,
+    max_markets: int | None,
+    pending_sweep_limit: int | None,
+) -> list[dict[str, _ContractRow]]:
+    if max_markets is None:
+        return market_groups
+    selected_by_market_id: dict[str, dict[str, _ContractRow]] = {}
+    for rows in market_groups[:max_markets]:
+        market_id = _market_group_id(rows)
+        if market_id is not None:
+            selected_by_market_id[market_id] = rows
+
+    pending_ids = _pending_official_market_ids(
+        store=store,
+        asof_ts=asof_ts,
+        limit=pending_sweep_limit,
+    )
+    if not pending_ids:
+        return list(selected_by_market_id.values())
+
+    for rows in reversed(market_groups):
+        market_id = _market_group_id(rows)
+        if market_id in pending_ids:
+            selected_by_market_id[market_id] = rows
+    return list(selected_by_market_id.values())
+
+
+def _market_group_id(rows: dict[str, _ContractRow]) -> str | None:
+    first = next(iter(rows.values()), None)
+    return first.market_id if first is not None else None
+
+
+def _pending_official_market_ids(
+    *,
+    store: DuckDbIngestStore,
+    asof_ts: datetime,
+    limit: int | None,
+) -> set[str]:
+    if limit is not None and limit <= 0:
+        return set()
+    limit_clause = "" if limit is None else " limit ?"
+    params: list[object] = [asof_ts]
+    if limit is not None:
+        params.append(limit)
+    with store._connection() as conn:
+        rows = conn.execute(
+            """
+            select market_id
+            from validation.market_outcome_history
+            where expiry_ts <= ?
+              and official_winner is null
+              and official_resolution_status = 'pending'
+            order by expiry_ts asc, asset, interval, market_id
+            """
+            + limit_clause,
+            params,
+        ).fetchall()
+    return {str(row[0]) for row in rows}
 
 
 def _official_fields(store: DuckDbIngestStore, *, market_id: str) -> dict[str, Any]:

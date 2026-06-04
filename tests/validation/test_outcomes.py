@@ -265,6 +265,69 @@ def test_official_outcome_refresh_can_be_limited_to_newest_markets(
     assert fetch_outcome(store.db_path, newest_market_id)["official_winner"] == "UP"
 
 
+def test_official_outcome_sweeps_stale_pending_market_outside_newest_limit(
+    tmp_path: Path,
+) -> None:
+    store = seeded_store_with_btc_market(
+        tmp_path,
+        start_price=None,
+        end_price=None,
+    )
+    stale = UTC_START - timedelta(minutes=10)
+    middle = UTC_START - timedelta(minutes=5)
+    newest = UTC_START + timedelta(minutes=5)
+    store.upsert_contract_specs(
+        (
+            _contract_at("stale", stale, "UP", "stale-up-token", ">="),
+            _contract_at("stale", stale, "DOWN", "stale-down-token", "<"),
+            _contract_at("middle", middle, "UP", "middle-up-token", ">="),
+            _contract_at("middle", middle, "DOWN", "middle-down-token", "<"),
+            _contract_at("newest", newest, "UP", "newest-up-token", ">="),
+            _contract_at("newest", newest, "DOWN", "newest-down-token", "<"),
+        )
+    )
+    asof_ts = newest + timedelta(minutes=5, seconds=1)
+    stale_market_id = f"stale-updown-5m-{int((stale + timedelta(minutes=5)).timestamp())}"
+    upsert_official_market_outcomes(
+        store=store,
+        asof_ts=asof_ts,
+        market_payload_source=lambda _condition_id: None,
+    )
+    assert fetch_outcome(store.db_path, stale_market_id)["official_resolution_status"] == "pending"
+    requested_condition_ids: list[str] = []
+
+    def payload_source(condition_id: str) -> dict[str, object] | None:
+        requested_condition_ids.append(condition_id)
+        if condition_id != "0xstale":
+            return None
+        return {
+            "closed": True,
+            "tokens": [
+                {
+                    "token_id": "stale-up-token",
+                    "outcome": "Up",
+                    "winner": True,
+                },
+                {
+                    "token_id": "stale-down-token",
+                    "outcome": "Down",
+                    "winner": False,
+                },
+            ],
+        }
+
+    upsert_official_market_outcomes(
+        store=store,
+        asof_ts=asof_ts,
+        market_payload_source=payload_source,
+        max_markets=1,
+        pending_sweep_limit=10,
+    )
+
+    assert "0xstale" in requested_condition_ids
+    assert fetch_outcome(store.db_path, stale_market_id)["official_winner"] == "UP"
+
+
 def seeded_store_with_btc_market(
     tmp_path: Path,
     *,

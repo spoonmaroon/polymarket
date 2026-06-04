@@ -40,8 +40,12 @@ PROBABILITY_MAX_STATE_AGE_SECONDS = 600.0
 OUTCOME_OUTPUT_LIMIT = 20
 OUTCOME_REFRESH_INTERVAL_SECONDS = 30.0
 OUTCOME_REFRESH_MARKET_LIMIT = 4
+OUTCOME_PENDING_SWEEP_LIMIT = 20
 OFFICIAL_OUTCOME_SOURCE_ENV = "POLYMARKET_OFFICIAL_OUTCOME_SOURCE"
 OFFICIAL_OUTCOME_REFRESH_LIMIT_ENV = "POLYMARKET_OFFICIAL_OUTCOME_REFRESH_LIMIT"
+OFFICIAL_OUTCOME_PENDING_SWEEP_LIMIT_ENV = (
+    "POLYMARKET_OFFICIAL_OUTCOME_PENDING_SWEEP_LIMIT"
+)
 
 
 @dataclass(frozen=True)
@@ -759,6 +763,7 @@ def _upsert_market_outcomes(*, store: DuckDbIngestStore, out_path: Path) -> int:
         asof_ts=datetime.now(timezone.utc),
         market_payload_source=_official_outcome_payload_source_from_env(),
         max_markets=_official_outcome_refresh_limit_from_env(),
+        pending_sweep_limit=_official_outcome_pending_sweep_limit_from_env(),
     )
     with store._connection() as conn:
         rows = latest_market_outcome_rows_from_connection(
@@ -786,6 +791,14 @@ def _official_outcome_refresh_limit_from_env() -> int | None:
     raw_limit = os.environ.get(OFFICIAL_OUTCOME_REFRESH_LIMIT_ENV)
     if raw_limit is None or raw_limit.strip() == "":
         return OUTCOME_REFRESH_MARKET_LIMIT
+    limit = int(raw_limit)
+    return limit if limit > 0 else None
+
+
+def _official_outcome_pending_sweep_limit_from_env() -> int | None:
+    raw_limit = os.environ.get(OFFICIAL_OUTCOME_PENDING_SWEEP_LIMIT_ENV)
+    if raw_limit is None or raw_limit.strip() == "":
+        return OUTCOME_PENDING_SWEEP_LIMIT
     limit = int(raw_limit)
     return limit if limit > 0 else None
 
