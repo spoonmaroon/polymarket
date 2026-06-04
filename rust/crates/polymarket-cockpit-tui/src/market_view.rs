@@ -38,7 +38,8 @@ pub fn market_groups(orderbooks: &[RuntimeOrderbookRow]) -> Vec<MarketGroup<'_>>
             .unwrap_or(orderbook.contract_id.as_str())
             .to_string();
         let expiry_ts = expiry_ts(orderbook);
-        let start_ts = expiry_ts.map(|ts| ts - Duration::minutes(5));
+        let start_ts =
+            start_ts(orderbook).or_else(|| expiry_ts.map(|ts| ts - Duration::minutes(5)));
         let interval = slug_parts(orderbook.market_slug.as_deref())
             .map(|parts| parts.interval)
             .unwrap_or_else(|| "5m".to_string());
@@ -136,8 +137,21 @@ fn market_group_sort_key(group: &MarketGroup<'_>) -> (u8, i64) {
 }
 
 pub fn expiry_ts(orderbook: &RuntimeOrderbookRow) -> Option<DateTime<Utc>> {
+    if let Some(expiry_ts) = parse_utc_ts(orderbook.expiry_ts.as_deref()) {
+        return Some(expiry_ts);
+    }
     let epoch = slug_parts(orderbook.market_slug.as_deref())?.expiry_epoch;
     Utc.timestamp_opt(epoch, 0).single()
+}
+
+fn start_ts(orderbook: &RuntimeOrderbookRow) -> Option<DateTime<Utc>> {
+    parse_utc_ts(orderbook.start_ts.as_deref())
+}
+
+fn parse_utc_ts(value: Option<&str>) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(value?)
+        .ok()
+        .map(|ts| ts.with_timezone(&Utc))
 }
 
 #[derive(Debug)]
@@ -200,6 +214,19 @@ mod tests {
         assert_eq!(groups[2].market_slug, "eth-updown-5m-1780521900");
     }
 
+    #[test]
+    fn market_groups_use_runtime_expiry_when_slug_epoch_is_start_time() {
+        let mut book = orderbook("BTC", "UP", "btc-updown-5m-1780556100", "btc-token");
+        book.start_ts = Some("2026-06-04T06:55:00Z".to_string());
+        book.expiry_ts = Some("2026-06-04T07:00:00Z".to_string());
+
+        let books = [book];
+        let groups = market_groups(&books);
+
+        assert_eq!(groups[0].start_ts.unwrap().timestamp(), 1_780_556_100);
+        assert_eq!(groups[0].expiry_ts.unwrap().timestamp(), 1_780_556_400);
+    }
+
     fn orderbook(
         asset: &str,
         side: &str,
@@ -216,6 +243,8 @@ mod tests {
             side: Some(side.to_string()),
             event_ts: None,
             observed_ts: Some("2026-06-03T21:22:15Z".to_string()),
+            start_ts: None,
+            expiry_ts: None,
             best_bid: None,
             best_ask: None,
             spread: None,

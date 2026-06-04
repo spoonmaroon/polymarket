@@ -151,6 +151,10 @@ pub struct RuntimeOrderbookRow {
     #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
     pub observed_ts: Option<String>,
     #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub start_ts: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub expiry_ts: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
     pub best_bid: Option<String>,
     #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
     pub best_ask: Option<String>,

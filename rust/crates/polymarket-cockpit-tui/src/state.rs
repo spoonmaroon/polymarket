@@ -526,6 +526,8 @@ mod tests {
             side: Some(side.to_string()),
             event_ts: None,
             observed_ts: Some(observed_ts.to_string()),
+            start_ts: None,
+            expiry_ts: None,
             best_bid: None,
             best_ask: None,
             spread: None,
