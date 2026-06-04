@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -9,6 +10,8 @@ import duckdb
 from polymarket_engine.domain.contracts import ContractSpec
 from polymarket_engine.domain.market_state import PriceObservation
 from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
+from polymarket_engine.validation.outcomes import OUTCOME_HISTORY_SCHEMA_VERSION
+from polymarket_engine.validation.outcomes import backfill_outcome_history
 from polymarket_engine.validation.outcomes import official_resolution_from_polymarket_market
 from polymarket_engine.validation.outcomes import latest_market_outcome_rows
 from polymarket_engine.validation.outcomes import upsert_official_market_outcomes
@@ -266,6 +269,58 @@ def test_latest_market_outcome_rows_reads_history_read_only(tmp_path: Path) -> N
     assert rows[0]["computed_winner"] is None
     assert rows[0]["official_winner"] == "DOWN"
     assert rows[0]["winning_token_id"] == "down-token"
+
+
+def test_backfill_outcome_history_dry_run_missing_db_does_not_create_files(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "missing" / "outcomes.duckdb"
+    outcomes_path = tmp_path / "live" / "outcomes.json"
+
+    report = backfill_outcome_history(
+        duckdb_path=db_path,
+        outcomes_path=outcomes_path,
+        asof_ts=UTC_EXPIRY_PLUS_ONE,
+        write=False,
+    )
+
+    assert report["ok"] is False
+    assert report["dry_run"] is True
+    assert report["state"] == "MISSING"
+    assert report["rows_written"] == 0
+    assert db_path.exists() is False
+    assert outcomes_path.exists() is False
+
+
+def test_backfill_outcome_history_write_mode_rewrites_status_file(
+    tmp_path: Path,
+) -> None:
+    store = seeded_store_with_btc_market(
+        tmp_path,
+        start_price=65_000.0,
+        end_price=65_100.0,
+    )
+    outcomes_path = tmp_path / "live" / "outcomes.json"
+
+    report = backfill_outcome_history(
+        duckdb_path=store.db_path,
+        outcomes_path=outcomes_path,
+        asof_ts=UTC_EXPIRY_PLUS_ONE,
+        limit=1,
+        write=True,
+        market_payload_source=lambda _condition_id: _polymarket_market_payload(
+            winning_token_id="up-token"
+        ),
+    )
+
+    assert report["ok"] is True
+    assert report["dry_run"] is False
+    assert report["rows_written"] == 1
+    payload = json.loads(outcomes_path.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == OUTCOME_HISTORY_SCHEMA_VERSION
+    assert payload["ok"] is True
+    assert payload["rows"][0]["market_id"] == "btc-updown-5m-1780502400"
+    assert payload["rows"][0]["official_winner"] == "UP"
 
 
 def test_official_outcome_does_not_label_from_chainlink_prices(

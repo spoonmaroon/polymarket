@@ -289,14 +289,44 @@ def backfill_outcome_history(
     asof_ts = _to_utc(asof_ts or datetime.now(timezone.utc))
     expiry_start_ts = _parse_utc_date_start(start_date) if start_date is not None else None
     expiry_end_ts = _parse_utc_next_day_start(end_date) if end_date is not None else None
+    if not write and not duckdb_path.exists():
+        return _outcome_backfill_error_report(
+            state="MISSING",
+            error=f"{duckdb_path} missing",
+            asof_ts=asof_ts,
+            start_date=start_date,
+            end_date=end_date,
+            limit=limit,
+            dry_run=True,
+        )
     store = DuckDbIngestStore(duckdb_path)
-    store.apply_schema()
-    before = _outcome_backfill_counts(
-        store=store,
-        asof_ts=asof_ts,
-        expiry_start_ts=expiry_start_ts,
-        expiry_end_ts=expiry_end_ts,
-    )
+    if write:
+        store.apply_schema()
+        before = _outcome_backfill_counts(
+            store=store,
+            asof_ts=asof_ts,
+            expiry_start_ts=expiry_start_ts,
+            expiry_end_ts=expiry_end_ts,
+        )
+    else:
+        try:
+            with _connect_read_only_with_retry(duckdb_path, lock_retry_seconds=2.0) as conn:
+                before = _outcome_backfill_counts_from_connection(
+                    conn=conn,
+                    asof_ts=asof_ts,
+                    expiry_start_ts=expiry_start_ts,
+                    expiry_end_ts=expiry_end_ts,
+                )
+        except (duckdb.Error, OSError, ValueError) as exc:
+            return _outcome_backfill_error_report(
+                state="INVALID",
+                error=f"{type(exc).__name__}: {exc}",
+                asof_ts=asof_ts,
+                start_date=start_date,
+                end_date=end_date,
+                limit=limit,
+                dry_run=True,
+            )
     rows_written = 0
     if write:
         rows_written = upsert_official_market_outcomes(
@@ -309,12 +339,14 @@ def backfill_outcome_history(
         )
         rows = latest_market_outcome_rows(duckdb_path=duckdb_path, limit=5000)
         write_outcome_history_status(out_path=outcomes_path, rows=rows)
-    after = _outcome_backfill_counts(
-        store=store,
-        asof_ts=asof_ts,
-        expiry_start_ts=expiry_start_ts,
-        expiry_end_ts=expiry_end_ts,
-    )
+        after = _outcome_backfill_counts(
+            store=store,
+            asof_ts=asof_ts,
+            expiry_start_ts=expiry_start_ts,
+            expiry_end_ts=expiry_end_ts,
+        )
+    else:
+        after = before
     return {
         "ok": True,
         "dry_run": not write,
@@ -328,6 +360,34 @@ def backfill_outcome_history(
         "missing_k_after": after["missing_k"],
         "pending_official_before": before["pending_official"],
         "pending_official_after": after["pending_official"],
+    }
+
+
+def _outcome_backfill_error_report(
+    *,
+    state: str,
+    error: str,
+    asof_ts: datetime,
+    start_date: str | None,
+    end_date: str | None,
+    limit: int | None,
+    dry_run: bool,
+) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "state": state,
+        "error": error,
+        "dry_run": dry_run,
+        "asof_ts": asof_ts.isoformat(),
+        "start_date": start_date,
+        "end_date": end_date,
+        "limit": limit,
+        "markets_scanned": 0,
+        "rows_written": 0,
+        "missing_k_before": 0,
+        "missing_k_after": 0,
+        "pending_official_before": 0,
+        "pending_official_after": 0,
     }
 
 
@@ -640,39 +700,7 @@ def _outcome_backfill_counts(
         filters.append("expiry_ts < ?")
         params.append(expiry_end_ts)
     with store._connection() as conn:
-        row = conn.execute(
-            f"""
-            with markets as (
-                select market_id, max(expiry_ts) as expiry_ts
-                from core.contracts
-                where {" and ".join(filters)}
-                group by market_id
-            )
-            select
-                count(*) as markets_scanned,
-                sum(
-                    case
-                        when history.market_id is null
-                          or history.threshold_price is null
-                        then 1
-                        else 0
-                    end
-                ) as missing_k,
-                sum(
-                    case
-                        when history.market_id is null
-                          or history.official_resolution_status = 'pending'
-                          or history.official_winner is null
-                        then 1
-                        else 0
-                    end
-                ) as pending_official
-            from markets
-            left join validation.market_outcome_history as history
-              on markets.market_id = history.market_id
-            """,
-            params,
-        ).fetchone()
+        row = _fetch_outcome_backfill_counts(conn=conn, filters=filters, params=params)
     if row is None:
         return {"markets_scanned": 0, "missing_k": 0, "pending_official": 0}
     return {
@@ -680,6 +708,72 @@ def _outcome_backfill_counts(
         "missing_k": int(row[1] or 0),
         "pending_official": int(row[2] or 0),
     }
+
+
+def _outcome_backfill_counts_from_connection(
+    *,
+    conn: duckdb.DuckDBPyConnection,
+    asof_ts: datetime,
+    expiry_start_ts: datetime | None,
+    expiry_end_ts: datetime | None,
+) -> dict[str, int]:
+    filters = ["expiry_ts <= ?"]
+    params: list[object] = [asof_ts]
+    if expiry_start_ts is not None:
+        filters.append("expiry_ts >= ?")
+        params.append(expiry_start_ts)
+    if expiry_end_ts is not None:
+        filters.append("expiry_ts < ?")
+        params.append(expiry_end_ts)
+    row = _fetch_outcome_backfill_counts(conn=conn, filters=filters, params=params)
+    if row is None:
+        return {"markets_scanned": 0, "missing_k": 0, "pending_official": 0}
+    return {
+        "markets_scanned": int(row[0] or 0),
+        "missing_k": int(row[1] or 0),
+        "pending_official": int(row[2] or 0),
+    }
+
+
+def _fetch_outcome_backfill_counts(
+    *,
+    conn: duckdb.DuckDBPyConnection,
+    filters: list[str],
+    params: list[object],
+) -> tuple[Any, ...] | None:
+    return conn.execute(
+        f"""
+        with markets as (
+            select market_id, max(expiry_ts) as expiry_ts
+            from core.contracts
+            where {" and ".join(filters)}
+            group by market_id
+        )
+        select
+            count(*) as markets_scanned,
+            sum(
+                case
+                    when history.market_id is null
+                      or history.threshold_price is null
+                    then 1
+                    else 0
+                end
+            ) as missing_k,
+            sum(
+                case
+                    when history.market_id is null
+                      or history.official_resolution_status = 'pending'
+                      or history.official_winner is null
+                    then 1
+                    else 0
+                end
+            ) as pending_official
+        from markets
+        left join validation.market_outcome_history as history
+          on markets.market_id = history.market_id
+        """,
+        params,
+    ).fetchone()
 
 
 def _group_by_market(
