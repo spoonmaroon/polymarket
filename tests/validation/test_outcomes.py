@@ -135,6 +135,47 @@ def test_official_outcome_records_chainlink_threshold_without_computing_winner(
     assert row["official_winner"] == "UP"
 
 
+def test_official_outcome_preserves_existing_threshold_when_later_price_exists(
+    tmp_path: Path,
+) -> None:
+    store = seeded_store_with_btc_market(
+        tmp_path,
+        start_price=65_000.0,
+        end_price=65_100.0,
+    )
+    upsert_official_market_outcomes(
+        store=store,
+        asof_ts=UTC_EXPIRY_PLUS_ONE,
+        market_payload_source=lambda _condition_id: _polymarket_market_payload(
+            winning_token_id="up-token"
+        ),
+    )
+    store.insert_price_ticks(
+        (
+            PriceObservation(
+                source_key="polymarket_rtds_chainlink",
+                symbol="BTC/USD",
+                event_ts=UTC_START,
+                observed_ts=UTC_START + timedelta(seconds=1),
+                price=65_050.0,
+            ),
+        )
+    )
+
+    upsert_official_market_outcomes(
+        store=store,
+        asof_ts=UTC_EXPIRY_PLUS_ONE,
+        market_payload_source=lambda _condition_id: _polymarket_market_payload(
+            winning_token_id="up-token"
+        ),
+    )
+
+    row = fetch_outcome(store.db_path, "btc-updown-5m-1780502400")
+    assert row["threshold_price"] == 65_000.0
+    assert row["threshold_event_ts"] == UTC_START
+    assert row["threshold_observed_ts"] == UTC_START
+
+
 def test_official_outcome_leaves_threshold_null_when_chainlink_start_reference_missing(
     tmp_path: Path,
 ) -> None:
@@ -319,6 +360,35 @@ def test_official_outcome_refresh_can_be_limited_to_newest_markets(
     assert fetch_outcome(store.db_path, newest_market_id)["official_winner"] == "UP"
 
 
+def test_upsert_official_market_outcomes_filters_expiry_range(tmp_path: Path) -> None:
+    store = seeded_store_with_btc_market(
+        tmp_path,
+        start_price=None,
+        end_price=None,
+    )
+    later_start = UTC_START + timedelta(minutes=5)
+    store.upsert_contract_specs(
+        (
+            _contract_at("later", later_start, "UP", "later-up-token", ">="),
+            _contract_at("later", later_start, "DOWN", "later-down-token", "<"),
+        )
+    )
+    later_expiry = later_start + timedelta(minutes=5)
+
+    written = upsert_official_market_outcomes(
+        store=store,
+        asof_ts=later_expiry + timedelta(seconds=1),
+        market_payload_source=lambda _condition_id: None,
+        expiry_start_ts=later_expiry,
+        expiry_end_ts=later_expiry + timedelta(minutes=5),
+    )
+
+    later_market_id = f"later-updown-5m-{int(later_expiry.timestamp())}"
+    assert written == 1
+    assert fetch_optional_outcome(store.db_path, "btc-updown-5m-1780502400") is None
+    assert fetch_outcome(store.db_path, later_market_id)["official_resolution_status"] == "pending"
+
+
 def test_official_outcome_sweeps_stale_pending_market_outside_newest_limit(
     tmp_path: Path,
 ) -> None:
@@ -444,6 +514,12 @@ def seeded_store_with_btc_market(
 
 
 def fetch_outcome(db_path: Path, market_id: str) -> dict[str, object]:
+    row = fetch_optional_outcome(db_path, market_id)
+    assert row is not None
+    return row
+
+
+def fetch_optional_outcome(db_path: Path, market_id: str) -> dict[str, object] | None:
     with duckdb.connect(str(db_path), read_only=True) as conn:
         row = conn.execute(
             """
@@ -457,7 +533,8 @@ def fetch_outcome(db_path: Path, market_id: str) -> dict[str, object]:
             """,
             [market_id],
         ).fetchone()
-    assert row is not None
+    if row is None:
+        return None
     return {
         "market_id": row[0],
         "computed_winner": row[1],

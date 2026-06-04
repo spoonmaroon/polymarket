@@ -133,11 +133,20 @@ def upsert_official_market_outcomes(
     market_payload_source: MarketPayloadSource | None = None,
     max_markets: int | None = None,
     pending_sweep_limit: int | None = None,
+    expiry_start_ts: datetime | None = None,
+    expiry_end_ts: datetime | None = None,
 ) -> int:
     if max_markets is not None and max_markets <= 0:
         return 0
     asof_ts = _to_utc(asof_ts)
-    contract_rows = _expired_contract_rows(store=store, asof_ts=asof_ts)
+    expiry_start_ts = _to_utc(expiry_start_ts) if expiry_start_ts is not None else None
+    expiry_end_ts = _to_utc(expiry_end_ts) if expiry_end_ts is not None else None
+    contract_rows = _expired_contract_rows(
+        store=store,
+        asof_ts=asof_ts,
+        expiry_start_ts=expiry_start_ts,
+        expiry_end_ts=expiry_end_ts,
+    )
     records: list[MarketOutcomeRecord] = []
     payload_cache: dict[str, Mapping[str, Any] | None] = {}
     market_groups = sorted(
@@ -159,7 +168,7 @@ def upsert_official_market_outcomes(
             continue
         if up.expiry_ts > asof_ts:
             continue
-        existing = _official_fields(store=store, market_id=up.market_id)
+        existing = _existing_outcome_fields(store=store, market_id=up.market_id)
         payload = _market_payload_for_condition(
             condition_id=up.condition_id,
             market_payload_source=market_payload_source,
@@ -179,7 +188,7 @@ def upsert_official_market_outcomes(
             existing=existing,
             resolution=resolution,
         )
-        threshold = _chainlink_tick_at_or_before(
+        threshold = _preserved_threshold(existing) or _chainlink_tick_at_or_before(
             store=store,
             symbol=up.settlement_symbol,
             event_ts_lte=up.start_ts,
@@ -502,10 +511,20 @@ def _expired_contract_rows(
     *,
     store: DuckDbIngestStore,
     asof_ts: datetime,
+    expiry_start_ts: datetime | None = None,
+    expiry_end_ts: datetime | None = None,
 ) -> tuple[_ContractRow, ...]:
+    filters = ["expiry_ts <= ?"]
+    params: list[object] = [asof_ts]
+    if expiry_start_ts is not None:
+        filters.append("expiry_ts >= ?")
+        params.append(expiry_start_ts)
+    if expiry_end_ts is not None:
+        filters.append("expiry_ts < ?")
+        params.append(expiry_end_ts)
     with store._connection() as conn:
         rows = conn.execute(
-            """
+            f"""
             select
                 market_id,
                 condition_id,
@@ -520,10 +539,10 @@ def _expired_contract_rows(
                 settlement_symbol,
                 rule_hash
             from core.contracts
-            where expiry_ts <= ?
+            where {" and ".join(filters)}
             order by expiry_ts asc, asset, market_id, side
             """,
-            [asof_ts],
+            params,
         ).fetchall()
     return tuple(
         _ContractRow(
@@ -625,12 +644,14 @@ def _pending_official_market_ids(
     return {str(row[0]) for row in rows}
 
 
-def _official_fields(store: DuckDbIngestStore, *, market_id: str) -> dict[str, Any]:
+def _existing_outcome_fields(store: DuckDbIngestStore, *, market_id: str) -> dict[str, Any]:
     with store._connection() as conn:
         row = conn.execute(
             """
             select official_winner, winning_token_id, official_resolution_status,
-                   official_label_source, official_resolved_at::VARCHAR
+                   official_label_source, official_resolved_at::VARCHAR,
+                   threshold_price, threshold_event_ts::VARCHAR,
+                   threshold_observed_ts::VARCHAR
             from validation.market_outcome_history
             where market_id = ?
             """,
@@ -643,6 +664,9 @@ def _official_fields(store: DuckDbIngestStore, *, market_id: str) -> dict[str, A
             "official_resolution_status": "pending",
             "official_label_source": None,
             "official_resolved_at": None,
+            "threshold_price": None,
+            "threshold_event_ts": None,
+            "threshold_observed_ts": None,
         }
     return {
         "official_winner": row[0],
@@ -650,6 +674,23 @@ def _official_fields(store: DuckDbIngestStore, *, market_id: str) -> dict[str, A
         "official_resolution_status": row[2],
         "official_label_source": row[3],
         "official_resolved_at": _parse_optional_duckdb_ts(row[4]),
+        "threshold_price": row[5],
+        "threshold_event_ts": _parse_optional_duckdb_ts(row[6]),
+        "threshold_observed_ts": _parse_optional_duckdb_ts(row[7]),
+    }
+
+
+def _preserved_threshold(existing: dict[str, Any]) -> dict[str, Any] | None:
+    if (
+        existing["threshold_price"] is None
+        or existing["threshold_event_ts"] is None
+        or existing["threshold_observed_ts"] is None
+    ):
+        return None
+    return {
+        "price": existing["threshold_price"],
+        "event_ts": existing["threshold_event_ts"],
+        "observed_ts": existing["threshold_observed_ts"],
     }
 
 
