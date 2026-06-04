@@ -25,18 +25,24 @@ pub fn market_header_labels() -> [&'static str; 6] {
 }
 
 pub fn market_rows(app: &AppState) -> Vec<MarketDisplayRow> {
+    market_rows_for_visible_count(app, MARKET_VISIBLE_ROWS)
+}
+
+pub fn market_rows_for_visible_count(app: &AppState, visible_rows: usize) -> Vec<MarketDisplayRow> {
     let selected_index = app.effective_market_index();
+    let visible_rows = visible_rows.max(1);
 
     app.runtime_monitor
         .as_ref()
         .map(|monitor| {
             let display_rows = market_display_rows(&monitor.orderbooks, selected_index);
             let selected_display_index = display_rows.iter().position(|row| row.marker == ">");
-            let start = visible_market_start(display_rows.len(), selected_display_index);
+            let start =
+                visible_market_start(display_rows.len(), selected_display_index, visible_rows);
             display_rows
                 .into_iter()
                 .skip(start)
-                .take(MARKET_VISIBLE_ROWS)
+                .take(visible_rows)
                 .collect()
         })
         .unwrap_or_default()
@@ -78,16 +84,16 @@ fn market_display_rows(
     rows
 }
 
-fn visible_market_start(count: usize, selected_index: Option<usize>) -> usize {
-    if count <= MARKET_VISIBLE_ROWS {
+fn visible_market_start(count: usize, selected_index: Option<usize>, visible_rows: usize) -> usize {
+    if count <= visible_rows {
         return 0;
     }
 
     let selected_index = selected_index.unwrap_or_default().min(count - 1);
-    if selected_index < MARKET_VISIBLE_ROWS {
+    if selected_index < visible_rows {
         0
     } else {
-        selected_index + 1 - MARKET_VISIBLE_ROWS
+        selected_index + 1 - visible_rows
     }
 }
 
@@ -187,7 +193,8 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(13), Constraint::Min(3)])
         .areas(area);
-    let rows = market_rows(app)
+    let visible_rows = counts_area.height.saturating_sub(3).max(1) as usize;
+    let rows = market_rows_for_visible_count(app, visible_rows)
         .into_iter()
         .map(|row| {
             Row::new(vec![
@@ -238,7 +245,7 @@ mod tests {
         status::{RuntimeBookLevel, RuntimeMonitor, RuntimeOrderbookRow},
     };
 
-    use super::{market_header_labels, market_rows};
+    use super::{market_header_labels, market_rows, market_rows_for_visible_count};
 
     #[test]
     fn market_rows_show_contract_identity_and_top_of_book() {
@@ -465,6 +472,49 @@ mod tests {
         assert!(rows.len() <= 10);
         assert_eq!(rows.last().map(|row| row.marker.as_str()), Some(">"));
         assert_eq!(rows.last().map(|row| row.down.as_str()), Some("0.71/0.72"));
+    }
+
+    #[test]
+    fn market_rows_keep_selected_contract_visible_in_short_panels() {
+        let mut app = AppState {
+            runtime_monitor: Some(RuntimeMonitor {
+                generated_at: "2026-06-03T21:06:00Z".to_string(),
+                price_rows: Vec::new(),
+                orderbooks: (0..12)
+                    .map(|index| RuntimeOrderbookRow {
+                        venue: Some("polymarket".to_string()),
+                        source_key: Some("polymarket_rust_sdk".to_string()),
+                        market_slug: Some(format!("btc-updown-5m-1780522{index:03}")),
+                        contract_id: format!("btc-row-{index}"),
+                        token_id: Some(format!("btc-row-{index}-token")),
+                        asset: Some("BTC".to_string()),
+                        side: Some(if index % 2 == 0 { "UP" } else { "DOWN" }.to_string()),
+                        event_ts: None,
+                        observed_ts: Some(format!("2026-06-03T21:05:{index:02}Z")),
+                        best_bid: Some(format!("0.{index}1")),
+                        best_ask: Some(format!("0.{index}2")),
+                        spread: Some("0.01".to_string()),
+                        bid_size_top: None,
+                        ask_size_top: None,
+                        bids: Vec::new(),
+                        asks: Vec::new(),
+                    })
+                    .collect(),
+            }),
+            ..Default::default()
+        };
+        app.sync_market_selection();
+        app.select_previous_market();
+
+        let rows = market_rows_for_visible_count(&app, 4);
+
+        assert_eq!(app.selected_market_index(), Some(11));
+        assert_eq!(rows.len(), 4);
+        assert_eq!(rows.last().map(|row| row.marker.as_str()), Some(">"));
+        assert_eq!(
+            rows.last().map(|row| row.down.as_str()),
+            Some("0.111/0.112")
+        );
     }
 
     fn local_epoch_label(epoch_seconds: i64) -> String {

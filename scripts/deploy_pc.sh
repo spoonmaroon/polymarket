@@ -112,6 +112,7 @@ PC_BUNDLE=$(shell_quote "$PC_BUNDLE")
 PC_DATA_DIR=$(shell_quote "$PC_DATA_DIR")
 PC_DIST_DIR=$(shell_quote "$PC_DIST_DIR")
 PC_BIN_DIR=$(shell_quote "$PC_BIN_DIR")
+PC_WSL_DISTRO=$(shell_quote "$PC_WSL_DISTRO")
 PC_NORMALIZER_INTERVAL_SECONDS=$(shell_quote "$PC_NORMALIZER_INTERVAL_SECONDS")
 PC_REST_BACKUP_INTERVAL_MS=$(shell_quote "$PC_REST_BACKUP_INTERVAL_MS")
 PC_API_PORT=$(shell_quote "$PC_API_PORT")
@@ -179,6 +180,46 @@ docker load -i "\$COLLECTOR_TAR"
 docker load -i "\$NORMALIZER_TAR"
 install -m 755 "\$TUI_BIN" "\$PC_BIN_DIR/polymarket-cockpit-tui"
 
+{
+  printf '%s\n' '#!/usr/bin/env bash'
+  printf '%s\n' 'set -euo pipefail'
+  printf 'cd %q\n' "\$PC_REPO"
+  printf '%s\n' "echo 'Starting Polymarket runtime containers...'"
+  printf '%s\n' 'docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml up -d collector normalizer api >/dev/null 2>&1 || true'
+  printf '%s\n' "echo 'Waiting for runtime API and live market rows...'"
+  printf '%s\n' 'for _ in \$(seq 1 45); do'
+  printf '  if curl -fsS --max-time 2 http://127.0.0.1:%s/api/runtime/live?limit=8 2>/dev/null \\\n' "\$PC_API_PORT"
+  printf '%s\n' '    | python3 -c '\''import json,sys; p=json.load(sys.stdin); c=p.get("status",{}).get("counts",{}); sys.exit(0 if p.get("ok") and c.get("prices",0) >= 2 and c.get("orderbooks",0) > 0 else 1)'\'' >/dev/null 2>&1; then'
+  printf '%s\n' '    break'
+  printf '%s\n' '  fi'
+  printf '%s\n' '  sleep 1'
+  printf '%s\n' 'done'
+  printf 'exec %q --engine-api-url http://127.0.0.1:%s --poll-interval-ms 250\n' "\$PC_BIN_DIR/polymarket-cockpit-tui" "\$PC_API_PORT"
+} > "\$PC_BIN_DIR/open-polymarket-tui.sh"
+chmod 755 "\$PC_BIN_DIR/open-polymarket-tui.sh"
+
+WINDOWS_USER_DIR="/mnt/c/Users/ender"
+if [ -d "\$WINDOWS_USER_DIR" ]; then
+  cat > "\$WINDOWS_USER_DIR/open-polymarket-tui.cmd" <<CMD_LAUNCHER
+@echo off
+wt.exe -w 0 new-tab --title "Polymarket TUI" wsl.exe -d \$PC_WSL_DISTRO -- \$PC_BIN_DIR/open-polymarket-tui.sh
+CMD_LAUNCHER
+  POWERSHELL_SCRIPT="\$WINDOWS_USER_DIR/AppData/Local/Temp/polymarket-tui-shortcut.ps1"
+  cat > "\$POWERSHELL_SCRIPT" <<'PS1'
+\$shortcutPath = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Polymarket TUI.lnk'
+\$targetPath = Join-Path ([Environment]::GetFolderPath('UserProfile')) 'open-polymarket-tui.cmd'
+\$shell = New-Object -ComObject WScript.Shell
+\$shortcut = \$shell.CreateShortcut(\$shortcutPath)
+\$shortcut.TargetPath = \$targetPath
+\$shortcut.WorkingDirectory = [Environment]::GetFolderPath('UserProfile')
+\$shortcut.IconLocation = 'C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe,0'
+\$shortcut.WindowStyle = 1
+\$shortcut.Save()
+PS1
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -File "\$(wslpath -w "\$POWERSHELL_SCRIPT")" >/dev/null
+  rm -f "\$POWERSHELL_SCRIPT"
+fi
+
 POLYMARKET_DEPLOY_USE_PREBUILT=1 \\
 POLYMARKET_DEPLOY_REF="\$FULL_SHA" \\
 POLYMARKET_EXPECTED_DEPLOY_SHA="\$FULL_SHA" \\
@@ -238,5 +279,6 @@ PY
 
 docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml ps
 printf 'THEPC TUI installed %s\\n' "\$PC_BIN_DIR/polymarket-cockpit-tui"
+printf 'THEPC TUI launcher installed %s\\n' "\$PC_BIN_DIR/open-polymarket-tui.sh"
 printf 'THEPC deployed %s\\n' "\$FULL_SHA"
 EOF

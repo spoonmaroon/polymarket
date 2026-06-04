@@ -300,6 +300,22 @@ def test_pc_deploy_script_runs_prebuilt_deploy_gate_with_pc_cadence() -> None:
     assert "--expected-prewarm-windows 2" in script
 
 
+def test_pc_deploy_script_refreshes_tui_desktop_launcher() -> None:
+    script = (ROOT / "scripts" / "deploy_pc.sh").read_text(encoding="utf-8")
+
+    assert "open-polymarket-tui.sh" in script
+    assert "open-polymarket-tui.cmd" in script
+    assert "Polymarket TUI.lnk" in script
+    assert "CreateShortcut" in script
+    assert (
+        "docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml "
+        "up -d collector normalizer api"
+    ) in script
+    assert "--engine-api-url http://127.0.0.1:%s --poll-interval-ms 250" in script
+    assert '"\\$PC_API_PORT"' in script
+    assert "polymarket-runtime-api" not in script
+
+
 def test_deploy_script_supports_prebuilt_images_with_build_fallback() -> None:
     script = (ROOT / "scripts" / "deploy.sh").read_text(encoding="utf-8")
 
