@@ -188,8 +188,7 @@ install -m 755 "\$TUI_BIN" "\$PC_BIN_DIR/polymarket-cockpit-tui"
   printf '%s\n' 'docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml up -d collector normalizer api >/dev/null 2>&1 || true'
   printf '%s\n' "echo 'Waiting for runtime API and live market rows...'"
   printf '%s\n' 'for _ in \$(seq 1 45); do'
-  printf '  if curl -fsS --max-time 2 http://127.0.0.1:%s/api/runtime/live?limit=8 2>/dev/null \\\n' "\$PC_API_PORT"
-  printf '%s\n' '    | python3 -c '\''import json,sys; p=json.load(sys.stdin); c=p.get("status",{}).get("counts",{}); sys.exit(0 if p.get("ok") and c.get("prices",0) >= 2 and c.get("orderbooks",0) > 0 else 1)'\'' >/dev/null 2>&1; then'
+  printf '  if curl -fsS --max-time 2 http://127.0.0.1:%s/api/runtime/live?limit=8 2>/dev/null | python3 -c %q >/dev/null 2>&1; then\n' "\$PC_API_PORT" 'import json,sys; p=json.load(sys.stdin); c=p.get("status",{}).get("counts",{}); sys.exit(0 if p.get("ok") and c.get("prices",0) >= 2 and c.get("orderbooks",0) > 0 else 1)'
   printf '%s\n' '    break'
   printf '%s\n' '  fi'
   printf '%s\n' '  sleep 1'
@@ -220,15 +219,15 @@ PS1
   rm -f "\$POWERSHELL_SCRIPT"
 fi
 
-POLYMARKET_DEPLOY_USE_PREBUILT=1 \\
-POLYMARKET_DEPLOY_REF="\$FULL_SHA" \\
-POLYMARKET_EXPECTED_DEPLOY_SHA="\$FULL_SHA" \\
-POLYMARKET_COLLECTOR_IMAGE="\$COLLECTOR_IMAGE" \\
-POLYMARKET_NORMALIZER_IMAGE="\$NORMALIZER_IMAGE" \\
-POLYMARKET_DATA_DIR="\$PC_DATA_DIR" \\
-POLYMARKET_NORMALIZER_INTERVAL_SECONDS="\$PC_NORMALIZER_INTERVAL_SECONDS" \\
-POLYMARKET_REST_BACKUP_INTERVAL_MS="\$PC_REST_BACKUP_INTERVAL_MS" \\
-DEPLOY_FORCE=1 \\
+export POLYMARKET_DEPLOY_USE_PREBUILT=1
+export POLYMARKET_DEPLOY_REF="\$FULL_SHA"
+export POLYMARKET_EXPECTED_DEPLOY_SHA="\$FULL_SHA"
+export POLYMARKET_COLLECTOR_IMAGE="\$COLLECTOR_IMAGE"
+export POLYMARKET_NORMALIZER_IMAGE="\$NORMALIZER_IMAGE"
+export POLYMARKET_DATA_DIR="\$PC_DATA_DIR"
+export POLYMARKET_NORMALIZER_INTERVAL_SECONDS="\$PC_NORMALIZER_INTERVAL_SECONDS"
+export POLYMARKET_REST_BACKUP_INTERVAL_MS="\$PC_REST_BACKUP_INTERVAL_MS"
+export DEPLOY_FORCE=1
 ./scripts/deploy.sh
 
 python3 scripts/check_collector_status.py \\

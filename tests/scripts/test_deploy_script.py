@@ -283,7 +283,7 @@ def test_pc_deploy_script_runs_prebuilt_deploy_gate_with_pc_cadence() -> None:
 
     assert 'PC_NORMALIZER_INTERVAL_SECONDS="${PC_NORMALIZER_INTERVAL_SECONDS:-0.1}"' in script
     assert 'PC_REST_BACKUP_INTERVAL_MS="${PC_REST_BACKUP_INTERVAL_MS:-1000}"' in script
-    assert "POLYMARKET_DEPLOY_USE_PREBUILT=1" in script
+    assert "export POLYMARKET_DEPLOY_USE_PREBUILT=1" in script
     assert 'POLYMARKET_DEPLOY_REF="\\$FULL_SHA"' in script
     assert 'POLYMARKET_EXPECTED_DEPLOY_SHA="\\$FULL_SHA"' in script
     assert 'POLYMARKET_COLLECTOR_IMAGE="\\$COLLECTOR_IMAGE"' in script
@@ -311,8 +311,10 @@ def test_pc_deploy_script_refreshes_tui_desktop_launcher() -> None:
         "docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml "
         "up -d collector normalizer api"
     ) in script
+    assert "python3 -c %q" in script
     assert "--engine-api-url http://127.0.0.1:%s --poll-interval-ms 250" in script
     assert '"\\$PC_API_PORT"' in script
+    assert "\\\\n' \"\\$PC_API_PORT\"" not in script
     assert "polymarket-runtime-api" not in script
 
 
