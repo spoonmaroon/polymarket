@@ -121,6 +121,7 @@ def run_rust_normalizer_cycle(
     probability_status_path: Path | None = None,
     outcome_status_path: Path | None = None,
     include_next: bool = False,
+    compute_probabilities: bool = False,
     reprocess_all: bool = False,
     apply_schema: bool = True,
 ) -> RustNormalizerCycleResult:
@@ -139,6 +140,7 @@ def run_rust_normalizer_cycle(
             probability_status_path=probability_status_path,
             outcome_status_path=outcome_status_path,
             include_next=include_next,
+            compute_probabilities=compute_probabilities,
             reprocess_all=reprocess_all,
             apply_schema=apply_schema,
         )
@@ -157,6 +159,7 @@ def _run_rust_normalizer_cycle_with_store(
     status_mtime_ns: int | None = None,
     force_state_build: bool = True,
     refresh_outcomes: bool = True,
+    compute_probabilities: bool = False,
     state_read_cache: CurrentDecisionStateReadCache | None = None,
     probability_status_path: Path | None = None,
     outcome_status_path: Path | None = None,
@@ -208,10 +211,11 @@ def _run_rust_normalizer_cycle_with_store(
             contracts_upserted = state_result.contracts_upserted
             states_written = state_result.states_written
             unavailable = state_result.unavailable
-            probability_outputs_written = _compute_probability_outputs(
-                store=store,
-                out_path=probability_status_path,
-            )
+            if compute_probabilities:
+                probability_outputs_written = _compute_probability_outputs(
+                    store=store,
+                    out_path=probability_status_path,
+                )
     market_outcomes_written = (
         _upsert_market_outcomes(
             store=store,
@@ -251,6 +255,7 @@ def run_rust_normalizer_loop(
     outcome_status_path: Path | None = None,
     interval_seconds: float = 1.0,
     include_next: bool = False,
+    compute_probabilities: bool = False,
     reprocess_all: bool = False,
     max_cycles: int | None = None,
 ) -> None:
@@ -316,6 +321,7 @@ def run_rust_normalizer_loop(
                     probability_status_path=probability_status_path,
                     outcome_status_path=outcome_status_path,
                     include_next=include_next,
+                    compute_probabilities=compute_probabilities,
                     reprocess_all=reprocess_all,
                     apply_schema=False,
                     previous_status_mtime_ns=effective_previous_status_mtime_ns,
@@ -336,6 +342,7 @@ def run_rust_normalizer_loop(
                         probability_status_path=probability_status_path,
                         outcome_status_path=outcome_status_path,
                         include_next=include_next,
+                        compute_probabilities=compute_probabilities,
                         previous_status_mtime_ns=effective_previous_status_mtime_ns,
                         status_mtime_ns=status_mtime_ns,
                         write_health=True,
@@ -354,6 +361,7 @@ def run_rust_normalizer_loop(
                         probability_status_path=probability_status_path,
                         outcome_status_path=outcome_status_path,
                         include_next=include_next,
+                        compute_probabilities=compute_probabilities,
                         reprocess_all=reprocess_all,
                         apply_schema=False,
                         previous_status_mtime_ns=effective_previous_status_mtime_ns,
@@ -382,6 +390,7 @@ def run_rust_normalizer_loop(
                         probability_status_path=probability_status_path,
                         outcome_status_path=outcome_status_path,
                         include_next=include_next,
+                        compute_probabilities=compute_probabilities,
                         previous_status_mtime_ns=effective_previous_status_mtime_ns,
                         status_mtime_ns=status_mtime_ns,
                         write_health=write_health,
@@ -407,6 +416,7 @@ def run_rust_normalizer_loop(
                         probability_status_path=probability_status_path,
                         outcome_status_path=outcome_status_path,
                         include_next=include_next,
+                        compute_probabilities=compute_probabilities,
                         reprocess_all=reprocess_all,
                         previous_status_mtime_ns=effective_previous_status_mtime_ns,
                         status_mtime_ns=status_mtime_ns,
@@ -459,6 +469,7 @@ def _run_changed_rust_normalizer_cycle_with_store(
     price_state_cache: dict[tuple[str, str], tuple[object, ...]] | None = None,
     orderbook_state_cache: dict[tuple[str, str], tuple[object, ...]] | None = None,
     refresh_outcomes: bool = True,
+    compute_probabilities: bool = False,
     state_read_cache: CurrentDecisionStateReadCache | None = None,
     probability_status_path: Path | None = None,
     outcome_status_path: Path | None = None,
@@ -532,10 +543,11 @@ def _run_changed_rust_normalizer_cycle_with_store(
             contracts_upserted = state_result.contracts_upserted
             states_written = state_result.states_written
             unavailable = state_result.unavailable
-            probability_outputs_written = _compute_probability_outputs(
-                store=store,
-                out_path=probability_status_path,
-            )
+            if compute_probabilities:
+                probability_outputs_written = _compute_probability_outputs(
+                    store=store,
+                    out_path=probability_status_path,
+                )
     market_outcomes_written = (
         _upsert_market_outcomes(
             store=store,
@@ -581,6 +593,7 @@ def _run_idle_rust_normalizer_cycle_with_store(
     force_state_build: bool = False,
     write_health: bool = True,
     refresh_outcomes: bool = True,
+    compute_probabilities: bool = False,
     state_read_cache: CurrentDecisionStateReadCache | None = None,
     probability_status_path: Path | None = None,
     outcome_status_path: Path | None = None,
@@ -618,10 +631,11 @@ def _run_idle_rust_normalizer_cycle_with_store(
             contracts_upserted = state_result.contracts_upserted
             states_written = state_result.states_written
             unavailable = state_result.unavailable
-            probability_outputs_written = _compute_probability_outputs(
-                store=store,
-                out_path=probability_status_path,
-            )
+            if compute_probabilities:
+                probability_outputs_written = _compute_probability_outputs(
+                    store=store,
+                    out_path=probability_status_path,
+                )
     market_outcomes_written = (
         _upsert_market_outcomes(
             store=store,

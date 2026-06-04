@@ -113,6 +113,11 @@ because the Rust status file does not contain full venue rule text; do not
 synthesize rule text. `features.decision_snapshots remains empty until probability`
 because no probability model or decision policy exists yet.
 
+The normalizer sidecar does not compute probability outputs by default. Runtime
+probability generation is opt-in via `--enable-probabilities`; the current live
+collector/normalizer lane should stay pre-probability unless that flag is
+deliberately enabled for a separate validation run.
+
 ## Runtime API And Cockpit Display
 
 The cockpit should prefer `/api/runtime/live/stream`, which emits `event: live`

@@ -216,6 +216,10 @@ market books, cached probability outputs, and read-only outcome history. It must
 not place orders, deploy containers, rebuild images, write collector state,
 restart services, or access auth secrets.
 
+Cached probability outputs are display-only. The deployed normalizer sidecar
+does not pass `--enable-probabilities`, so live runtime on THEPC remains
+pre-probability unless an operator explicitly starts a separate opt-in run.
+
 Live data changes should appear through the runtime API polling path. TUI code,
 layout, or parser changes require a fresh THEPC deploy and reopening the
 desktop shortcut so the new binary is loaded.

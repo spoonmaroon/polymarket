@@ -39,6 +39,7 @@ def test_sidecar_cycle_normalizes_builds_states_and_writes_health(tmp_path: Path
         status_path=status_path,
         normalized_health_path=health_path,
         include_next=False,
+        compute_probabilities=True,
     )
 
     assert result.files == 2
@@ -64,6 +65,40 @@ def test_sidecar_cycle_normalizes_builds_states_and_writes_health(tmp_path: Path
         assert conn.execute("select count(*) from core.orderbook_snapshots").fetchone() == (2,)
         assert conn.execute("select count(*) from features.probability_outputs").fetchone() == (2,)
         assert conn.execute("select count(*) from features.asof_state_inputs").fetchone() == (2,)
+
+
+def test_sidecar_cycle_skips_probability_outputs_by_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_root = tmp_path / "raw"
+    db_path = tmp_path / "state.duckdb"
+    status_path = tmp_path / "live" / "status.json"
+    health_path = tmp_path / "live" / "normalized_health.json"
+    asof_ts = datetime.now(timezone.utc).replace(microsecond=0)
+    start_ts = asof_ts - timedelta(minutes=2)
+    _write_probability_ready_raw_tree(raw_root=raw_root, start_ts=start_ts, asof_ts=asof_ts)
+    _write_status(status_path, start_ts=start_ts, asof_ts=asof_ts)
+
+    def fail_compute(*_: object, **__: object) -> int:
+        raise AssertionError("normalizer should not compute probabilities by default")
+
+    monkeypatch.setattr(
+        rust_normalizer_sidecar,
+        "_compute_probability_outputs",
+        fail_compute,
+    )
+
+    result = run_rust_normalizer_cycle(
+        raw_root=raw_root,
+        db_path=db_path,
+        status_path=status_path,
+        normalized_health_path=health_path,
+        include_next=False,
+    )
+
+    assert result.states_written == 2
+    assert result.probability_outputs_written == 0
 
 
 def test_sidecar_cycle_writes_health_when_status_is_missing(tmp_path: Path) -> None:
