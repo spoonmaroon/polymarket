@@ -13,4 +13,4 @@ pub use decision::{
 pub use orderbook::{BookLevel, NormalizedOrderBook, OrderBookMeta};
 pub use price::{NormalizedPriceTick, PriceDisagreement};
 pub use probe::{LatencyMark, ProbeReport};
-pub use state::{FeedFreshness, WarmStateSnapshot};
+pub use state::{ContractTarget, FeedFreshness, WarmStateSnapshot};

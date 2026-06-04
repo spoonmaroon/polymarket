@@ -233,6 +233,21 @@ winner, winning token id, and status. Labels come from Polymarket CLOB market
 metadata where a known Up or Down token has `winner=true`; if the source is
 missing or ambiguous, the row stays pending.
 
+The Market tab `K` column is the read-only Chainlink start-reference target for
+the market window as surfaced by the Rust state-manager status payload. Current
+windows should show a numeric `K`; future windows can show `pending` until the
+start tick has been observed. The Market tab also keeps a bounded in-memory
+BTC/ETH price path panel with the active target label for each asset. This chart
+is display state only and is rebuilt from runtime price rows after reopening the
+TUI.
+
+Expired market rows stay visible for the normal handoff window, and can remain
+visible longer while a fresh pending outcome feed is actively tracking that
+market. Once the TUI first sees an official winner for that market, the row
+remains visible for 30 seconds so the Market tab can show the handoff, then it
+disappears and the Outcomes tab remains the history surface. A stale pending
+outcome feed must not pin an expired row forever.
+
 The normalizer publishes outcome history to
 `/var/lib/polymarket/live/outcomes.json`, and the API reads that file before any
 DuckDB fallback. This avoids read contention with the normalizer's live writer

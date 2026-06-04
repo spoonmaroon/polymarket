@@ -21,6 +21,7 @@ pub struct MarketDisplayRow {
     pub marker: String,
     pub expires: String,
     pub market: String,
+    pub k: String,
     pub up: String,
     pub down: String,
     pub spread: String,
@@ -28,11 +29,12 @@ pub struct MarketDisplayRow {
     pub outcome: String,
 }
 
-pub fn market_header_labels() -> [&'static str; 8] {
+pub fn market_header_labels() -> [&'static str; 9] {
     [
         "",
         "Expires",
         "Market",
+        "K",
         "UP bid/ask",
         "DOWN bid/ask",
         "Spread",
@@ -53,8 +55,9 @@ pub fn market_rows_for_visible_count(app: &AppState, visible_rows: usize) -> Vec
     app.runtime_monitor
         .as_ref()
         .map(|monitor| {
+            let groups = app.visible_market_groups();
             let display_rows = market_display_rows(
-                &monitor.orderbooks,
+                &groups,
                 app.runtime_outcomes.as_ref(),
                 selected_index,
                 &monitor.generated_at,
@@ -72,17 +75,14 @@ pub fn market_rows_for_visible_count(app: &AppState, visible_rows: usize) -> Vec
 }
 
 fn market_display_rows(
-    orderbooks: &[RuntimeOrderbookRow],
+    groups: &[market_view::MarketGroup<'_>],
     outcomes: Option<&RuntimeOutcomes>,
     selected_index: Option<usize>,
     generated_at: &str,
 ) -> Vec<MarketDisplayRow> {
     let mut rows = Vec::new();
     let mut last_asset: Option<String> = None;
-    for (index, group) in market_view::market_groups(orderbooks).iter().enumerate() {
-        if expired_beyond_handoff(group.expiry_ts, generated_at) {
-            continue;
-        }
+    for (index, group) in groups.iter().enumerate() {
         let asset = group.asset.clone();
         if last_asset.as_deref() != Some(asset.as_str()) {
             if last_asset.is_some() {
@@ -90,6 +90,7 @@ fn market_display_rows(
                     marker: " ".to_string(),
                     expires: String::new(),
                     market: String::new(),
+                    k: String::new(),
                     up: String::new(),
                     down: String::new(),
                     spread: String::new(),
@@ -101,6 +102,7 @@ fn market_display_rows(
                 marker: " ".to_string(),
                 expires: String::new(),
                 market: asset.clone(),
+                k: String::new(),
                 up: String::new(),
                 down: String::new(),
                 spread: String::new(),
@@ -118,6 +120,7 @@ fn market_display_rows(
             .to_string(),
             expires: local_expiry_timestamp(group.expiry_ts),
             market: short_market_label(&group.label),
+            k: market_k(group),
             up: top_quote(group.up),
             down: top_quote(group.down),
             spread: tight_spread(group.up, group.down),
@@ -176,6 +179,16 @@ fn tight_spread(up: Option<&RuntimeOrderbookRow>, down: Option<&RuntimeOrderbook
     }
 }
 
+fn market_k(group: &market_view::MarketGroup<'_>) -> String {
+    group
+        .up
+        .or(group.down)
+        .and_then(|row| row.threshold_price.as_deref())
+        .and_then(|price| positive_number(Some(price)))
+        .map(format_usd_number)
+        .unwrap_or_else(|| "pending".to_string())
+}
+
 fn positive_scalar(value: Option<&str>) -> Option<String> {
     let value = value?.trim();
     if value.is_empty() {
@@ -196,6 +209,32 @@ fn positive_number(value: Option<&str>) -> Option<f64> {
     if number > 0.0 { Some(number) } else { None }
 }
 
+fn format_usd_number(value: f64) -> String {
+    add_thousands_separators(&format!("{value:.2}"))
+}
+
+fn add_thousands_separators(value: &str) -> String {
+    let (whole, fraction) = value.split_once('.').unwrap_or((value, ""));
+    let (sign, digits) = whole
+        .strip_prefix('-')
+        .map_or(("", whole), |rest| ("-", rest));
+    let mut grouped = String::new();
+
+    for (index, character) in digits.chars().rev().enumerate() {
+        if index > 0 && index % 3 == 0 {
+            grouped.push(',');
+        }
+        grouped.push(character);
+    }
+
+    let whole = grouped.chars().rev().collect::<String>();
+    if fraction.is_empty() {
+        format!("{sign}{whole}")
+    } else {
+        format!("{sign}{whole}.{fraction}")
+    }
+}
+
 fn local_expiry_timestamp(expiry_ts: Option<DateTime<Utc>>) -> String {
     expiry_ts
         .map(|timestamp| {
@@ -214,20 +253,6 @@ fn short_market_label(label: &str) -> String {
     } else {
         label.to_string()
     }
-}
-
-fn expired_beyond_handoff(expiry_ts: Option<DateTime<Utc>>, generated_at: &str) -> bool {
-    let Some(expiry_ts) = expiry_ts else {
-        return false;
-    };
-    let Ok(generated_at) = DateTime::parse_from_rfc3339(generated_at) else {
-        return false;
-    };
-    let elapsed = generated_at
-        .with_timezone(&Utc)
-        .signed_duration_since(expiry_ts)
-        .num_seconds();
-    elapsed > 60
 }
 
 fn market_outcome_label(
@@ -323,6 +348,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
                 Cell::from(row.marker),
                 Cell::from(row.expires),
                 Cell::from(row.market),
+                Cell::from(row.k),
                 Cell::from(row.up),
                 Cell::from(row.down),
                 Cell::from(row.spread),
@@ -336,6 +362,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
             Cell::from(" "),
             Cell::from("-"),
             Cell::from("monitor pending"),
+            Cell::from("pending"),
             Cell::from("-"),
             Cell::from("-"),
             Cell::from("-"),
@@ -351,6 +378,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
             Constraint::Length(2),
             Constraint::Length(18),
             Constraint::Length(10),
+            Constraint::Length(11),
             Constraint::Length(13),
             Constraint::Length(13),
             Constraint::Length(7),
@@ -397,6 +425,11 @@ mod tests {
                     observed_ts: Some("2026-06-03T20:43:20.616043736Z".to_string()),
                     start_ts: None,
                     expiry_ts: None,
+                    threshold_price: None,
+                    threshold_event_ts: None,
+                    threshold_observed_ts: None,
+                    settlement_price: None,
+                    settlement_event_ts: None,
                     best_bid: Some("0.86".to_string()),
                     best_ask: Some("0.87".to_string()),
                     spread: Some("0.01".to_string()),
@@ -446,6 +479,11 @@ mod tests {
                     observed_ts: Some("2026-06-03T20:43:20.616043736Z".to_string()),
                     start_ts: None,
                     expiry_ts: None,
+                    threshold_price: None,
+                    threshold_event_ts: None,
+                    threshold_observed_ts: None,
+                    settlement_price: None,
+                    settlement_event_ts: None,
                     best_bid: Some("0.44".to_string()),
                     best_ask: None,
                     spread: None,
@@ -485,6 +523,11 @@ mod tests {
                     observed_ts: Some("2026-06-03T21:05:58Z".to_string()),
                     start_ts: None,
                     expiry_ts: None,
+                    threshold_price: None,
+                    threshold_event_ts: None,
+                    threshold_observed_ts: None,
+                    settlement_price: None,
+                    settlement_event_ts: None,
                     best_bid: Some("0".to_string()),
                     best_ask: Some("-0.01".to_string()),
                     spread: Some("0".to_string()),
@@ -524,6 +567,11 @@ mod tests {
                         observed_ts: Some("2026-06-03T21:05:58Z".to_string()),
                         start_ts: None,
                         expiry_ts: None,
+                        threshold_price: None,
+                        threshold_event_ts: None,
+                        threshold_observed_ts: None,
+                        settlement_price: None,
+                        settlement_event_ts: None,
                         best_bid: Some("0.88".to_string()),
                         best_ask: Some("0.89".to_string()),
                         spread: Some("0.01".to_string()),
@@ -544,6 +592,11 @@ mod tests {
                         observed_ts: Some("2026-06-03T21:05:47Z".to_string()),
                         start_ts: None,
                         expiry_ts: None,
+                        threshold_price: None,
+                        threshold_event_ts: None,
+                        threshold_observed_ts: None,
+                        settlement_price: None,
+                        settlement_event_ts: None,
                         best_bid: Some("0.49".to_string()),
                         best_ask: Some("0.50".to_string()),
                         spread: Some("0.01".to_string()),
@@ -566,6 +619,7 @@ mod tests {
                 "",
                 "Expires",
                 "Market",
+                "K",
                 "UP bid/ask",
                 "DOWN bid/ask",
                 "Spread",
@@ -581,6 +635,40 @@ mod tests {
         assert_eq!(rows[2].market, "");
         assert_eq!(rows[3].market, "ETH");
         assert_eq!(rows[4].marker, " ");
+    }
+
+    #[test]
+    fn market_rows_show_threshold_k_from_up_or_down_row() {
+        let app = AppState {
+            runtime_monitor: Some(RuntimeMonitor {
+                generated_at: "2026-06-03T21:06:00Z".to_string(),
+                price_rows: Vec::new(),
+                orderbooks: vec![
+                    threshold_orderbook("BTC", "UP", "btc-updown-5m-1780522200", Some("64000")),
+                    threshold_orderbook("ETH", "DOWN", "eth-updown-5m-1780522200", None),
+                ],
+            }),
+            ..Default::default()
+        };
+
+        let rows = market_rows(&app);
+
+        assert_eq!(
+            market_header_labels(),
+            [
+                "",
+                "Expires",
+                "Market",
+                "K",
+                "UP bid/ask",
+                "DOWN bid/ask",
+                "Spread",
+                "TTE",
+                "Outcome"
+            ]
+        );
+        assert_eq!(rows[1].k, "64,000.00");
+        assert_eq!(rows[4].k, "pending");
     }
 
     #[test]
@@ -601,6 +689,11 @@ mod tests {
                     observed_ts: Some("2026-06-03T21:23:18Z".to_string()),
                     start_ts: None,
                     expiry_ts: None,
+                    threshold_price: None,
+                    threshold_event_ts: None,
+                    threshold_observed_ts: None,
+                    settlement_price: None,
+                    settlement_event_ts: None,
                     best_bid: Some("0.45".to_string()),
                     best_ask: Some("0.46".to_string()),
                     spread: Some("0.01".to_string()),
@@ -636,6 +729,11 @@ mod tests {
                     observed_ts: Some("2026-06-03T21:24:59Z".to_string()),
                     start_ts: None,
                     expiry_ts: None,
+                    threshold_price: None,
+                    threshold_event_ts: None,
+                    threshold_observed_ts: None,
+                    settlement_price: None,
+                    settlement_event_ts: None,
                     best_bid: Some("0.99".to_string()),
                     best_ask: None,
                     spread: None,
@@ -671,6 +769,11 @@ mod tests {
                     observed_ts: Some("2026-06-03T21:24:59Z".to_string()),
                     start_ts: None,
                     expiry_ts: None,
+                    threshold_price: None,
+                    threshold_event_ts: None,
+                    threshold_observed_ts: None,
+                    settlement_price: None,
+                    settlement_event_ts: None,
                     best_bid: Some("0.99".to_string()),
                     best_ask: None,
                     spread: None,
@@ -708,6 +811,46 @@ mod tests {
     }
 
     #[test]
+    fn market_rows_keep_resolved_expired_market_until_outcome_visible_for_30_seconds() {
+        let mut app = AppState {
+            runtime_monitor: Some(RuntimeMonitor {
+                generated_at: "2026-06-03T21:26:49Z".to_string(),
+                price_rows: Vec::new(),
+                orderbooks: vec![
+                    threshold_orderbook("BTC", "UP", "btc-updown-5m-1780521900", Some("64000")),
+                    threshold_orderbook("BTC", "DOWN", "btc-updown-5m-1780521900", Some("64000")),
+                ],
+            }),
+            ..Default::default()
+        };
+        app.apply_runtime_outcomes(RuntimeOutcomes {
+            ok: true,
+            state: "OK".to_string(),
+            generated_at: Some("2026-06-03T21:26:20Z".to_string()),
+            rows: vec![RuntimeOutcomeRow {
+                market: "BTC 5m".to_string(),
+                market_id: "btc-updown-5m-1780521900".to_string(),
+                market_slug: Some("btc-updown-5m-1780521900".to_string()),
+                asset: Some("BTC".to_string()),
+                start_ts: Some("2026-06-03T21:20:00Z".to_string()),
+                expiry_ts: Some("2026-06-03T21:25:00Z".to_string()),
+                computed_winner: None,
+                official_winner: Some("UP".to_string()),
+                winning_token_id: Some("btc-up-token".to_string()),
+                official_resolution_status: "resolved".to_string(),
+                mismatch: None,
+            }],
+        });
+
+        let rows = market_rows(&app);
+
+        assert_eq!(rows[0].market, "BTC");
+        assert_eq!(rows[1].market, "BTC 5m");
+        assert_eq!(rows[1].tte, "+01:49");
+        assert_eq!(rows[1].outcome, "UP");
+    }
+
+    #[test]
     fn market_rows_drop_expired_contract_after_handoff_window() {
         let app = AppState {
             runtime_monitor: Some(RuntimeMonitor {
@@ -725,6 +868,11 @@ mod tests {
                     observed_ts: Some("2026-06-03T21:24:59Z".to_string()),
                     start_ts: None,
                     expiry_ts: None,
+                    threshold_price: None,
+                    threshold_event_ts: None,
+                    threshold_observed_ts: None,
+                    settlement_price: None,
+                    settlement_event_ts: None,
                     best_bid: Some("0.99".to_string()),
                     best_ask: None,
                     spread: None,
@@ -761,6 +909,11 @@ mod tests {
                         observed_ts: Some(format!("2026-06-03T21:05:5{index}Z")),
                         start_ts: None,
                         expiry_ts: None,
+                        threshold_price: None,
+                        threshold_event_ts: None,
+                        threshold_observed_ts: None,
+                        settlement_price: None,
+                        settlement_event_ts: None,
                         best_bid: Some(format!("0.{index}1")),
                         best_ask: Some(format!("0.{index}2")),
                         spread: Some("0.01".to_string()),
@@ -803,6 +956,11 @@ mod tests {
                         observed_ts: Some(format!("2026-06-03T21:05:{index:02}Z")),
                         start_ts: None,
                         expiry_ts: None,
+                        threshold_price: None,
+                        threshold_event_ts: None,
+                        threshold_observed_ts: None,
+                        settlement_price: None,
+                        settlement_event_ts: None,
                         best_bid: Some(format!("0.{index}1")),
                         best_ask: Some(format!("0.{index}2")),
                         spread: Some("0.01".to_string()),
@@ -848,6 +1006,11 @@ mod tests {
                         observed_ts: Some("2026-06-03T21:05:55Z".to_string()),
                         start_ts: None,
                         expiry_ts: None,
+                        threshold_price: None,
+                        threshold_event_ts: None,
+                        threshold_observed_ts: None,
+                        settlement_price: None,
+                        settlement_event_ts: None,
                         best_bid: Some("0.41".to_string()),
                         best_ask: Some("0.42".to_string()),
                         spread: Some("0.01".to_string()),
@@ -868,6 +1031,11 @@ mod tests {
                         observed_ts: Some("2026-06-03T21:05:56Z".to_string()),
                         start_ts: None,
                         expiry_ts: None,
+                        threshold_price: None,
+                        threshold_event_ts: None,
+                        threshold_observed_ts: None,
+                        settlement_price: None,
+                        settlement_event_ts: None,
                         best_bid: Some("0.51".to_string()),
                         best_ask: Some("0.52".to_string()),
                         spread: Some("0.01".to_string()),
@@ -888,6 +1056,11 @@ mod tests {
                         observed_ts: Some("2026-06-03T21:05:57Z".to_string()),
                         start_ts: None,
                         expiry_ts: None,
+                        threshold_price: None,
+                        threshold_event_ts: None,
+                        threshold_observed_ts: None,
+                        settlement_price: None,
+                        settlement_event_ts: None,
                         best_bid: Some("0.61".to_string()),
                         best_ask: Some("0.62".to_string()),
                         spread: Some("0.01".to_string()),
@@ -908,6 +1081,11 @@ mod tests {
                         observed_ts: Some("2026-06-03T21:05:58Z".to_string()),
                         start_ts: None,
                         expiry_ts: None,
+                        threshold_price: None,
+                        threshold_event_ts: None,
+                        threshold_observed_ts: None,
+                        settlement_price: None,
+                        settlement_event_ts: None,
                         best_bid: Some("0.71".to_string()),
                         best_ask: Some("0.72".to_string()),
                         spread: Some("0.01".to_string()),
@@ -938,5 +1116,38 @@ mod tests {
             .with_timezone(&Local)
             .format("%b %d %H:%M %Z")
             .to_string()
+    }
+
+    fn threshold_orderbook(
+        asset: &str,
+        side: &str,
+        market_slug: &str,
+        threshold_price: Option<&str>,
+    ) -> RuntimeOrderbookRow {
+        RuntimeOrderbookRow {
+            venue: Some("polymarket".to_string()),
+            source_key: Some("polymarket_rust_sdk".to_string()),
+            market_slug: Some(market_slug.to_string()),
+            contract_id: format!("{market_slug}-{side}"),
+            token_id: Some(format!("{market_slug}-{side}-token")),
+            asset: Some(asset.to_string()),
+            side: Some(side.to_string()),
+            event_ts: None,
+            observed_ts: Some("2026-06-03T21:05:58Z".to_string()),
+            start_ts: None,
+            expiry_ts: None,
+            threshold_price: threshold_price.map(str::to_string),
+            threshold_event_ts: None,
+            threshold_observed_ts: None,
+            settlement_price: None,
+            settlement_event_ts: None,
+            best_bid: Some("0.45".to_string()),
+            best_ask: Some("0.46".to_string()),
+            spread: Some("0.01".to_string()),
+            bid_size_top: None,
+            ask_size_top: None,
+            bids: Vec::new(),
+            asks: Vec::new(),
+        }
     }
 }

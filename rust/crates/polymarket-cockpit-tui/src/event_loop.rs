@@ -251,9 +251,16 @@ fn apply_runtime_update(app: &mut AppState, update: RuntimeUpdate) -> bool {
         changed |= replace_if_changed(&mut app.runtime_gates, gates);
     }
 
+    if let Some(outcomes) = update.outcomes {
+        if app.apply_runtime_outcomes(outcomes) {
+            app.sync_outcome_selection();
+            app.sync_market_selection();
+            changed = true;
+        }
+    }
+
     if let Some(monitor) = update.monitor {
-        let monitor = app.monitor_with_expiration_handoff(monitor);
-        if replace_if_changed(&mut app.runtime_monitor, monitor) {
+        if app.apply_runtime_monitor(monitor) {
             app.sync_market_selection();
             changed = true;
         }
@@ -261,13 +268,6 @@ fn apply_runtime_update(app: &mut AppState, update: RuntimeUpdate) -> bool {
 
     if let Some(probabilities) = update.probabilities {
         changed |= replace_if_changed(&mut app.runtime_probabilities, probabilities);
-    }
-
-    if let Some(outcomes) = update.outcomes {
-        if replace_if_changed(&mut app.runtime_outcomes, outcomes) {
-            app.sync_outcome_selection();
-            changed = true;
-        }
     }
 
     if let Some(display_lag) = update.display_lag {
@@ -575,6 +575,11 @@ mod tests {
             observed_ts: Some("2026-06-03T21:05:58Z".to_string()),
             start_ts: None,
             expiry_ts: None,
+            threshold_price: None,
+            threshold_event_ts: None,
+            threshold_observed_ts: None,
+            settlement_price: None,
+            settlement_event_ts: None,
             best_bid: None,
             best_ask: None,
             spread: None,
@@ -603,6 +608,11 @@ mod tests {
             observed_ts: Some("2026-06-03T21:24:59Z".to_string()),
             start_ts: None,
             expiry_ts: None,
+            threshold_price: None,
+            threshold_event_ts: None,
+            threshold_observed_ts: None,
+            settlement_price: None,
+            settlement_event_ts: None,
             best_bid: None,
             best_ask: None,
             spread: None,
@@ -708,6 +718,31 @@ mod tests {
     }
 
     #[test]
+    fn apply_runtime_update_reports_changed_when_only_price_history_changes() {
+        let mut app = AppState {
+            runtime_monitor: Some(monitor("65000.00")),
+            ..Default::default()
+        };
+
+        let changed = apply_runtime_update(
+            &mut app,
+            RuntimeUpdate {
+                status: None,
+                gates: None,
+                monitor: Some(monitor("65000.00")),
+                probabilities: None,
+                outcomes: None,
+                display_lag: None,
+                error: None,
+            },
+        );
+
+        assert!(changed);
+        assert_eq!(app.price_history_for("BTC/USD").len(), 1);
+        assert_eq!(app.price_history_for("BTC/USD")[0].price, 65000.00);
+    }
+
+    #[test]
     fn runtime_monitor_retains_recently_expired_market_for_outcome_handoff() {
         let mut app = AppState {
             runtime_monitor: Some(RuntimeMonitor {
@@ -769,6 +804,84 @@ mod tests {
     }
 
     #[test]
+    fn apply_runtime_update_records_outcome_before_monitor_retention() {
+        let mut app = AppState {
+            runtime_monitor: Some(RuntimeMonitor {
+                generated_at: "2026-06-03T21:24:59Z".to_string(),
+                price_rows: Vec::new(),
+                orderbooks: vec![
+                    orderbook_with_slug(
+                        "BTC",
+                        "UP",
+                        "btc-updown-5m-1780521900",
+                        "expired-up-token",
+                    ),
+                    orderbook_with_slug(
+                        "BTC",
+                        "DOWN",
+                        "btc-updown-5m-1780521900",
+                        "expired-down-token",
+                    ),
+                ],
+            }),
+            ..Default::default()
+        };
+
+        let changed = apply_runtime_update(
+            &mut app,
+            RuntimeUpdate {
+                status: None,
+                gates: None,
+                monitor: Some(RuntimeMonitor {
+                    generated_at: "2026-06-03T21:26:49Z".to_string(),
+                    price_rows: Vec::new(),
+                    orderbooks: vec![orderbook_with_slug(
+                        "BTC",
+                        "UP",
+                        "btc-updown-5m-1780522200",
+                        "current-up-token",
+                    )],
+                }),
+                probabilities: None,
+                outcomes: Some(RuntimeOutcomes {
+                    ok: true,
+                    state: "OK".to_string(),
+                    generated_at: Some("2026-06-03T21:26:20Z".to_string()),
+                    rows: vec![RuntimeOutcomeRow {
+                        market: "BTC 5m".to_string(),
+                        market_id: "btc-updown-5m-1780521900".to_string(),
+                        market_slug: Some("btc-updown-5m-1780521900".to_string()),
+                        asset: Some("BTC".to_string()),
+                        start_ts: Some("2026-06-03T21:20:00Z".to_string()),
+                        expiry_ts: Some("2026-06-03T21:25:00Z".to_string()),
+                        computed_winner: None,
+                        official_winner: Some("UP".to_string()),
+                        winning_token_id: Some("expired-up-token".to_string()),
+                        official_resolution_status: "resolved".to_string(),
+                        mismatch: None,
+                    }],
+                }),
+                display_lag: None,
+                error: None,
+            },
+        );
+
+        let token_ids = app
+            .runtime_monitor
+            .as_ref()
+            .unwrap()
+            .orderbooks
+            .iter()
+            .filter_map(|row| row.token_id.as_deref())
+            .collect::<Vec<_>>();
+        assert!(changed);
+        assert_eq!(
+            token_ids,
+            vec!["current-up-token", "expired-up-token", "expired-down-token"]
+        );
+    }
+
+    #[test]
     fn drain_runtime_updates_ignores_unchanged_payloads() {
         let (tx, mut rx) = mpsc::unbounded_channel();
         tx.send(RuntimeUpdate {
@@ -794,9 +907,7 @@ mod tests {
                 ok: true,
                 failures: Vec::new(),
             }),
-            runtime_monitor: Some(monitor("65000.00")),
             runtime_probabilities: Some(probabilities()),
-            runtime_outcomes: Some(outcomes()),
             runtime_display_lag: Some(RuntimeDisplayLag {
                 status_age_ms: Some(12),
                 ..RuntimeDisplayLag::default()
@@ -804,6 +915,8 @@ mod tests {
             runtime_error: None,
             ..Default::default()
         };
+        app.apply_runtime_monitor(monitor("65000.00"));
+        app.apply_runtime_outcomes(outcomes());
 
         assert!(!drain_runtime_updates(&mut app, &mut rx));
     }
@@ -813,7 +926,7 @@ mod tests {
         let mut app = AppState {
             active_tab: MainTab::Market,
             runtime_monitor: Some(RuntimeMonitor {
-                generated_at: "2026-06-03T21:06:00Z".to_string(),
+                generated_at: "2026-06-03T20:44:00Z".to_string(),
                 price_rows: Vec::new(),
                 orderbooks: vec![orderbook("BTC", "UP"), orderbook("BTC", "DOWN")],
             }),

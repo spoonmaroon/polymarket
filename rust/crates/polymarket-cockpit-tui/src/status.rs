@@ -155,6 +155,16 @@ pub struct RuntimeOrderbookRow {
     #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
     pub expiry_ts: Option<String>,
     #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub threshold_price: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub threshold_event_ts: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub threshold_observed_ts: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub settlement_price: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub settlement_event_ts: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
     pub best_bid: Option<String>,
     #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
     pub best_ask: Option<String>,
@@ -270,6 +280,11 @@ mod tests {
                     "side": "DOWN",
                     "event_ts": "2026-06-03T20:43:12.101Z",
                     "observed_ts": "2026-06-03T20:43:20.616043736Z",
+                    "threshold_price": "64000",
+                    "threshold_event_ts": "2026-06-03T20:40:00Z",
+                    "threshold_observed_ts": "2026-06-03T20:40:00.005Z",
+                    "settlement_price": "64050",
+                    "settlement_event_ts": "2026-06-03T20:43:16Z",
                     "best_bid": "0.86",
                     "best_ask": "0.87",
                     "spread": "0.01",
@@ -291,6 +306,26 @@ mod tests {
         assert_eq!(
             monitor.orderbooks[0].market_slug.as_deref(),
             Some("eth-updown-5m-1780519200")
+        );
+        assert_eq!(
+            monitor.orderbooks[0].threshold_price.as_deref(),
+            Some("64000")
+        );
+        assert_eq!(
+            monitor.orderbooks[0].threshold_event_ts.as_deref(),
+            Some("2026-06-03T20:40:00Z")
+        );
+        assert_eq!(
+            monitor.orderbooks[0].threshold_observed_ts.as_deref(),
+            Some("2026-06-03T20:40:00.005Z")
+        );
+        assert_eq!(
+            monitor.orderbooks[0].settlement_price.as_deref(),
+            Some("64050")
+        );
+        assert_eq!(
+            monitor.orderbooks[0].settlement_event_ts.as_deref(),
+            Some("2026-06-03T20:43:16Z")
         );
         assert_eq!(monitor.orderbooks[0].best_bid.as_deref(), Some("0.86"));
         assert_eq!(monitor.orderbooks[0].asks[0].size.as_deref(), Some("14.46"));

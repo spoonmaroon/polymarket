@@ -7,7 +7,12 @@ import duckdb
 import pytest
 
 from polymarket_engine.domain.market_state import PriceObservation
-from polymarket_engine.monitor import _snapshot_from_status, fetch_monitor_snapshot, render_monitor
+from polymarket_engine.monitor import (
+    _snapshot_from_status,
+    fetch_monitor_snapshot,
+    render_monitor,
+    snapshot_from_status_payload,
+)
 from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
 
 
@@ -249,6 +254,49 @@ def test_monitor_snapshot_reads_rust_state_manager_status(tmp_path: Path) -> Non
     assert "polymarket_rust_sdk:btc-up" in output
     assert "Hot Decisions" in output
     assert "states_built=4890" in output
+
+
+def test_state_manager_orderbook_rows_include_matching_contract_target() -> None:
+    payload = {
+        "generated_at": "2026-06-04T07:43:10Z",
+        "current": [
+            {
+                "window": {
+                    "asset": "BTC",
+                    "interval": "5m",
+                    "start_ts": "2026-06-04T07:40:00Z",
+                    "end_ts": "2026-06-04T07:45:00Z",
+                },
+                "up": {"asset": "BTC", "side": "Up", "token_id": "btc-up"},
+                "down": {"asset": "BTC", "side": "Down", "token_id": "btc-down"},
+            }
+        ],
+        "next": [],
+        "orderbooks": [],
+        "chainlink_prices": [],
+        "targets": [
+            {
+                "asset": "BTC",
+                "interval": "5m",
+                "market_slug": "BTC-UPDOWN-5M-1780558800",
+                "start_ts": "2026-06-04T07:40:00Z",
+                "end_ts": "2026-06-04T07:45:00Z",
+                "threshold_price": "64000",
+                "threshold_event_ts": "2026-06-04T07:40:00Z",
+                "threshold_observed_ts": "2026-06-04T07:40:00.005Z",
+                "settlement_price": "64050",
+                "settlement_event_ts": "2026-06-04T07:43:09Z",
+            }
+        ],
+    }
+
+    snapshot = snapshot_from_status_payload(payload, limit=8)
+
+    assert snapshot.orderbooks[0]["threshold_price"] == "64000"
+    assert snapshot.orderbooks[0]["threshold_event_ts"] == "2026-06-04T07:40:00Z"
+    assert snapshot.orderbooks[0]["threshold_observed_ts"] == "2026-06-04T07:40:00.005Z"
+    assert snapshot.orderbooks[0]["settlement_price"] == "64050"
+    assert snapshot.orderbooks[0]["settlement_event_ts"] == "2026-06-04T07:43:09Z"
 
 
 def test_monitor_snapshot_shapes_state_manager_books_to_active_current_and_next_rows(

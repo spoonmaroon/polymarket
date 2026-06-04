@@ -6,6 +6,7 @@ pub mod market;
 pub mod orderbook;
 pub mod outcomes;
 pub mod price;
+pub mod price_path;
 pub mod probability;
 pub mod systems;
 
@@ -32,7 +33,7 @@ pub fn render(frame: &mut Frame<'_>, app: &AppState) {
         }
         MainTab::Market => {
             market::render(frame, body.primary, app);
-            systems::render(frame, body.secondary, app);
+            price_path::render(frame, body.secondary, app);
         }
         MainTab::Probability => {
             probability::render(frame, body.primary, app);
@@ -47,6 +48,7 @@ pub fn render(frame: &mut Frame<'_>, app: &AppState) {
             systems::render(frame, body.secondary, app);
         }
     }
+    systems::render(frame, body.systems, app);
     logs::render(frame, body.logs, app);
     footer::render(frame, shell.footer);
 }

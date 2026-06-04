@@ -12,6 +12,13 @@ import duckdb
 
 
 CHAINLINK_SOURCE_KEY = "polymarket_rtds_chainlink"
+TARGET_FIELDS = (
+    "threshold_price",
+    "threshold_event_ts",
+    "threshold_observed_ts",
+    "settlement_price",
+    "settlement_event_ts",
+)
 
 
 @dataclass(frozen=True)
@@ -262,6 +269,7 @@ def _state_manager_orderbook_rows(
     limit: int,
 ) -> tuple[dict[str, Any], ...]:
     contracts = _state_manager_book_contract_rows(payload, limit=limit)
+    targets_by_slug = _targets_by_market_slug(payload)
     raw_books_by_token = {
         str(row.get("token_id", "")): dict(row)
         for row in payload.get("orderbooks", ())
@@ -274,6 +282,7 @@ def _state_manager_orderbook_rows(
         row = _normalize_orderbook_row({} if raw is None else raw)
         for key, value in contract.items():
             row[key] = value
+        _copy_matching_target_fields(row, targets_by_slug)
         if raw is None:
             row.update(
                 {
@@ -432,6 +441,7 @@ def _state_manager_contract_rows(
     limit: int,
 ) -> tuple[dict[str, Any], ...]:
     rows: list[dict[str, Any]] = []
+    targets_by_slug = _targets_by_market_slug(payload)
     for group in ("current", "next", "next_next"):
         for raw_contract in payload.get(group, ()):
             contract = dict(raw_contract)
@@ -447,22 +457,44 @@ def _state_manager_contract_rows(
             )
             for token_key in ("up", "down"):
                 token = dict(contract.get(token_key, {}))
-                rows.append(
-                    {
-                        "contract_id": contract_id,
-                        "asset": asset,
-                        "side": str(token.get("side", token_key)).upper(),
-                        "token_id": token.get("token_id", ""),
-                        "threshold_type": "above" if token_key == "up" else "below",
-                        "settlement_symbol": f"{asset}/USD" if asset else "",
-                        "start_ts": start_ts,
-                        "expiry_ts": expiry_ts,
-                        "window": group,
-                    }
-                )
+                row = {
+                    "contract_id": contract_id,
+                    "asset": asset,
+                    "side": str(token.get("side", token_key)).upper(),
+                    "token_id": token.get("token_id", ""),
+                    "threshold_type": "above" if token_key == "up" else "below",
+                    "settlement_symbol": f"{asset}/USD" if asset else "",
+                    "start_ts": start_ts,
+                    "expiry_ts": expiry_ts,
+                    "window": group,
+                }
+                _copy_matching_target_fields(row, targets_by_slug, market_slug=contract_id)
+                rows.append(row)
                 if len(rows) >= limit:
                     return tuple(rows)
     return tuple(rows)
+
+
+def _targets_by_market_slug(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {
+        str(row.get("market_slug", "")).casefold(): dict(row)
+        for row in payload.get("targets", ())
+        if isinstance(row, dict) and row.get("market_slug")
+    }
+
+
+def _copy_matching_target_fields(
+    row: dict[str, Any],
+    targets_by_slug: dict[str, dict[str, Any]],
+    *,
+    market_slug: str | None = None,
+) -> None:
+    slug = row.get("market_slug", "") if market_slug is None else market_slug
+    target = targets_by_slug.get(str(slug).casefold())
+    if target is None:
+        return
+    for key in TARGET_FIELDS:
+        row[key] = target.get(key)
 
 
 def _state_manager_contract_id(*, asset: str, interval: str, start_ts: str) -> str:
