@@ -163,6 +163,8 @@ const OUTCOME_SECTIONS: [OutcomeSection; 4] = [
         end_hour: 23,
     },
 ];
+const UNKNOWN_OUTCOME_SECTION_KEY: &str = "unknown";
+const UNKNOWN_OUTCOME_SECTION_LABEL: &str = "Unknown expiry";
 
 fn grouped_outcomes(rows: &[RuntimeOutcomeRow]) -> Vec<OutcomeDayGroup<'_>> {
     let mut groups_by_key: BTreeMap<String, Vec<&RuntimeOutcomeRow>> = BTreeMap::new();
@@ -194,7 +196,7 @@ fn grouped_sections<'a>(
     day_key: &str,
     rows: Vec<&'a RuntimeOutcomeRow>,
 ) -> Vec<OutcomeSectionGroup<'a>> {
-    OUTCOME_SECTIONS
+    let mut groups = OUTCOME_SECTIONS
         .iter()
         .filter_map(|section| {
             let mut section_rows = rows
@@ -216,7 +218,20 @@ fn grouped_sections<'a>(
                 rows: section_rows,
             })
         })
-        .collect()
+        .collect::<Vec<_>>();
+    let mut unknown_rows = rows
+        .into_iter()
+        .filter(|row| parse_local_expiry(row).is_none())
+        .collect::<Vec<_>>();
+    if !unknown_rows.is_empty() {
+        unknown_rows.sort_by(|left, right| right.market.cmp(&left.market));
+        groups.push(OutcomeSectionGroup {
+            key: outcome_section_key(day_key, UNKNOWN_OUTCOME_SECTION_KEY),
+            label: UNKNOWN_OUTCOME_SECTION_LABEL,
+            rows: unknown_rows,
+        });
+    }
+    groups
 }
 
 fn section_for_local_expiry(timestamp: DateTime<Local>) -> OutcomeSection {
@@ -244,6 +259,8 @@ fn parse_local_expiry(row: &RuntimeOutcomeRow) -> Option<DateTime<Local>> {
 
 #[cfg(test)]
 mod tests {
+    use chrono::{Datelike, Local, NaiveDate, TimeZone};
+
     use crate::{
         outcome_view::{
             OutcomeDisplayItem, OutcomeExpansion, OutcomeToggleTarget, default_outcome_section_key,
@@ -260,8 +277,8 @@ mod tests {
             state: "OK".to_string(),
             generated_at: Some("2026-06-04T20:00:00Z".to_string()),
             rows: vec![
-                outcome("BTC 5m", "2026-06-04T20:00:00Z"),
-                outcome("ETH 5m", "2026-06-03T20:00:00Z"),
+                outcome("BTC 5m", &local_expiry("2026-06-04", 20)),
+                outcome("ETH 5m", &local_expiry("2026-06-03", 20)),
             ],
         };
         let mut expansion = OutcomeExpansion::default();
@@ -289,8 +306,8 @@ mod tests {
             state: "OK".to_string(),
             generated_at: Some("2026-06-04T20:00:00Z".to_string()),
             rows: vec![
-                outcome("BTC 5m overnight", "2026-06-04T10:05:00Z"),
-                outcome("BTC 5m afternoon", "2026-06-04T18:05:00Z"),
+                outcome("BTC 5m overnight", &local_expiry("2026-06-04", 1)),
+                outcome("BTC 5m afternoon", &local_expiry("2026-06-04", 13)),
             ],
         };
         let mut expansion = OutcomeExpansion::default();
@@ -347,7 +364,7 @@ mod tests {
             ok: true,
             state: "OK".to_string(),
             generated_at: Some("2026-06-04T20:00:00Z".to_string()),
-            rows: vec![outcome("BTC 5m", "2026-06-04T20:00:00Z")],
+            rows: vec![outcome("BTC 5m", &local_expiry("2026-06-04", 13))],
         };
         let mut expansion = OutcomeExpansion::default();
         expansion.expanded_days.insert("2026-06-04".to_string());
@@ -378,8 +395,8 @@ mod tests {
             state: "OK".to_string(),
             generated_at: Some("2026-06-04T20:00:00Z".to_string()),
             rows: vec![
-                outcome("ETH 5m", "2026-06-03T20:00:00Z"),
-                outcome("BTC 5m", "2026-06-04T20:00:00Z"),
+                outcome("ETH 5m", &local_expiry("2026-06-03", 20)),
+                outcome("BTC 5m", &local_expiry("2026-06-04", 20)),
             ],
         };
 
@@ -396,8 +413,8 @@ mod tests {
             state: "OK".to_string(),
             generated_at: Some("2026-06-04T20:00:00Z".to_string()),
             rows: vec![
-                outcome("BTC 5m morning", "2026-06-04T08:05:00Z"),
-                outcome("BTC 5m evening", "2026-06-05T02:05:00Z"),
+                outcome("BTC 5m morning", &local_expiry("2026-06-04", 8)),
+                outcome("BTC 5m evening", &local_expiry("2026-06-04", 20)),
             ],
         };
 
@@ -405,6 +422,57 @@ mod tests {
             default_outcome_section_key(Some(&outcomes), "2026-06-04").as_deref(),
             Some("2026-06-04#evening")
         );
+    }
+
+    #[test]
+    fn outcome_display_items_keeps_unknown_expiry_rows_visible() {
+        let outcomes = RuntimeOutcomes {
+            ok: true,
+            state: "OK".to_string(),
+            generated_at: Some("2026-06-04T20:00:00Z".to_string()),
+            rows: vec![outcome("BTC malformed", "not-a-timestamp")],
+        };
+        let mut expansion = OutcomeExpansion::default();
+        expansion.expanded_days.insert("unknown".to_string());
+        expansion
+            .expanded_sections
+            .insert("unknown#unknown".to_string());
+
+        let items = outcome_display_items(Some(&outcomes), &expansion);
+
+        assert!(matches!(
+            &items[0],
+            OutcomeDisplayItem::Day {
+                key,
+                count: 1,
+                expanded: true,
+                ..
+            } if key == "unknown"
+        ));
+        assert!(items.iter().any(|item| {
+            matches!(
+                item,
+                OutcomeDisplayItem::Section {
+                    key,
+                    label,
+                    count: 1,
+                    expanded: true,
+                    ..
+                } if key == "unknown#unknown" && label.contains("Unknown")
+            )
+        }));
+        assert!(items.iter().any(|item| {
+            matches!(item, OutcomeDisplayItem::Outcome { row } if row.market == "BTC malformed")
+        }));
+    }
+
+    fn local_expiry(day: &str, hour: u32) -> String {
+        let date = NaiveDate::parse_from_str(day, "%Y-%m-%d").unwrap();
+        Local
+            .with_ymd_and_hms(date.year(), date.month(), date.day(), hour, 5, 0)
+            .single()
+            .unwrap()
+            .to_rfc3339()
     }
 
     fn outcome(market: &str, expiry_ts: &str) -> RuntimeOutcomeRow {

@@ -201,6 +201,8 @@ fn compact_timestamp(timestamp: Option<&str>) -> String {
 
 #[cfg(test)]
 mod tests {
+    use chrono::{Datelike, Local, NaiveDate, TimeZone};
+
     use crate::{
         render::outcomes::{outcome_rows, outcome_rows_for_visible_count},
         state::AppState,
@@ -222,8 +224,8 @@ mod tests {
     #[test]
     fn outcome_rows_render_day_and_section_headers() {
         let app = app_with_expiry_days(vec![
-            ("BTC 5m", "2026-06-04T20:00:00Z"),
-            ("ETH 5m", "2026-06-03T20:00:00Z"),
+            ("BTC 5m", &local_expiry("2026-06-04", 13)),
+            ("ETH 5m", &local_expiry("2026-06-03", 13)),
         ]);
 
         let rows = outcome_rows(&app);
@@ -240,11 +242,13 @@ mod tests {
         let mut app = app_with_market_names(vec!["BTC 5m", "ETH 5m"]);
         app.sync_outcome_selection();
         app.select_next_outcome();
+        app.select_next_outcome();
 
         let rows = outcome_rows(&app);
 
         assert_eq!(rows[0].marker, " ");
-        assert_eq!(rows[1].marker, ">");
+        assert_eq!(rows[2].marker, ">");
+        assert_eq!(rows[2].market, "    BTC 5m");
     }
 
     #[test]
@@ -303,7 +307,7 @@ mod tests {
                         runtime_outcome(
                             market,
                             &format!("market-{index}"),
-                            "2026-06-03T21:25:00Z",
+                            &local_expiry("2026-06-03", 13),
                             Some("UP"),
                             Some(&format!("token-{index}")),
                             "resolved",
@@ -342,6 +346,15 @@ mod tests {
         };
         app.sync_outcome_expansion_defaults();
         app
+    }
+
+    fn local_expiry(day: &str, hour: u32) -> String {
+        let date = NaiveDate::parse_from_str(day, "%Y-%m-%d").unwrap();
+        Local
+            .with_ymd_and_hms(date.year(), date.month(), date.day(), hour, 5, 0)
+            .single()
+            .unwrap()
+            .to_rfc3339()
     }
 
     fn runtime_outcome(
