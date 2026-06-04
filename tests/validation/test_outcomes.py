@@ -8,9 +8,9 @@ import duckdb
 from polymarket_engine.domain.contracts import ContractSpec
 from polymarket_engine.domain.market_state import PriceObservation
 from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
-from polymarket_engine.validation.outcomes import computed_winner
+from polymarket_engine.validation.outcomes import official_resolution_from_polymarket_market
 from polymarket_engine.validation.outcomes import latest_market_outcome_rows
-from polymarket_engine.validation.outcomes import upsert_computed_market_outcomes
+from polymarket_engine.validation.outcomes import upsert_official_market_outcomes
 
 
 UTC_START = datetime(2026, 6, 3, 20, 0, tzinfo=timezone.utc)
@@ -19,11 +19,67 @@ UTC_EXPIRY_PLUS_ONE = UTC_EXPIRY + timedelta(seconds=1)
 UTC_BEFORE_EXPIRY = UTC_EXPIRY - timedelta(seconds=1)
 
 
-def test_computed_winner_uses_exact_up_greater_than_or_equal_rule() -> None:
-    assert computed_winner(threshold_price=65_000.0, end_price=65_000.0) == "UP"
+def test_official_resolution_maps_winning_up_token_from_polymarket_payload() -> None:
+    resolution = official_resolution_from_polymarket_market(
+        {
+            "closed": True,
+            "tokens": [
+                {"token_id": "up-token", "outcome": "Up", "winner": True},
+                {"token_id": "down-token", "outcome": "Down", "winner": False},
+            ],
+        },
+        up_token_id="up-token",
+        down_token_id="down-token",
+        observed_at=UTC_EXPIRY_PLUS_ONE,
+    )
+
+    assert resolution.official_winner == "UP"
+    assert resolution.winning_token_id == "up-token"
+    assert resolution.official_resolution_status == "resolved"
+    assert resolution.official_label_source == "polymarket_clob_market"
+    assert resolution.official_resolved_at == UTC_EXPIRY_PLUS_ONE
 
 
-def test_computed_outcome_uses_exact_up_greater_than_or_equal_rule(
+def test_official_resolution_maps_winning_down_token_from_polymarket_payload() -> None:
+    resolution = official_resolution_from_polymarket_market(
+        {
+            "closed": True,
+            "tokens": [
+                {"token_id": "up-token", "outcome": "Up", "winner": False},
+                {"token_id": "down-token", "outcome": "Down", "winner": True},
+            ],
+        },
+        up_token_id="up-token",
+        down_token_id="down-token",
+        observed_at=UTC_EXPIRY_PLUS_ONE,
+    )
+
+    assert resolution.official_winner == "DOWN"
+    assert resolution.winning_token_id == "down-token"
+    assert resolution.official_resolution_status == "resolved"
+
+
+def test_official_resolution_stays_pending_for_ambiguous_polymarket_payload() -> None:
+    resolution = official_resolution_from_polymarket_market(
+        {
+            "closed": True,
+            "tokens": [
+                {"token_id": "up-token", "outcome": "Up", "winner": True},
+                {"token_id": "down-token", "outcome": "Down", "winner": True},
+            ],
+        },
+        up_token_id="up-token",
+        down_token_id="down-token",
+        observed_at=UTC_EXPIRY_PLUS_ONE,
+    )
+
+    assert resolution.official_winner is None
+    assert resolution.winning_token_id is None
+    assert resolution.official_resolution_status == "pending"
+    assert resolution.official_label_source is None
+
+
+def test_official_outcome_uses_only_polymarket_source_payload(
     tmp_path: Path,
 ) -> None:
     store = seeded_store_with_btc_market(
@@ -32,12 +88,21 @@ def test_computed_outcome_uses_exact_up_greater_than_or_equal_rule(
         end_price=65_000.0,
     )
 
-    written = upsert_computed_market_outcomes(store=store, asof_ts=UTC_EXPIRY_PLUS_ONE)
+    written = upsert_official_market_outcomes(
+        store=store,
+        asof_ts=UTC_EXPIRY_PLUS_ONE,
+        market_payload_source=lambda _condition_id: _polymarket_market_payload(
+            winning_token_id="up-token"
+        ),
+    )
 
     assert written == 1
     row = fetch_outcome(store.db_path, "btc-updown-5m-1780502400")
-    assert row["computed_winner"] == "UP"
-    assert row["official_resolution_status"] == "pending"
+    assert row["computed_winner"] is None
+    assert row["official_winner"] == "UP"
+    assert row["winning_token_id"] == "up-token"
+    assert row["official_resolution_status"] == "resolved"
+    assert row["official_label_source"] == "polymarket_clob_market"
     assert row["mismatch"] is None
 
 
@@ -47,15 +112,23 @@ def test_latest_market_outcome_rows_reads_history_read_only(tmp_path: Path) -> N
         start_price=65_000.0,
         end_price=65_000.0,
     )
-    upsert_computed_market_outcomes(store=store, asof_ts=UTC_EXPIRY_PLUS_ONE)
+    upsert_official_market_outcomes(
+        store=store,
+        asof_ts=UTC_EXPIRY_PLUS_ONE,
+        market_payload_source=lambda _condition_id: _polymarket_market_payload(
+            winning_token_id="down-token"
+        ),
+    )
 
     rows = latest_market_outcome_rows(duckdb_path=store.db_path, limit=4)
 
     assert rows[0]["market_id"] == "btc-updown-5m-1780502400"
-    assert rows[0]["computed_winner"] == "UP"
+    assert rows[0]["computed_winner"] is None
+    assert rows[0]["official_winner"] == "DOWN"
+    assert rows[0]["winning_token_id"] == "down-token"
 
 
-def test_computed_outcome_marks_down_when_end_price_is_below_start(
+def test_official_outcome_does_not_label_from_chainlink_prices(
     tmp_path: Path,
 ) -> None:
     store = seeded_store_with_btc_market(
@@ -64,26 +137,38 @@ def test_computed_outcome_marks_down_when_end_price_is_below_start(
         end_price=64_999.99,
     )
 
-    upsert_computed_market_outcomes(store=store, asof_ts=UTC_EXPIRY_PLUS_ONE)
+    written = upsert_official_market_outcomes(
+        store=store,
+        asof_ts=UTC_EXPIRY_PLUS_ONE,
+        market_payload_source=lambda _condition_id: None,
+    )
 
-    assert fetch_outcome(store.db_path, "btc-updown-5m-1780502400")[
-        "computed_winner"
-    ] == "DOWN"
+    row = fetch_outcome(store.db_path, "btc-updown-5m-1780502400")
+    assert written == 1
+    assert row["computed_winner"] is None
+    assert row["official_winner"] is None
+    assert row["official_resolution_status"] == "pending"
 
 
-def test_computed_outcome_waits_until_after_expiry(tmp_path: Path) -> None:
+def test_official_outcome_waits_until_after_expiry(tmp_path: Path) -> None:
     store = seeded_store_with_btc_market(
         tmp_path,
         start_price=65_000.0,
         end_price=64_999.99,
     )
 
-    written = upsert_computed_market_outcomes(store=store, asof_ts=UTC_BEFORE_EXPIRY)
+    written = upsert_official_market_outcomes(
+        store=store,
+        asof_ts=UTC_BEFORE_EXPIRY,
+        market_payload_source=lambda _condition_id: _polymarket_market_payload(
+            winning_token_id="up-token"
+        ),
+    )
 
     assert written == 0
 
 
-def test_computed_outcome_skips_when_chainlink_end_tick_is_missing(
+def test_official_outcome_does_not_require_chainlink_end_tick(
     tmp_path: Path,
 ) -> None:
     store = seeded_store_with_btc_market(
@@ -92,12 +177,21 @@ def test_computed_outcome_skips_when_chainlink_end_tick_is_missing(
         end_price=None,
     )
 
-    written = upsert_computed_market_outcomes(store=store, asof_ts=UTC_EXPIRY_PLUS_ONE)
+    written = upsert_official_market_outcomes(
+        store=store,
+        asof_ts=UTC_EXPIRY_PLUS_ONE,
+        market_payload_source=lambda _condition_id: _polymarket_market_payload(
+            winning_token_id="down-token"
+        ),
+    )
 
-    assert written == 0
+    row = fetch_outcome(store.db_path, "btc-updown-5m-1780502400")
+    assert written == 1
+    assert row["computed_winner"] is None
+    assert row["official_winner"] == "DOWN"
 
 
-def test_computed_outcome_never_uses_coinbase_for_labels(tmp_path: Path) -> None:
+def test_official_outcome_never_uses_coinbase_for_labels(tmp_path: Path) -> None:
     store = seeded_store_with_btc_market(
         tmp_path,
         start_price=None,
@@ -106,9 +200,17 @@ def test_computed_outcome_never_uses_coinbase_for_labels(tmp_path: Path) -> None
         coinbase_end_price=65_001.0,
     )
 
-    written = upsert_computed_market_outcomes(store=store, asof_ts=UTC_EXPIRY_PLUS_ONE)
+    written = upsert_official_market_outcomes(
+        store=store,
+        asof_ts=UTC_EXPIRY_PLUS_ONE,
+        market_payload_source=lambda _condition_id: None,
+    )
 
-    assert written == 0
+    row = fetch_outcome(store.db_path, "btc-updown-5m-1780502400")
+    assert written == 1
+    assert row["computed_winner"] is None
+    assert row["official_winner"] is None
+    assert row["official_resolution_status"] == "pending"
 
 
 def seeded_store_with_btc_market(
@@ -176,7 +278,8 @@ def fetch_outcome(db_path: Path, market_id: str) -> dict[str, object]:
     with duckdb.connect(str(db_path), read_only=True) as conn:
         row = conn.execute(
             """
-            select market_id, computed_winner, official_resolution_status, mismatch
+            select market_id, computed_winner, official_winner, winning_token_id,
+                   official_resolution_status, official_label_source, mismatch
             from validation.market_outcome_history
             where market_id = ?
             """,
@@ -186,8 +289,25 @@ def fetch_outcome(db_path: Path, market_id: str) -> dict[str, object]:
     return {
         "market_id": row[0],
         "computed_winner": row[1],
-        "official_resolution_status": row[2],
-        "mismatch": row[3],
+        "official_winner": row[2],
+        "winning_token_id": row[3],
+        "official_resolution_status": row[4],
+        "official_label_source": row[5],
+        "mismatch": row[6],
+    }
+
+
+def _polymarket_market_payload(*, winning_token_id: str) -> dict[str, object]:
+    return {
+        "closed": True,
+        "tokens": [
+            {"token_id": "up-token", "outcome": "Up", "winner": winning_token_id == "up-token"},
+            {
+                "token_id": "down-token",
+                "outcome": "Down",
+                "winner": winning_token_id == "down-token",
+            },
+        ],
     }
 
 

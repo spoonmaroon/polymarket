@@ -277,13 +277,14 @@ def test_store_upserts_and_reads_market_outcome_history(tmp_path: Path) -> None:
                 end_price=104_001.0,
                 end_event_ts=expiry_ts,
                 end_observed_ts=expiry_ts,
-                computed_winner="UP",
-                computed_label_source="polymarket_rtds_chainlink",
-                computed_at=expiry_ts,
-                official_winner=None,
-                official_resolution_status="pending",
-                official_label_source=None,
-                official_resolved_at=None,
+                computed_winner=None,
+                computed_label_source=None,
+                computed_at=None,
+                official_winner="UP",
+                winning_token_id="up-token",
+                official_resolution_status="resolved",
+                official_label_source="polymarket_clob_market",
+                official_resolved_at=expiry_ts,
                 rule_hash="hash",
                 mismatch=None,
             ),
@@ -294,9 +295,10 @@ def test_store_upserts_and_reads_market_outcome_history(tmp_path: Path) -> None:
 
     assert written == 1
     assert rows[0]["market_id"] == "btc-updown-5m-1780264500"
-    assert rows[0]["computed_winner"] == "UP"
-    assert rows[0]["official_winner"] is None
-    assert rows[0]["official_resolution_status"] == "pending"
+    assert rows[0]["computed_winner"] is None
+    assert rows[0]["official_winner"] == "UP"
+    assert rows[0]["winning_token_id"] == "up-token"
+    assert rows[0]["official_resolution_status"] == "resolved"
     assert rows[0]["mismatch"] is None
 
 

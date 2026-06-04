@@ -27,8 +27,9 @@ from polymarket_engine.probability.runtime import compute_and_persist_probabilit
 from polymarket_engine.probability.runtime import latest_probability_output_rows_from_connection
 from polymarket_engine.storage.atomic import durable_replace
 from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
+from polymarket_engine.validation.outcomes import PolymarketClobMarketPayloadSource
 from polymarket_engine.validation.outcomes import latest_market_outcome_rows_from_connection
-from polymarket_engine.validation.outcomes import upsert_computed_market_outcomes
+from polymarket_engine.validation.outcomes import upsert_official_market_outcomes
 from polymarket_engine.validation.outcomes import write_outcome_history_status
 
 
@@ -38,6 +39,7 @@ PROBABILITY_OUTPUT_LIMIT = 8
 PROBABILITY_MAX_STATE_AGE_SECONDS = 600.0
 OUTCOME_OUTPUT_LIMIT = 20
 OUTCOME_REFRESH_INTERVAL_SECONDS = 30.0
+OFFICIAL_OUTCOME_SOURCE_ENV = "POLYMARKET_OFFICIAL_OUTCOME_SOURCE"
 
 
 @dataclass(frozen=True)
@@ -750,9 +752,10 @@ def _state_build_unavailable(exc: ValueError) -> UnavailableDecisionState:
 
 
 def _upsert_market_outcomes(*, store: DuckDbIngestStore, out_path: Path) -> int:
-    written = upsert_computed_market_outcomes(
+    written = upsert_official_market_outcomes(
         store=store,
         asof_ts=datetime.now(timezone.utc),
+        market_payload_source=_official_outcome_payload_source_from_env(),
     )
     with store._connection() as conn:
         rows = latest_market_outcome_rows_from_connection(
@@ -761,6 +764,19 @@ def _upsert_market_outcomes(*, store: DuckDbIngestStore, out_path: Path) -> int:
         )
     write_outcome_history_status(out_path=out_path, rows=rows)
     return written
+
+
+def _official_outcome_payload_source_from_env() -> PolymarketClobMarketPayloadSource | None:
+    source = os.environ.get(OFFICIAL_OUTCOME_SOURCE_ENV, "").strip().lower()
+    if source not in {"clob", "polymarket_clob", "polymarket_clob_market"}:
+        return None
+    return PolymarketClobMarketPayloadSource(
+        base_url=os.environ.get(
+            "POLYMARKET_CLOB_HTTP_URL",
+            "https://clob.polymarket.com",
+        ),
+        timeout_seconds=float(os.environ.get("POLYMARKET_OFFICIAL_OUTCOME_TIMEOUT_SECONDS", "2.0")),
+    )
 
 
 def _write_probability_status(

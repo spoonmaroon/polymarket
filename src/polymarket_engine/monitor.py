@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import duckdb
 
@@ -411,7 +411,7 @@ def _positive_number_or_none(value: object) -> float | None:
     if value is None or isinstance(value, bool):
         return None
     try:
-        number = float(value)
+        number = float(cast(Any, value))
     except (TypeError, ValueError):
         return None
     if number <= 0:

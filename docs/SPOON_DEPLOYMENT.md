@@ -228,10 +228,10 @@ desktop shortcut so the new binary is loaded.
 
 Each displayed BTC/ETH 5m row is one binary market window. The CLOB books remain
 separate Up and Down token books internally, and the selected Book panel renders
-both sides for the chosen market. The Outcomes tab keeps `computed_winner`
-separate from `official_winner`: computed labels are Chainlink-derived after
-expiry, while official labels remain pending until an explicit
-Polymarket/UMA/onchain resolution fetch exists.
+both sides for the chosen market. The Outcomes tab shows only the official
+winner, winning token id, and status. Labels come from Polymarket CLOB market
+metadata where a known Up or Down token has `winner=true`; if the source is
+missing or ambiguous, the row stays pending.
 
 The normalizer publishes outcome history to
 `/var/lib/polymarket/live/outcomes.json`, and the API reads that file before any

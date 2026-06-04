@@ -536,9 +536,10 @@ mod tests {
                 asset: Some("BTC".to_string()),
                 start_ts: None,
                 expiry_ts: Some("2026-06-03T21:25:00Z".to_string()),
-                computed_winner: Some("UP".to_string()),
-                official_winner: None,
-                official_resolution_status: "pending".to_string(),
+                computed_winner: None,
+                official_winner: Some("UP".to_string()),
+                winning_token_id: Some("up-token".to_string()),
+                official_resolution_status: "resolved".to_string(),
                 mismatch: None,
             }],
         }
@@ -645,7 +646,7 @@ mod tests {
         );
         assert_eq!(
             app.runtime_outcomes.as_ref().unwrap().rows[0]
-                .computed_winner
+                .official_winner
                 .as_deref(),
             Some("UP")
         );
@@ -815,9 +816,10 @@ mod tests {
                     "market_id": "btc-updown-5m-1780521900",
                     "asset": "BTC",
                     "expiry_ts": "2026-06-03T21:25:00Z",
-                    "computed_winner": "UP",
-                    "official_winner": null,
-                    "official_resolution_status": "pending",
+                    "computed_winner": null,
+                    "official_winner": "UP",
+                    "winning_token_id": "up-token",
+                    "official_resolution_status": "resolved",
                     "mismatch": null
                 }]
             }"#

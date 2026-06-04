@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import duckdb
 
@@ -473,7 +473,7 @@ def _contract_label(*, asset: str, side: str, start_ts: datetime, expiry_ts: dat
 def _float(value: object, field_name: str) -> float:
     if value is None or isinstance(value, bool):
         raise ValueError(f"{field_name} is required")
-    number = float(value)
+    number = float(cast(Any, value))
     if not math.isfinite(number):
         raise ValueError(f"{field_name} must be finite")
     return number
@@ -482,7 +482,7 @@ def _float(value: object, field_name: str) -> float:
 def _int(value: object, field_name: str) -> int:
     if value is None or isinstance(value, bool):
         raise ValueError(f"{field_name} is required")
-    number = float(value)
+    number = float(cast(Any, value))
     if not math.isfinite(number) or number < 0:
         raise ValueError(f"{field_name} must be nonnegative")
     return int(number)

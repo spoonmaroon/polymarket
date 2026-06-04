@@ -140,11 +140,10 @@ are token-level. The selected book panel renders both token books for the
 selected market.
 
 The normalizer writes `validation.market_outcome_history` for expired recorded
-markets when Chainlink start and end ticks are available. `computed_winner` is a
-read-only Chainlink-rule-derived label. `official_winner` stays pending until a
-future Polymarket/UMA/onchain resolution source is explicitly fetched and
-verified. A computed/official mismatch is a validation incident, not a trading
-signal.
+markets from official Polymarket CLOB market metadata when that source marks a
+known Up or Down token as `winner=true`. `computed_winner` remains nullable for
+JSON/schema compatibility and is not populated as an outcome label. If the
+official source is unavailable or ambiguous, `official_winner` stays pending.
 
 The normalizer also writes `data/live/outcomes.json` from its writer-owned
 DuckDB connection. `/api/runtime/outcomes` reads that live file first so the

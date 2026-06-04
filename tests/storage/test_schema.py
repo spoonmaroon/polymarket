@@ -77,6 +77,7 @@ def test_market_outcome_history_schema_has_expected_columns(tmp_path: Path) -> N
         "computed_label_source",
         "computed_at",
         "official_winner",
+        "winning_token_id",
         "official_resolution_status",
         "official_label_source",
         "official_resolved_at",

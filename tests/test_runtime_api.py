@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 from polymarket_engine.app import create_app
 from polymarket_engine.app import create_app_from_env
 from polymarket_engine.domain.contracts import ContractSpec
+from polymarket_engine.domain.market_state import DataQualityFlag
 from polymarket_engine.domain.market_state import DecisionState
 from polymarket_engine.probability.schema import ProbabilityInput, ProbabilityOutput
 from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
@@ -362,7 +363,7 @@ def test_runtime_live_stream_emits_sse_payload(tmp_path: Path) -> None:
 
 
 def test_runtime_outcomes_returns_market_level_history(tmp_path: Path) -> None:
-    store = _seeded_store_with_outcome(tmp_path, computed_winner="UP")
+    store = _seeded_store_with_outcome(tmp_path, official_winner="UP")
     app = create_app(status_path=tmp_path / "missing-status.json", duckdb_path=store.db_path)
 
     response = TestClient(app).get("/api/runtime/outcomes?limit=4")
@@ -371,8 +372,10 @@ def test_runtime_outcomes_returns_market_level_history(tmp_path: Path) -> None:
     payload = response.json()
     assert payload["ok"] is True
     assert payload["rows"][0]["market"] == "BTC 5m"
-    assert payload["rows"][0]["computed_winner"] == "UP"
-    assert payload["rows"][0]["official_resolution_status"] == "pending"
+    assert payload["rows"][0]["computed_winner"] is None
+    assert payload["rows"][0]["official_winner"] == "UP"
+    assert payload["rows"][0]["winning_token_id"] == "up-token"
+    assert payload["rows"][0]["official_resolution_status"] == "resolved"
 
 
 def test_runtime_outcomes_reads_live_outcome_status_file(tmp_path: Path) -> None:
@@ -450,7 +453,7 @@ def test_runtime_outcomes_rejects_malformed_live_outcome_status_rows(
                 "ok": True,
                 "state": "OK",
                 "generated_at": datetime.now(UTC).isoformat(),
-                "rows": [{"market": "BTC 5m", "computed_winner": "UP"}],
+                "rows": [{"market": "BTC 5m", "official_winner": "UP"}],
             }
         ),
         encoding="utf-8",
@@ -847,7 +850,7 @@ def _contract() -> ContractSpec:
 
 def _decision_state(
     *,
-    data_quality_flags: tuple[str, ...] = (),
+    data_quality_flags: tuple[DataQualityFlag, ...] = (),
 ) -> DecisionState:
     contract = _contract()
     asof_ts = datetime(2026, 6, 3, 20, 3, tzinfo=timezone.utc)
@@ -890,7 +893,7 @@ def _decision_state(
 def _seeded_store_with_outcome(
     tmp_path: Path,
     *,
-    computed_winner: str,
+    official_winner: str,
 ) -> DuckDbIngestStore:
     from polymarket_engine.storage.duckdb_store import MarketOutcomeRecord
 
@@ -917,13 +920,14 @@ def _seeded_store_with_outcome(
                 end_price=70_100.0,
                 end_event_ts=expiry_ts,
                 end_observed_ts=expiry_ts,
-                computed_winner=computed_winner,
-                computed_label_source="polymarket_rtds_chainlink",
-                computed_at=expiry_ts,
-                official_winner=None,
-                official_resolution_status="pending",
-                official_label_source=None,
-                official_resolved_at=None,
+                computed_winner=None,
+                computed_label_source=None,
+                computed_at=None,
+                official_winner=official_winner,
+                winning_token_id="up-token" if official_winner == "UP" else "down-token",
+                official_resolution_status="resolved",
+                official_label_source="polymarket_clob_market",
+                official_resolved_at=expiry_ts,
                 rule_hash="hash",
                 mismatch=None,
             ),
@@ -932,7 +936,7 @@ def _seeded_store_with_outcome(
     return store
 
 
-def _runtime_outcome_row(asset: str, computed_winner: str) -> dict[str, object]:
+def _runtime_outcome_row(asset: str, official_winner: str) -> dict[str, object]:
     return {
         "market": f"{asset} 5m",
         "market_id": f"{asset.lower()}-updown-5m-1780502400",
@@ -941,9 +945,10 @@ def _runtime_outcome_row(asset: str, computed_winner: str) -> dict[str, object]:
         "interval": "5m",
         "start_ts": "2026-06-03T20:00:00+00:00",
         "expiry_ts": "2026-06-03T20:05:00+00:00",
-        "computed_winner": computed_winner,
-        "official_winner": None,
-        "official_resolution_status": "pending",
+        "computed_winner": None,
+        "official_winner": official_winner,
+        "winning_token_id": "up-token" if official_winner == "UP" else "down-token",
+        "official_resolution_status": "resolved",
         "mismatch": None,
     }
 

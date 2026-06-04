@@ -136,6 +136,7 @@ class MarketOutcomeRecord:
     computed_label_source: str | None
     computed_at: datetime | None
     official_winner: str | None
+    winning_token_id: str | None
     official_resolution_status: str
     official_label_source: str | None
     official_resolved_at: datetime | None
@@ -724,6 +725,7 @@ class DuckDbIngestStore:
                 record.computed_label_source,
                 record.computed_at,
                 record.official_winner,
+                record.winning_token_id,
                 record.official_resolution_status,
                 record.official_label_source,
                 record.official_resolved_at,
@@ -741,9 +743,9 @@ class DuckDbIngestStore:
                  up_token_id, down_token_id, threshold_price, threshold_event_ts,
                  threshold_observed_ts, end_price, end_event_ts, end_observed_ts,
                  computed_winner, computed_label_source, computed_at, official_winner,
-                 official_resolution_status, official_label_source, official_resolved_at,
+                 winning_token_id, official_resolution_status, official_label_source, official_resolved_at,
                  rule_hash, mismatch, updated_at)
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 rows,
             )
@@ -775,6 +777,7 @@ class DuckDbIngestStore:
                     computed_label_source,
                     computed_at::VARCHAR,
                     official_winner,
+                    winning_token_id,
                     official_resolution_status,
                     official_label_source,
                     official_resolved_at::VARCHAR,
@@ -807,6 +810,7 @@ class DuckDbIngestStore:
             "computed_label_source",
             "computed_at",
             "official_winner",
+            "winning_token_id",
             "official_resolution_status",
             "official_label_source",
             "official_resolved_at",
@@ -1256,6 +1260,9 @@ def _drop_incompatible_tables(conn: duckdb.DuckDBPyConnection) -> None:
             "book_event_ts",
             "source_observed_lag_ms",
             "book_observed_lag_ms",
+        },
+        ("validation", "market_outcome_history"): {
+            "winning_token_id",
         },
     }
     for (schema_name, table_name), columns in required_columns.items():

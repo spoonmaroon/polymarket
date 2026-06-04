@@ -12,10 +12,9 @@ use crate::state::AppState;
 pub struct OutcomeDisplayRow {
     pub market: String,
     pub expiry: String,
-    pub computed: String,
-    pub official: String,
+    pub winner: String,
+    pub token: String,
     pub status: String,
-    pub mismatch: String,
 }
 
 pub fn outcome_rows(app: &AppState) -> Vec<OutcomeDisplayRow> {
@@ -28,13 +27,9 @@ pub fn outcome_rows(app: &AppState) -> Vec<OutcomeDisplayRow> {
                 .map(|row| OutcomeDisplayRow {
                     market: row.market.clone(),
                     expiry: compact_timestamp(row.expiry_ts.as_deref()),
-                    computed: optional_as_dash(row.computed_winner.as_deref()),
-                    official: optional_as_dash(row.official_winner.as_deref()),
+                    winner: optional_as_dash(row.official_winner.as_deref()),
+                    token: optional_as_dash(row.winning_token_id.as_deref()),
                     status: row.official_resolution_status.clone(),
-                    mismatch: row
-                        .mismatch
-                        .map(|value| value.to_string())
-                        .unwrap_or_else(|| "-".to_string()),
                 })
                 .collect()
         })
@@ -48,18 +43,15 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
             Row::new(vec![
                 Cell::from(row.market),
                 Cell::from(row.expiry),
-                Cell::from(row.computed),
-                Cell::from(row.official),
+                Cell::from(row.winner),
+                Cell::from(row.token),
                 Cell::from(row.status),
-                Cell::from(row.mismatch),
             ])
         })
         .collect::<Vec<_>>();
     let rows = if rows.is_empty() {
         vec![Row::new(vec![
             Cell::from("outcomes pending"),
-            Cell::from("-"),
-            Cell::from("-"),
             Cell::from("-"),
             Cell::from("-"),
             Cell::from("-"),
@@ -72,17 +64,14 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         [
             Constraint::Length(14),
             Constraint::Length(12),
-            Constraint::Length(9),
-            Constraint::Length(9),
-            Constraint::Length(10),
+            Constraint::Length(8),
+            Constraint::Length(16),
             Constraint::Min(8),
         ],
     )
     .header(
-        Row::new(vec![
-            "Market", "Expiry", "Computed", "Official", "Status", "Mismatch",
-        ])
-        .style(Style::default().fg(Color::Cyan)),
+        Row::new(vec!["Market", "Expiry", "Winner", "Token", "Status"])
+            .style(Style::default().fg(Color::Cyan)),
     )
     .block(Block::bordered().title("Outcomes"));
 
@@ -115,19 +104,19 @@ mod tests {
     };
 
     #[test]
-    fn outcome_rows_keep_computed_and_official_labels_separate() {
-        let app = app_with_outcomes("UP", None, "pending");
+    fn outcome_rows_show_official_label_only() {
+        let app = app_with_outcomes(Some("UP"), Some("up-token"), "resolved");
 
         let rows = outcome_rows(&app);
 
-        assert_eq!(rows[0].computed, "UP");
-        assert_eq!(rows[0].official, "-");
-        assert_eq!(rows[0].status, "pending");
+        assert_eq!(rows[0].winner, "UP");
+        assert_eq!(rows[0].token, "up-token");
+        assert_eq!(rows[0].status, "resolved");
     }
 
     fn app_with_outcomes(
-        computed_winner: &str,
         official_winner: Option<&str>,
+        winning_token_id: Option<&str>,
         official_resolution_status: &str,
     ) -> AppState {
         AppState {
@@ -141,8 +130,9 @@ mod tests {
                     asset: Some("BTC".to_string()),
                     start_ts: None,
                     expiry_ts: Some("2026-06-03T21:25:00Z".to_string()),
-                    computed_winner: Some(computed_winner.to_string()),
+                    computed_winner: None,
                     official_winner: official_winner.map(str::to_string),
+                    winning_token_id: winning_token_id.map(str::to_string),
                     official_resolution_status: official_resolution_status.to_string(),
                     mismatch: None,
                 }],

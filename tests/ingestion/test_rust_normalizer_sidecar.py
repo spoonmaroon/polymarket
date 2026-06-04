@@ -147,11 +147,14 @@ def test_normalizer_writes_market_outcome_history(tmp_path: Path) -> None:
     outcome_payload = json.loads(outcome_path.read_text(encoding="utf-8"))
     assert outcome_payload["schema_version"] == "polymarket-outcome-runtime-v1"
     assert outcome_payload["rows"][0]["market"] == "BTC 5m"
-    assert outcome_payload["rows"][0]["computed_winner"] == "UP"
+    assert outcome_payload["rows"][0]["computed_winner"] is None
+    assert outcome_payload["rows"][0]["official_winner"] is None
+    assert outcome_payload["rows"][0]["official_resolution_status"] == "pending"
     with duckdb.connect(str(db_path), read_only=True) as conn:
         assert conn.execute(
-            "select computed_winner from validation.market_outcome_history"
-        ).fetchone() == ("UP",)
+            "select computed_winner, official_winner, official_resolution_status "
+            "from validation.market_outcome_history"
+        ).fetchone() == (None, None, "pending")
 
 
 def test_cadence_sleep_subtracts_cycle_elapsed_time() -> None:

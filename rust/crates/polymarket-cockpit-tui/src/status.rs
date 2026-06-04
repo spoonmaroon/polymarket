@@ -98,6 +98,8 @@ pub struct RuntimeOutcomeRow {
     pub computed_winner: Option<String>,
     #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
     pub official_winner: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub winning_token_id: Option<String>,
     pub official_resolution_status: String,
     pub mismatch: Option<bool>,
 }
@@ -395,16 +397,19 @@ mod tests {
                 "market_id": "btc-updown-5m-1780521900",
                 "asset": "BTC",
                 "expiry_ts": "2026-06-03T21:25:00Z",
-                "computed_winner": "UP",
-                "official_winner": null,
-                "official_resolution_status": "pending",
+                "computed_winner": null,
+                "official_winner": "UP",
+                "winning_token_id": "up-token",
+                "official_resolution_status": "resolved",
                 "mismatch": null
             }]
         }"#;
 
         let outcomes: RuntimeOutcomes = serde_json::from_str(payload).unwrap();
 
-        assert_eq!(outcomes.rows[0].computed_winner.as_deref(), Some("UP"));
-        assert_eq!(outcomes.rows[0].official_resolution_status, "pending");
+        assert_eq!(outcomes.rows[0].computed_winner.as_deref(), None);
+        assert_eq!(outcomes.rows[0].official_winner.as_deref(), Some("UP"));
+        assert_eq!(outcomes.rows[0].winning_token_id.as_deref(), Some("up-token"));
+        assert_eq!(outcomes.rows[0].official_resolution_status, "resolved");
     }
 }

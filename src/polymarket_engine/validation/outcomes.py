@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -11,14 +11,14 @@ from pathlib import Path
 from typing import Any
 
 import duckdb
+import httpx
 
-from polymarket_engine.domain.market_state import PriceObservation
-from polymarket_engine.features.rust_decision_snapshots import SETTLEMENT_SOURCE_KEY
 from polymarket_engine.storage.atomic import durable_replace
 from polymarket_engine.storage.duckdb_store import DuckDbIngestStore, MarketOutcomeRecord
 
 OUTCOME_HISTORY_SCHEMA_VERSION = "polymarket-outcome-runtime-v1"
 OUTCOME_STATUS_MAX_AGE_SECONDS = 120.0
+POLYMARKET_CLOB_MARKET_LABEL_SOURCE = "polymarket_clob_market"
 OUTCOME_STATUS_REQUIRED_ROW_FIELDS = (
     "market",
     "market_id",
@@ -29,9 +29,11 @@ OUTCOME_STATUS_REQUIRED_ROW_FIELDS = (
     "expiry_ts",
     "computed_winner",
     "official_winner",
+    "winning_token_id",
     "official_resolution_status",
     "mismatch",
 )
+MarketPayloadSource = Callable[[str], Mapping[str, Any] | None]
 
 
 @dataclass(frozen=True)
@@ -51,18 +53,89 @@ class _ContractRow:
     rule_hash: str
 
 
-def computed_winner(*, threshold_price: float, end_price: float) -> str:
-    return "UP" if end_price >= threshold_price else "DOWN"
+@dataclass(frozen=True)
+class OfficialOutcomeResolution:
+    official_winner: str | None
+    winning_token_id: str | None
+    official_resolution_status: str
+    official_label_source: str | None
+    official_resolved_at: datetime | None
 
 
-def upsert_computed_market_outcomes(
+class PolymarketClobMarketPayloadSource:
+    def __init__(
+        self,
+        *,
+        base_url: str = "https://clob.polymarket.com",
+        timeout_seconds: float = 2.0,
+    ) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.timeout = httpx.Timeout(
+            timeout_seconds,
+            connect=min(timeout_seconds, 2.0),
+        )
+
+    def __call__(self, condition_id: str) -> Mapping[str, Any] | None:
+        try:
+            response = httpx.get(
+                f"{self.base_url}/markets/{condition_id}",
+                timeout=self.timeout,
+            )
+            if response.status_code == 404:
+                return None
+            response.raise_for_status()
+            payload = response.json()
+        except (httpx.HTTPError, ValueError):
+            return None
+        return payload if isinstance(payload, dict) else None
+
+
+def official_resolution_from_polymarket_market(
+    payload: Mapping[str, Any],
+    *,
+    up_token_id: str,
+    down_token_id: str,
+    observed_at: datetime,
+) -> OfficialOutcomeResolution:
+    tokens = payload.get("tokens")
+    if not isinstance(tokens, list):
+        return _pending_official_resolution()
+    winning_token_ids = tuple(
+        token_id
+        for token in tokens
+        if isinstance(token, Mapping)
+        if token.get("winner") is True
+        for token_id in (_token_id_from_payload(token),)
+        if token_id is not None
+    )
+    if len(winning_token_ids) != 1:
+        return _pending_official_resolution()
+    winning_token_id = winning_token_ids[0]
+    if winning_token_id == up_token_id:
+        winner = "UP"
+    elif winning_token_id == down_token_id:
+        winner = "DOWN"
+    else:
+        return _pending_official_resolution()
+    return OfficialOutcomeResolution(
+        official_winner=winner,
+        winning_token_id=winning_token_id,
+        official_resolution_status="resolved",
+        official_label_source=POLYMARKET_CLOB_MARKET_LABEL_SOURCE,
+        official_resolved_at=_to_utc(observed_at),
+    )
+
+
+def upsert_official_market_outcomes(
     *,
     store: DuckDbIngestStore,
     asof_ts: datetime,
+    market_payload_source: MarketPayloadSource | None = None,
 ) -> int:
     asof_ts = _to_utc(asof_ts)
     contract_rows = _expired_contract_rows(store=store, asof_ts=asof_ts)
     records: list[MarketOutcomeRecord] = []
+    payload_cache: dict[str, Mapping[str, Any] | None] = {}
     for market_rows in _group_by_market(contract_rows).values():
         up = market_rows.get("UP")
         down = market_rows.get("DOWN")
@@ -70,25 +143,25 @@ def upsert_computed_market_outcomes(
             continue
         if up.expiry_ts > asof_ts:
             continue
-        threshold = _threshold_tick(store=store, contract=up, asof_ts=asof_ts)
-        end = store.latest_price_tick_before(
-            source_key=SETTLEMENT_SOURCE_KEY,
-            symbol=up.settlement_symbol,
-            event_ts_lte=up.expiry_ts,
-            observed_ts_lte=asof_ts,
+        existing = _official_fields(store=store, market_id=up.market_id)
+        payload = _market_payload_for_condition(
+            condition_id=up.condition_id,
+            market_payload_source=market_payload_source,
+            payload_cache=payload_cache,
         )
-        if threshold is None or end is None:
-            continue
-        if end.event_ts <= threshold.event_ts:
-            continue
-        winner = computed_winner(threshold_price=threshold.price, end_price=end.price)
-        official = _official_fields(store=store, market_id=up.market_id)
-        official_winner = official["official_winner"]
-        official_status = official["official_resolution_status"] or "pending"
-        mismatch = (
-            official_winner != winner
-            if official_winner is not None and official_status != "pending"
-            else None
+        resolution = (
+            official_resolution_from_polymarket_market(
+                payload,
+                up_token_id=up.token_id,
+                down_token_id=down.token_id,
+                observed_at=asof_ts,
+            )
+            if payload is not None
+            else _pending_official_resolution()
+        )
+        resolution = _preserve_existing_resolved_official_fields(
+            existing=existing,
+            resolution=resolution,
         )
         records.append(
             MarketOutcomeRecord(
@@ -101,21 +174,22 @@ def upsert_computed_market_outcomes(
                 expiry_ts=up.expiry_ts,
                 up_token_id=up.token_id,
                 down_token_id=down.token_id,
-                threshold_price=threshold.price,
-                threshold_event_ts=threshold.event_ts,
-                threshold_observed_ts=threshold.observed_ts,
-                end_price=end.price,
-                end_event_ts=end.event_ts,
-                end_observed_ts=end.observed_ts,
-                computed_winner=winner,
-                computed_label_source=SETTLEMENT_SOURCE_KEY,
-                computed_at=asof_ts,
-                official_winner=official_winner,
-                official_resolution_status=official_status,
-                official_label_source=official["official_label_source"],
-                official_resolved_at=official["official_resolved_at"],
+                threshold_price=None,
+                threshold_event_ts=None,
+                threshold_observed_ts=None,
+                end_price=None,
+                end_event_ts=None,
+                end_observed_ts=None,
+                computed_winner=None,
+                computed_label_source=None,
+                computed_at=None,
+                official_winner=resolution.official_winner,
+                winning_token_id=resolution.winning_token_id,
+                official_resolution_status=resolution.official_resolution_status,
+                official_label_source=resolution.official_label_source,
+                official_resolved_at=resolution.official_resolved_at,
                 rule_hash=up.rule_hash,
-                mismatch=mismatch,
+                mismatch=None,
             )
         )
     return store.upsert_market_outcome_records(tuple(records))
@@ -213,6 +287,7 @@ def latest_market_outcome_rows_from_connection(
             computed_label_source,
             computed_at::VARCHAR,
             official_winner,
+            winning_token_id,
             official_resolution_status,
             official_label_source,
             official_resolved_at::VARCHAR,
@@ -245,6 +320,7 @@ def latest_market_outcome_rows_from_connection(
         "computed_label_source",
         "computed_at",
         "official_winner",
+        "winning_token_id",
         "official_resolution_status",
         "official_label_source",
         "official_resolved_at",
@@ -427,34 +503,12 @@ def _group_by_market(
     return grouped
 
 
-def _threshold_tick(
-    *,
-    store: DuckDbIngestStore,
-    contract: _ContractRow,
-    asof_ts: datetime,
-) -> PriceObservation | None:
-    if contract.threshold_type == "fixed_price" and contract.threshold_price is not None:
-        return PriceObservation(
-            source_key=SETTLEMENT_SOURCE_KEY,
-            symbol=contract.settlement_symbol,
-            event_ts=contract.start_ts,
-            observed_ts=contract.start_ts,
-            price=contract.threshold_price,
-        )
-    return store.latest_price_tick_before(
-        source_key=SETTLEMENT_SOURCE_KEY,
-        symbol=contract.settlement_symbol,
-        event_ts_lte=contract.start_ts,
-        observed_ts_lte=asof_ts,
-    )
-
-
 def _official_fields(store: DuckDbIngestStore, *, market_id: str) -> dict[str, Any]:
     with store._connection() as conn:
         row = conn.execute(
             """
-            select official_winner, official_resolution_status, official_label_source,
-                   official_resolved_at::VARCHAR
+            select official_winner, winning_token_id, official_resolution_status,
+                   official_label_source, official_resolved_at::VARCHAR
             from validation.market_outcome_history
             where market_id = ?
             """,
@@ -463,15 +517,17 @@ def _official_fields(store: DuckDbIngestStore, *, market_id: str) -> dict[str, A
     if row is None:
         return {
             "official_winner": None,
+            "winning_token_id": None,
             "official_resolution_status": "pending",
             "official_label_source": None,
             "official_resolved_at": None,
         }
     return {
         "official_winner": row[0],
-        "official_resolution_status": row[1],
-        "official_label_source": row[2],
-        "official_resolved_at": _parse_optional_duckdb_ts(row[3]),
+        "winning_token_id": row[1],
+        "official_resolution_status": row[2],
+        "official_label_source": row[3],
+        "official_resolved_at": _parse_optional_duckdb_ts(row[4]),
     }
 
 
@@ -486,9 +542,59 @@ def _runtime_row(row: dict[str, Any]) -> dict[str, Any]:
         "expiry_ts": _iso_string(row["expiry_ts"]),
         "computed_winner": row["computed_winner"],
         "official_winner": row["official_winner"],
+        "winning_token_id": row["winning_token_id"],
         "official_resolution_status": row["official_resolution_status"],
         "mismatch": row["mismatch"],
     }
+
+
+def _pending_official_resolution() -> OfficialOutcomeResolution:
+    return OfficialOutcomeResolution(
+        official_winner=None,
+        winning_token_id=None,
+        official_resolution_status="pending",
+        official_label_source=None,
+        official_resolved_at=None,
+    )
+
+
+def _market_payload_for_condition(
+    *,
+    condition_id: str,
+    market_payload_source: MarketPayloadSource | None,
+    payload_cache: dict[str, Mapping[str, Any] | None],
+) -> Mapping[str, Any] | None:
+    if market_payload_source is None:
+        return None
+    if condition_id not in payload_cache:
+        payload_cache[condition_id] = market_payload_source(condition_id)
+    return payload_cache[condition_id]
+
+
+def _preserve_existing_resolved_official_fields(
+    *,
+    existing: dict[str, Any],
+    resolution: OfficialOutcomeResolution,
+) -> OfficialOutcomeResolution:
+    if resolution.official_winner is not None:
+        return resolution
+    if existing["official_winner"] is None:
+        return resolution
+    return OfficialOutcomeResolution(
+        official_winner=existing["official_winner"],
+        winning_token_id=existing["winning_token_id"],
+        official_resolution_status=existing["official_resolution_status"] or "resolved",
+        official_label_source=existing["official_label_source"],
+        official_resolved_at=existing["official_resolved_at"],
+    )
+
+
+def _token_id_from_payload(token: Mapping[str, Any]) -> str | None:
+    for field in ("token_id", "tokenId", "asset_id", "assetId", "id"):
+        value = token.get(field)
+        if value is not None:
+            return str(value)
+    return None
 
 
 def _interval_from_slug(slug: str) -> str:

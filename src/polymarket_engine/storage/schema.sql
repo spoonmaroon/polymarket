@@ -244,6 +244,7 @@ CREATE TABLE IF NOT EXISTS validation.market_outcome_history (
     computed_label_source VARCHAR,
     computed_at TIMESTAMPTZ,
     official_winner VARCHAR,
+    winning_token_id VARCHAR,
     official_resolution_status VARCHAR NOT NULL,
     official_label_source VARCHAR,
     official_resolved_at TIMESTAMPTZ,
