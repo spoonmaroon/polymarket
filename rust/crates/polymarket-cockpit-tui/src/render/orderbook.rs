@@ -14,9 +14,11 @@ use crate::{
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BookDisplayRow {
-    pub contract: String,
+    pub side: String,
+    pub bid_size: String,
     pub bid: String,
     pub ask: String,
+    pub ask_size: String,
 }
 
 pub fn book_title(app: &AppState) -> String {
@@ -53,27 +55,25 @@ fn side_book_rows(side: &str, orderbook: &RuntimeOrderbookRow) -> Vec<BookDispla
 
     (0..row_count)
         .map(|index| BookDisplayRow {
-            contract: side.to_string(),
-            bid: bids.get(index).map_or("-".to_string(), |level| {
-                price_size(level.price.as_deref(), level.size.as_deref())
-            }),
-            ask: asks.get(index).map_or("-".to_string(), |level| {
-                price_size(level.price.as_deref(), level.size.as_deref())
-            }),
+            side: if index == 0 { side } else { "" }.to_string(),
+            bid_size: bids
+                .get(index)
+                .and_then(|level| positive_scalar(level.size.as_deref()))
+                .unwrap_or_else(|| "-".to_string()),
+            bid: bids
+                .get(index)
+                .and_then(|level| positive_scalar(level.price.as_deref()))
+                .unwrap_or_else(|| "-".to_string()),
+            ask: asks
+                .get(index)
+                .and_then(|level| positive_scalar(level.price.as_deref()))
+                .unwrap_or_else(|| "-".to_string()),
+            ask_size: asks
+                .get(index)
+                .and_then(|level| positive_scalar(level.size.as_deref()))
+                .unwrap_or_else(|| "-".to_string()),
         })
         .collect()
-}
-
-fn price_size(price: Option<&str>, size: Option<&str>) -> String {
-    let Some(price) = positive_scalar(price) else {
-        return "-".to_string();
-    };
-
-    if let Some(size) = positive_scalar(size) {
-        format!("{price} x{size}")
-    } else {
-        price
-    }
 }
 
 fn compare_level_price_asc(left: &RuntimeBookLevel, right: &RuntimeBookLevel) -> Ordering {
@@ -127,15 +127,19 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         .into_iter()
         .map(|row| {
             Row::new(vec![
-                Cell::from(row.contract),
+                Cell::from(row.side),
+                Cell::from(row.bid_size),
                 Cell::from(row.bid),
                 Cell::from(row.ask),
+                Cell::from(row.ask_size),
             ])
         })
         .collect::<Vec<_>>();
     let rows = if rows.is_empty() {
         vec![Row::new(vec![
             Cell::from("monitor pending"),
+            Cell::from("-"),
+            Cell::from("-"),
             Cell::from("-"),
             Cell::from("-"),
         ])]
@@ -145,12 +149,17 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let table = Table::new(
         rows,
         [
+            ratatui::layout::Constraint::Length(6),
             ratatui::layout::Constraint::Length(12),
-            ratatui::layout::Constraint::Length(16),
-            ratatui::layout::Constraint::Min(16),
+            ratatui::layout::Constraint::Length(8),
+            ratatui::layout::Constraint::Length(8),
+            ratatui::layout::Constraint::Min(12),
         ],
     )
-    .header(Row::new(vec!["Contract", "Bid", "Ask"]).style(Style::default().fg(Color::Cyan)))
+    .header(
+        Row::new(vec!["Side", "Bid Size", "Bid", "Ask", "Ask Size"])
+            .style(Style::default().fg(Color::Cyan)),
+    )
     .block(Block::bordered().title(book_title(app)));
 
     frame.render_widget(table, area);
@@ -213,11 +222,16 @@ mod tests {
 
         let rows = book_rows(&app);
 
-        assert_eq!(rows[0].contract, "DOWN");
-        assert_eq!(rows[0].bid, "0.86 x33");
-        assert_eq!(rows[0].ask, "0.87 x14.46");
-        assert_eq!(rows[1].bid, "0.84 x10");
-        assert_eq!(rows[1].ask, "0.88 x20");
+        assert_eq!(rows[0].side, "DOWN");
+        assert_eq!(rows[0].bid_size, "33");
+        assert_eq!(rows[0].bid, "0.86");
+        assert_eq!(rows[0].ask, "0.87");
+        assert_eq!(rows[0].ask_size, "14.46");
+        assert_eq!(rows[1].side, "");
+        assert_eq!(rows[1].bid_size, "10");
+        assert_eq!(rows[1].bid, "0.84");
+        assert_eq!(rows[1].ask, "0.88");
+        assert_eq!(rows[1].ask_size, "20");
     }
 
     #[test]
@@ -268,9 +282,12 @@ mod tests {
 
         let rows = book_rows(&app);
 
-        assert_eq!(rows[0].bid, "0.50 x639.47");
-        assert_eq!(rows[0].ask, "0.51 x603.36");
-        assert_eq!(rows[1].ask, "0.99 x7690.54");
+        assert_eq!(rows[0].bid_size, "639.47");
+        assert_eq!(rows[0].bid, "0.50");
+        assert_eq!(rows[0].ask, "0.51");
+        assert_eq!(rows[0].ask_size, "603.36");
+        assert_eq!(rows[1].ask, "0.99");
+        assert_eq!(rows[1].ask_size, "7690.54");
     }
 
     #[test]
@@ -316,8 +333,10 @@ mod tests {
         let rows = book_rows(&app);
 
         assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].bid_size, "-");
         assert_eq!(rows[0].bid, "-");
-        assert_eq!(rows[0].ask, "0.51 x603.36");
+        assert_eq!(rows[0].ask, "0.51");
+        assert_eq!(rows[0].ask_size, "603.36");
     }
 
     #[test]
@@ -384,9 +403,11 @@ mod tests {
         let rows = book_rows(&app);
 
         assert!(book_title(&app).starts_with("Book: BTC 5m "));
-        assert_eq!(rows[0].contract, "DOWN");
-        assert_eq!(rows[0].bid, "0.49 x1256.68");
-        assert_eq!(rows[0].ask, "0.50 x702.96");
+        assert_eq!(rows[0].side, "DOWN");
+        assert_eq!(rows[0].bid_size, "1256.68");
+        assert_eq!(rows[0].bid, "0.49");
+        assert_eq!(rows[0].ask, "0.50");
+        assert_eq!(rows[0].ask_size, "702.96");
     }
 
     #[test]
@@ -408,8 +429,8 @@ mod tests {
         let rows = book_rows(&app);
 
         assert!(title.starts_with("Book: BTC 5m"));
-        assert_eq!(rows[0].contract, "UP");
-        assert_eq!(rows[1].contract, "DOWN");
+        assert_eq!(rows[0].side, "UP");
+        assert_eq!(rows[1].side, "DOWN");
     }
 
     fn orderbook_with_level(
