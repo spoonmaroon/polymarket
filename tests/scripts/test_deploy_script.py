@@ -315,6 +315,9 @@ def test_pc_deploy_script_refreshes_tui_desktop_launcher() -> None:
         "up -d --no-recreate collector normalizer api"
     ) in script
     assert "python3 -c %q" in script
+    assert 'm=p.get("monitor") or {}' in script
+    assert 'len(m.get("orderbooks") or []) > 0' in script
+    assert 'p.get("status",{}).get("counts",{})' not in script
     assert "--engine-api-url http://127.0.0.1:%s --poll-interval-ms 250" in script
     assert '"\\$PC_API_PORT"' in script
     assert "\\\\n' \"\\$PC_API_PORT\"" not in script
