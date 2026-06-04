@@ -1,4 +1,4 @@
-use chrono::{DateTime, Local};
+use chrono::{DateTime, Local, Utc};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -18,11 +18,20 @@ pub struct MarketDisplayRow {
     pub up: String,
     pub down: String,
     pub spread: String,
+    pub ttl: String,
     pub seen: String,
 }
 
-pub fn market_header_labels() -> [&'static str; 6] {
-    ["", "Market", "UP bid/ask", "DOWN bid/ask", "Spread", "Seen"]
+pub fn market_header_labels() -> [&'static str; 7] {
+    [
+        "",
+        "Market",
+        "UP bid/ask",
+        "DOWN bid/ask",
+        "Spread",
+        "TTL",
+        "Seen",
+    ]
 }
 
 #[cfg(test)]
@@ -37,7 +46,8 @@ pub fn market_rows_for_visible_count(app: &AppState, visible_rows: usize) -> Vec
     app.runtime_monitor
         .as_ref()
         .map(|monitor| {
-            let display_rows = market_display_rows(&monitor.orderbooks, selected_index);
+            let display_rows =
+                market_display_rows(&monitor.orderbooks, selected_index, &monitor.generated_at);
             let selected_display_index = display_rows.iter().position(|row| row.marker == ">");
             let start =
                 visible_market_start(display_rows.len(), selected_display_index, visible_rows);
@@ -53,18 +63,31 @@ pub fn market_rows_for_visible_count(app: &AppState, visible_rows: usize) -> Vec
 fn market_display_rows(
     orderbooks: &[RuntimeOrderbookRow],
     selected_index: Option<usize>,
+    generated_at: &str,
 ) -> Vec<MarketDisplayRow> {
     let mut rows = Vec::new();
     let mut last_asset: Option<String> = None;
     for (index, group) in market_view::market_groups(orderbooks).iter().enumerate() {
         let asset = group.asset.clone();
         if last_asset.as_deref() != Some(asset.as_str()) {
+            if last_asset.is_some() {
+                rows.push(MarketDisplayRow {
+                    marker: " ".to_string(),
+                    market: String::new(),
+                    up: String::new(),
+                    down: String::new(),
+                    spread: String::new(),
+                    ttl: String::new(),
+                    seen: String::new(),
+                });
+            }
             rows.push(MarketDisplayRow {
                 marker: " ".to_string(),
                 market: asset.clone(),
                 up: String::new(),
                 down: String::new(),
                 spread: String::new(),
+                ttl: String::new(),
                 seen: String::new(),
             });
             last_asset = Some(asset);
@@ -80,6 +103,7 @@ fn market_display_rows(
             up: top_quote(group.up),
             down: top_quote(group.down),
             spread: tight_spread(group.up, group.down),
+            ttl: countdown_to_expiry(group.expiry_ts, generated_at),
             seen: compact_timestamp(freshest_seen(group.up, group.down).as_deref()),
         });
     }
@@ -190,6 +214,30 @@ fn compact_timestamp(timestamp: Option<&str>) -> String {
     time.to_string()
 }
 
+fn countdown_to_expiry(expiry_ts: Option<DateTime<Utc>>, generated_at: &str) -> String {
+    let Some(expiry_ts) = expiry_ts else {
+        return "-".to_string();
+    };
+    let Ok(generated_at) = DateTime::parse_from_rfc3339(generated_at) else {
+        return "-".to_string();
+    };
+    let remaining = expiry_ts
+        .signed_duration_since(generated_at.with_timezone(&Utc))
+        .num_seconds();
+    if remaining <= 0 {
+        return "expired".to_string();
+    }
+
+    let hours = remaining / 3600;
+    let minutes = (remaining % 3600) / 60;
+    let seconds = remaining % 60;
+    if hours > 0 {
+        format!("{hours:02}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("{minutes:02}:{seconds:02}")
+    }
+}
+
 pub fn render(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let [counts_area, orderbook_area] = Layout::default()
         .direction(Direction::Vertical)
@@ -205,6 +253,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
                 Cell::from(row.up),
                 Cell::from(row.down),
                 Cell::from(row.spread),
+                Cell::from(row.ttl),
                 Cell::from(row.seen),
             ])
         })
@@ -213,6 +262,8 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         vec![Row::new(vec![
             Cell::from(" "),
             Cell::from("monitor pending"),
+            Cell::from("-"),
+            Cell::from("-"),
             Cell::from("-"),
             Cell::from("-"),
             Cell::from("-"),
@@ -228,6 +279,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
             Constraint::Length(13),
             Constraint::Length(13),
             Constraint::Length(7),
+            Constraint::Length(8),
             Constraint::Min(9),
         ],
     )
@@ -427,13 +479,55 @@ mod tests {
 
         assert_eq!(
             market_header_labels(),
-            ["", "Market", "UP bid/ask", "DOWN bid/ask", "Spread", "Seen"]
+            [
+                "",
+                "Market",
+                "UP bid/ask",
+                "DOWN bid/ask",
+                "Spread",
+                "TTL",
+                "Seen"
+            ]
         );
         assert_eq!(rows[0].market, "BTC");
         assert_eq!(rows[1].marker, ">");
         assert_eq!(rows[1].seen, local_timestamp_label("2026-06-03T21:05:47Z"));
-        assert_eq!(rows[2].market, "ETH");
-        assert_eq!(rows[3].marker, " ");
+        assert_eq!(rows[2].market, "");
+        assert_eq!(rows[3].market, "ETH");
+        assert_eq!(rows[4].marker, " ");
+    }
+
+    #[test]
+    fn market_rows_show_countdown_to_expiration_from_monitor_time() {
+        let app = AppState {
+            runtime_monitor: Some(RuntimeMonitor {
+                generated_at: "2026-06-03T21:23:20Z".to_string(),
+                price_rows: Vec::new(),
+                orderbooks: vec![RuntimeOrderbookRow {
+                    venue: Some("polymarket".to_string()),
+                    source_key: Some("polymarket_rust_sdk".to_string()),
+                    market_slug: Some("btc-updown-5m-1780521900".to_string()),
+                    contract_id: "btc-up".to_string(),
+                    token_id: Some("btc-up-token".to_string()),
+                    asset: Some("BTC".to_string()),
+                    side: Some("UP".to_string()),
+                    event_ts: None,
+                    observed_ts: Some("2026-06-03T21:23:18Z".to_string()),
+                    best_bid: Some("0.45".to_string()),
+                    best_ask: Some("0.46".to_string()),
+                    spread: Some("0.01".to_string()),
+                    bid_size_top: None,
+                    ask_size_top: None,
+                    bids: Vec::new(),
+                    asks: Vec::new(),
+                }],
+            }),
+            ..Default::default()
+        };
+
+        let rows = market_rows(&app);
+
+        assert_eq!(rows[1].ttl, "01:40");
     }
 
     #[test]
@@ -517,6 +611,100 @@ mod tests {
             rows.last().map(|row| row.down.as_str()),
             Some("0.111/0.112")
         );
+    }
+
+    #[test]
+    fn market_rows_keep_selected_contract_visible_with_asset_spacers() {
+        let mut app = AppState {
+            runtime_monitor: Some(RuntimeMonitor {
+                generated_at: "2026-06-03T21:06:00Z".to_string(),
+                price_rows: Vec::new(),
+                orderbooks: vec![
+                    RuntimeOrderbookRow {
+                        venue: Some("polymarket".to_string()),
+                        source_key: Some("polymarket_rust_sdk".to_string()),
+                        market_slug: Some("btc-updown-5m-1780521900".to_string()),
+                        contract_id: "btc-early".to_string(),
+                        token_id: Some("btc-early-token".to_string()),
+                        asset: Some("BTC".to_string()),
+                        side: Some("UP".to_string()),
+                        event_ts: None,
+                        observed_ts: Some("2026-06-03T21:05:55Z".to_string()),
+                        best_bid: Some("0.41".to_string()),
+                        best_ask: Some("0.42".to_string()),
+                        spread: Some("0.01".to_string()),
+                        bid_size_top: None,
+                        ask_size_top: None,
+                        bids: Vec::new(),
+                        asks: Vec::new(),
+                    },
+                    RuntimeOrderbookRow {
+                        venue: Some("polymarket".to_string()),
+                        source_key: Some("polymarket_rust_sdk".to_string()),
+                        market_slug: Some("btc-updown-5m-1780522200".to_string()),
+                        contract_id: "btc-late".to_string(),
+                        token_id: Some("btc-late-token".to_string()),
+                        asset: Some("BTC".to_string()),
+                        side: Some("UP".to_string()),
+                        event_ts: None,
+                        observed_ts: Some("2026-06-03T21:05:56Z".to_string()),
+                        best_bid: Some("0.51".to_string()),
+                        best_ask: Some("0.52".to_string()),
+                        spread: Some("0.01".to_string()),
+                        bid_size_top: None,
+                        ask_size_top: None,
+                        bids: Vec::new(),
+                        asks: Vec::new(),
+                    },
+                    RuntimeOrderbookRow {
+                        venue: Some("polymarket".to_string()),
+                        source_key: Some("polymarket_rust_sdk".to_string()),
+                        market_slug: Some("eth-updown-5m-1780521900".to_string()),
+                        contract_id: "eth-early".to_string(),
+                        token_id: Some("eth-early-token".to_string()),
+                        asset: Some("ETH".to_string()),
+                        side: Some("UP".to_string()),
+                        event_ts: None,
+                        observed_ts: Some("2026-06-03T21:05:57Z".to_string()),
+                        best_bid: Some("0.61".to_string()),
+                        best_ask: Some("0.62".to_string()),
+                        spread: Some("0.01".to_string()),
+                        bid_size_top: None,
+                        ask_size_top: None,
+                        bids: Vec::new(),
+                        asks: Vec::new(),
+                    },
+                    RuntimeOrderbookRow {
+                        venue: Some("polymarket".to_string()),
+                        source_key: Some("polymarket_rust_sdk".to_string()),
+                        market_slug: Some("eth-updown-5m-1780522200".to_string()),
+                        contract_id: "eth-late".to_string(),
+                        token_id: Some("eth-late-token".to_string()),
+                        asset: Some("ETH".to_string()),
+                        side: Some("UP".to_string()),
+                        event_ts: None,
+                        observed_ts: Some("2026-06-03T21:05:58Z".to_string()),
+                        best_bid: Some("0.71".to_string()),
+                        best_ask: Some("0.72".to_string()),
+                        spread: Some("0.01".to_string()),
+                        bid_size_top: None,
+                        ask_size_top: None,
+                        bids: Vec::new(),
+                        asks: Vec::new(),
+                    },
+                ],
+            }),
+            ..Default::default()
+        };
+        app.sync_market_selection();
+        app.select_previous_market();
+
+        let rows = market_rows_for_visible_count(&app, 3);
+
+        assert_eq!(app.selected_market_index(), Some(3));
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows.last().map(|row| row.marker.as_str()), Some(">"));
+        assert_eq!(rows.last().map(|row| row.up.as_str()), Some("0.71/0.72"));
     }
 
     fn local_epoch_label(epoch_seconds: i64) -> String {

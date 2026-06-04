@@ -22,7 +22,7 @@ use crate::{
 };
 
 type Tui = Terminal<CrosstermBackend<Stdout>>;
-const AUXILIARY_POLL_INTERVAL: Duration = Duration::from_secs(1);
+const AUXILIARY_POLL_INTERVAL: Duration = Duration::from_secs(3);
 
 pub async fn run(mut app: AppState, engine_api_url: String, poll_interval_ms: u64) -> Result<()> {
     let mut terminal = TerminalGuard::enter()?;
@@ -135,6 +135,14 @@ fn apply_key(app: &mut AppState, key_code: KeyCode) -> bool {
         }
         KeyCode::Down if app.active_tab == MainTab::Market => {
             app.select_next_market();
+            false
+        }
+        KeyCode::Up if app.active_tab == MainTab::Outcomes => {
+            app.select_previous_outcome();
+            false
+        }
+        KeyCode::Down if app.active_tab == MainTab::Outcomes => {
+            app.select_next_outcome();
             false
         }
         _ => false,
@@ -255,7 +263,10 @@ fn apply_runtime_update(app: &mut AppState, update: RuntimeUpdate) -> bool {
     }
 
     if let Some(outcomes) = update.outcomes {
-        changed |= replace_if_changed(&mut app.runtime_outcomes, outcomes);
+        if replace_if_changed(&mut app.runtime_outcomes, outcomes) {
+            app.sync_outcome_selection();
+            changed = true;
+        }
     }
 
     if let Some(display_lag) = update.display_lag {
@@ -464,7 +475,8 @@ mod tests {
     use tokio::sync::mpsc;
 
     use super::{
-        RuntimeUpdate, apply_key, drain_runtime_updates, poll_interval_duration, poll_runtime,
+        AUXILIARY_POLL_INTERVAL, RuntimeUpdate, apply_key, drain_runtime_updates,
+        poll_interval_duration, poll_runtime,
     };
     use crate::client::EngineClient;
     use crate::{
@@ -572,6 +584,12 @@ mod tests {
     #[test]
     fn poll_interval_duration_uses_configured_milliseconds() {
         assert_eq!(poll_interval_duration(250), Duration::from_millis(250));
+    }
+
+    #[test]
+    fn auxiliary_poll_interval_is_slower_than_live_market_polling() {
+        assert_eq!(poll_interval_duration(100), Duration::from_millis(100));
+        assert_eq!(AUXILIARY_POLL_INTERVAL, Duration::from_secs(3));
     }
 
     #[tokio::test]
@@ -715,6 +733,52 @@ mod tests {
 
         assert!(!apply_key(&mut app, KeyCode::Up));
         assert_eq!(app.selected_market_index(), Some(0));
+    }
+
+    #[test]
+    fn apply_key_moves_outcome_selection_with_up_down() {
+        let mut app = AppState {
+            active_tab: MainTab::Outcomes,
+            runtime_outcomes: Some(RuntimeOutcomes {
+                ok: true,
+                state: "OK".to_string(),
+                generated_at: Some("2026-06-03T22:00:00Z".to_string()),
+                rows: vec![
+                    RuntimeOutcomeRow {
+                        market: "BTC 5m".to_string(),
+                        market_id: "btc-updown-5m-1780521900".to_string(),
+                        asset: Some("BTC".to_string()),
+                        start_ts: None,
+                        expiry_ts: Some("2026-06-03T21:25:00Z".to_string()),
+                        computed_winner: None,
+                        official_winner: Some("UP".to_string()),
+                        winning_token_id: Some("up-token".to_string()),
+                        official_resolution_status: "resolved".to_string(),
+                        mismatch: None,
+                    },
+                    RuntimeOutcomeRow {
+                        market: "ETH 5m".to_string(),
+                        market_id: "eth-updown-5m-1780521900".to_string(),
+                        asset: Some("ETH".to_string()),
+                        start_ts: None,
+                        expiry_ts: Some("2026-06-03T21:25:00Z".to_string()),
+                        computed_winner: None,
+                        official_winner: Some("DOWN".to_string()),
+                        winning_token_id: Some("down-token".to_string()),
+                        official_resolution_status: "resolved".to_string(),
+                        mismatch: None,
+                    },
+                ],
+            }),
+            ..Default::default()
+        };
+        app.sync_outcome_selection();
+
+        assert!(!apply_key(&mut app, KeyCode::Down));
+        assert_eq!(app.selected_outcome_index, Some(1));
+
+        assert!(!apply_key(&mut app, KeyCode::Up));
+        assert_eq!(app.selected_outcome_index, Some(0));
     }
 
     fn delayed_runtime_api_url(delay: Duration) -> String {

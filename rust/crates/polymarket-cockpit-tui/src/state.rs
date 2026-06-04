@@ -49,6 +49,7 @@ pub struct AppState {
     pub runtime_display_lag: Option<RuntimeDisplayLag>,
     pub runtime_error: Option<String>,
     pub selected_market_key: Option<String>,
+    pub selected_outcome_index: Option<usize>,
 }
 
 impl Default for AppState {
@@ -64,6 +65,7 @@ impl Default for AppState {
             runtime_display_lag: None,
             runtime_error: None,
             selected_market_key: None,
+            selected_outcome_index: None,
         }
     }
 }
@@ -141,10 +143,52 @@ impl AppState {
         self.set_selected_market_index((current + count - 1) % count);
     }
 
+    pub fn sync_outcome_selection(&mut self) {
+        let Some(count) = self.outcome_count().filter(|count| *count > 0) else {
+            self.selected_outcome_index = None;
+            return;
+        };
+
+        self.selected_outcome_index = Some(
+            self.selected_outcome_index
+                .unwrap_or_default()
+                .min(count - 1),
+        );
+    }
+
+    pub fn effective_outcome_index(&self) -> Option<usize> {
+        let count = self.outcome_count().filter(|count| *count > 0)?;
+        Some(self.selected_outcome_index.unwrap_or_default().min(count - 1))
+    }
+
+    pub fn select_next_outcome(&mut self) {
+        let Some(count) = self.outcome_count().filter(|count| *count > 0) else {
+            self.selected_outcome_index = None;
+            return;
+        };
+        let current = self.effective_outcome_index().unwrap_or_default();
+        self.selected_outcome_index = Some((current + 1) % count);
+    }
+
+    pub fn select_previous_outcome(&mut self) {
+        let Some(count) = self.outcome_count().filter(|count| *count > 0) else {
+            self.selected_outcome_index = None;
+            return;
+        };
+        let current = self.effective_outcome_index().unwrap_or_default();
+        self.selected_outcome_index = Some((current + count - 1) % count);
+    }
+
     fn orderbook_count(&self) -> Option<usize> {
         self.runtime_monitor
             .as_ref()
             .map(|monitor| crate::market_view::market_groups(&monitor.orderbooks).len())
+    }
+
+    fn outcome_count(&self) -> Option<usize> {
+        self.runtime_outcomes
+            .as_ref()
+            .map(|outcomes| outcomes.rows.len())
     }
 
     fn default_market_index(&self) -> Option<usize> {
@@ -200,7 +244,7 @@ fn is_btc_group(group: &crate::market_view::MarketGroup<'_>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{AppState, MainTab};
-    use crate::status::{RuntimeMonitor, RuntimeOrderbookRow};
+    use crate::status::{RuntimeMonitor, RuntimeOutcomeRow, RuntimeOutcomes, RuntimeOrderbookRow};
 
     #[test]
     fn cockpit_defaults_to_live_read_only_tab() {
@@ -357,6 +401,41 @@ mod tests {
         assert_eq!(app.selected_market_index(), Some(1));
     }
 
+    #[test]
+    fn outcome_selection_moves_with_up_down_and_wraps() {
+        let mut app = AppState {
+            runtime_outcomes: Some(outcomes(vec!["BTC 5m 16:25", "ETH 5m 16:25"])),
+            ..Default::default()
+        };
+
+        app.sync_outcome_selection();
+        assert_eq!(app.selected_outcome_index, Some(0));
+
+        app.select_next_outcome();
+        assert_eq!(app.selected_outcome_index, Some(1));
+
+        app.select_next_outcome();
+        assert_eq!(app.selected_outcome_index, Some(0));
+
+        app.select_previous_outcome();
+        assert_eq!(app.selected_outcome_index, Some(1));
+    }
+
+    #[test]
+    fn outcome_selection_clamps_when_outcome_rows_shrink() {
+        let mut app = AppState {
+            runtime_outcomes: Some(outcomes(vec!["BTC 5m 16:25", "ETH 5m 16:25"])),
+            ..Default::default()
+        };
+        app.sync_outcome_selection();
+        app.select_next_outcome();
+
+        app.runtime_outcomes = Some(outcomes(vec!["BTC 5m 16:25"]));
+        app.sync_outcome_selection();
+
+        assert_eq!(app.selected_outcome_index, Some(0));
+    }
+
     fn monitor(orderbooks: Vec<RuntimeOrderbookRow>) -> RuntimeMonitor {
         RuntimeMonitor {
             generated_at: "2026-06-03T21:06:00Z".to_string(),
@@ -388,6 +467,30 @@ mod tests {
             ask_size_top: None,
             bids: Vec::new(),
             asks: Vec::new(),
+        }
+    }
+
+    fn outcomes(markets: Vec<&str>) -> RuntimeOutcomes {
+        RuntimeOutcomes {
+            ok: true,
+            state: "OK".to_string(),
+            generated_at: Some("2026-06-03T22:00:00Z".to_string()),
+            rows: markets
+                .into_iter()
+                .enumerate()
+                .map(|(index, market)| RuntimeOutcomeRow {
+                    market: market.to_string(),
+                    market_id: format!("market-{index}"),
+                    asset: Some("BTC".to_string()),
+                    start_ts: None,
+                    expiry_ts: Some("2026-06-03T21:25:00Z".to_string()),
+                    computed_winner: None,
+                    official_winner: Some("UP".to_string()),
+                    winning_token_id: Some(format!("token-{index}")),
+                    official_resolution_status: "resolved".to_string(),
+                    mismatch: None,
+                })
+                .collect(),
         }
     }
 }
