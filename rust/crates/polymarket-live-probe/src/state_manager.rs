@@ -340,6 +340,7 @@ fn start_hot_decision_worker(
     })
 }
 
+#[cfg(test)]
 pub fn build_snapshot_from_warmed(
     now: DateTime<Utc>,
     config: &StateManagerConfig,
@@ -357,6 +358,7 @@ pub fn build_snapshot_from_warmed(
     )
 }
 
+#[cfg(test)]
 pub fn build_snapshot_from_warmed_with_price_history(
     now: DateTime<Utc>,
     config: &StateManagerConfig,
@@ -475,6 +477,7 @@ fn build_snapshot_from_warmed_inner(
     })
 }
 
+#[cfg(test)]
 fn latest_prices_by_symbol(history: &[NormalizedPriceTick]) -> Vec<NormalizedPriceTick> {
     let mut latest_by_symbol = HashMap::new();
     for tick in history {
