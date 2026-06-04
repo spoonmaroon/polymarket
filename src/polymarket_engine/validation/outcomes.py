@@ -6,7 +6,7 @@ import time
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -272,6 +272,62 @@ def build_outcome_history_payload(
         "state": "OK",
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "rows": [_runtime_row(row) for row in rows],
+    }
+
+
+def backfill_outcome_history(
+    *,
+    duckdb_path: Path,
+    outcomes_path: Path,
+    asof_ts: datetime | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    limit: int | None = None,
+    write: bool = False,
+    market_payload_source: MarketPayloadSource | None = None,
+) -> dict[str, Any]:
+    asof_ts = _to_utc(asof_ts or datetime.now(timezone.utc))
+    expiry_start_ts = _parse_utc_date_start(start_date) if start_date is not None else None
+    expiry_end_ts = _parse_utc_next_day_start(end_date) if end_date is not None else None
+    store = DuckDbIngestStore(duckdb_path)
+    store.apply_schema()
+    before = _outcome_backfill_counts(
+        store=store,
+        asof_ts=asof_ts,
+        expiry_start_ts=expiry_start_ts,
+        expiry_end_ts=expiry_end_ts,
+    )
+    rows_written = 0
+    if write:
+        rows_written = upsert_official_market_outcomes(
+            store=store,
+            asof_ts=asof_ts,
+            market_payload_source=market_payload_source,
+            max_markets=limit,
+            expiry_start_ts=expiry_start_ts,
+            expiry_end_ts=expiry_end_ts,
+        )
+        rows = latest_market_outcome_rows(duckdb_path=duckdb_path, limit=5000)
+        write_outcome_history_status(out_path=outcomes_path, rows=rows)
+    after = _outcome_backfill_counts(
+        store=store,
+        asof_ts=asof_ts,
+        expiry_start_ts=expiry_start_ts,
+        expiry_end_ts=expiry_end_ts,
+    )
+    return {
+        "ok": True,
+        "dry_run": not write,
+        "asof_ts": asof_ts.isoformat(),
+        "start_date": start_date,
+        "end_date": end_date,
+        "limit": limit,
+        "markets_scanned": before["markets_scanned"],
+        "rows_written": rows_written,
+        "missing_k_before": before["missing_k"],
+        "missing_k_after": after["missing_k"],
+        "pending_official_before": before["pending_official"],
+        "pending_official_after": after["pending_official"],
     }
 
 
@@ -568,6 +624,64 @@ def _expired_contract_rows(
     )
 
 
+def _outcome_backfill_counts(
+    *,
+    store: DuckDbIngestStore,
+    asof_ts: datetime,
+    expiry_start_ts: datetime | None,
+    expiry_end_ts: datetime | None,
+) -> dict[str, int]:
+    filters = ["expiry_ts <= ?"]
+    params: list[object] = [asof_ts]
+    if expiry_start_ts is not None:
+        filters.append("expiry_ts >= ?")
+        params.append(expiry_start_ts)
+    if expiry_end_ts is not None:
+        filters.append("expiry_ts < ?")
+        params.append(expiry_end_ts)
+    with store._connection() as conn:
+        row = conn.execute(
+            f"""
+            with markets as (
+                select market_id, max(expiry_ts) as expiry_ts
+                from core.contracts
+                where {" and ".join(filters)}
+                group by market_id
+            )
+            select
+                count(*) as markets_scanned,
+                sum(
+                    case
+                        when history.market_id is null
+                          or history.threshold_price is null
+                        then 1
+                        else 0
+                    end
+                ) as missing_k,
+                sum(
+                    case
+                        when history.market_id is null
+                          or history.official_resolution_status = 'pending'
+                          or history.official_winner is null
+                        then 1
+                        else 0
+                    end
+                ) as pending_official
+            from markets
+            left join validation.market_outcome_history as history
+              on markets.market_id = history.market_id
+            """,
+            params,
+        ).fetchone()
+    if row is None:
+        return {"markets_scanned": 0, "missing_k": 0, "pending_official": 0}
+    return {
+        "markets_scanned": int(row[0] or 0),
+        "missing_k": int(row[1] or 0),
+        "pending_official": int(row[2] or 0),
+    }
+
+
 def _group_by_market(
     rows: tuple[_ContractRow, ...],
 ) -> dict[str, dict[str, _ContractRow]]:
@@ -618,6 +732,15 @@ def _selected_market_groups(
 def _market_group_id(rows: dict[str, _ContractRow]) -> str | None:
     first = next(iter(rows.values()), None)
     return first.market_id if first is not None else None
+
+
+def _parse_utc_date_start(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value).date()
+    return datetime(parsed.year, parsed.month, parsed.day, tzinfo=timezone.utc)
+
+
+def _parse_utc_next_day_start(value: str) -> datetime:
+    return _parse_utc_date_start(value) + timedelta(days=1)
 
 
 def _pending_official_market_ids(

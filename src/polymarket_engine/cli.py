@@ -147,6 +147,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     verify_hot_replay.add_argument("--scan-limit", type=int, default=1000)
     verify_hot_replay.add_argument("--report-out", type=Path, default=None)
 
+    backfill_outcomes = subparsers.add_parser("backfill-outcomes")
+    backfill_outcomes.add_argument("--duckdb-path", type=Path, required=True)
+    backfill_outcomes.add_argument("--outcomes-path", type=Path, required=True)
+    backfill_outcomes.add_argument("--start-date", default=None)
+    backfill_outcomes.add_argument("--end-date", default=None)
+    backfill_outcomes.add_argument("--limit", type=int, default=500)
+    backfill_outcomes.add_argument("--write", action="store_true")
+    backfill_outcomes.add_argument("--official-outcome-source", default="clob")
+    backfill_outcomes.add_argument("--official-timeout-seconds", type=float, default=2.0)
+
     return parser.parse_args(argv)
 
 
@@ -166,6 +176,8 @@ async def run_collect_command(argv: list[str] | None = None) -> int:
         return _run_rust_normalizer_sidecar(args)
     if args.command == "verify-hot-decision-replay":
         return _run_verify_hot_decision_replay(args)
+    if args.command == "backfill-outcomes":
+        return _run_backfill_outcomes(args)
     if args.command != "collect":
         return 2
     raise SystemExit(RETIRED_COLLECTOR_MESSAGE)
@@ -336,6 +348,30 @@ def _run_verify_hot_decision_replay(args: argparse.Namespace) -> int:
         )
     print(json.dumps(payload, sort_keys=True))
     return 0 if payload["ok"] else 1
+
+
+def _run_backfill_outcomes(args: argparse.Namespace) -> int:
+    from polymarket_engine.validation.outcomes import (
+        PolymarketClobMarketPayloadSource,
+        backfill_outcome_history,
+    )
+
+    market_payload_source = None
+    if args.official_outcome_source == "clob":
+        market_payload_source = PolymarketClobMarketPayloadSource(
+            timeout_seconds=args.official_timeout_seconds,
+        )
+    report = backfill_outcome_history(
+        duckdb_path=args.duckdb_path,
+        outcomes_path=args.outcomes_path,
+        start_date=args.start_date,
+        end_date=args.end_date,
+        limit=args.limit,
+        write=args.write,
+        market_payload_source=market_payload_source,
+    )
+    print(json.dumps(report, sort_keys=True, separators=(",", ":")))
+    return 0 if report.get("ok") is True else 1
 
 
 def _isoformat_optional(value: object) -> str | None:

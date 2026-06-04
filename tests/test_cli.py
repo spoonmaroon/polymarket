@@ -274,6 +274,119 @@ def test_parse_verify_hot_decision_replay_args() -> None:
 
 
 @pytest.mark.anyio
+async def test_backfill_outcomes_dry_run_prints_summary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls: list[dict[str, object]] = []
+    expected_report = {
+        "ok": True,
+        "dry_run": True,
+        "asof_ts": "2026-06-04T12:00:00+00:00",
+        "start_date": "2026-06-01",
+        "end_date": "2026-06-02",
+        "limit": 500,
+        "markets_scanned": 3,
+        "rows_written": 0,
+        "missing_k_before": 2,
+        "missing_k_after": 2,
+        "pending_official_before": 1,
+        "pending_official_after": 1,
+    }
+
+    def fake_backfill_outcome_history(**kwargs: object) -> dict[str, object]:
+        calls.append(kwargs)
+        return expected_report
+
+    monkeypatch.setattr(
+        "polymarket_engine.validation.outcomes.backfill_outcome_history",
+        fake_backfill_outcome_history,
+    )
+
+    result = await cli.run_collect_command(
+        [
+            "backfill-outcomes",
+            "--duckdb-path",
+            str(tmp_path / "state.duckdb"),
+            "--outcomes-path",
+            str(tmp_path / "live" / "outcomes.json"),
+            "--start-date",
+            "2026-06-01",
+            "--end-date",
+            "2026-06-02",
+        ]
+    )
+
+    assert result == 0
+    assert calls == [
+        {
+            "duckdb_path": tmp_path / "state.duckdb",
+            "outcomes_path": tmp_path / "live" / "outcomes.json",
+            "start_date": "2026-06-01",
+            "end_date": "2026-06-02",
+            "limit": 500,
+            "write": False,
+            "market_payload_source": calls[0]["market_payload_source"],
+        }
+    ]
+    assert calls[0]["market_payload_source"] is not None
+    assert json.loads(capsys.readouterr().out) == expected_report
+
+
+@pytest.mark.anyio
+async def test_backfill_outcomes_write_mode_passes_write_true(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_backfill_outcome_history(**kwargs: object) -> dict[str, object]:
+        calls.append(kwargs)
+        return {
+            "ok": True,
+            "dry_run": False,
+            "asof_ts": "2026-06-04T12:00:00+00:00",
+            "start_date": None,
+            "end_date": None,
+            "limit": 25,
+            "markets_scanned": 1,
+            "rows_written": 1,
+            "missing_k_before": 1,
+            "missing_k_after": 0,
+            "pending_official_before": 1,
+            "pending_official_after": 0,
+        }
+
+    monkeypatch.setattr(
+        "polymarket_engine.validation.outcomes.backfill_outcome_history",
+        fake_backfill_outcome_history,
+    )
+
+    result = await cli.run_collect_command(
+        [
+            "backfill-outcomes",
+            "--duckdb-path",
+            str(tmp_path / "state.duckdb"),
+            "--outcomes-path",
+            str(tmp_path / "live" / "outcomes.json"),
+            "--limit",
+            "25",
+            "--official-outcome-source",
+            "none",
+            "--write",
+        ]
+    )
+
+    assert result == 0
+    assert calls[0]["write"] is True
+    assert calls[0]["limit"] == 25
+    assert calls[0]["market_payload_source"] is None
+    assert json.loads(capsys.readouterr().out)["dry_run"] is False
+
+
+@pytest.mark.anyio
 async def test_run_normalize_rust_events_command_writes_duckdb(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
