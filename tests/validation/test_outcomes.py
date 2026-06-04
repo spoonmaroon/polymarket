@@ -9,6 +9,7 @@ from polymarket_engine.domain.contracts import ContractSpec
 from polymarket_engine.domain.market_state import PriceObservation
 from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
 from polymarket_engine.validation.outcomes import computed_winner
+from polymarket_engine.validation.outcomes import latest_market_outcome_rows
 from polymarket_engine.validation.outcomes import upsert_computed_market_outcomes
 
 
@@ -38,6 +39,20 @@ def test_computed_outcome_uses_exact_up_greater_than_or_equal_rule(
     assert row["computed_winner"] == "UP"
     assert row["official_resolution_status"] == "pending"
     assert row["mismatch"] is None
+
+
+def test_latest_market_outcome_rows_reads_history_read_only(tmp_path: Path) -> None:
+    store = seeded_store_with_btc_market(
+        tmp_path,
+        start_price=65_000.0,
+        end_price=65_000.0,
+    )
+    upsert_computed_market_outcomes(store=store, asof_ts=UTC_EXPIRY_PLUS_ONE)
+
+    rows = latest_market_outcome_rows(duckdb_path=store.db_path, limit=4)
+
+    assert rows[0]["market_id"] == "btc-updown-5m-1780502400"
+    assert rows[0]["computed_winner"] == "UP"
 
 
 def test_computed_outcome_marks_down_when_end_price_is_below_start(

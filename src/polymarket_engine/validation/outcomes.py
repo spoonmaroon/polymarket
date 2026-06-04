@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import re
+import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -110,8 +113,7 @@ def build_outcome_history_payload(*, duckdb_path: Path, limit: int = 20) -> dict
             "rows": [],
         }
     try:
-        store = DuckDbIngestStore(duckdb_path)
-        rows = store.market_outcome_history(limit=limit)
+        rows = latest_market_outcome_rows(duckdb_path=duckdb_path, limit=limit)
     except (duckdb.Error, OSError, ValueError) as exc:
         return {
             "ok": False,
@@ -126,6 +128,100 @@ def build_outcome_history_payload(*, duckdb_path: Path, limit: int = 20) -> dict
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "rows": [_runtime_row(row) for row in rows],
     }
+
+
+def latest_market_outcome_rows(*, duckdb_path: Path, limit: int) -> list[dict[str, Any]]:
+    if limit <= 0:
+        raise ValueError("limit must be positive")
+    with _connect_read_only_with_retry(duckdb_path, lock_retry_seconds=2.0) as conn:
+        return _market_outcome_history_from_connection(conn=conn, limit=limit)
+
+
+def _market_outcome_history_from_connection(
+    *,
+    conn: duckdb.DuckDBPyConnection,
+    limit: int,
+) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        select
+            market_id,
+            condition_id,
+            market_slug,
+            asset,
+            interval,
+            start_ts::VARCHAR,
+            expiry_ts::VARCHAR,
+            up_token_id,
+            down_token_id,
+            threshold_price,
+            threshold_event_ts::VARCHAR,
+            threshold_observed_ts::VARCHAR,
+            end_price,
+            end_event_ts::VARCHAR,
+            end_observed_ts::VARCHAR,
+            computed_winner,
+            computed_label_source,
+            computed_at::VARCHAR,
+            official_winner,
+            official_resolution_status,
+            official_label_source,
+            official_resolved_at::VARCHAR,
+            rule_hash,
+            mismatch,
+            updated_at::VARCHAR
+        from validation.market_outcome_history
+        order by expiry_ts desc, asset, interval, market_id
+        limit ?
+        """,
+        [limit],
+    ).fetchall()
+    keys = (
+        "market_id",
+        "condition_id",
+        "market_slug",
+        "asset",
+        "interval",
+        "start_ts",
+        "expiry_ts",
+        "up_token_id",
+        "down_token_id",
+        "threshold_price",
+        "threshold_event_ts",
+        "threshold_observed_ts",
+        "end_price",
+        "end_event_ts",
+        "end_observed_ts",
+        "computed_winner",
+        "computed_label_source",
+        "computed_at",
+        "official_winner",
+        "official_resolution_status",
+        "official_label_source",
+        "official_resolved_at",
+        "rule_hash",
+        "mismatch",
+        "updated_at",
+    )
+    return [dict(zip(keys, row, strict=True)) for row in rows]
+
+
+@contextmanager
+def _connect_read_only_with_retry(
+    duckdb_path: Path,
+    *,
+    lock_retry_seconds: float,
+) -> Iterator[duckdb.DuckDBPyConnection]:
+    deadline = time.monotonic() + lock_retry_seconds
+    while True:
+        try:
+            with duckdb.connect(str(duckdb_path), read_only=True) as conn:
+                yield conn
+            return
+        except duckdb.IOException:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.05)
 
 
 def _expired_contract_rows(
