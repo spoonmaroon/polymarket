@@ -7,7 +7,10 @@ use ratatui::{
     widgets::{Block, Cell, Row, Table},
 };
 
-use crate::{render::market, state::AppState, status::RuntimeBookLevel};
+use crate::{
+    state::AppState,
+    status::{RuntimeBookLevel, RuntimeOrderbookRow},
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BookDisplayRow {
@@ -17,16 +20,27 @@ pub struct BookDisplayRow {
 }
 
 pub fn book_title(app: &AppState) -> String {
-    app.selected_orderbook()
-        .map(|orderbook| format!("Book: {}", market::book_contract_label(orderbook)))
+    app.selected_market_group()
+        .map(|group| format!("Book: {}", group.label))
         .unwrap_or_else(|| "Book".to_string())
 }
 
 pub fn book_rows(app: &AppState) -> Vec<BookDisplayRow> {
-    let Some(orderbook) = app.selected_orderbook() else {
+    let Some(group) = app.selected_market_group() else {
         return Vec::new();
     };
 
+    let mut rows = Vec::new();
+    if let Some(up) = group.up {
+        rows.extend(side_book_rows("UP", up));
+    }
+    if let Some(down) = group.down {
+        rows.extend(side_book_rows("DOWN", down));
+    }
+    rows
+}
+
+fn side_book_rows(side: &str, orderbook: &RuntimeOrderbookRow) -> Vec<BookDisplayRow> {
     let mut bids = orderbook.bids.iter().collect::<Vec<_>>();
     bids.retain(|level| level_price(level).is_some() && level_size(level).is_some());
     bids.sort_by(|left, right| compare_level_price_desc(left, right));
@@ -36,17 +50,10 @@ pub fn book_rows(app: &AppState) -> Vec<BookDisplayRow> {
     asks.sort_by(|left, right| compare_level_price_asc(left, right));
     let asks = asks.into_iter().take(6).collect::<Vec<_>>();
     let row_count = bids.len().max(asks.len());
-    let contract = match (orderbook.asset.as_deref(), orderbook.side.as_deref()) {
-        (Some(asset), Some(side)) if !asset.is_empty() && !side.is_empty() => {
-            format!("{asset} {side}")
-        }
-        _ if !orderbook.contract_id.is_empty() => orderbook.contract_id.clone(),
-        _ => "unknown".to_string(),
-    };
 
     (0..row_count)
         .map(|index| BookDisplayRow {
-            contract: contract.clone(),
+            contract: side.to_string(),
             bid: bids.get(index).map_or("-".to_string(), |level| {
                 price_size(level.price.as_deref(), level.size.as_deref())
             }),
@@ -151,8 +158,6 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
 
 #[cfg(test)]
 mod tests {
-    use chrono::{Local, TimeZone, Utc};
-
     use crate::{
         state::AppState,
         status::{RuntimeBookLevel, RuntimeMonitor, RuntimeOrderbookRow},
@@ -161,7 +166,7 @@ mod tests {
     use super::{book_rows, book_title};
 
     #[test]
-    fn book_rows_pair_best_bid_and_ask_levels_for_first_contract() {
+    fn book_rows_pair_best_bid_and_ask_levels_for_selected_market_side() {
         let app = AppState {
             runtime_monitor: Some(RuntimeMonitor {
                 generated_at: "2026-06-03T20:43:20.744215+00:00".to_string(),
@@ -208,7 +213,7 @@ mod tests {
 
         let rows = book_rows(&app);
 
-        assert_eq!(rows[0].contract, "ETH DOWN");
+        assert_eq!(rows[0].contract, "DOWN");
         assert_eq!(rows[0].bid, "0.86 x33");
         assert_eq!(rows[0].ask, "0.87 x14.46");
         assert_eq!(rows[1].bid, "0.84 x10");
@@ -378,21 +383,65 @@ mod tests {
 
         let rows = book_rows(&app);
 
-        assert_eq!(
-            book_title(&app),
-            format!("Book: BTC DOWN {}", local_epoch_label(1_780_521_000))
-        );
-        assert_eq!(rows[0].contract, "BTC DOWN");
+        assert!(book_title(&app).starts_with("Book: BTC 5m "));
+        assert_eq!(rows[0].contract, "DOWN");
         assert_eq!(rows[0].bid, "0.49 x1256.68");
         assert_eq!(rows[0].ask, "0.50 x702.96");
     }
 
-    fn local_epoch_label(epoch_seconds: i64) -> String {
-        Utc.timestamp_opt(epoch_seconds, 0)
-            .single()
-            .unwrap()
-            .with_timezone(&Local)
-            .format("%H:%M %Z")
-            .to_string()
+    #[test]
+    fn book_rows_render_selected_market_up_and_down_books_together() {
+        let mut app = AppState {
+            runtime_monitor: Some(RuntimeMonitor {
+                generated_at: "2026-06-03T21:22:15Z".to_string(),
+                price_rows: Vec::new(),
+                orderbooks: vec![
+                    orderbook_with_level("BTC", "UP", "btc-updown-5m-1780521900", "0.44", "0.45"),
+                    orderbook_with_level("BTC", "DOWN", "btc-updown-5m-1780521900", "0.55", "0.56"),
+                ],
+            }),
+            ..Default::default()
+        };
+        app.sync_market_selection();
+
+        let title = book_title(&app);
+        let rows = book_rows(&app);
+
+        assert!(title.starts_with("Book: BTC 5m"));
+        assert_eq!(rows[0].contract, "UP");
+        assert_eq!(rows[1].contract, "DOWN");
+    }
+
+    fn orderbook_with_level(
+        asset: &str,
+        side: &str,
+        market_slug: &str,
+        bid: &str,
+        ask: &str,
+    ) -> RuntimeOrderbookRow {
+        RuntimeOrderbookRow {
+            venue: Some("polymarket".to_string()),
+            source_key: Some("polymarket_rust_sdk".to_string()),
+            market_slug: Some(market_slug.to_string()),
+            contract_id: format!("{asset}-{side}"),
+            token_id: Some(format!("{asset}-{side}-token")),
+            asset: Some(asset.to_string()),
+            side: Some(side.to_string()),
+            event_ts: None,
+            observed_ts: Some("2026-06-03T21:22:15Z".to_string()),
+            best_bid: Some(bid.to_string()),
+            best_ask: Some(ask.to_string()),
+            spread: Some("0.01".to_string()),
+            bid_size_top: None,
+            ask_size_top: None,
+            bids: vec![RuntimeBookLevel {
+                price: Some(bid.to_string()),
+                size: Some("100".to_string()),
+            }],
+            asks: vec![RuntimeBookLevel {
+                price: Some(ask.to_string()),
+                size: Some("200".to_string()),
+            }],
+        }
     }
 }

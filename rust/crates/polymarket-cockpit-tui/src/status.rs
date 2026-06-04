@@ -43,12 +43,63 @@ pub struct RuntimeMonitor {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct RuntimeLive {
+    pub ok: bool,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub server_sent_at: Option<String>,
+    pub status: RuntimeStatus,
+    pub gates: RuntimeGates,
+    pub monitor: RuntimeMonitor,
+    #[serde(default)]
+    pub latency: RuntimeDisplayLag,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+pub struct RuntimeDisplayLag {
+    pub status_age_ms: Option<u64>,
+    pub api_build_ms: Option<u64>,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub server_sent_at: Option<String>,
+    pub source_to_observed_ms: Option<u64>,
+    pub observed_to_state_us: Option<u64>,
+    pub tui_receive_lag_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct RuntimeProbabilities {
     pub generated_at: String,
     #[serde(default)]
     pub cached: bool,
     #[serde(default)]
     pub rows: Vec<RuntimeProbabilityRow>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct RuntimeOutcomes {
+    pub ok: bool,
+    pub state: String,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub generated_at: Option<String>,
+    #[serde(default)]
+    pub rows: Vec<RuntimeOutcomeRow>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct RuntimeOutcomeRow {
+    pub market: String,
+    pub market_id: String,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub asset: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub start_ts: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub expiry_ts: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub computed_winner: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub official_winner: Option<String>,
+    pub official_resolution_status: String,
+    pub mismatch: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -147,7 +198,10 @@ impl RuntimeStatus {
 
 #[cfg(test)]
 mod tests {
-    use super::{RuntimeGates, RuntimeMonitor, RuntimeProbabilities, RuntimeStatus};
+    use super::{
+        RuntimeGates, RuntimeLive, RuntimeMonitor, RuntimeOutcomes, RuntimeProbabilities,
+        RuntimeStatus,
+    };
 
     #[test]
     fn status_payload_parses_and_labels_ok() {
@@ -294,5 +348,63 @@ mod tests {
         assert_eq!(probabilities.rows[0].contract, "BTC 5m UP");
         assert_eq!(probabilities.rows[0].p_finish, 0.57);
         assert_eq!(probabilities.rows[0].flags, vec!["OK"]);
+    }
+
+    #[test]
+    fn live_payload_parses_combined_runtime_shape() {
+        let payload = r#"{
+            "ok": true,
+            "server_sent_at": "2026-06-03T21:00:00+00:00",
+            "status": {
+                "ok": true,
+                "schema_kind": "rust-live-probe-state-manager-v1",
+                "mode": "state-manager",
+                "age_ms": 12,
+                "counts": {"prices": 2, "orderbooks": 4, "current": 2, "next": 2, "next_next": 0, "websocket_status": 2},
+                "latency_marks": [],
+                "health_flags": []
+            },
+            "gates": {"ok": true, "failures": []},
+            "monitor": {
+                "generated_at": "2026-06-03T21:00:00+00:00",
+                "price_rows": [],
+                "orderbooks": []
+            },
+            "latency": {
+                "status_age_ms": 12,
+                "api_build_ms": 1,
+                "server_sent_at": "2026-06-03T21:00:00+00:00"
+            }
+        }"#;
+
+        let live: RuntimeLive = serde_json::from_str(payload).unwrap();
+
+        assert!(live.ok);
+        assert_eq!(live.status.counts.orderbooks, 4);
+        assert_eq!(live.latency.status_age_ms, Some(12));
+    }
+
+    #[test]
+    fn outcomes_payload_parses_market_level_history() {
+        let payload = r#"{
+            "ok": true,
+            "state": "OK",
+            "generated_at": "2026-06-03T22:00:00Z",
+            "rows": [{
+                "market": "BTC 5m",
+                "market_id": "btc-updown-5m-1780521900",
+                "asset": "BTC",
+                "expiry_ts": "2026-06-03T21:25:00Z",
+                "computed_winner": "UP",
+                "official_winner": null,
+                "official_resolution_status": "pending",
+                "mismatch": null
+            }]
+        }"#;
+
+        let outcomes: RuntimeOutcomes = serde_json::from_str(payload).unwrap();
+
+        assert_eq!(outcomes.rows[0].computed_winner.as_deref(), Some("UP"));
+        assert_eq!(outcomes.rows[0].official_resolution_status, "pending");
     }
 }

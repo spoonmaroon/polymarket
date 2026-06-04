@@ -223,3 +223,31 @@ CREATE TABLE IF NOT EXISTS validation.decision_labels (
     label_source VARCHAR NOT NULL,
     created_at TIMESTAMPTZ NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS validation.market_outcome_history (
+    market_id VARCHAR PRIMARY KEY,
+    condition_id VARCHAR NOT NULL,
+    market_slug VARCHAR NOT NULL,
+    asset VARCHAR NOT NULL,
+    interval VARCHAR NOT NULL,
+    start_ts TIMESTAMPTZ NOT NULL,
+    expiry_ts TIMESTAMPTZ NOT NULL,
+    up_token_id VARCHAR NOT NULL,
+    down_token_id VARCHAR NOT NULL,
+    threshold_price DOUBLE,
+    threshold_event_ts TIMESTAMPTZ,
+    threshold_observed_ts TIMESTAMPTZ,
+    end_price DOUBLE,
+    end_event_ts TIMESTAMPTZ,
+    end_observed_ts TIMESTAMPTZ,
+    computed_winner VARCHAR,
+    computed_label_source VARCHAR,
+    computed_at TIMESTAMPTZ,
+    official_winner VARCHAR,
+    official_resolution_status VARCHAR NOT NULL,
+    official_label_source VARCHAR,
+    official_resolved_at TIMESTAMPTZ,
+    rule_hash VARCHAR NOT NULL,
+    mismatch BOOLEAN,
+    updated_at TIMESTAMPTZ NOT NULL
+);

@@ -27,6 +27,7 @@ from polymarket_engine.probability.runtime import compute_and_persist_probabilit
 from polymarket_engine.probability.runtime import latest_probability_output_rows_from_connection
 from polymarket_engine.storage.atomic import durable_replace
 from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
+from polymarket_engine.validation.outcomes import upsert_computed_market_outcomes
 
 
 FULL_RAW_TREE_SCAN_INTERVAL_CYCLES = 240
@@ -67,6 +68,7 @@ class RustNormalizerCycleResult:
     contracts_upserted: int
     states_written: int
     probability_outputs_written: int
+    market_outcomes_written: int
     state_skipped: bool
     unavailable: tuple[UnavailableDecisionState, ...]
     elapsed_ms: int
@@ -88,6 +90,7 @@ class RustNormalizerCycleResult:
             "contracts_upserted": self.contracts_upserted,
             "states_written": self.states_written,
             "probability_outputs_written": self.probability_outputs_written,
+            "market_outcomes_written": self.market_outcomes_written,
             "state_skipped": self.state_skipped,
             "unavailable": [
                 {
@@ -178,19 +181,24 @@ def _run_rust_normalizer_cycle_with_store(
     probability_outputs_written = 0
     unavailable: tuple[UnavailableDecisionState, ...] = ()
     if build_state:
-        state_result = build_current_decision_state_snapshots(
-            status_path=status_path,
-            store=store,
-            include_next=include_next,
-            read_cache=state_read_cache,
-        )
-        contracts_upserted = state_result.contracts_upserted
-        states_written = state_result.states_written
-        unavailable = state_result.unavailable
-        probability_outputs_written = _compute_probability_outputs(
-            store=store,
-            out_path=probability_status_path,
-        )
+        try:
+            state_result = build_current_decision_state_snapshots(
+                status_path=status_path,
+                store=store,
+                include_next=include_next,
+                read_cache=state_read_cache,
+            )
+        except ValueError as exc:
+            unavailable = (_state_build_unavailable(exc),)
+        else:
+            contracts_upserted = state_result.contracts_upserted
+            states_written = state_result.states_written
+            unavailable = state_result.unavailable
+            probability_outputs_written = _compute_probability_outputs(
+                store=store,
+                out_path=probability_status_path,
+            )
+    market_outcomes_written = _upsert_market_outcomes(store=store)
     state_at = time.perf_counter()
 
     write_normalized_health_status(store=store, out_path=normalized_health_path)
@@ -201,6 +209,7 @@ def _run_rust_normalizer_cycle_with_store(
         contracts_upserted=contracts_upserted,
         states_written=states_written,
         probability_outputs_written=probability_outputs_written,
+        market_outcomes_written=market_outcomes_written,
         state_skipped=status_mtime_ns is not None and not build_state,
         unavailable=unavailable,
         elapsed_ms=_elapsed_ms(cycle_started, health_at),
@@ -463,19 +472,24 @@ def _run_changed_rust_normalizer_cycle_with_store(
     probability_outputs_written = 0
     unavailable: tuple[UnavailableDecisionState, ...] = ()
     if build_state:
-        state_result = build_current_decision_state_snapshots(
-            status_path=status_path,
-            store=store,
-            include_next=include_next,
-            read_cache=state_read_cache,
-        )
-        contracts_upserted = state_result.contracts_upserted
-        states_written = state_result.states_written
-        unavailable = state_result.unavailable
-        probability_outputs_written = _compute_probability_outputs(
-            store=store,
-            out_path=probability_status_path,
-        )
+        try:
+            state_result = build_current_decision_state_snapshots(
+                status_path=status_path,
+                store=store,
+                include_next=include_next,
+                read_cache=state_read_cache,
+            )
+        except ValueError as exc:
+            unavailable = (_state_build_unavailable(exc),)
+        else:
+            contracts_upserted = state_result.contracts_upserted
+            states_written = state_result.states_written
+            unavailable = state_result.unavailable
+            probability_outputs_written = _compute_probability_outputs(
+                store=store,
+                out_path=probability_status_path,
+            )
+    market_outcomes_written = _upsert_market_outcomes(store=store)
     state_at = time.perf_counter()
 
     health_skipped = not write_health
@@ -488,6 +502,7 @@ def _run_changed_rust_normalizer_cycle_with_store(
         contracts_upserted=contracts_upserted,
         states_written=states_written,
         probability_outputs_written=probability_outputs_written,
+        market_outcomes_written=market_outcomes_written,
         state_skipped=status_mtime_ns is not None and not build_state,
         unavailable=unavailable,
         elapsed_ms=_elapsed_ms(cycle_started, health_at),
@@ -531,19 +546,24 @@ def _run_idle_rust_normalizer_cycle_with_store(
     probability_outputs_written = 0
     unavailable: tuple[UnavailableDecisionState, ...] = ()
     if build_state:
-        state_result = build_current_decision_state_snapshots(
-            status_path=status_path,
-            store=store,
-            include_next=include_next,
-            read_cache=state_read_cache,
-        )
-        contracts_upserted = state_result.contracts_upserted
-        states_written = state_result.states_written
-        unavailable = state_result.unavailable
-        probability_outputs_written = _compute_probability_outputs(
-            store=store,
-            out_path=probability_status_path,
-        )
+        try:
+            state_result = build_current_decision_state_snapshots(
+                status_path=status_path,
+                store=store,
+                include_next=include_next,
+                read_cache=state_read_cache,
+            )
+        except ValueError as exc:
+            unavailable = (_state_build_unavailable(exc),)
+        else:
+            contracts_upserted = state_result.contracts_upserted
+            states_written = state_result.states_written
+            unavailable = state_result.unavailable
+            probability_outputs_written = _compute_probability_outputs(
+                store=store,
+                out_path=probability_status_path,
+            )
+    market_outcomes_written = _upsert_market_outcomes(store=store)
     state_at = time.perf_counter()
 
     health_skipped = not write_health
@@ -559,6 +579,7 @@ def _run_idle_rust_normalizer_cycle_with_store(
         contracts_upserted=contracts_upserted,
         states_written=states_written,
         probability_outputs_written=probability_outputs_written,
+        market_outcomes_written=market_outcomes_written,
         state_skipped=status_mtime_ns is not None and not build_state,
         unavailable=unavailable,
         elapsed_ms=_elapsed_ms(cycle_started, health_at),
@@ -638,6 +659,21 @@ def _compute_probability_outputs(*, store: DuckDbIngestStore, out_path: Path) ->
             flush=True,
         )
     return written
+
+
+def _state_build_unavailable(exc: ValueError) -> UnavailableDecisionState:
+    return UnavailableDecisionState(
+        contract_id="",
+        token_id="",
+        reason=f"state_build_failed: {exc}",
+    )
+
+
+def _upsert_market_outcomes(*, store: DuckDbIngestStore) -> int:
+    return upsert_computed_market_outcomes(
+        store=store,
+        asof_ts=datetime.now(timezone.utc),
+    )
 
 
 def _write_probability_status(
@@ -869,5 +905,6 @@ def _cycle_log_line(result: RustNormalizerCycleResult) -> str:
         f"rows_read={result.rows_read} "
         f"bytes_read={result.bytes_read} "
         f"probability_outputs_written={result.probability_outputs_written} "
+        f"market_outcomes_written={result.market_outcomes_written} "
         f"state_skipped={str(result.state_skipped).lower()}"
     )

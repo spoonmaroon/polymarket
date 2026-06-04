@@ -115,6 +115,34 @@ class OrderBookSnapshotBatch:
         )
 
 
+@dataclass(frozen=True)
+class MarketOutcomeRecord:
+    market_id: str
+    condition_id: str
+    market_slug: str
+    asset: str
+    interval: str
+    start_ts: datetime
+    expiry_ts: datetime
+    up_token_id: str
+    down_token_id: str
+    threshold_price: float | None
+    threshold_event_ts: datetime | None
+    threshold_observed_ts: datetime | None
+    end_price: float | None
+    end_event_ts: datetime | None
+    end_observed_ts: datetime | None
+    computed_winner: str | None
+    computed_label_source: str | None
+    computed_at: datetime | None
+    official_winner: str | None
+    official_resolution_status: str
+    official_label_source: str | None
+    official_resolved_at: datetime | None
+    rule_hash: str
+    mismatch: bool | None
+
+
 class DuckDbIngestStore:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
@@ -668,6 +696,126 @@ class DuckDbIngestStore:
                 ],
             )
 
+    def upsert_market_outcome_records(
+        self,
+        records: Sequence[MarketOutcomeRecord],
+    ) -> int:
+        if not records:
+            return 0
+        now = datetime.now(timezone.utc)
+        rows = [
+            (
+                record.market_id,
+                record.condition_id,
+                record.market_slug,
+                record.asset,
+                record.interval,
+                record.start_ts,
+                record.expiry_ts,
+                record.up_token_id,
+                record.down_token_id,
+                record.threshold_price,
+                record.threshold_event_ts,
+                record.threshold_observed_ts,
+                record.end_price,
+                record.end_event_ts,
+                record.end_observed_ts,
+                record.computed_winner,
+                record.computed_label_source,
+                record.computed_at,
+                record.official_winner,
+                record.official_resolution_status,
+                record.official_label_source,
+                record.official_resolved_at,
+                record.rule_hash,
+                record.mismatch,
+                now,
+            )
+            for record in records
+        ]
+        with self._connection() as conn:
+            conn.executemany(
+                """
+                insert or replace into validation.market_outcome_history
+                (market_id, condition_id, market_slug, asset, interval, start_ts, expiry_ts,
+                 up_token_id, down_token_id, threshold_price, threshold_event_ts,
+                 threshold_observed_ts, end_price, end_event_ts, end_observed_ts,
+                 computed_winner, computed_label_source, computed_at, official_winner,
+                 official_resolution_status, official_label_source, official_resolved_at,
+                 rule_hash, mismatch, updated_at)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
+        return len(records)
+
+    def market_outcome_history(self, *, limit: int = 20) -> list[dict[str, Any]]:
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                select
+                    market_id,
+                    condition_id,
+                    market_slug,
+                    asset,
+                    interval,
+                    start_ts::VARCHAR,
+                    expiry_ts::VARCHAR,
+                    up_token_id,
+                    down_token_id,
+                    threshold_price,
+                    threshold_event_ts::VARCHAR,
+                    threshold_observed_ts::VARCHAR,
+                    end_price,
+                    end_event_ts::VARCHAR,
+                    end_observed_ts::VARCHAR,
+                    computed_winner,
+                    computed_label_source,
+                    computed_at::VARCHAR,
+                    official_winner,
+                    official_resolution_status,
+                    official_label_source,
+                    official_resolved_at::VARCHAR,
+                    rule_hash,
+                    mismatch,
+                    updated_at::VARCHAR
+                from validation.market_outcome_history
+                order by expiry_ts desc, asset, interval, market_id
+                limit ?
+                """,
+                [limit],
+            ).fetchall()
+        keys = (
+            "market_id",
+            "condition_id",
+            "market_slug",
+            "asset",
+            "interval",
+            "start_ts",
+            "expiry_ts",
+            "up_token_id",
+            "down_token_id",
+            "threshold_price",
+            "threshold_event_ts",
+            "threshold_observed_ts",
+            "end_price",
+            "end_event_ts",
+            "end_observed_ts",
+            "computed_winner",
+            "computed_label_source",
+            "computed_at",
+            "official_winner",
+            "official_resolution_status",
+            "official_label_source",
+            "official_resolved_at",
+            "rule_hash",
+            "mismatch",
+            "updated_at",
+        )
+        return [dict(zip(keys, row, strict=True)) for row in rows]
+
     def insert_probability_output(
         self,
         *,
@@ -735,6 +883,10 @@ class DuckDbIngestStore:
                     select 7 as sort_order, 'features.probability_outputs' as table_name,
                            count(*) as rows, max(created_at) as latest_ts
                     from features.probability_outputs
+                    union all
+                    select 8 as sort_order, 'validation.market_outcome_history' as table_name,
+                           count(*) as rows, max(updated_at) as latest_ts
+                    from validation.market_outcome_history
                 ) as health_rows
                 order by sort_order
                 """

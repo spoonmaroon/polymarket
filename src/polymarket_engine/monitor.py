@@ -185,6 +185,15 @@ def _snapshot_from_status(
     now: datetime | None = None,
 ) -> MonitorSnapshot:
     payload = json.loads(status_path.read_text(encoding="utf-8"))
+    return snapshot_from_status_payload(payload, limit=limit, now=now)
+
+
+def snapshot_from_status_payload(
+    payload: dict[str, Any],
+    *,
+    limit: int,
+    now: datetime | None = None,
+) -> MonitorSnapshot:
     generated_at = _parse_datetime(payload["generated_at"])
     wall_time = datetime.now(timezone.utc) if now is None else _to_utc(now)
     price_rows = _status_price_rows(payload)

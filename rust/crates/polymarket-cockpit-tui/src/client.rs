@@ -1,6 +1,8 @@
 use std::time::Duration;
 
-use crate::status::{RuntimeGates, RuntimeMonitor, RuntimeProbabilities, RuntimeStatus};
+use crate::status::{
+    RuntimeGates, RuntimeLive, RuntimeMonitor, RuntimeOutcomes, RuntimeProbabilities, RuntimeStatus,
+};
 
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -38,8 +40,30 @@ impl EngineClient {
             .await
     }
 
+    pub async fn live(&self, limit: usize) -> anyhow::Result<RuntimeLive> {
+        self.get_json(&format!("/api/runtime/live?limit={limit}"))
+            .await
+    }
+
+    pub async fn live_stream_response(
+        &self,
+        limit: usize,
+        interval_ms: u64,
+    ) -> anyhow::Result<reqwest::Response> {
+        let url = format!(
+            "{}/api/runtime/live/stream?limit={limit}&interval_ms={interval_ms}",
+            self.base_url
+        );
+        Ok(self.client.get(url).send().await?.error_for_status()?)
+    }
+
     pub async fn probabilities(&self, limit: usize) -> anyhow::Result<RuntimeProbabilities> {
         self.get_json(&format!("/api/runtime/probabilities?limit={limit}"))
+            .await
+    }
+
+    pub async fn outcomes(&self, limit: usize) -> anyhow::Result<RuntimeOutcomes> {
+        self.get_json(&format!("/api/runtime/outcomes?limit={limit}"))
             .await
     }
 

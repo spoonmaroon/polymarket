@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timezone
 from pathlib import Path
-from typing import NoReturn
+from typing import Any, NoReturn
 import json
 import subprocess
 
@@ -298,6 +298,81 @@ def test_runtime_monitor_parseable_schema_malformed_status_returns_empty_envelop
     assert payload["price_rows"] == []
     assert payload["orderbooks"] == []
     assert "prices" not in payload
+
+
+def test_runtime_live_combines_status_gates_monitor_and_latency(tmp_path: Path) -> None:
+    status_path = tmp_path / "status.json"
+    _write_status(status_path)
+    app = create_app(status_path=status_path)
+
+    response = TestClient(app).get("/api/runtime/live?limit=8")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["status"]["counts"]["orderbooks"] == 1
+    assert payload["gates"]["ok"] is True
+    assert payload["monitor"]["orderbooks"][0]["contract_id"] == "btc-5m-up"
+    assert payload["latency"]["status_age_ms"] >= 0
+    assert payload["latency"]["api_build_ms"] >= 0
+    assert payload["latency"]["server_sent_at"].endswith("+00:00")
+
+
+def test_runtime_live_reads_status_once_for_status_backed_payload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    status_path = tmp_path / "status.json"
+    _write_status(status_path)
+    read_count = 0
+    real_read_text = Path.read_text
+
+    def counting_read_text(path: Path, *args: Any, **kwargs: Any) -> str:
+        nonlocal read_count
+        if path == status_path:
+            read_count += 1
+        return real_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", counting_read_text)
+    app = create_app(status_path=status_path)
+
+    response = TestClient(app).get("/api/runtime/live?limit=8")
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert read_count == 1
+
+
+def test_runtime_live_stream_emits_sse_payload(tmp_path: Path) -> None:
+    status_path = tmp_path / "status.json"
+    _write_status(status_path)
+    app = create_app(status_path=status_path)
+
+    with TestClient(app).stream(
+        "GET",
+        "/api/runtime/live/stream?limit=8&interval_ms=1&max_events=1",
+    ) as response:
+        body = "".join(response.iter_text())
+
+    assert response.status_code == 200
+    assert "event: live" in body
+    assert "data: " in body
+    assert '"status"' in body
+    assert '"monitor"' in body
+
+
+def test_runtime_outcomes_returns_market_level_history(tmp_path: Path) -> None:
+    store = _seeded_store_with_outcome(tmp_path, computed_winner="UP")
+    app = create_app(status_path=tmp_path / "missing-status.json", duckdb_path=store.db_path)
+
+    response = TestClient(app).get("/api/runtime/outcomes?limit=4")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["rows"][0]["market"] == "BTC 5m"
+    assert payload["rows"][0]["computed_winner"] == "UP"
+    assert payload["rows"][0]["official_resolution_status"] == "pending"
 
 
 def test_runtime_monitor_malformed_status_returns_empty_envelope(tmp_path: Path) -> None:
@@ -676,6 +751,51 @@ def _decision_state(
         volatility_regime="normal",
         data_quality_flags=data_quality_flags,
     )
+
+
+def _seeded_store_with_outcome(
+    tmp_path: Path,
+    *,
+    computed_winner: str,
+) -> DuckDbIngestStore:
+    from polymarket_engine.storage.duckdb_store import MarketOutcomeRecord
+
+    db_path = tmp_path / "polymarket.duckdb"
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    start_ts = datetime(2026, 6, 3, 20, 0, tzinfo=timezone.utc)
+    expiry_ts = datetime(2026, 6, 3, 20, 5, tzinfo=timezone.utc)
+    store.upsert_market_outcome_records(
+        (
+            MarketOutcomeRecord(
+                market_id="btc-updown-5m-1780502400",
+                condition_id="0xbtc",
+                market_slug="btc-updown-5m-1780502400",
+                asset="BTC",
+                interval="5m",
+                start_ts=start_ts,
+                expiry_ts=expiry_ts,
+                up_token_id="up-token",
+                down_token_id="down-token",
+                threshold_price=70_000.0,
+                threshold_event_ts=start_ts,
+                threshold_observed_ts=start_ts,
+                end_price=70_100.0,
+                end_event_ts=expiry_ts,
+                end_observed_ts=expiry_ts,
+                computed_winner=computed_winner,
+                computed_label_source="polymarket_rtds_chainlink",
+                computed_at=expiry_ts,
+                official_winner=None,
+                official_resolution_status="pending",
+                official_label_source=None,
+                official_resolved_at=None,
+                rule_hash="hash",
+                mismatch=None,
+            ),
+        )
+    )
+    return store
 
 
 def test_runtime_containers_enabled_missing_docker_returns_controlled_state(

@@ -1,5 +1,6 @@
 use crate::status::{
-    RuntimeGates, RuntimeMonitor, RuntimeOrderbookRow, RuntimeProbabilities, RuntimeStatus,
+    RuntimeDisplayLag, RuntimeGates, RuntimeMonitor, RuntimeOutcomes, RuntimeProbabilities,
+    RuntimeStatus,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -8,6 +9,7 @@ pub enum MainTab {
     Systems,
     Market,
     Probability,
+    Outcomes,
     Logs,
 }
 
@@ -18,6 +20,7 @@ impl MainTab {
             MainTab::Systems,
             MainTab::Market,
             MainTab::Probability,
+            MainTab::Outcomes,
             MainTab::Logs,
         ]
     }
@@ -28,6 +31,7 @@ impl MainTab {
             MainTab::Systems => "Systems",
             MainTab::Market => "Market",
             MainTab::Probability => "Probability",
+            MainTab::Outcomes => "Outcomes",
             MainTab::Logs => "Logs",
         }
     }
@@ -41,6 +45,8 @@ pub struct AppState {
     pub runtime_gates: Option<RuntimeGates>,
     pub runtime_monitor: Option<RuntimeMonitor>,
     pub runtime_probabilities: Option<RuntimeProbabilities>,
+    pub runtime_outcomes: Option<RuntimeOutcomes>,
+    pub runtime_display_lag: Option<RuntimeDisplayLag>,
     pub runtime_error: Option<String>,
     pub selected_market_key: Option<String>,
 }
@@ -54,6 +60,8 @@ impl Default for AppState {
             runtime_gates: None,
             runtime_monitor: None,
             runtime_probabilities: None,
+            runtime_outcomes: None,
+            runtime_display_lag: None,
             runtime_error: None,
             selected_market_key: None,
         }
@@ -96,10 +104,9 @@ impl AppState {
         let key = self.selected_market_key.as_ref()?;
         let monitor = self.runtime_monitor.as_ref()?;
 
-        monitor
-            .orderbooks
+        crate::market_view::market_groups(&monitor.orderbooks)
             .iter()
-            .position(|orderbook| orderbook_key(orderbook) == *key)
+            .position(|group| group.key == *key)
     }
 
     pub fn effective_market_index(&self) -> Option<usize> {
@@ -107,11 +114,13 @@ impl AppState {
             .or_else(|| self.default_market_index())
     }
 
-    pub fn selected_orderbook(&self) -> Option<&RuntimeOrderbookRow> {
+    pub fn selected_market_group(&self) -> Option<crate::market_view::MarketGroup<'_>> {
         let index = self.effective_market_index()?;
-        self.runtime_monitor
-            .as_ref()
-            .and_then(|monitor| monitor.orderbooks.get(index))
+        self.runtime_monitor.as_ref().and_then(|monitor| {
+            crate::market_view::market_groups(&monitor.orderbooks)
+                .get(index)
+                .cloned()
+        })
     }
 
     pub fn select_next_market(&mut self) {
@@ -135,21 +144,21 @@ impl AppState {
     fn orderbook_count(&self) -> Option<usize> {
         self.runtime_monitor
             .as_ref()
-            .map(|monitor| monitor.orderbooks.len())
+            .map(|monitor| crate::market_view::market_groups(&monitor.orderbooks).len())
     }
 
     fn default_market_index(&self) -> Option<usize> {
         let monitor = self.runtime_monitor.as_ref()?;
-        if monitor.orderbooks.is_empty() {
+        let groups = crate::market_view::market_groups(&monitor.orderbooks);
+        if groups.is_empty() {
             return None;
         }
 
         Some(
-            monitor
-                .orderbooks
+            groups
                 .iter()
-                .position(is_btc_orderbook)
-                .unwrap_or_else(|| freshest_orderbook_index(monitor)),
+                .position(is_btc_group)
+                .unwrap_or_else(|| freshest_group_index(&groups)),
         )
     }
 
@@ -157,20 +166,24 @@ impl AppState {
         self.selected_market_key = self
             .runtime_monitor
             .as_ref()
-            .and_then(|monitor| monitor.orderbooks.get(index))
-            .map(orderbook_key);
+            .and_then(|monitor| {
+                crate::market_view::market_groups(&monitor.orderbooks)
+                    .get(index)
+                    .cloned()
+            })
+            .map(|group| group.key);
     }
 }
 
-fn freshest_orderbook_index(monitor: &RuntimeMonitor) -> usize {
-    monitor
-        .orderbooks
+fn freshest_group_index(groups: &[crate::market_view::MarketGroup<'_>]) -> usize {
+    groups
         .iter()
         .enumerate()
-        .filter_map(|(index, orderbook)| {
-            orderbook
-                .observed_ts
-                .as_deref()
+        .filter_map(|(index, group)| {
+            group
+                .up
+                .or(group.down)
+                .and_then(|orderbook| orderbook.observed_ts.as_deref())
                 .filter(|timestamp| !timestamp.is_empty())
                 .map(|timestamp| (index, timestamp))
         })
@@ -179,31 +192,9 @@ fn freshest_orderbook_index(monitor: &RuntimeMonitor) -> usize {
         .unwrap_or(0)
 }
 
-fn is_btc_orderbook(orderbook: &RuntimeOrderbookRow) -> bool {
-    orderbook
-        .asset
-        .as_deref()
-        .is_some_and(|asset| asset.eq_ignore_ascii_case("BTC"))
-        || orderbook.market_slug.as_deref().is_some_and(|slug| {
-            slug.to_ascii_lowercase().starts_with("btc-")
-                || slug.to_ascii_lowercase().starts_with("btc_")
-        })
-        || orderbook.contract_id.to_ascii_lowercase().contains("btc")
-}
-
-fn orderbook_key(orderbook: &RuntimeOrderbookRow) -> String {
-    format!(
-        "token={}|contract={}|slug={}|asset={}|side={}",
-        normalized_key_part(orderbook.token_id.as_deref()),
-        normalized_key_part(Some(orderbook.contract_id.as_str())),
-        normalized_key_part(orderbook.market_slug.as_deref()),
-        normalized_key_part(orderbook.asset.as_deref()),
-        normalized_key_part(orderbook.side.as_deref())
-    )
-}
-
-fn normalized_key_part(value: Option<&str>) -> String {
-    value.unwrap_or_default().trim().to_ascii_lowercase()
+fn is_btc_group(group: &crate::market_view::MarketGroup<'_>) -> bool {
+    group.asset.eq_ignore_ascii_case("BTC")
+        || group.market_slug.to_ascii_lowercase().starts_with("btc-")
 }
 
 #[cfg(test)]
@@ -224,7 +215,14 @@ mod tests {
 
         assert_eq!(
             labels,
-            vec!["Live", "Systems", "Market", "Probability", "Logs"]
+            vec![
+                "Live",
+                "Systems",
+                "Market",
+                "Probability",
+                "Outcomes",
+                "Logs"
+            ]
         );
     }
 
@@ -256,7 +254,7 @@ mod tests {
 
         app.sync_market_selection();
 
-        assert_eq!(app.selected_market_index(), Some(1));
+        assert_eq!(app.selected_market_index(), Some(0));
     }
 
     #[test]
@@ -318,7 +316,45 @@ mod tests {
         assert_eq!(app.selected_market_index(), Some(0));
 
         app.select_previous_market();
-        assert_eq!(app.selected_market_index(), Some(2));
+        assert_eq!(app.selected_market_index(), Some(1));
+    }
+
+    #[test]
+    fn market_selection_moves_by_market_group_not_outcome_token() {
+        let mut app = AppState {
+            runtime_monitor: Some(monitor(vec![
+                orderbook(
+                    "BTC",
+                    "UP",
+                    "btc-updown-5m-1780521900",
+                    "2026-06-03T21:22:15Z",
+                ),
+                orderbook(
+                    "BTC",
+                    "DOWN",
+                    "btc-updown-5m-1780521900",
+                    "2026-06-03T21:22:15Z",
+                ),
+                orderbook(
+                    "ETH",
+                    "UP",
+                    "eth-updown-5m-1780521900",
+                    "2026-06-03T21:22:15Z",
+                ),
+                orderbook(
+                    "ETH",
+                    "DOWN",
+                    "eth-updown-5m-1780521900",
+                    "2026-06-03T21:22:15Z",
+                ),
+            ])),
+            ..Default::default()
+        };
+
+        app.sync_market_selection();
+        assert_eq!(app.selected_market_index(), Some(0));
+        app.select_next_market();
+        assert_eq!(app.selected_market_index(), Some(1));
     }
 
     fn monitor(orderbooks: Vec<RuntimeOrderbookRow>) -> RuntimeMonitor {

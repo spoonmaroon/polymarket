@@ -4,6 +4,7 @@ pub mod live;
 pub mod logs;
 pub mod market;
 pub mod orderbook;
+pub mod outcomes;
 pub mod price;
 pub mod probability;
 pub mod systems;
@@ -35,6 +36,10 @@ pub fn render(frame: &mut Frame<'_>, app: &AppState) {
         }
         MainTab::Probability => {
             probability::render(frame, body.primary, app);
+            systems::render(frame, body.secondary, app);
+        }
+        MainTab::Outcomes => {
+            outcomes::render(frame, body.primary, app);
             systems::render(frame, body.secondary, app);
         }
         MainTab::Logs => {

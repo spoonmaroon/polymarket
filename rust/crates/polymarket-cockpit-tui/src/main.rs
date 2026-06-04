@@ -1,6 +1,7 @@
 pub mod client;
 mod event_loop;
 mod layout;
+pub mod market_view;
 mod render;
 mod state;
 pub mod status;

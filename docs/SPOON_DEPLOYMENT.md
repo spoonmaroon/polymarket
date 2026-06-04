@@ -56,7 +56,9 @@ THEPC is the active runtime host. Do not use blind auto-pull for this lane. The
 Mac-side helper below builds pinned Linux images, creates a git bundle for the
 exact local commit, streams the bundle and image tarballs into THEPC's Ubuntu
 WSL environment, runs the existing prebuilt-image deploy gate, and finishes with
-the collector status check.
+the collector status check. The same deploy also installs the matching
+`polymarket-cockpit-tui` binary to `/home/ender/bin/polymarket-cockpit-tui`, so
+the Windows desktop shortcut opens the TUI for the deployed commit.
 
 ```bash
 cd /Users/goon/polymarket
@@ -70,11 +72,13 @@ Defaults:
 - `PC_REPO=/home/ender/polymarket`
 - `PC_BUNDLE=/home/ender/polymarket.bundle`
 - `PC_DATA_DIR=/home/ender/polymarket-data`
+- `PC_BIN_DIR=/home/ender/bin`
 - `PC_NORMALIZER_INTERVAL_SECONDS=0.1`
 
 Set `PC_DEPLOY_BUILD_IMAGES=0` only when matching
 `dist/docker/polymarket-rust-collector-<sha>.tar` and
-`dist/docker/polymarket-normalizer-<sha>.tar` already exist for the checked-out
+`dist/docker/polymarket-normalizer-<sha>.tar` plus
+`dist/docker/polymarket-cockpit-tui-<sha>` already exist for the checked-out
 commit.
 
 ### Spoon Deploy
@@ -204,10 +208,24 @@ du -sh /home/spoon/polymarket-data/*
 
 ## Read-Only Cockpit TUI
 
-The `polymarket-cockpit-tui` is read-only. It polls the engine API for runtime
-status, gate failures, freshness, latency, health, market books, and cached
-probability outputs. It must not place orders, deploy containers, rebuild
-images, write collector state, restart services, or access auth secrets.
+The `polymarket-cockpit-tui` is read-only. It consumes
+`/api/runtime/live/stream` first, falls back to `/api/runtime/live`, and keeps
+the legacy `/status`, `/monitor`, and `/gates` endpoints for manual debugging.
+It displays runtime status, gate failures, freshness, latency, health, grouped
+market books, cached probability outputs, and read-only outcome history. It must
+not place orders, deploy containers, rebuild images, write collector state,
+restart services, or access auth secrets.
+
+Live data changes should appear through the runtime API polling path. TUI code,
+layout, or parser changes require a fresh THEPC deploy and reopening the
+desktop shortcut so the new binary is loaded.
+
+Each displayed BTC/ETH 5m row is one binary market window. The CLOB books remain
+separate Up and Down token books internally, and the selected Book panel renders
+both sides for the chosen market. The Outcomes tab keeps `computed_winner`
+separate from `official_winner`: computed labels are Chainlink-derived after
+expiry, while official labels remain pending until an explicit
+Polymarket/UMA/onchain resolution fetch exists.
 
 Local API:
 
@@ -220,6 +238,14 @@ THEPC over Tailscale, using a configurable URL:
 
 ```bash
 cargo run --manifest-path rust/Cargo.toml -p polymarket-cockpit-tui -- --engine-api-url http://100.72.104.49:8000 --poll-interval-ms 1000
+```
+
+Endpoint smoke checks:
+
+```bash
+curl -fsS "$POLYMARKET_ENGINE_API_URL/api/runtime/live?limit=8" | python3 -m json.tool | head -80
+curl -fsS -N "$POLYMARKET_ENGINE_API_URL/api/runtime/live/stream?limit=8&interval_ms=250&max_events=1" | head -20
+curl -fsS "$POLYMARKET_ENGINE_API_URL/api/runtime/outcomes?limit=8" | python3 -m json.tool | head -80
 ```
 
 The deploy compose file runs `collector`, `normalizer`, and `api` with

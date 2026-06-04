@@ -29,6 +29,21 @@ pub fn systems_summary_lines(app: &AppState) -> Vec<String> {
         }
     }
 
+    if let Some(lag) = app.runtime_display_lag.as_ref() {
+        if let Some(value) = lag.status_age_ms {
+            lines.push(format!("status_age_ms={value}"));
+        }
+        if let Some(value) = lag.observed_to_state_us {
+            lines.push(format!("state_us={value}"));
+        }
+        if let Some(value) = lag.api_build_ms {
+            lines.push(format!("api_build_ms={value}"));
+        }
+        if let Some(value) = lag.tui_receive_lag_ms {
+            lines.push(format!("tui_rx_ms={value}"));
+        }
+    }
+
     if let Some(error) = &app.runtime_error {
         lines.push(format!("runtime_error={error}"));
     }
@@ -52,7 +67,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
 mod tests {
     use crate::{
         state::AppState,
-        status::{RuntimeCounts, RuntimeGates, RuntimeStatus},
+        status::{RuntimeCounts, RuntimeDisplayLag, RuntimeGates, RuntimeStatus},
     };
 
     use super::systems_summary_lines;
@@ -90,6 +105,26 @@ mod tests {
         assert!(text.contains("prices=2"));
         assert!(text.contains("orderbooks=4"));
         assert!(!text.contains("block="));
+    }
+
+    #[test]
+    fn systems_summary_shows_runtime_lag_metrics() {
+        let app = AppState {
+            runtime_display_lag: Some(RuntimeDisplayLag {
+                status_age_ms: Some(57),
+                api_build_ms: Some(1),
+                observed_to_state_us: Some(220),
+                tui_receive_lag_ms: Some(8),
+                ..RuntimeDisplayLag::default()
+            }),
+            ..Default::default()
+        };
+
+        let text = systems_summary_lines(&app).join("\n");
+
+        assert!(text.contains("status_age_ms=57"));
+        assert!(text.contains("state_us=220"));
+        assert!(text.contains("tui_rx_ms=8"));
     }
 
     fn runtime_status(ok: bool, health_flags: Vec<String>) -> RuntimeStatus {

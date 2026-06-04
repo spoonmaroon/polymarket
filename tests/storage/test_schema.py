@@ -34,7 +34,56 @@ def test_schema_applies_to_empty_database(tmp_path: Path) -> None:
         "features.probability_outputs",
         "validation.contract_labels",
         "validation.decision_labels",
+        "validation.market_outcome_history",
     }.issubset(tables)
+
+
+def test_market_outcome_history_schema_has_expected_columns(tmp_path: Path) -> None:
+    db_path = tmp_path / "test.duckdb"
+    schema_path = Path("src/polymarket_engine/storage/schema.sql")
+
+    with duckdb.connect(str(db_path)) as conn:
+        conn.sql(schema_path.read_text())
+        columns = [
+            row[0]
+            for row in conn.sql(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'validation'
+                  AND table_name = 'market_outcome_history'
+                ORDER BY ordinal_position
+                """
+            ).fetchall()
+        ]
+
+    assert columns == [
+        "market_id",
+        "condition_id",
+        "market_slug",
+        "asset",
+        "interval",
+        "start_ts",
+        "expiry_ts",
+        "up_token_id",
+        "down_token_id",
+        "threshold_price",
+        "threshold_event_ts",
+        "threshold_observed_ts",
+        "end_price",
+        "end_event_ts",
+        "end_observed_ts",
+        "computed_winner",
+        "computed_label_source",
+        "computed_at",
+        "official_winner",
+        "official_resolution_status",
+        "official_label_source",
+        "official_resolved_at",
+        "rule_hash",
+        "mismatch",
+        "updated_at",
+    ]
 
 
 def test_apply_schema_rebuilds_incompatible_normalized_tables(tmp_path: Path) -> None:

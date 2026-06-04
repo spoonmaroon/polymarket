@@ -5,7 +5,7 @@ WORKDIR /app/rust
 COPY rust/Cargo.toml rust/Cargo.lock ./
 COPY rust/crates ./crates
 
-RUN cargo build --release -p polymarket-live-probe
+RUN cargo build --release -p polymarket-live-probe -p polymarket-cockpit-tui
 
 FROM debian:bookworm-slim
 
@@ -14,6 +14,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/rust/target/release/polymarket-live-probe /usr/local/bin/polymarket-live-probe
+COPY --from=builder /app/rust/target/release/polymarket-cockpit-tui /usr/local/bin/polymarket-cockpit-tui
 COPY scripts/check_collector_status.py /usr/local/bin/check_collector_status.py
 COPY deploy/collector/collector-entrypoint.sh /usr/local/bin/collector-entrypoint.sh
 

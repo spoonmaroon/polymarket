@@ -1027,6 +1027,18 @@ Important rule note: some Up/Down markets use the end price relative to the star
 | `rule_text_hash` | Hash of the rule text at collection time. |
 | `resolution_status` | Pending, proposed, disputed, resolved, canceled, or invalid. |
 
+Implementation boundary: one short-dated Up/Down market has two venue outcome
+tokens. Operator displays may group the Up and Down token books into one market
+row, but storage, replay, execution math, and any future paper fills must keep
+token ids and token-level books separate.
+
+Outcome history also has two label sources. `computed_winner` is the engine's
+read-only Chainlink-rule-derived label after expiry, produced only when the
+required start and end settlement ticks are present. `official_winner` is the
+venue/onchain resolution label and must stay pending until a dedicated
+Polymarket/UMA/onchain resolution fetch verifies it. A mismatch between the two
+is a validation incident to investigate, not a model feature or trade signal.
+
 ## 2.3 Settlement-source hierarchy
 
 The settlement-source layer should use the following hierarchy:

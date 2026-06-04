@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -7,13 +8,20 @@ from typing import Any, Sequence
 import json
 import os
 import subprocess
+import time
 
 import duckdb
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 
-from polymarket_engine.monitor import MonitorSnapshot, fetch_monitor_snapshot
+from polymarket_engine.monitor import (
+    MonitorSnapshot,
+    fetch_monitor_snapshot,
+    snapshot_from_status_payload,
+)
 from polymarket_engine.probability.runtime import ProbabilityRuntimeCache
 from polymarket_engine.runtime_gates import evaluate_runtime_gates
+from polymarket_engine.validation.outcomes import build_outcome_history_payload
 
 
 NORMALIZED_HEALTH_SCHEMA_VERSION = "polymarket-normalized-health-v1"
@@ -50,30 +58,7 @@ def build_runtime_router(
                 payload=payload,
             )
 
-        try:
-            generated_at = _parse_timestamp(payload.get("generated_at"))
-        except ValueError as exc:
-            return _status_error_payload(
-                path=status_path,
-                state="INVALID",
-                error=f"generated_at timestamp parse failed: {exc}",
-                payload=payload,
-            )
-
-        return {
-            "ok": not bool(payload.get("health_flags", [])),
-            "state": "OK" if not payload.get("health_flags", []) else "STALE",
-            "status_path": str(status_path),
-            "schema_kind": payload.get("schema_version", "legacy"),
-            "mode": payload.get("mode", "legacy"),
-            "generated_at": payload.get("generated_at"),
-            "age_ms": _age_ms(generated_at),
-            "counts": _status_counts(payload),
-            "websocket_status": payload.get("websocket_status", []),
-            "latency_marks": payload.get("latency_marks", []),
-            "source_errors": payload.get("source_errors", {}),
-            "health_flags": payload.get("health_flags", []),
-        }
+        return _status_payload_from_valid_status(status_path, payload)
 
     @router.get("/monitor")
     def runtime_monitor(limit: int = 12) -> dict[str, Any]:
@@ -147,6 +132,44 @@ def build_runtime_router(
             normalized_health_path=normalized_health_path,
         )
 
+    @router.get("/live")
+    def runtime_live(limit: int = 8) -> dict[str, Any]:
+        return _runtime_live_payload(
+            status_path=status_path,
+            duckdb_path=duckdb_path,
+            normalized_health_path=normalized_health_path,
+            limit=limit,
+        )
+
+    @router.get("/live/stream")
+    def runtime_live_stream(
+        limit: int = 8,
+        interval_ms: int = 250,
+        max_events: int | None = None,
+    ) -> StreamingResponse:
+        interval_seconds = max(interval_ms, 50) / 1000
+
+        async def events() -> Any:
+            emitted = 0
+            while max_events is None or emitted < max_events:
+                payload = _runtime_live_payload(
+                    status_path=status_path,
+                    duckdb_path=duckdb_path,
+                    normalized_health_path=normalized_health_path,
+                    limit=limit,
+                )
+                yield f"event: live\ndata: {json.dumps(payload, separators=(',', ':'))}\n\n"
+                emitted += 1
+                if max_events is not None and emitted >= max_events:
+                    break
+                await asyncio.sleep(interval_seconds)
+
+        return StreamingResponse(
+            events(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
     @router.get("/probabilities")
     def runtime_probabilities(limit: int = 8) -> dict[str, Any]:
         if probability_status_path.exists():
@@ -195,6 +218,10 @@ def build_runtime_router(
                 "errors": [str(exc)],
             }
 
+    @router.get("/outcomes")
+    def runtime_outcomes(limit: int = 20) -> dict[str, Any]:
+        return build_outcome_history_payload(duckdb_path=duckdb_path, limit=limit)
+
     @router.get("/storage")
     def storage() -> dict[str, Any]:
         return _storage_payload(data_dir)
@@ -226,6 +253,75 @@ def build_runtime_router(
 
 def container_status_enabled_from_env() -> bool:
     return os.getenv("POLYMARKET_ENABLE_CONTAINER_STATUS") == "1"
+
+
+def _runtime_live_payload(
+    *,
+    status_path: Path,
+    duckdb_path: Path,
+    normalized_health_path: Path,
+    limit: int,
+) -> dict[str, Any]:
+    started = time.perf_counter()
+    server_sent_at = datetime.now(timezone.utc)
+    payload, read_error = _read_json_or_error(status_path)
+    if payload is None:
+        status = _status_error_payload(
+            path=status_path,
+            state=read_error["state"],
+            error=read_error["error"],
+        )
+        gates = evaluate_runtime_gates(
+            status_path=status_path,
+            normalized_health_path=normalized_health_path,
+        )
+        monitor = _empty_monitor_payload(state=read_error["state"], error=read_error["error"])
+    else:
+        shape_error = _status_shape_error(payload, require_generated_at=True)
+        if shape_error is not None:
+            status = _status_error_payload(
+                path=status_path,
+                state="INVALID",
+                error=shape_error,
+                payload=payload,
+            )
+            gates = _runtime_gates_from_status_payload(
+                status_path=status_path,
+                normalized_health_path=normalized_health_path,
+                payload=payload,
+            )
+            monitor = _empty_monitor_payload(state="INVALID", error=shape_error)
+        else:
+            status = _status_payload_from_valid_status(status_path, payload)
+            gates = _runtime_gates_from_status_payload(
+                status_path=status_path,
+                normalized_health_path=normalized_health_path,
+                payload=payload,
+            )
+            try:
+                monitor = _snapshot_to_json(snapshot_from_status_payload(payload, limit=limit))
+            except (TypeError, ValueError, KeyError) as exc:
+                monitor = _empty_monitor_payload(
+                    state="INVALID",
+                    error=f"runtime monitor unavailable: {_format_error(exc)}",
+                )
+
+    latency = _live_latency_payload(
+        status=status,
+        monitor=monitor,
+        server_sent_at=server_sent_at,
+        api_build_ms=int((time.perf_counter() - started) * 1000),
+    )
+    return {
+        "ok": bool(status.get("ok"))
+        and bool(gates.get("ok"))
+        and bool(monitor.get("orderbooks", [])),
+        "server_sent_at": server_sent_at.isoformat(),
+        "status": status,
+        "gates": gates,
+        "monitor": monitor,
+        "latency": latency,
+    }
 
 
 def _read_json_or_error(path: Path) -> tuple[dict[str, Any] | None, dict[str, str]]:
@@ -273,6 +369,164 @@ def _empty_monitor_payload(*, state: str, error: str) -> dict[str, Any]:
         "health_flags": ["runtime_status_invalid"],
         "websocket_status": [],
     }
+
+
+def _status_payload_from_valid_status(path: Path, payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        generated_at = _parse_timestamp(payload.get("generated_at"))
+    except ValueError as exc:
+        return _status_error_payload(
+            path=path,
+            state="INVALID",
+            error=f"generated_at timestamp parse failed: {exc}",
+            payload=payload,
+        )
+
+    return {
+        "ok": not bool(payload.get("health_flags", [])),
+        "state": "OK" if not payload.get("health_flags", []) else "STALE",
+        "status_path": str(path),
+        "schema_kind": payload.get("schema_version", "legacy"),
+        "mode": payload.get("mode", "legacy"),
+        "generated_at": payload.get("generated_at"),
+        "age_ms": _age_ms(generated_at),
+        "counts": _status_counts(payload),
+        "websocket_status": payload.get("websocket_status", []),
+        "latency_marks": payload.get("latency_marks", []),
+        "source_errors": payload.get("source_errors", {}),
+        "health_flags": payload.get("health_flags", []),
+    }
+
+
+def _runtime_gates_from_status_payload(
+    *,
+    status_path: Path,
+    normalized_health_path: Path,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    failures: list[str] = []
+    generated_at = _parse_timestamp_or_none(payload.get("generated_at"))
+    age_seconds = None
+    if generated_at is None:
+        failures.append("status generated_at invalid")
+    else:
+        age_seconds = (datetime.now(timezone.utc) - generated_at).total_seconds()
+        if age_seconds > 30:
+            failures.append("status file stale")
+
+    price_rows = _status_price_rows(payload)
+    orderbook_rows = list(_list_field(payload, "orderbooks"))
+    if not price_rows:
+        failures.append("status has no price rows")
+    if not orderbook_rows:
+        failures.append("status has no orderbook rows")
+    health_flags = payload.get("health_flags")
+    if isinstance(health_flags, list) and health_flags:
+        failures.append(f"status health_flags present: {', '.join(map(str, health_flags))}")
+    elif health_flags is not None and not isinstance(health_flags, list):
+        failures.append("status health_flags invalid")
+
+    normalized_health = (
+        _normalized_health_gate_payload(path=normalized_health_path, failures=failures)
+        if normalized_health_path.exists()
+        else None
+    )
+    return {
+        "ok": not failures,
+        "status_path": str(status_path),
+        "normalized_health_path": str(normalized_health_path),
+        "thresholds": {
+            "max_status_age_seconds": 30,
+            "max_normalized_health_age_seconds": 30,
+        },
+        "failures": failures,
+        "status": {
+            "state": "OK",
+            "generated_at": payload.get("generated_at"),
+            "age_seconds": age_seconds,
+            "counts": {
+                "prices": len(price_rows),
+                "orderbooks": len(orderbook_rows),
+            },
+            "health_flags": health_flags if isinstance(health_flags, list) else [],
+        },
+        "normalized_health": normalized_health,
+    }
+
+
+def _normalized_health_gate_payload(
+    *,
+    path: Path,
+    failures: list[str],
+) -> dict[str, Any]:
+    payload, read_error = _read_json_or_error(path)
+    if payload is None:
+        failures.append("normalized health missing")
+        return {"state": "INVALID", "schema_version": None, "tables": []}
+
+    generated_at = _parse_timestamp_or_none(payload.get("generated_at"))
+    age_seconds = None
+    if generated_at is None:
+        failures.append("normalized health generated_at invalid")
+    else:
+        age_seconds = (datetime.now(timezone.utc) - generated_at).total_seconds()
+        if age_seconds > 30:
+            failures.append("normalized health stale")
+
+    schema_version = payload.get("schema_version")
+    if schema_version != NORMALIZED_HEALTH_SCHEMA_VERSION:
+        failures.append("normalized health schema stale")
+    tables = payload.get("tables", [])
+    if not isinstance(tables, list):
+        failures.append("normalized health tables invalid")
+        tables = []
+    return {
+        "state": "OK" if not read_error else read_error["state"],
+        "schema_version": schema_version,
+        "generated_at": payload.get("generated_at"),
+        "age_seconds": age_seconds,
+        "tables": tables,
+    }
+
+
+def _live_latency_payload(
+    *,
+    status: dict[str, Any],
+    monitor: dict[str, Any],
+    server_sent_at: datetime,
+    api_build_ms: int,
+) -> dict[str, Any]:
+    latency_marks = status.get("latency_marks", [])
+    return {
+        "status_age_ms": status.get("age_ms"),
+        "api_build_ms": api_build_ms,
+        "server_sent_at": server_sent_at.isoformat(),
+        "source_to_observed_ms": _latency_mark_value(
+            latency_marks,
+            "source_to_observed_ms",
+        ),
+        "observed_to_state_us": _latency_mark_value(
+            latency_marks,
+            "observed_to_state_us",
+        ),
+        "orderbook_rows": len(monitor.get("orderbooks", [])),
+    }
+
+
+def _latency_mark_value(rows: object, name: str) -> int | None:
+    if not isinstance(rows, list):
+        return None
+    for row in rows:
+        if not isinstance(row, dict) or row.get("name") != name:
+            continue
+        value = row.get("elapsed_ms", row.get("value"))
+        if isinstance(value, bool) or value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+    return None
 
 
 def _container_error_payload(exc: BaseException) -> dict[str, Any]:
@@ -465,6 +719,13 @@ def _parse_timestamp(value: object) -> datetime | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def _parse_timestamp_or_none(value: object) -> datetime | None:
+    try:
+        return _parse_timestamp(value)
+    except ValueError:
+        return None
 
 
 def _age_ms(value: datetime | None) -> int | None:

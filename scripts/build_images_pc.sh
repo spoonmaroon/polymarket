@@ -37,6 +37,7 @@ COLLECTOR_LATEST_TAG="polymarket-rust-collector:latest"
 NORMALIZER_LATEST_TAG="polymarket-normalizer:latest"
 COLLECTOR_TAR="$DIST_DIR/${COLLECTOR_IMAGE}-${SHORT_SHA}.tar"
 NORMALIZER_TAR="$DIST_DIR/${NORMALIZER_IMAGE}-${SHORT_SHA}.tar"
+TUI_BIN="$DIST_DIR/polymarket-cockpit-tui-${SHORT_SHA}"
 MANIFEST="$DIST_DIR/manifest-${SHORT_SHA}.txt"
 
 export DOCKER_BUILDKIT=1
@@ -69,6 +70,14 @@ docker save \
   "$NORMALIZER_SHA_TAG" \
   "$NORMALIZER_LATEST_TAG"
 
+CONTAINER_ID="$(docker create --platform "$TARGET_PLATFORM" "$COLLECTOR_SHA_TAG")"
+trap 'docker rm -f "$CONTAINER_ID" >/dev/null 2>&1 || true' EXIT
+docker cp "$CONTAINER_ID:/usr/local/bin/polymarket-cockpit-tui" "$TUI_BIN.tmp"
+mv "$TUI_BIN.tmp" "$TUI_BIN"
+chmod 755 "$TUI_BIN"
+docker rm -f "$CONTAINER_ID" >/dev/null
+trap - EXIT
+
 COLLECTOR_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$COLLECTOR_SHA_TAG")"
 NORMALIZER_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$NORMALIZER_SHA_TAG")"
 
@@ -85,6 +94,7 @@ normalizer_image=${NORMALIZER_SHA_TAG}
 normalizer_latest=${NORMALIZER_LATEST_TAG}
 normalizer_tar=${NORMALIZER_TAR}
 normalizer_image_id=${NORMALIZER_IMAGE_ID}
+tui_bin=${TUI_BIN}
 EOF
 
 echo "$MANIFEST"

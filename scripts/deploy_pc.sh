@@ -12,6 +12,7 @@ PC_REPO="${PC_REPO:-/home/ender/polymarket}"
 PC_BUNDLE="${PC_BUNDLE:-/home/ender/polymarket.bundle}"
 PC_DATA_DIR="${PC_DATA_DIR:-/home/ender/polymarket-data}"
 PC_DIST_DIR="${PC_DIST_DIR:-/home/ender/polymarket-image-artifacts}"
+PC_BIN_DIR="${PC_BIN_DIR:-/home/ender/bin}"
 PC_NORMALIZER_INTERVAL_SECONDS="${PC_NORMALIZER_INTERVAL_SECONDS:-0.1}"
 PC_REST_BACKUP_INTERVAL_MS="${PC_REST_BACKUP_INTERVAL_MS:-1000}"
 PC_API_PORT="${PC_API_PORT:-8000}"
@@ -50,6 +51,7 @@ COLLECTOR_IMAGE="polymarket-rust-collector:${SHORT_SHA}"
 NORMALIZER_IMAGE="polymarket-normalizer:${SHORT_SHA}"
 COLLECTOR_TAR="$DIST_DIR/polymarket-rust-collector-${SHORT_SHA}.tar"
 NORMALIZER_TAR="$DIST_DIR/polymarket-normalizer-${SHORT_SHA}.tar"
+TUI_BIN="$DIST_DIR/polymarket-cockpit-tui-${SHORT_SHA}"
 LOCAL_BUNDLE="$DIST_DIR/polymarket-${SHORT_SHA}.bundle"
 
 if [ "$PC_DEPLOY_BUILD_IMAGES" = "1" ]; then
@@ -63,6 +65,11 @@ fi
 
 if [ ! -f "$NORMALIZER_TAR" ]; then
   echo "missing normalizer image tarball: $NORMALIZER_TAR" >&2
+  exit 1
+fi
+
+if [ ! -f "$TUI_BIN" ]; then
+  echo "missing TUI binary: $TUI_BIN" >&2
   exit 1
 fi
 
@@ -92,6 +99,7 @@ echo "copying git bundle and image tarballs to THEPC WSL"
 wsl_put_file "$LOCAL_BUNDLE" "$PC_BUNDLE"
 wsl_put_file "$COLLECTOR_TAR" "$PC_DIST_DIR/$(basename "$COLLECTOR_TAR")"
 wsl_put_file "$NORMALIZER_TAR" "$PC_DIST_DIR/$(basename "$NORMALIZER_TAR")"
+wsl_put_file "$TUI_BIN" "$PC_DIST_DIR/$(basename "$TUI_BIN")"
 
 ssh "$PC_HOST" "wsl.exe -d $PC_WSL_DISTRO -- bash -s" <<EOF
 set -euo pipefail
@@ -103,6 +111,7 @@ PC_REPO=$(shell_quote "$PC_REPO")
 PC_BUNDLE=$(shell_quote "$PC_BUNDLE")
 PC_DATA_DIR=$(shell_quote "$PC_DATA_DIR")
 PC_DIST_DIR=$(shell_quote "$PC_DIST_DIR")
+PC_BIN_DIR=$(shell_quote "$PC_BIN_DIR")
 PC_NORMALIZER_INTERVAL_SECONDS=$(shell_quote "$PC_NORMALIZER_INTERVAL_SECONDS")
 PC_REST_BACKUP_INTERVAL_MS=$(shell_quote "$PC_REST_BACKUP_INTERVAL_MS")
 PC_API_PORT=$(shell_quote "$PC_API_PORT")
@@ -110,6 +119,7 @@ COLLECTOR_IMAGE=$(shell_quote "$COLLECTOR_IMAGE")
 NORMALIZER_IMAGE=$(shell_quote "$NORMALIZER_IMAGE")
 COLLECTOR_TAR=$(shell_quote "$PC_DIST_DIR/$(basename "$COLLECTOR_TAR")")
 NORMALIZER_TAR=$(shell_quote "$PC_DIST_DIR/$(basename "$NORMALIZER_TAR")")
+TUI_BIN=$(shell_quote "$PC_DIST_DIR/$(basename "$TUI_BIN")")
 
 set_env() {
   key="\$1"
@@ -134,7 +144,7 @@ set_env() {
   mv "\$tmp" "\$file"
 }
 
-mkdir -p "\$PC_DATA_DIR/raw" "\$PC_DATA_DIR/db" "\$PC_DATA_DIR/live" "\$PC_DATA_DIR/logs" "\$PC_DIST_DIR"
+mkdir -p "\$PC_DATA_DIR/raw" "\$PC_DATA_DIR/db" "\$PC_DATA_DIR/live" "\$PC_DATA_DIR/logs" "\$PC_DIST_DIR" "\$PC_BIN_DIR"
 touch "\$PC_DATA_DIR/raw/.polymarket_archive_root"
 
 if [ ! -d "\$PC_REPO/.git" ]; then
@@ -167,6 +177,7 @@ set_env POLYMARKET_NORMALIZER_IMAGE "\$NORMALIZER_IMAGE" deploy/collector/.env
 
 docker load -i "\$COLLECTOR_TAR"
 docker load -i "\$NORMALIZER_TAR"
+install -m 755 "\$TUI_BIN" "\$PC_BIN_DIR/polymarket-cockpit-tui"
 
 POLYMARKET_DEPLOY_USE_PREBUILT=1 \\
 POLYMARKET_DEPLOY_REF="\$FULL_SHA" \\
@@ -192,5 +203,6 @@ python3 scripts/check_collector_status.py \\
   --expected-prewarm-windows 2
 
 docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml ps
+printf 'THEPC TUI installed %s\\n' "\$PC_BIN_DIR/polymarket-cockpit-tui"
 printf 'THEPC deployed %s\\n' "\$FULL_SHA"
 EOF

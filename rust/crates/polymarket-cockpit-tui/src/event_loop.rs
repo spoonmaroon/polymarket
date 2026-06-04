@@ -1,7 +1,8 @@
 use std::io::{self, Stdout};
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind},
     execute,
@@ -14,15 +15,19 @@ use crate::{
     client::EngineClient,
     render,
     state::{AppState, MainTab},
-    status::{RuntimeGates, RuntimeMonitor, RuntimeProbabilities, RuntimeStatus},
+    status::{
+        RuntimeDisplayLag, RuntimeGates, RuntimeLive, RuntimeMonitor, RuntimeOutcomes,
+        RuntimeProbabilities, RuntimeStatus,
+    },
 };
 
 type Tui = Terminal<CrosstermBackend<Stdout>>;
+const AUXILIARY_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 pub async fn run(mut app: AppState, engine_api_url: String, poll_interval_ms: u64) -> Result<()> {
     let mut terminal = TerminalGuard::enter()?;
     let (runtime_tx, mut runtime_rx) = mpsc::unbounded_channel();
-    let _poll_task = RuntimePollTask::spawn(engine_api_url, poll_interval_ms, runtime_tx);
+    let _poll_task = RuntimeLiveTask::spawn(engine_api_url, poll_interval_ms, runtime_tx);
 
     run_loop(terminal.terminal_mut(), &mut app, &mut runtime_rx)
 }
@@ -142,14 +147,16 @@ struct RuntimeUpdate {
     gates: Option<RuntimeGates>,
     monitor: Option<RuntimeMonitor>,
     probabilities: Option<RuntimeProbabilities>,
+    outcomes: Option<RuntimeOutcomes>,
+    display_lag: Option<RuntimeDisplayLag>,
     error: Option<String>,
 }
 
-struct RuntimePollTask {
+struct RuntimeLiveTask {
     handle: JoinHandle<()>,
 }
 
-impl RuntimePollTask {
+impl RuntimeLiveTask {
     fn spawn(
         engine_api_url: String,
         poll_interval_ms: u64,
@@ -157,15 +164,47 @@ impl RuntimePollTask {
     ) -> Self {
         let handle = tokio::spawn(async move {
             let client = EngineClient::new(engine_api_url);
-            let mut interval = tokio::time::interval(poll_interval_duration(poll_interval_ms));
+            let auxiliary_client = client.clone();
+            let auxiliary_tx = runtime_tx.clone();
+            let auxiliary_handle = tokio::spawn(async move {
+                let mut interval = tokio::time::interval(AUXILIARY_POLL_INTERVAL);
+                loop {
+                    interval.tick().await;
+                    if auxiliary_tx
+                        .send(poll_auxiliary_runtime(&auxiliary_client).await)
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            });
 
             loop {
-                interval.tick().await;
+                if stream_runtime_updates(&client, poll_interval_ms, &runtime_tx)
+                    .await
+                    .is_err_and(|error| {
+                        runtime_tx
+                            .send(RuntimeUpdate {
+                                status: None,
+                                gates: None,
+                                monitor: None,
+                                probabilities: None,
+                                outcomes: None,
+                                display_lag: None,
+                                error: Some(format!("stream: {error}")),
+                            })
+                            .is_err()
+                    })
+                {
+                    break;
+                }
                 let update = poll_runtime(&client).await;
                 if runtime_tx.send(update).is_err() {
                     break;
                 }
+                tokio::time::sleep(poll_interval_duration(poll_interval_ms)).await;
             }
+            auxiliary_handle.abort();
         });
 
         Self { handle }
@@ -176,7 +215,7 @@ fn poll_interval_duration(poll_interval_ms: u64) -> Duration {
     Duration::from_millis(poll_interval_ms.max(1))
 }
 
-impl Drop for RuntimePollTask {
+impl Drop for RuntimeLiveTask {
     fn drop(&mut self) {
         self.handle.abort();
     }
@@ -215,6 +254,14 @@ fn apply_runtime_update(app: &mut AppState, update: RuntimeUpdate) -> bool {
         changed |= replace_if_changed(&mut app.runtime_probabilities, probabilities);
     }
 
+    if let Some(outcomes) = update.outcomes {
+        changed |= replace_if_changed(&mut app.runtime_outcomes, outcomes);
+    }
+
+    if let Some(display_lag) = update.display_lag {
+        changed |= replace_if_changed(&mut app.runtime_display_lag, display_lag);
+    }
+
     if app.runtime_error != update.error {
         app.runtime_error = update.error;
         changed = true;
@@ -241,27 +288,39 @@ async fn poll_runtime(client: &EngineClient) -> RuntimeUpdate {
     let mut gates = None;
     let mut monitor = None;
     let mut probabilities = None;
+    let mut outcomes = None;
+    let mut display_lag = None;
 
-    let (status_result, gates_result, monitor_result, probabilities_result) = tokio::join!(
-        client.status(),
-        client.gates(),
-        client.monitor(8),
-        client.probabilities(8)
-    );
+    let (live_result, probabilities_result, outcomes_result) =
+        tokio::join!(client.live(8), client.probabilities(8), client.outcomes(20));
 
-    match status_result {
-        Ok(next_status) => status = Some(next_status),
-        Err(error) => errors.push(format!("status: {error}")),
-    }
-
-    match gates_result {
-        Ok(next_gates) => gates = Some(next_gates),
-        Err(error) => errors.push(format!("gates: {error}")),
-    }
-
-    match monitor_result {
-        Ok(next_monitor) => monitor = Some(next_monitor),
-        Err(error) => errors.push(format!("monitor: {error}")),
+    match live_result {
+        Ok(next_live) => {
+            status = Some(next_live.status);
+            gates = Some(next_live.gates);
+            monitor = Some(next_live.monitor);
+            display_lag = Some(display_lag_with_receive_ms(
+                next_live.latency,
+                next_live.server_sent_at,
+            ));
+        }
+        Err(error) => {
+            errors.push(format!("live: {error}"));
+            let (status_result, gates_result, monitor_result) =
+                tokio::join!(client.status(), client.gates(), client.monitor(8));
+            match status_result {
+                Ok(next_status) => status = Some(next_status),
+                Err(error) => errors.push(format!("status: {error}")),
+            }
+            match gates_result {
+                Ok(next_gates) => gates = Some(next_gates),
+                Err(error) => errors.push(format!("gates: {error}")),
+            }
+            match monitor_result {
+                Ok(next_monitor) => monitor = Some(next_monitor),
+                Err(error) => errors.push(format!("monitor: {error}")),
+            }
+        }
     }
 
     match probabilities_result {
@@ -269,17 +328,127 @@ async fn poll_runtime(client: &EngineClient) -> RuntimeUpdate {
         Err(error) => errors.push(format!("probabilities: {error}")),
     }
 
+    match outcomes_result {
+        Ok(next_outcomes) => outcomes = Some(next_outcomes),
+        Err(error) => errors.push(format!("outcomes: {error}")),
+    }
+
     RuntimeUpdate {
         status,
         gates,
         monitor,
         probabilities,
+        outcomes,
+        display_lag,
         error: if errors.is_empty() {
             None
         } else {
             Some(errors.join("; "))
         },
     }
+}
+
+async fn stream_runtime_updates(
+    client: &EngineClient,
+    poll_interval_ms: u64,
+    runtime_tx: &mpsc::UnboundedSender<RuntimeUpdate>,
+) -> Result<()> {
+    let mut response = client
+        .live_stream_response(8, poll_interval_ms)
+        .await
+        .context("open live stream")?;
+    let mut buffer = String::new();
+
+    while let Some(chunk) = response.chunk().await.context("read live stream")? {
+        buffer.push_str(std::str::from_utf8(&chunk).context("decode live stream bytes")?);
+        while let Some(event_end) = buffer.find("\n\n") {
+            let event = buffer[..event_end].to_string();
+            buffer.drain(..event_end + 2);
+            if let Some(live) = parse_sse_live_event(&event)? {
+                let update = runtime_update_from_live(live);
+                if runtime_tx.send(update).is_err() {
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    Err(anyhow::anyhow!("live stream closed"))
+}
+
+fn parse_sse_live_event(event: &str) -> Result<Option<RuntimeLive>> {
+    let data = event
+        .lines()
+        .filter_map(|line| line.strip_prefix("data:"))
+        .map(str::trim_start)
+        .collect::<Vec<_>>()
+        .join("\n");
+    if data.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(serde_json::from_str(&data)?))
+}
+
+fn runtime_update_from_live(live: RuntimeLive) -> RuntimeUpdate {
+    let display_lag = display_lag_with_receive_ms(live.latency, live.server_sent_at);
+    RuntimeUpdate {
+        status: Some(live.status),
+        gates: Some(live.gates),
+        monitor: Some(live.monitor),
+        probabilities: None,
+        outcomes: None,
+        display_lag: Some(display_lag),
+        error: None,
+    }
+}
+
+async fn poll_auxiliary_runtime(client: &EngineClient) -> RuntimeUpdate {
+    let (probabilities_result, outcomes_result) =
+        tokio::join!(client.probabilities(8), client.outcomes(20));
+    let mut errors = Vec::new();
+    let mut update = RuntimeUpdate {
+        status: None,
+        gates: None,
+        monitor: None,
+        probabilities: None,
+        outcomes: None,
+        display_lag: None,
+        error: None,
+    };
+
+    match probabilities_result {
+        Ok(probabilities) => update.probabilities = Some(probabilities),
+        Err(error) => errors.push(format!("probabilities: {error}")),
+    }
+    match outcomes_result {
+        Ok(outcomes) => update.outcomes = Some(outcomes),
+        Err(error) => errors.push(format!("outcomes: {error}")),
+    }
+
+    if !errors.is_empty() {
+        update.error = Some(errors.join("; "));
+    }
+    update
+}
+
+fn display_lag_with_receive_ms(
+    mut display_lag: RuntimeDisplayLag,
+    server_sent_at: Option<String>,
+) -> RuntimeDisplayLag {
+    let timestamp = display_lag
+        .server_sent_at
+        .as_deref()
+        .or(server_sent_at.as_deref());
+    display_lag.tui_receive_lag_ms = receive_lag_ms(timestamp);
+    display_lag
+}
+
+fn receive_lag_ms(server_sent_at: Option<&str>) -> Option<u64> {
+    let parsed = DateTime::parse_from_rfc3339(server_sent_at?).ok()?;
+    let elapsed = Utc::now()
+        .signed_duration_since(parsed.with_timezone(&Utc))
+        .num_milliseconds();
+    Some(elapsed.max(0) as u64)
 }
 
 #[cfg(test)]
@@ -301,8 +470,9 @@ mod tests {
     use crate::{
         state::{AppState, MainTab},
         status::{
-            RuntimeCounts, RuntimeGates, RuntimeMonitor, RuntimeOrderbookRow, RuntimePriceRow,
-            RuntimeProbabilities, RuntimeProbabilityRow, RuntimeStatus,
+            RuntimeCounts, RuntimeDisplayLag, RuntimeGates, RuntimeMonitor, RuntimeOrderbookRow,
+            RuntimeOutcomeRow, RuntimeOutcomes, RuntimePriceRow, RuntimeProbabilities,
+            RuntimeProbabilityRow, RuntimeStatus,
         },
     };
 
@@ -355,6 +525,25 @@ mod tests {
         }
     }
 
+    fn outcomes() -> RuntimeOutcomes {
+        RuntimeOutcomes {
+            ok: true,
+            state: "OK".to_string(),
+            generated_at: Some("2026-06-03T22:00:00Z".to_string()),
+            rows: vec![RuntimeOutcomeRow {
+                market: "BTC 5m".to_string(),
+                market_id: "btc-updown-5m-1780521900".to_string(),
+                asset: Some("BTC".to_string()),
+                start_ts: None,
+                expiry_ts: Some("2026-06-03T21:25:00Z".to_string()),
+                computed_winner: Some("UP".to_string()),
+                official_winner: None,
+                official_resolution_status: "pending".to_string(),
+                mismatch: None,
+            }],
+        }
+    }
+
     fn orderbook(asset: &str, side: &str) -> RuntimeOrderbookRow {
         RuntimeOrderbookRow {
             venue: Some("polymarket".to_string()),
@@ -385,7 +574,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn poll_runtime_fetches_endpoints_concurrently() {
+    async fn poll_runtime_fetches_live_probabilities_and_outcomes_concurrently() {
         let engine_api_url = delayed_runtime_api_url(Duration::from_millis(200));
         let client = EngineClient::new(engine_api_url);
         let started = Instant::now();
@@ -397,6 +586,8 @@ mod tests {
         assert!(update.gates.is_some());
         assert!(update.monitor.is_some());
         assert!(update.probabilities.is_some());
+        assert!(update.outcomes.is_some());
+        assert_eq!(update.display_lag.unwrap().status_age_ms, Some(12));
         assert_eq!(update.error, None);
     }
 
@@ -408,6 +599,11 @@ mod tests {
             gates: None,
             monitor: Some(monitor("65000.00")),
             probabilities: None,
+            outcomes: None,
+            display_lag: Some(RuntimeDisplayLag {
+                status_age_ms: Some(10),
+                ..RuntimeDisplayLag::default()
+            }),
             error: Some("status: timeout".to_string()),
         })
         .unwrap();
@@ -419,6 +615,11 @@ mod tests {
             }),
             monitor: Some(monitor("65185.18")),
             probabilities: Some(probabilities()),
+            outcomes: Some(outcomes()),
+            display_lag: Some(RuntimeDisplayLag {
+                status_age_ms: Some(12),
+                ..RuntimeDisplayLag::default()
+            }),
             error: None,
         })
         .unwrap();
@@ -442,6 +643,16 @@ mod tests {
             app.runtime_probabilities.as_ref().unwrap().rows[0].contract,
             "BTC 5m UP"
         );
+        assert_eq!(
+            app.runtime_outcomes.as_ref().unwrap().rows[0]
+                .computed_winner
+                .as_deref(),
+            Some("UP")
+        );
+        assert_eq!(
+            app.runtime_display_lag.as_ref().unwrap().status_age_ms,
+            Some(12)
+        );
         assert_eq!(app.runtime_error, None);
     }
 
@@ -456,6 +667,11 @@ mod tests {
             }),
             monitor: Some(monitor("65000.00")),
             probabilities: Some(probabilities()),
+            outcomes: Some(outcomes()),
+            display_lag: Some(RuntimeDisplayLag {
+                status_age_ms: Some(12),
+                ..RuntimeDisplayLag::default()
+            }),
             error: None,
         })
         .unwrap();
@@ -468,6 +684,11 @@ mod tests {
             }),
             runtime_monitor: Some(monitor("65000.00")),
             runtime_probabilities: Some(probabilities()),
+            runtime_outcomes: Some(outcomes()),
+            runtime_display_lag: Some(RuntimeDisplayLag {
+                status_age_ms: Some(12),
+                ..RuntimeDisplayLag::default()
+            }),
             runtime_error: None,
             ..Default::default()
         };
@@ -489,7 +710,7 @@ mod tests {
         app.sync_market_selection();
 
         assert!(!apply_key(&mut app, KeyCode::Down));
-        assert_eq!(app.selected_market_index(), Some(1));
+        assert_eq!(app.selected_market_index(), Some(0));
 
         assert!(!apply_key(&mut app, KeyCode::Up));
         assert_eq!(app.selected_market_index(), Some(0));
@@ -499,7 +720,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         thread::spawn(move || {
-            for _ in 0..4 {
+            for _ in 0..3 {
                 let Ok((mut stream, _peer)) = listener.accept() else {
                     return;
                 };
@@ -528,7 +749,37 @@ mod tests {
     }
 
     fn runtime_response_body(path: &str) -> &'static str {
-        if path.starts_with("/api/runtime/status") {
+        if path.starts_with("/api/runtime/live") {
+            r#"{
+                "ok": true,
+                "server_sent_at": "2026-06-03T21:00:00+00:00",
+                "status": {
+                    "ok": true,
+                    "schema_kind": "rust-live-probe-state-manager-v1",
+                    "mode": "state-manager",
+                    "age_ms": 12,
+                    "counts": {"prices": 2, "orderbooks": 4, "current": 2, "next": 2, "next_next": 0, "websocket_status": 2},
+                    "latency_marks": [],
+                    "health_flags": []
+                },
+                "gates": {"ok": true, "failures": []},
+                "monitor": {
+                    "generated_at": "2026-06-03T20:43:20.744215+00:00",
+                    "price_rows": [{
+                        "source_key": "polymarket_rtds_chainlink",
+                        "symbol": "BTC/USD",
+                        "observed_ts": "2026-06-03T20:43:19.789163241Z",
+                        "price": "65000.00"
+                    }],
+                    "orderbooks": []
+                },
+                "latency": {
+                    "status_age_ms": 12,
+                    "api_build_ms": 1,
+                    "server_sent_at": "2026-06-03T21:00:00+00:00"
+                }
+            }"#
+        } else if path.starts_with("/api/runtime/status") {
             r#"{
                 "ok": true,
                 "schema_kind": "rust-live-probe-state-manager-v1",
@@ -552,6 +803,22 @@ mod tests {
                     "sigma_tau": 0.0123,
                     "age_ms": 850,
                     "flags": ["OK"]
+                }]
+            }"#
+        } else if path.starts_with("/api/runtime/outcomes") {
+            r#"{
+                "ok": true,
+                "state": "OK",
+                "generated_at": "2026-06-03T22:00:00Z",
+                "rows": [{
+                    "market": "BTC 5m",
+                    "market_id": "btc-updown-5m-1780521900",
+                    "asset": "BTC",
+                    "expiry_ts": "2026-06-03T21:25:00Z",
+                    "computed_winner": "UP",
+                    "official_winner": null,
+                    "official_resolution_status": "pending",
+                    "mismatch": null
                 }]
             }"#
         } else {

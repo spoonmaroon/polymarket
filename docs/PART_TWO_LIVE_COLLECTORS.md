@@ -113,6 +113,31 @@ because the Rust status file does not contain full venue rule text; do not
 synthesize rule text. `features.decision_snapshots remains empty until probability`
 because no probability model or decision policy exists yet.
 
+## Runtime API And Cockpit Display
+
+The cockpit should prefer `/api/runtime/live/stream`, which emits `event: live`
+SSE messages whose `data` body matches `/api/runtime/live`. If the stream drops,
+the cockpit falls back to polling `/api/runtime/live`. The legacy `/status`,
+`/monitor`, and `/gates` endpoints remain for manual debugging and compatibility.
+
+The live payload combines status, gates, monitor rows, and compact latency
+metadata from one status-file read in normal operation. The stream interval is
+an API display cadence; WebSocket collection remains primary, and REST orderbook
+backup cadence remains a backup path.
+
+The market table groups a BTC/ETH 5m window into one binary market row because
+operator reasoning is market-level. Internally, the Up and Down CLOB token books
+stay separate because venue liquidity, execution math, and paper-trade replay
+are token-level. The selected book panel renders both token books for the
+selected market.
+
+The normalizer writes `validation.market_outcome_history` for expired recorded
+markets when Chainlink start and end ticks are available. `computed_winner` is a
+read-only Chainlink-rule-derived label. `official_winner` stays pending until a
+future Polymarket/UMA/onchain resolution source is explicitly fetched and
+verified. A computed/official mismatch is a validation incident, not a trading
+signal.
+
 ## Source Rules
 
 - Polymarket website chart prices are not model truth.

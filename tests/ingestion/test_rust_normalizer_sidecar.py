@@ -89,6 +89,31 @@ def test_sidecar_cycle_writes_health_when_status_is_missing(tmp_path: Path) -> N
     assert health_path.exists()
 
 
+def test_normalizer_writes_market_outcome_history(tmp_path: Path) -> None:
+    raw_root = tmp_path / "raw"
+    db_path = tmp_path / "state.duckdb"
+    status_path = tmp_path / "live" / "status.json"
+    health_path = tmp_path / "live" / "normalized_health.json"
+    start_ts = datetime(2026, 6, 2, 6, 0, tzinfo=timezone.utc)
+    asof_ts = start_ts + timedelta(minutes=5, seconds=1)
+    _write_raw_tree(raw_root=raw_root, start_ts=start_ts, asof_ts=asof_ts)
+    _write_status(status_path, start_ts=start_ts, asof_ts=asof_ts)
+
+    result = run_rust_normalizer_cycle(
+        raw_root=raw_root,
+        db_path=db_path,
+        status_path=status_path,
+        normalized_health_path=health_path,
+        include_next=False,
+    )
+
+    assert result.market_outcomes_written == 1
+    with duckdb.connect(str(db_path), read_only=True) as conn:
+        assert conn.execute(
+            "select computed_winner from validation.market_outcome_history"
+        ).fetchone() == ("UP",)
+
+
 def test_cadence_sleep_subtracts_cycle_elapsed_time() -> None:
     assert _cadence_sleep_seconds(
         cycle_started=10.0,
