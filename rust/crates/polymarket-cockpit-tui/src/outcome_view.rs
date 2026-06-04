@@ -173,7 +173,8 @@ fn grouped_outcomes(rows: &[RuntimeOutcomeRow]) -> Vec<OutcomeDayGroup<'_>> {
         groups_by_key.entry(key).or_default().push(row);
     }
 
-    groups_by_key
+    let mut unknown_rows = groups_by_key.remove("unknown");
+    let mut groups = groups_by_key
         .into_iter()
         .rev()
         .map(|(key, rows)| {
@@ -189,7 +190,18 @@ fn grouped_outcomes(rows: &[RuntimeOutcomeRow]) -> Vec<OutcomeDayGroup<'_>> {
                 count,
             }
         })
-        .collect()
+        .collect::<Vec<_>>();
+    if let Some(rows) = unknown_rows.take() {
+        let key = "unknown".to_string();
+        let count = rows.len();
+        groups.push(OutcomeDayGroup {
+            sections: grouped_sections(&key, rows),
+            key: key.clone(),
+            label: key,
+            count,
+        });
+    }
+    groups
 }
 
 fn grouped_sections<'a>(
@@ -464,6 +476,35 @@ mod tests {
         assert!(items.iter().any(|item| {
             matches!(item, OutcomeDisplayItem::Outcome { row } if row.market == "BTC malformed")
         }));
+    }
+
+    #[test]
+    fn outcome_display_items_orders_unknown_day_after_dated_days() {
+        let dated_key = "2026-06-04";
+        let outcomes = RuntimeOutcomes {
+            ok: true,
+            state: "OK".to_string(),
+            generated_at: Some("2026-06-04T20:00:00Z".to_string()),
+            rows: vec![
+                outcome("BTC malformed", "not-a-timestamp"),
+                outcome("BTC dated", &local_expiry(dated_key, 13)),
+            ],
+        };
+        let expansion = OutcomeExpansion::default();
+
+        let items = outcome_display_items(Some(&outcomes), &expansion);
+
+        assert!(matches!(
+            &items[0],
+            OutcomeDisplayItem::Day { key, .. } if key == dated_key
+        ));
+        assert!(items.iter().skip(1).any(|item| {
+            matches!(item, OutcomeDisplayItem::Day { key, .. } if key == "unknown")
+        }));
+        assert_eq!(
+            latest_outcome_day_key(&outcomes).as_deref(),
+            Some(dated_key)
+        );
     }
 
     fn local_expiry(day: &str, hour: u32) -> String {
