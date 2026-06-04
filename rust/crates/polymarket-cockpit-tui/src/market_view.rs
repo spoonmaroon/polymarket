@@ -135,7 +135,7 @@ fn market_group_sort_key(group: &MarketGroup<'_>) -> (u8, i64) {
     (asset_order, expiry)
 }
 
-fn expiry_ts(orderbook: &RuntimeOrderbookRow) -> Option<DateTime<Utc>> {
+pub fn expiry_ts(orderbook: &RuntimeOrderbookRow) -> Option<DateTime<Utc>> {
     let epoch = slug_parts(orderbook.market_slug.as_deref())?.expiry_epoch;
     Utc.timestamp_opt(epoch, 0).single()
 }

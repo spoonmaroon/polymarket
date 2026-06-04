@@ -18,7 +18,7 @@ pub struct MarketDisplayRow {
     pub up: String,
     pub down: String,
     pub spread: String,
-    pub ttl: String,
+    pub tte: String,
     pub seen: String,
 }
 
@@ -29,7 +29,7 @@ pub fn market_header_labels() -> [&'static str; 7] {
         "UP bid/ask",
         "DOWN bid/ask",
         "Spread",
-        "TTL",
+        "TTE",
         "Seen",
     ]
 }
@@ -77,7 +77,7 @@ fn market_display_rows(
                     up: String::new(),
                     down: String::new(),
                     spread: String::new(),
-                    ttl: String::new(),
+                    tte: String::new(),
                     seen: String::new(),
                 });
             }
@@ -87,7 +87,7 @@ fn market_display_rows(
                 up: String::new(),
                 down: String::new(),
                 spread: String::new(),
-                ttl: String::new(),
+                tte: String::new(),
                 seen: String::new(),
             });
             last_asset = Some(asset);
@@ -103,7 +103,7 @@ fn market_display_rows(
             up: top_quote(group.up),
             down: top_quote(group.down),
             spread: tight_spread(group.up, group.down),
-            ttl: countdown_to_expiry(group.expiry_ts, generated_at),
+            tte: countdown_to_expiry(group.expiry_ts, generated_at),
             seen: compact_timestamp(freshest_seen(group.up, group.down).as_deref()),
         });
     }
@@ -224,13 +224,21 @@ fn countdown_to_expiry(expiry_ts: Option<DateTime<Utc>>, generated_at: &str) -> 
     let remaining = expiry_ts
         .signed_duration_since(generated_at.with_timezone(&Utc))
         .num_seconds();
-    if remaining <= 0 {
+    if remaining < 0 {
+        let elapsed = -remaining;
+        if elapsed <= 60 {
+            return format!("+{}", duration_label(elapsed));
+        }
         return "expired".to_string();
     }
 
-    let hours = remaining / 3600;
-    let minutes = (remaining % 3600) / 60;
-    let seconds = remaining % 60;
+    duration_label(remaining)
+}
+
+fn duration_label(seconds: i64) -> String {
+    let hours = seconds / 3600;
+    let minutes = (seconds % 3600) / 60;
+    let seconds = seconds % 60;
     if hours > 0 {
         format!("{hours:02}:{minutes:02}:{seconds:02}")
     } else {
@@ -253,7 +261,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
                 Cell::from(row.up),
                 Cell::from(row.down),
                 Cell::from(row.spread),
-                Cell::from(row.ttl),
+                Cell::from(row.tte),
                 Cell::from(row.seen),
             ])
         })
@@ -485,7 +493,7 @@ mod tests {
                 "UP bid/ask",
                 "DOWN bid/ask",
                 "Spread",
-                "TTL",
+                "TTE",
                 "Seen"
             ]
         );
@@ -527,7 +535,40 @@ mod tests {
 
         let rows = market_rows(&app);
 
-        assert_eq!(rows[1].ttl, "01:40");
+        assert_eq!(rows[1].tte, "01:40");
+    }
+
+    #[test]
+    fn market_rows_show_post_expiration_handoff_timer() {
+        let app = AppState {
+            runtime_monitor: Some(RuntimeMonitor {
+                generated_at: "2026-06-03T21:25:05Z".to_string(),
+                price_rows: Vec::new(),
+                orderbooks: vec![RuntimeOrderbookRow {
+                    venue: Some("polymarket".to_string()),
+                    source_key: Some("polymarket_rust_sdk".to_string()),
+                    market_slug: Some("btc-updown-5m-1780521900".to_string()),
+                    contract_id: "btc-up".to_string(),
+                    token_id: Some("btc-up-token".to_string()),
+                    asset: Some("BTC".to_string()),
+                    side: Some("UP".to_string()),
+                    event_ts: None,
+                    observed_ts: Some("2026-06-03T21:24:59Z".to_string()),
+                    best_bid: Some("0.99".to_string()),
+                    best_ask: None,
+                    spread: None,
+                    bid_size_top: None,
+                    ask_size_top: None,
+                    bids: Vec::new(),
+                    asks: Vec::new(),
+                }],
+            }),
+            ..Default::default()
+        };
+
+        let rows = market_rows(&app);
+
+        assert_eq!(rows[1].tte, "+00:05");
     }
 
     #[test]

@@ -1,7 +1,13 @@
+use std::collections::HashSet;
+
+use chrono::{DateTime, Utc};
+
 use crate::status::{
-    RuntimeDisplayLag, RuntimeGates, RuntimeMonitor, RuntimeOutcomes, RuntimeProbabilities,
-    RuntimeStatus,
+    RuntimeDisplayLag, RuntimeGates, RuntimeMonitor, RuntimeOrderbookRow, RuntimeOutcomes,
+    RuntimeProbabilities, RuntimeStatus,
 };
+
+const EXPIRED_MARKET_HANDOFF_SECONDS: i64 = 60;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MainTab {
@@ -125,6 +131,32 @@ impl AppState {
         })
     }
 
+    pub fn monitor_with_expiration_handoff(&self, mut next: RuntimeMonitor) -> RuntimeMonitor {
+        let Some(previous) = self.runtime_monitor.as_ref() else {
+            return next;
+        };
+        let Some(generated_at) = parse_runtime_timestamp(&next.generated_at) else {
+            return next;
+        };
+
+        let mut seen = next
+            .orderbooks
+            .iter()
+            .map(orderbook_identity)
+            .collect::<HashSet<_>>();
+        for orderbook in &previous.orderbooks {
+            let identity = orderbook_identity(orderbook);
+            if seen.contains(&identity) {
+                continue;
+            }
+            if recently_expired_for_handoff(orderbook, generated_at) {
+                seen.insert(identity);
+                next.orderbooks.push(orderbook.clone());
+            }
+        }
+        next
+    }
+
     pub fn select_next_market(&mut self) {
         let Some(count) = self.orderbook_count().filter(|count| *count > 0) else {
             self.selected_market_key = None;
@@ -158,7 +190,11 @@ impl AppState {
 
     pub fn effective_outcome_index(&self) -> Option<usize> {
         let count = self.outcome_count().filter(|count| *count > 0)?;
-        Some(self.selected_outcome_index.unwrap_or_default().min(count - 1))
+        Some(
+            self.selected_outcome_index
+                .unwrap_or_default()
+                .min(count - 1),
+        )
     }
 
     pub fn select_next_outcome(&mut self) {
@@ -219,6 +255,36 @@ impl AppState {
     }
 }
 
+fn recently_expired_for_handoff(
+    orderbook: &RuntimeOrderbookRow,
+    generated_at: DateTime<Utc>,
+) -> bool {
+    let Some(expiry_ts) = crate::market_view::expiry_ts(orderbook) else {
+        return false;
+    };
+    let elapsed = generated_at.signed_duration_since(expiry_ts).num_seconds();
+    (0..=EXPIRED_MARKET_HANDOFF_SECONDS).contains(&elapsed)
+}
+
+fn orderbook_identity(orderbook: &RuntimeOrderbookRow) -> String {
+    if let Some(token_id) = orderbook
+        .token_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|token_id| !token_id.is_empty())
+    {
+        format!("token={token_id}")
+    } else {
+        format!("contract={}", orderbook.contract_id.trim())
+    }
+}
+
+fn parse_runtime_timestamp(timestamp: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(timestamp)
+        .ok()
+        .map(|timestamp| timestamp.with_timezone(&Utc))
+}
+
 fn freshest_group_index(groups: &[crate::market_view::MarketGroup<'_>]) -> usize {
     groups
         .iter()
@@ -244,7 +310,7 @@ fn is_btc_group(group: &crate::market_view::MarketGroup<'_>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{AppState, MainTab};
-    use crate::status::{RuntimeMonitor, RuntimeOutcomeRow, RuntimeOutcomes, RuntimeOrderbookRow};
+    use crate::status::{RuntimeMonitor, RuntimeOrderbookRow, RuntimeOutcomeRow, RuntimeOutcomes};
 
     #[test]
     fn cockpit_defaults_to_live_read_only_tab() {
