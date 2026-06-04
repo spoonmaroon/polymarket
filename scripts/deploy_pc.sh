@@ -215,7 +215,7 @@ CMD_LAUNCHER
 \$shortcut.WindowStyle = 1
 \$shortcut.Save()
 PS1
-  powershell.exe -NoProfile -ExecutionPolicy Bypass -File "\$(wslpath -w "\$POWERSHELL_SCRIPT")" >/dev/null
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -File "\$(wslpath -w "\$POWERSHELL_SCRIPT")" >/dev/null < /dev/null
   rm -f "\$POWERSHELL_SCRIPT"
 fi
 

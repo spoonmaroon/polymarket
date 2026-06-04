@@ -318,6 +318,16 @@ def test_pc_deploy_script_refreshes_tui_desktop_launcher() -> None:
     assert "polymarket-runtime-api" not in script
 
 
+def test_pc_deploy_script_prevents_powershell_from_consuming_remote_script() -> None:
+    script = (ROOT / "scripts" / "deploy_pc.sh").read_text(encoding="utf-8")
+
+    powershell_index = script.index("powershell.exe -NoProfile")
+    deploy_gate_index = script.index("export POLYMARKET_DEPLOY_USE_PREBUILT=1")
+
+    assert powershell_index < deploy_gate_index
+    assert "< /dev/null" in script[powershell_index:deploy_gate_index]
+
+
 def test_deploy_script_supports_prebuilt_images_with_build_fallback() -> None:
     script = (ROOT / "scripts" / "deploy.sh").read_text(encoding="utf-8")
 
