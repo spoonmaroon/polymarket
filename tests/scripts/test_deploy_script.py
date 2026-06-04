@@ -307,9 +307,12 @@ def test_pc_deploy_script_refreshes_tui_desktop_launcher() -> None:
     assert "open-polymarket-tui.cmd" in script
     assert "Polymarket TUI.lnk" in script
     assert "CreateShortcut" in script
+    assert "Checking Polymarket runtime..." in script
+    assert "Runtime already live." in script
+    assert "Runtime not live; starting containers..." in script
     assert (
         "docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml "
-        "up -d collector normalizer api"
+        "up -d --no-recreate collector normalizer api"
     ) in script
     assert "python3 -c %q" in script
     assert "--engine-api-url http://127.0.0.1:%s --poll-interval-ms 250" in script

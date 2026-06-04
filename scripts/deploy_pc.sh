@@ -184,8 +184,13 @@ install -m 755 "\$TUI_BIN" "\$PC_BIN_DIR/polymarket-cockpit-tui"
   printf '%s\n' '#!/usr/bin/env bash'
   printf '%s\n' 'set -euo pipefail'
   printf 'cd %q\n' "\$PC_REPO"
-  printf '%s\n' "echo 'Starting Polymarket runtime containers...'"
-  printf '%s\n' 'docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml up -d collector normalizer api >/dev/null 2>&1 || true'
+  printf '%s\n' "echo 'Checking Polymarket runtime...'"
+  printf 'if curl -fsS --max-time 2 http://127.0.0.1:%s/api/runtime/live?limit=8 2>/dev/null | python3 -c %q >/dev/null 2>&1; then\n' "\$PC_API_PORT" 'import json,sys; p=json.load(sys.stdin); c=p.get("status",{}).get("counts",{}); sys.exit(0 if p.get("ok") and c.get("prices",0) >= 2 and c.get("orderbooks",0) > 0 else 1)'
+  printf '%s\n' "  echo 'Runtime already live.'"
+  printf '%s\n' 'else'
+  printf '%s\n' "  echo 'Runtime not live; starting containers...'"
+  printf '%s\n' '  docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml up -d --no-recreate collector normalizer api >/dev/null 2>&1 || true'
+  printf '%s\n' 'fi'
   printf '%s\n' "echo 'Waiting for runtime API and live market rows...'"
   printf '%s\n' 'for _ in \$(seq 1 45); do'
   printf '  if curl -fsS --max-time 2 http://127.0.0.1:%s/api/runtime/live?limit=8 2>/dev/null | python3 -c %q >/dev/null 2>&1; then\n' "\$PC_API_PORT" 'import json,sys; p=json.load(sys.stdin); c=p.get("status",{}).get("counts",{}); sys.exit(0 if p.get("ok") and c.get("prices",0) >= 2 and c.get("orderbooks",0) > 0 else 1)'
