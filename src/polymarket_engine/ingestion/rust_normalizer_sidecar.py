@@ -787,7 +787,6 @@ def _status_state_signature(status_path: Path) -> StatusStateSignature | None:
         return None
     state_inputs = {
         "schema_version": payload.get("schema_version"),
-        "generated_at": payload.get("generated_at"),
         "current": payload.get("current", []),
         "next": payload.get("next", []),
         "orderbooks": payload.get("orderbooks", []),

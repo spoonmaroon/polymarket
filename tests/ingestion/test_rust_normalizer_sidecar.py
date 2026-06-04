@@ -1102,7 +1102,7 @@ def test_sidecar_loop_skips_state_build_for_ops_only_status_refresh(
     assert build_calls == 1
 
 
-def test_sidecar_loop_rebuilds_state_when_generated_at_only_changes_without_raw_rows(
+def test_sidecar_loop_skips_state_build_when_only_generated_at_changes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1150,7 +1150,7 @@ def test_sidecar_loop_rebuilds_state_when_generated_at_only_changes_without_raw_
         max_cycles=2,
     )
 
-    assert build_calls == 2
+    assert build_calls == 1
 
 
 def test_sidecar_loop_rebuilds_state_when_status_inputs_change_without_raw_rows(
