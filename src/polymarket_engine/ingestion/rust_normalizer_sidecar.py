@@ -39,6 +39,7 @@ PROBABILITY_OUTPUT_LIMIT = 8
 PROBABILITY_MAX_STATE_AGE_SECONDS = 600.0
 OUTCOME_OUTPUT_LIMIT = 20
 OUTCOME_REFRESH_INTERVAL_SECONDS = 30.0
+OUTCOME_PENDING_REFRESH_INTERVAL_SECONDS = 5.0
 OUTCOME_REFRESH_MARKET_LIMIT = 4
 OUTCOME_PENDING_SWEEP_LIMIT = 20
 OFFICIAL_OUTCOME_SOURCE_ENV = "POLYMARKET_OFFICIAL_OUTCOME_SOURCE"
@@ -286,11 +287,13 @@ def run_rust_normalizer_loop(
         state_read_cache = CurrentDecisionStateReadCache()
         last_health_write_monotonic: float | None = None
         last_outcome_refresh_monotonic: float | None = None
+        last_outcome_refresh_had_pending = False
         while True:
             cycle_started = time.monotonic()
             refresh_outcomes = _outcome_refresh_due(
                 last_outcome_refresh_monotonic=last_outcome_refresh_monotonic,
                 cycle_started=cycle_started,
+                had_pending_outcomes=last_outcome_refresh_had_pending,
             )
             status_signature = _status_state_signature(status_path)
             status_mtime_ns = (
@@ -438,6 +441,9 @@ def run_rust_normalizer_loop(
             print(_cycle_log_line(result), flush=True)
             if refresh_outcomes:
                 last_outcome_refresh_monotonic = cycle_started
+                last_outcome_refresh_had_pending = _has_expired_pending_official_outcomes(
+                    store=store,
+                )
             previous_status_mtime_ns = status_mtime_ns
             previous_status_signature = status_signature
             if full_scan_due:
@@ -774,6 +780,21 @@ def _upsert_market_outcomes(*, store: DuckDbIngestStore, out_path: Path) -> int:
     return written
 
 
+def _has_expired_pending_official_outcomes(*, store: DuckDbIngestStore) -> bool:
+    with store._connection() as conn:
+        row = conn.execute(
+            """
+            select count(*)
+            from validation.market_outcome_history
+            where expiry_ts <= ?
+              and official_winner is null
+              and official_resolution_status = 'pending'
+            """,
+            [datetime.now(timezone.utc)],
+        ).fetchone()
+    return bool(row is not None and int(row[0]) > 0)
+
+
 def _official_outcome_payload_source_from_env() -> PolymarketClobMarketPayloadSource | None:
     source = os.environ.get(OFFICIAL_OUTCOME_SOURCE_ENV, "").strip().lower()
     if source not in {"clob", "polymarket_clob", "polymarket_clob_market"}:
@@ -1003,11 +1024,21 @@ def _outcome_refresh_due(
     *,
     last_outcome_refresh_monotonic: float | None,
     cycle_started: float,
-    interval_seconds: float = OUTCOME_REFRESH_INTERVAL_SECONDS,
+    had_pending_outcomes: bool = False,
+    interval_seconds: float | None = None,
 ) -> bool:
+    effective_interval_seconds = (
+        interval_seconds
+        if interval_seconds is not None
+        else (
+            OUTCOME_PENDING_REFRESH_INTERVAL_SECONDS
+            if had_pending_outcomes
+            else OUTCOME_REFRESH_INTERVAL_SECONDS
+        )
+    )
     return (
         last_outcome_refresh_monotonic is None
-        or cycle_started - last_outcome_refresh_monotonic >= interval_seconds
+        or cycle_started - last_outcome_refresh_monotonic >= effective_interval_seconds
     )
 
 
