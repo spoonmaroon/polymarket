@@ -909,6 +909,8 @@ def _chainlink_threshold_tick(
     start_ts: datetime,
     asof_ts: datetime,
 ) -> dict[str, Any] | None:
+    if asof_ts < start_ts:
+        return None
     row = conn.execute(
         """
         select price, event_ts::VARCHAR, observed_ts::VARCHAR

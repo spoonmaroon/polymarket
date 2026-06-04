@@ -316,6 +316,43 @@ def test_write_target_cache_status_uses_asof_chainlink_start_reference(
     ]
 
 
+def test_write_target_cache_status_keeps_future_window_threshold_pending(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "state.duckdb"
+    status_path = tmp_path / "live" / "status.json"
+    target_path = tmp_path / "live" / "targets.json"
+    start_ts = datetime(2026, 6, 4, 20, 5, tzinfo=timezone.utc)
+    asof_ts = datetime(2026, 6, 4, 20, 2, tzinfo=timezone.utc)
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    store.insert_price_ticks(
+        (
+            PriceObservation(
+                source_key="polymarket_rtds_chainlink",
+                symbol="BTC/USD",
+                event_ts=asof_ts - timedelta(seconds=2),
+                observed_ts=asof_ts - timedelta(seconds=1),
+                price=63_500.12,
+            ),
+        )
+    )
+    _write_status(status_path, start_ts=start_ts, asof_ts=asof_ts)
+
+    rust_normalizer_sidecar._write_target_cache_status(
+        store=store,
+        status_path=status_path,
+        out_path=target_path,
+        asof_ts=asof_ts,
+    )
+
+    payload = json.loads(target_path.read_text(encoding="utf-8"))
+    assert payload["rows"][0]["market_slug"] == "btc-updown-5m-1780603500"
+    assert payload["rows"][0]["threshold_price"] is None
+    assert payload["rows"][0]["threshold_event_ts"] is None
+    assert payload["rows"][0]["threshold_observed_ts"] is None
+
+
 def test_sidecar_loop_writes_target_cache_for_active_contracts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
