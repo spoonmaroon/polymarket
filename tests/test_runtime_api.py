@@ -474,6 +474,39 @@ def test_runtime_outcomes_rejects_malformed_live_outcome_status_rows(
     assert payload["rows"] == []
 
 
+def test_runtime_outcomes_accepts_legacy_rows_without_winning_token_id(
+    tmp_path: Path,
+) -> None:
+    outcome_status_path = tmp_path / "live" / "outcomes.json"
+    outcome_status_path.parent.mkdir()
+    legacy_row = _runtime_outcome_row("BTC", "UP")
+    legacy_row.pop("winning_token_id")
+    outcome_status_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "polymarket-outcome-runtime-v1",
+                "ok": True,
+                "state": "OK",
+                "generated_at": datetime.now(UTC).isoformat(),
+                "rows": [legacy_row],
+            }
+        ),
+        encoding="utf-8",
+    )
+    app = create_app(
+        status_path=tmp_path / "missing-status.json",
+        duckdb_path=tmp_path / "locked-or-missing.duckdb",
+        outcome_status_path=outcome_status_path,
+    )
+
+    response = TestClient(app).get("/api/runtime/outcomes?limit=1")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["rows"][0]["winning_token_id"] is None
+
+
 def test_runtime_monitor_malformed_status_returns_empty_envelope(tmp_path: Path) -> None:
     status_path = tmp_path / "status.json"
     status_path.write_text("{not-json", encoding="utf-8")

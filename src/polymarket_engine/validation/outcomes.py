@@ -131,12 +131,22 @@ def upsert_official_market_outcomes(
     store: DuckDbIngestStore,
     asof_ts: datetime,
     market_payload_source: MarketPayloadSource | None = None,
+    max_markets: int | None = None,
 ) -> int:
+    if max_markets is not None and max_markets <= 0:
+        return 0
     asof_ts = _to_utc(asof_ts)
     contract_rows = _expired_contract_rows(store=store, asof_ts=asof_ts)
     records: list[MarketOutcomeRecord] = []
     payload_cache: dict[str, Mapping[str, Any] | None] = {}
-    for market_rows in _group_by_market(contract_rows).values():
+    market_groups = sorted(
+        _group_by_market(contract_rows).values(),
+        key=_market_group_expiry_ts,
+        reverse=True,
+    )
+    if max_markets is not None:
+        market_groups = market_groups[:max_markets]
+    for market_rows in market_groups:
         up = market_rows.get("UP")
         down = market_rows.get("DOWN")
         if up is None or down is None:
@@ -384,7 +394,8 @@ def _outcome_status_payload_from_file(
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "rows": [],
         }
-    row_error = _outcome_status_row_error(rows)
+    normalized_rows = _normalize_outcome_status_rows(rows)
+    row_error = _outcome_status_row_error(normalized_rows)
     if row_error is not None:
         return {
             "ok": False,
@@ -394,7 +405,7 @@ def _outcome_status_payload_from_file(
             "rows": [],
         }
     limited = dict(payload)
-    limited["rows"] = rows[:limit]
+    limited["rows"] = normalized_rows[:limit]
     age_seconds = (datetime.now(timezone.utc) - generated_at).total_seconds()
     if age_seconds > OUTCOME_STATUS_MAX_AGE_SECONDS:
         limited["ok"] = False
@@ -427,6 +438,16 @@ def _outcome_status_row_error(rows: list[Any]) -> str | None:
                     f"row {index} missing row field {field}"
                 )
     return None
+
+
+def _normalize_outcome_status_rows(rows: list[Any]) -> list[Any]:
+    normalized: list[Any] = []
+    for row in rows:
+        if isinstance(row, dict) and "winning_token_id" not in row:
+            row = dict(row)
+            row["winning_token_id"] = None
+        normalized.append(row)
+    return normalized
 
 
 @contextmanager
@@ -501,6 +522,13 @@ def _group_by_market(
     for row in rows:
         grouped.setdefault(row.market_id, {})[row.side] = row
     return grouped
+
+
+def _market_group_expiry_ts(rows: dict[str, _ContractRow]) -> datetime:
+    expiries = tuple(row.expiry_ts for row in rows.values())
+    if not expiries:
+        return datetime.min.replace(tzinfo=timezone.utc)
+    return max(expiries)
 
 
 def _official_fields(store: DuckDbIngestStore, *, market_id: str) -> dict[str, Any]:

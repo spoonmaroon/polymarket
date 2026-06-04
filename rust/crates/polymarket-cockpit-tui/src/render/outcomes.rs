@@ -8,6 +8,7 @@ use ratatui::{
 
 use crate::state::AppState;
 
+#[cfg(test)]
 const OUTCOME_VISIBLE_ROWS: usize = 20;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,6 +21,7 @@ pub struct OutcomeDisplayRow {
     pub status: String,
 }
 
+#[cfg(test)]
 pub fn outcome_rows(app: &AppState) -> Vec<OutcomeDisplayRow> {
     outcome_rows_for_visible_count(app, OUTCOME_VISIBLE_ROWS)
 }

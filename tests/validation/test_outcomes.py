@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -213,6 +214,57 @@ def test_official_outcome_never_uses_coinbase_for_labels(tmp_path: Path) -> None
     assert row["official_resolution_status"] == "pending"
 
 
+def test_official_outcome_refresh_can_be_limited_to_newest_markets(
+    tmp_path: Path,
+) -> None:
+    store = seeded_store_with_btc_market(
+        tmp_path,
+        start_price=None,
+        end_price=None,
+    )
+    older = UTC_START - timedelta(minutes=5)
+    newest = UTC_START + timedelta(minutes=5)
+    store.upsert_contract_specs(
+        (
+            _contract_at("older", older, "UP", "older-up-token", ">="),
+            _contract_at("older", older, "DOWN", "older-down-token", "<"),
+            _contract_at("newest", newest, "UP", "newest-up-token", ">="),
+            _contract_at("newest", newest, "DOWN", "newest-down-token", "<"),
+        )
+    )
+    requested_condition_ids: list[str] = []
+
+    def payload_source(condition_id: str) -> dict[str, object]:
+        requested_condition_ids.append(condition_id)
+        return {
+            "closed": True,
+            "tokens": [
+                {
+                    "token_id": "newest-up-token",
+                    "outcome": "Up",
+                    "winner": True,
+                },
+                {
+                    "token_id": "newest-down-token",
+                    "outcome": "Down",
+                    "winner": False,
+                },
+            ],
+        }
+
+    written = upsert_official_market_outcomes(
+        store=store,
+        asof_ts=newest + timedelta(minutes=5, seconds=1),
+        market_payload_source=payload_source,
+        max_markets=1,
+    )
+
+    assert written == 1
+    assert requested_condition_ids == ["0xnewest"]
+    newest_market_id = f"newest-updown-5m-{int((newest + timedelta(minutes=5)).timestamp())}"
+    assert fetch_outcome(store.db_path, newest_market_id)["official_winner"] == "UP"
+
+
 def seeded_store_with_btc_market(
     tmp_path: Path,
     *,
@@ -336,4 +388,25 @@ def _contract(
         rule_text="fixture",
         rule_hash="hash",
         parser_version="test",
+    )
+
+
+def _contract_at(
+    suffix: str,
+    start_ts: datetime,
+    side: str,
+    token_id: str,
+    comparison_operator: str,
+) -> ContractSpec:
+    expiry_ts = start_ts + timedelta(minutes=5)
+    expiry_epoch = int(expiry_ts.timestamp())
+    return replace(
+        _contract(side, token_id, comparison_operator),
+        contract_id=f"btc-updown-5m-{expiry_epoch}:{side}",
+        market_id=f"{suffix}-updown-5m-{expiry_epoch}",
+        condition_id=f"0x{suffix}",
+        slug=f"{suffix}-updown-5m-{expiry_epoch}",
+        start_ts=start_ts,
+        expiry_ts=expiry_ts,
+        rule_hash=f"hash-{suffix}",
     )

@@ -151,6 +151,10 @@ read-only API and cockpit do not contend with the normalizer's long-lived DuckDB
 writer connection. Outcome-history refresh is intentionally throttled relative
 to the hot state loop because outcomes only change after market expiry and
 should not burn CPU on every 0.1s normalization pass.
+Official outcome refresh checks the newest expired market windows first and is
+capped by `POLYMARKET_OFFICIAL_OUTCOME_REFRESH_LIMIT` in the live normalizer, so
+a slow or pending CLOB response cannot walk the whole historical contract set
+inside one hot-loop cycle.
 
 ## Source Rules
 

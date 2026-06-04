@@ -239,6 +239,10 @@ DuckDB fallback. This avoids read contention with the normalizer's live writer
 connection while preserving `validation.market_outcome_history` for replay and
 audit. The normalizer refreshes outcome history on a slower cadence than the hot
 state loop so expired-market labeling does not dominate the 0.1s runtime path.
+Each official outcome refresh is also capped by
+`POLYMARKET_OFFICIAL_OUTCOME_REFRESH_LIMIT` and processes the newest expired
+market windows first. Keep the cap small on live collector hosts; use explicit
+offline/backfill jobs for deep historical labeling.
 
 Local API:
 

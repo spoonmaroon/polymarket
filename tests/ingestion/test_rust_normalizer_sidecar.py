@@ -157,6 +157,41 @@ def test_normalizer_writes_market_outcome_history(tmp_path: Path) -> None:
         ).fetchone() == (None, None, "pending")
 
 
+def test_upsert_market_outcomes_limits_official_refresh_from_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_limits: list[int | None] = []
+
+    def fake_upsert_official_market_outcomes(**kwargs: Any) -> int:
+        captured_limits.append(kwargs["max_markets"])
+        return 0
+
+    monkeypatch.setenv("POLYMARKET_OFFICIAL_OUTCOME_REFRESH_LIMIT", "2")
+    monkeypatch.setattr(
+        rust_normalizer_sidecar,
+        "upsert_official_market_outcomes",
+        fake_upsert_official_market_outcomes,
+    )
+    monkeypatch.setattr(
+        rust_normalizer_sidecar,
+        "latest_market_outcome_rows_from_connection",
+        lambda *, conn, limit: [],
+    )
+    monkeypatch.setattr(
+        rust_normalizer_sidecar,
+        "write_outcome_history_status",
+        lambda *, out_path, rows: None,
+    )
+
+    rust_normalizer_sidecar._upsert_market_outcomes(
+        store=cast(DuckDbIngestStore, _FakeConnectionStore()),
+        out_path=tmp_path / "outcomes.json",
+    )
+
+    assert captured_limits == [2]
+
+
 def test_cadence_sleep_subtracts_cycle_elapsed_time() -> None:
     assert _cadence_sleep_seconds(
         cycle_started=10.0,
@@ -1640,6 +1675,19 @@ def _write_jsonl(path: Path, *rows: dict[str, object]) -> None:
 
 def _log_values(line: str) -> dict[str, str]:
     return dict(part.split("=", maxsplit=1) for part in line.split()[1:])
+
+
+class _FakeConnectionContext:
+    def __enter__(self) -> object:
+        return object()
+
+    def __exit__(self, *_: object) -> None:
+        return None
+
+
+class _FakeConnectionStore:
+    def _connection(self) -> _FakeConnectionContext:
+        return _FakeConnectionContext()
 
 
 class _CountingCheckpointStore(DuckDbIngestStore):
