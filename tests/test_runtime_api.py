@@ -375,6 +375,38 @@ def test_runtime_outcomes_returns_market_level_history(tmp_path: Path) -> None:
     assert payload["rows"][0]["official_resolution_status"] == "pending"
 
 
+def test_runtime_outcomes_reads_live_outcome_status_file(tmp_path: Path) -> None:
+    outcome_status_path = tmp_path / "live" / "outcomes.json"
+    outcome_status_path.parent.mkdir()
+    outcome_status_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "polymarket-outcome-runtime-v1",
+                "ok": True,
+                "state": "OK",
+                "generated_at": datetime.now(UTC).isoformat(),
+                "rows": [
+                    {"market": "BTC 5m", "computed_winner": "UP"},
+                    {"market": "ETH 5m", "computed_winner": "DOWN"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    app = create_app(
+        status_path=tmp_path / "missing-status.json",
+        duckdb_path=tmp_path / "locked-or-missing.duckdb",
+        outcome_status_path=outcome_status_path,
+    )
+
+    response = TestClient(app).get("/api/runtime/outcomes?limit=1")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["rows"] == [{"market": "BTC 5m", "computed_winner": "UP"}]
+
+
 def test_runtime_monitor_malformed_status_returns_empty_envelope(tmp_path: Path) -> None:
     status_path = tmp_path / "status.json"
     status_path.write_text("{not-json", encoding="utf-8")

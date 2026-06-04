@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import time
 from collections.abc import Iterator
@@ -13,7 +14,10 @@ import duckdb
 
 from polymarket_engine.domain.market_state import PriceObservation
 from polymarket_engine.features.rust_decision_snapshots import SETTLEMENT_SOURCE_KEY
+from polymarket_engine.storage.atomic import durable_replace
 from polymarket_engine.storage.duckdb_store import DuckDbIngestStore, MarketOutcomeRecord
+
+OUTCOME_HISTORY_SCHEMA_VERSION = "polymarket-outcome-runtime-v1"
 
 
 @dataclass(frozen=True)
@@ -103,7 +107,17 @@ def upsert_computed_market_outcomes(
     return store.upsert_market_outcome_records(tuple(records))
 
 
-def build_outcome_history_payload(*, duckdb_path: Path, limit: int = 20) -> dict[str, Any]:
+def build_outcome_history_payload(
+    *,
+    duckdb_path: Path,
+    limit: int = 20,
+    outcome_status_path: Path | None = None,
+) -> dict[str, Any]:
+    if outcome_status_path is not None and outcome_status_path.exists():
+        return _outcome_status_payload_from_file(
+            outcome_status_path=outcome_status_path,
+            limit=limit,
+        )
     if not duckdb_path.exists():
         return {
             "ok": False,
@@ -130,14 +144,35 @@ def build_outcome_history_payload(*, duckdb_path: Path, limit: int = 20) -> dict
     }
 
 
+def write_outcome_history_status(
+    *,
+    out_path: Path,
+    rows: list[dict[str, Any]],
+) -> None:
+    payload = {
+        "schema_version": OUTCOME_HISTORY_SCHEMA_VERSION,
+        "ok": True,
+        "state": "OK",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "rows": [_runtime_row(row) for row in rows],
+    }
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = out_path.with_suffix(f"{out_path.suffix}.tmp")
+    tmp_path.write_text(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    durable_replace(tmp_path, out_path)
+
+
 def latest_market_outcome_rows(*, duckdb_path: Path, limit: int) -> list[dict[str, Any]]:
     if limit <= 0:
         raise ValueError("limit must be positive")
     with _connect_read_only_with_retry(duckdb_path, lock_retry_seconds=2.0) as conn:
-        return _market_outcome_history_from_connection(conn=conn, limit=limit)
+        return latest_market_outcome_rows_from_connection(conn=conn, limit=limit)
 
 
-def _market_outcome_history_from_connection(
+def latest_market_outcome_rows_from_connection(
     *,
     conn: duckdb.DuckDBPyConnection,
     limit: int,
@@ -204,6 +239,43 @@ def _market_outcome_history_from_connection(
         "updated_at",
     )
     return [dict(zip(keys, row, strict=True)) for row in rows]
+
+
+def _outcome_status_payload_from_file(
+    *,
+    outcome_status_path: Path,
+    limit: int,
+) -> dict[str, Any]:
+    try:
+        payload = json.loads(outcome_status_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        return {
+            "ok": False,
+            "state": "INVALID",
+            "error": f"{type(exc).__name__}: {exc}",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "rows": [],
+        }
+    if not isinstance(payload, dict):
+        return {
+            "ok": False,
+            "state": "INVALID",
+            "error": "outcome status shape invalid: payload must be an object",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "rows": [],
+        }
+    rows = payload.get("rows")
+    if not isinstance(rows, list):
+        return {
+            "ok": False,
+            "state": "INVALID",
+            "error": "outcome status shape invalid: rows must be a list",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "rows": [],
+        }
+    limited = dict(payload)
+    limited["rows"] = rows[:limit]
+    return limited
 
 
 @contextmanager

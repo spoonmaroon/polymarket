@@ -138,6 +138,11 @@ future Polymarket/UMA/onchain resolution source is explicitly fetched and
 verified. A computed/official mismatch is a validation incident, not a trading
 signal.
 
+The normalizer also writes `data/live/outcomes.json` from its writer-owned
+DuckDB connection. `/api/runtime/outcomes` reads that live file first so the
+read-only API and cockpit do not contend with the normalizer's long-lived DuckDB
+writer connection.
+
 ## Source Rules
 
 - Polymarket website chart prices are not model truth.

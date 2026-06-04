@@ -33,6 +33,7 @@ def build_runtime_router(
     duckdb_path: Path = Path("data/db/polymarket.duckdb"),
     normalized_health_path: Path = Path("data/live/normalized_health.json"),
     probability_status_path: Path = Path("data/live/probabilities.json"),
+    outcome_status_path: Path = Path("data/live/outcomes.json"),
     data_dir: Path = Path("data"),
     enable_container_status: bool = False,
 ) -> APIRouter:
@@ -220,7 +221,11 @@ def build_runtime_router(
 
     @router.get("/outcomes")
     def runtime_outcomes(limit: int = 20) -> dict[str, Any]:
-        return build_outcome_history_payload(duckdb_path=duckdb_path, limit=limit)
+        return build_outcome_history_payload(
+            duckdb_path=duckdb_path,
+            limit=limit,
+            outcome_status_path=outcome_status_path,
+        )
 
     @router.get("/storage")
     def storage() -> dict[str, Any]:

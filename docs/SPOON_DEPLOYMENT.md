@@ -227,6 +227,12 @@ separate from `official_winner`: computed labels are Chainlink-derived after
 expiry, while official labels remain pending until an explicit
 Polymarket/UMA/onchain resolution fetch exists.
 
+The normalizer publishes outcome history to
+`/var/lib/polymarket/live/outcomes.json`, and the API reads that file before any
+DuckDB fallback. This avoids read contention with the normalizer's live writer
+connection while preserving `validation.market_outcome_history` for replay and
+audit.
+
 Local API:
 
 ```bash

@@ -108,7 +108,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     sidecar.add_argument("--duckdb-path", type=Path, required=True)
     sidecar.add_argument("--status-path", type=Path, required=True)
     sidecar.add_argument("--normalized-health-path", type=Path, required=True)
-    sidecar.add_argument("--probability-status-path", type=Path, required=True)
+    sidecar.add_argument(
+        "--probability-status-path",
+        type=Path,
+        default=Path("data/live/probabilities.json"),
+    )
+    sidecar.add_argument(
+        "--outcome-status-path",
+        type=Path,
+        default=Path("data/live/outcomes.json"),
+    )
     sidecar.add_argument("--interval-seconds", type=float, default=0.25)
     sidecar.add_argument(
         "--include-next",
@@ -254,6 +263,7 @@ def _run_rust_normalizer_sidecar(args: argparse.Namespace) -> int:
             status_path=args.status_path,
             normalized_health_path=args.normalized_health_path,
             probability_status_path=args.probability_status_path,
+            outcome_status_path=args.outcome_status_path,
             include_next=args.include_next,
             reprocess_all=args.reprocess_all,
             apply_schema=True,
@@ -266,6 +276,7 @@ def _run_rust_normalizer_sidecar(args: argparse.Namespace) -> int:
         status_path=args.status_path,
         normalized_health_path=args.normalized_health_path,
         probability_status_path=args.probability_status_path,
+        outcome_status_path=args.outcome_status_path,
         interval_seconds=args.interval_seconds,
         include_next=args.include_next,
         reprocess_all=args.reprocess_all,
