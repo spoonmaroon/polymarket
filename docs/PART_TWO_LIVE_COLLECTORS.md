@@ -156,6 +156,11 @@ capped by `POLYMARKET_OFFICIAL_OUTCOME_REFRESH_LIMIT` in the live normalizer, so
 a slow or pending CLOB response cannot walk the whole historical contract set
 inside one hot-loop cycle.
 
+Historical outcome repair is explicit. Use `polymarket-engine backfill-outcomes`
+for source-backed history repairs and status-file rewrites outside live
+normalization. The live normalizer keeps only the small pending sweeper; deep
+historical backfill should not run inside the 0.1s hot loop.
+
 ## Source Rules
 
 - Polymarket website chart prices are not model truth.

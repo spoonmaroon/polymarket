@@ -168,6 +168,25 @@ uv run polymarket-engine write-normalized-health \
   --out /home/spoon/polymarket-data/live/normalized_health.json
 ```
 
+## THEPC Outcome Backfill
+
+Run historical outcome repair explicitly on THEPC, outside the 0.1s normalizer
+loop:
+
+```bash
+cd /home/ender/polymarket
+uv run polymarket-engine backfill-outcomes \
+  --duckdb-path /home/ender/polymarket-data/db/polymarket.duckdb \
+  --outcomes-path /home/ender/polymarket-data/live/outcomes.json \
+  --start-date 2026-06-01 \
+  --end-date 2026-06-04 \
+  --limit 500 \
+  --write
+```
+
+The command repairs source-backed outcome history and rewrites the status file
+for the TUI. It does not compute local winners.
+
 ## Hot Replay Gate
 
 Run this operational gate after normalized DuckDB rows are current:

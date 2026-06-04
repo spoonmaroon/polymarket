@@ -490,6 +490,38 @@ def test_runtime_outcomes_reads_live_outcome_status_file(tmp_path: Path) -> None
     assert payload["rows"] == [_runtime_outcome_row("BTC", "UP")]
 
 
+def test_runtime_outcomes_limits_large_status_file_rows(tmp_path: Path) -> None:
+    outcome_status_path = tmp_path / "live" / "outcomes.json"
+    outcome_status_path.parent.mkdir()
+    outcome_status_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "polymarket-outcome-runtime-v1",
+                "ok": True,
+                "state": "OK",
+                "generated_at": datetime.now(UTC).isoformat(),
+                "rows": [
+                    _runtime_outcome_row("BTC", "UP"),
+                    _runtime_outcome_row("ETH", "DOWN"),
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    app = create_app(
+        status_path=tmp_path / "missing-status.json",
+        duckdb_path=tmp_path / "locked-or-missing.duckdb",
+        outcome_status_path=outcome_status_path,
+    )
+
+    response = TestClient(app).get("/api/runtime/outcomes?limit=1")
+
+    assert response.status_code == 200
+    rows = response.json()["rows"]
+    assert len(rows) == 1
+    assert rows[0]["asset"] == "BTC"
+
+
 def test_runtime_outcomes_rejects_stale_live_outcome_status_file(tmp_path: Path) -> None:
     outcome_status_path = tmp_path / "live" / "outcomes.json"
     outcome_status_path.parent.mkdir()
