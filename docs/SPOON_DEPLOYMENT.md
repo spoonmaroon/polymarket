@@ -120,16 +120,15 @@ The deploy script fetches the configured deploy ref, refuses dirty server worktr
 It only skips a rebuild/restart when both the checked-out commit and the deployed marker match the target commit, so a manual `git pull` cannot accidentally leave an older healthy container running.
 If `deploy/collector/.env` exists, the deploy script uses it explicitly. The collector is read-only and runs Chainlink RTDS plus Polymarket CLOB WebSocket state-manager mode with `POLYMARKET_INTERVAL=5m`.
 
-For branch testing before merge:
+For manual deploy testing, pin the exact `main` commit or full SHA being tested:
 
 ```bash
 POLYMARKET_DEPLOY_REF=origin/main DEPLOY_FORCE=1 /home/spoon/polymarket/scripts/deploy.sh
 ```
 
-When testing the raw-normalizer deployment before merge, deploy explicitly with
-`POLYMARKET_DEPLOY_REF=origin/codex/rust-raw-normalizer`. Do not let spoon's
-local `main` remain ahead of `origin/main` after the branch is ready; either
-merge/push main or keep the deploy ref explicit.
+GitHub should stay clean with `main` as the only long-lived branch. Do not let
+a runtime host's local `main` remain ahead of `origin/main`; push `main` first,
+then deploy the pinned commit.
 
 ## Retention
 
