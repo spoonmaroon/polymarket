@@ -225,11 +225,7 @@ fn countdown_to_expiry(expiry_ts: Option<DateTime<Utc>>, generated_at: &str) -> 
         .signed_duration_since(generated_at.with_timezone(&Utc))
         .num_seconds();
     if remaining < 0 {
-        let elapsed = -remaining;
-        if elapsed <= 60 {
-            return format!("+{}", duration_label(elapsed));
-        }
-        return "expired".to_string();
+        return format!("+{}", duration_label(-remaining));
     }
 
     duration_label(remaining)
@@ -569,6 +565,39 @@ mod tests {
         let rows = market_rows(&app);
 
         assert_eq!(rows[1].tte, "+00:05");
+    }
+
+    #[test]
+    fn market_rows_keep_post_expiration_elapsed_timer_after_handoff_window() {
+        let app = AppState {
+            runtime_monitor: Some(RuntimeMonitor {
+                generated_at: "2026-06-03T21:27:05Z".to_string(),
+                price_rows: Vec::new(),
+                orderbooks: vec![RuntimeOrderbookRow {
+                    venue: Some("polymarket".to_string()),
+                    source_key: Some("polymarket_rust_sdk".to_string()),
+                    market_slug: Some("btc-updown-5m-1780521900".to_string()),
+                    contract_id: "btc-up".to_string(),
+                    token_id: Some("btc-up-token".to_string()),
+                    asset: Some("BTC".to_string()),
+                    side: Some("UP".to_string()),
+                    event_ts: None,
+                    observed_ts: Some("2026-06-03T21:24:59Z".to_string()),
+                    best_bid: Some("0.99".to_string()),
+                    best_ask: None,
+                    spread: None,
+                    bid_size_top: None,
+                    ask_size_top: None,
+                    bids: Vec::new(),
+                    asks: Vec::new(),
+                }],
+            }),
+            ..Default::default()
+        };
+
+        let rows = market_rows(&app);
+
+        assert_eq!(rows[1].tte, "+02:05");
     }
 
     #[test]
