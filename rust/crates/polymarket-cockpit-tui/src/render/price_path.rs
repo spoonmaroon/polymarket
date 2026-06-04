@@ -109,7 +109,6 @@ fn render_price_chart(frame: &mut Frame<'_>, area: Rect, model: &PricePathChartM
 
     let mut datasets = vec![
         Dataset::default()
-            .name("price")
             .marker(symbols::Marker::Braille)
             .graph_type(GraphType::Line)
             .style(Style::default().fg(Color::Cyan))
@@ -119,7 +118,6 @@ fn render_price_chart(frame: &mut Frame<'_>, area: Rect, model: &PricePathChartM
     if !model.target_line.is_empty() {
         datasets.push(
             Dataset::default()
-                .name("K")
                 .marker(symbols::Marker::Braille)
                 .graph_type(GraphType::Line)
                 .style(Style::default().fg(Color::Yellow))
@@ -202,12 +200,15 @@ fn chart_y_bounds(points: &[(f64, f64)], target_value: Option<f64>) -> [f64; 2] 
         return [0.0, 1.0];
     }
 
+    let midpoint = (min + max) / 2.0;
+    let minimum_span = (midpoint.abs() * 0.001).max(1.0);
+    if (max - min).abs() < minimum_span {
+        min = midpoint - (minimum_span / 2.0);
+        max = midpoint + (minimum_span / 2.0);
+    }
+
     let span = (max - min).abs();
-    let pad = if span > 0.0 {
-        (span * 0.12).max(0.01)
-    } else {
-        (max.abs() * 0.001).max(1.0)
-    };
+    let pad = (span * 0.12).max(0.01);
     min -= pad;
     max += pad;
     [min, max]
@@ -256,6 +257,8 @@ fn add_thousands_separators(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use ratatui::{Terminal, backend::TestBackend};
+
     use crate::{
         state::AppState,
         status::{RuntimeMonitor, RuntimeOrderbookRow, RuntimePriceRow},
@@ -403,6 +406,47 @@ mod tests {
 
         assert_eq!(btc.target, "K -");
         assert!(btc.target_line.is_empty());
+    }
+
+    #[test]
+    fn price_path_render_hides_dataset_legend_labels() {
+        let mut app = AppState::default();
+        for price in ["64000", "64010", "64020"] {
+            app.apply_runtime_monitor(RuntimeMonitor {
+                generated_at: "2026-06-04T07:43:10Z".to_string(),
+                price_rows: vec![price_row("BTC/USD", price), price_row("ETH/USD", "1800")],
+                orderbooks: vec![
+                    orderbook_with_threshold("BTC", "64005"),
+                    orderbook_with_threshold("ETH", "1801"),
+                ],
+            });
+        }
+
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).expect("terminal should initialize");
+        terminal
+            .draw(|frame| super::render(frame, frame.area(), &app))
+            .expect("render should complete");
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+
+        assert!(!rendered.contains("price"), "{rendered}");
+    }
+
+    #[test]
+    fn price_path_y_bounds_keep_small_moves_from_filling_chart() {
+        let bounds = super::chart_y_bounds(&[(0.0, 64000.0), (1.0, 64000.25)], None);
+
+        assert!(
+            bounds[1] - bounds[0] >= 64.0,
+            "expected at least a 0.1% BTC-scale viewport, got {:?}",
+            bounds
+        );
     }
 
     fn price_row(symbol: &str, price: &str) -> RuntimePriceRow {
