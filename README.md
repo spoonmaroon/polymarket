@@ -17,11 +17,16 @@ fees, spread, slippage, data latency, and path-reversal risk.
 ## Current Status
 
 - Private repo: `git@github.com:AnimeWeeb9000/polymarket.git`
+- Canonical GitHub branch: `main`
 - Python environment: `uv`
-- Backend scaffold: FastAPI
-- C++ scaffold: `probability_core`
-- UI scaffold: React/Vite
+- API: FastAPI read-only runtime endpoints
+- Live runtime: Rust SDK state-manager on THEPC
+- Operator UI: read-only Rust cockpit TUI
+- Research scaffold: `probability_core`, replay tables, and retired React/Vite UI
 - Execution mode: paper/read-only by design
+
+Start with [SETUP.md](SETUP.md). Normal development should merge back to
+`main`; do not leave merged `codex/*` branches on GitHub.
 
 ## Part One Data Contract
 

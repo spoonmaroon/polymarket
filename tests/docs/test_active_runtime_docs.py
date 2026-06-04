@@ -44,7 +44,8 @@ def test_spoon_docs_describe_two_window_runtime_and_normalizer_sidecar() -> None
     assert "normalized_health.json" in part_two
     assert "core.contract_rules remains empty" in part_two
     assert "features.decision_snapshots remains empty until probability" in part_two
-    assert "origin/codex/rust-raw-normalizer" in deployment
+    assert "`main` as the only long-lived branch" in deployment
+    assert "origin/codex/rust-raw-normalizer" not in deployment
 
 
 def test_live_docs_keep_hot_decisions_inside_rust_state_manager() -> None:
@@ -99,6 +100,17 @@ def test_spoon_docs_record_vps_cadence_revisit() -> None:
     assert "POLYMARKET_NORMALIZER_INTERVAL_SECONDS=0.25" in text
     assert "home-server CPU compromise" in text
     assert "After VPS migration" in text
+
+
+def test_setup_docs_describe_main_branch_and_thepc_runtime() -> None:
+    text = (ROOT / "SETUP.md").read_text(encoding="utf-8")
+
+    assert "main` is the only long-lived GitHub branch" in text
+    assert "THEPC is the active always-on read-only runtime" in text
+    assert "./scripts/deploy_pc.sh" in text
+    assert "ender@100.72.104.49" in text
+    assert "./scripts/open_tui_mac.sh" in text
+    assert "must not place orders" in text
 
 
 def test_spoon_docs_include_read_only_cockpit_tui() -> None:

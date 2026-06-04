@@ -1,6 +1,8 @@
 pub mod client;
 mod event_loop;
 mod layout;
+pub mod market_view;
+pub mod outcome_view;
 mod render;
 mod state;
 pub mod status;
@@ -17,7 +19,7 @@ struct Cli {
     engine_api_url: String,
 
     /// Runtime API polling interval in milliseconds.
-    #[arg(long, default_value_t = 250)]
+    #[arg(long, default_value_t = 1000)]
     poll_interval_ms: u64,
 
     /// Static preview mode for the first cockpit shell.
@@ -56,10 +58,10 @@ mod cli_tests {
     }
 
     #[test]
-    fn default_poll_interval_is_quarter_second() {
+    fn default_poll_interval_is_one_second() {
         let cli = Cli::parse_from(["polymarket-cockpit-tui"]);
 
-        assert_eq!(cli.poll_interval_ms, 250);
+        assert_eq!(cli.poll_interval_ms, 1000);
     }
 
     #[test]

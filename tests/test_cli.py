@@ -170,8 +170,30 @@ def test_parse_run_rust_normalizer_sidecar_args() -> None:
     assert args.duckdb_path == Path("data/db/polymarket.duckdb")
     assert args.status_path == Path("data/live/status.json")
     assert args.normalized_health_path == Path("data/live/normalized_health.json")
+    assert args.probability_status_path == Path("data/live/probabilities.json")
+    assert args.outcome_status_path == Path("data/live/outcomes.json")
     assert args.interval_seconds == 1.0
+    assert args.enable_probabilities is False
     assert args.once is True
+
+
+def test_parse_run_rust_normalizer_sidecar_enable_probabilities_arg() -> None:
+    args = parse_args(
+        [
+            "run-rust-normalizer-sidecar",
+            "--raw-root",
+            "data/raw",
+            "--duckdb-path",
+            "data/db/polymarket.duckdb",
+            "--status-path",
+            "data/live/status.json",
+            "--normalized-health-path",
+            "data/live/normalized_health.json",
+            "--enable-probabilities",
+        ]
+    )
+
+    assert args.enable_probabilities is True
 
 
 def test_run_rust_normalizer_sidecar_defaults_to_quarter_second_cadence() -> None:
@@ -517,8 +539,11 @@ async def test_run_rust_normalizer_sidecar_loop_command_dispatches(
             "db_path": tmp_path / "state.duckdb",
             "status_path": tmp_path / "live" / "status.json",
             "normalized_health_path": tmp_path / "live" / "normalized_health.json",
+            "probability_status_path": Path("data/live/probabilities.json"),
+            "outcome_status_path": Path("data/live/outcomes.json"),
             "interval_seconds": 1.5,
             "include_next": True,
+            "compute_probabilities": False,
             "reprocess_all": True,
         }
     ]

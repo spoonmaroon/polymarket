@@ -247,6 +247,45 @@ def test_build_volatility_snapshot_is_asof_safe_and_labels_regime() -> None:
     assert snapshot.regime in {"expanding", "normal", "contracting", "unknown"}
 
 
+def test_build_volatility_snapshot_normalizes_returns_by_actual_event_interval() -> None:
+    config = VolatilityConfig(
+        short_window=1,
+        medium_window=2,
+        long_window=3,
+        sigma_floor=0.000001,
+        max_price_gap_seconds=5.0,
+    )
+    one_second_snapshot = build_volatility_snapshot(
+        prices=(
+            _price(100.0, event_seconds=0),
+            _price(101.0, event_seconds=1),
+            _price(102.0, event_seconds=2),
+        ),
+        asof_ts=BASE_TS + timedelta(seconds=2),
+        seconds_left=60.0,
+        config=config,
+    )
+    four_second_snapshot = build_volatility_snapshot(
+        prices=(
+            _price(100.0, event_seconds=0),
+            _price(101.0, event_seconds=4),
+            _price(102.0, event_seconds=8),
+        ),
+        asof_ts=BASE_TS + timedelta(seconds=8),
+        seconds_left=60.0,
+        config=config,
+    )
+
+    assert one_second_snapshot.sigma_tau is not None
+    assert four_second_snapshot.sigma_tau is not None
+    assert four_second_snapshot.realized_returns == pytest.approx(
+        one_second_snapshot.realized_returns
+    )
+    assert four_second_snapshot.sigma_tau == pytest.approx(
+        one_second_snapshot.sigma_tau / math.sqrt(4.0)
+    )
+
+
 def test_build_volatility_snapshot_observed_ts_is_latest_observed_allowed_price() -> None:
     asof_ts = BASE_TS + timedelta(seconds=10)
     snapshot = build_volatility_snapshot(

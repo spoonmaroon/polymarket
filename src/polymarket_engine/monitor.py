@@ -6,12 +6,19 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import duckdb
 
 
 CHAINLINK_SOURCE_KEY = "polymarket_rtds_chainlink"
+TARGET_FIELDS = (
+    "threshold_price",
+    "threshold_event_ts",
+    "threshold_observed_ts",
+    "settlement_price",
+    "settlement_event_ts",
+)
 
 
 @dataclass(frozen=True)
@@ -38,9 +45,14 @@ def fetch_monitor_snapshot(
     limit: int = 8,
     lock_retry_seconds: float = 2.0,
     status_path: Path | None = None,
+    target_cache_path: Path | None = None,
 ) -> MonitorSnapshot:
     if status_path is not None and status_path.exists():
-        return _snapshot_from_status(status_path, limit=limit)
+        return _snapshot_from_status(
+            status_path,
+            limit=limit,
+            target_cache_path=target_cache_path,
+        )
 
     if not duckdb_path.exists():
         return MonitorSnapshot(
@@ -183,13 +195,32 @@ def _snapshot_from_status(
     status_path: Path,
     limit: int,
     now: datetime | None = None,
+    target_cache_path: Path | None = None,
 ) -> MonitorSnapshot:
     payload = json.loads(status_path.read_text(encoding="utf-8"))
+    return snapshot_from_status_payload(
+        payload,
+        limit=limit,
+        now=now,
+        target_cache=_read_target_cache(target_cache_path),
+    )
+
+
+def snapshot_from_status_payload(
+    payload: dict[str, Any],
+    *,
+    limit: int,
+    now: datetime | None = None,
+    target_cache: dict[str, Any] | None = None,
+) -> MonitorSnapshot:
     generated_at = _parse_datetime(payload["generated_at"])
     wall_time = datetime.now(timezone.utc) if now is None else _to_utc(now)
     price_rows = _status_price_rows(payload)
-    orderbooks = tuple(dict(row) for row in payload.get("orderbooks", ())[:limit])
+    orderbooks = _status_orderbook_rows(payload, limit=limit)
     contracts = _status_contract_rows(payload, limit=limit)
+    cache_targets = _target_cache_by_market_slug(target_cache, generated_at=generated_at)
+    orderbooks = _merge_cached_targets(orderbooks, cache_targets)
+    contracts = _merge_cached_targets(contracts, cache_targets)
     ingest_counts = tuple(dict(row) for row in payload.get("ingest_counts", ()))
     normalized_health = tuple(dict(row) for row in payload.get("normalized_health", ()))
     source_freshness, orderbook_freshness = _status_freshness_rows(
@@ -235,10 +266,245 @@ def _status_price_rows(payload: dict[str, Any]) -> tuple[dict[str, Any], ...]:
     return tuple(dict(row) for row in rows)
 
 
+def _read_target_cache(target_cache_path: Path | None) -> dict[str, Any] | None:
+    if target_cache_path is None or not target_cache_path.exists():
+        return None
+    try:
+        payload = json.loads(target_cache_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _target_cache_by_market_slug(
+    payload: dict[str, Any] | None,
+    *,
+    generated_at: datetime,
+) -> dict[str, dict[str, Any]]:
+    if payload is None or payload.get("schema_version") != "polymarket-target-cache-v1":
+        return {}
+    rows = payload.get("rows")
+    if not isinstance(rows, list):
+        return {}
+    targets: dict[str, dict[str, Any]] = {}
+    for raw_row in rows:
+        if not isinstance(raw_row, dict):
+            continue
+        row = dict(raw_row)
+        slug = str(row.get("market_slug", "")).casefold()
+        if not slug or row.get("threshold_price") in (None, ""):
+            continue
+        try:
+            observed_ts = _parse_optional_datetime(row.get("threshold_observed_ts"))
+        except (TypeError, ValueError):
+            continue
+        if observed_ts is None or observed_ts > generated_at:
+            continue
+        targets[slug] = row
+    return targets
+
+
+def _merge_cached_targets(
+    rows: tuple[dict[str, Any], ...],
+    targets_by_slug: dict[str, dict[str, Any]],
+) -> tuple[dict[str, Any], ...]:
+    merged: list[dict[str, Any]] = []
+    for raw_row in rows:
+        row = dict(raw_row)
+        target = targets_by_slug.get(str(row.get("market_slug", "")).casefold())
+        if target is not None and row.get("threshold_price") in (None, ""):
+            for field in (
+                "threshold_price",
+                "threshold_event_ts",
+                "threshold_observed_ts",
+            ):
+                row[field] = target.get(field)
+        merged.append(row)
+    return tuple(merged)
+
+
 def _status_contract_rows(payload: dict[str, Any], *, limit: int) -> tuple[dict[str, Any], ...]:
     if "contracts" in payload:
         return tuple(dict(row) for row in payload.get("contracts", ())[:limit])
     return _state_manager_contract_rows(payload, limit=limit)
+
+
+def _status_orderbook_rows(payload: dict[str, Any], *, limit: int) -> tuple[dict[str, Any], ...]:
+    if any(payload.get(group) for group in ("current", "next")):
+        return _state_manager_orderbook_rows(payload, limit=limit)
+    return tuple(_normalize_orderbook_row(dict(row)) for row in payload.get("orderbooks", ())[:limit])
+
+
+def _state_manager_orderbook_rows(
+    payload: dict[str, Any],
+    *,
+    limit: int,
+) -> tuple[dict[str, Any], ...]:
+    contracts = _state_manager_book_contract_rows(payload, limit=limit)
+    targets_by_slug = _targets_by_market_slug(payload)
+    raw_books_by_token = {
+        str(row.get("token_id", "")): dict(row)
+        for row in payload.get("orderbooks", ())
+        if isinstance(row, dict) and row.get("token_id")
+    }
+
+    rows: list[dict[str, Any]] = []
+    for contract in contracts:
+        raw = raw_books_by_token.get(str(contract["token_id"]))
+        row = _normalize_orderbook_row({} if raw is None else raw)
+        for key, value in contract.items():
+            row[key] = value
+        _copy_matching_target_fields(row, targets_by_slug)
+        if raw is None:
+            row.update(
+                {
+                    "venue": "polymarket",
+                    "source_key": "polymarket_rust_sdk",
+                    "event_ts": None,
+                    "observed_ts": None,
+                    "best_bid": None,
+                    "best_ask": None,
+                    "spread": None,
+                    "bid_size_top": None,
+                    "ask_size_top": None,
+                    "bids": [],
+                    "asks": [],
+                    "book_state": "missing",
+                }
+            )
+        else:
+            row["book_state"] = _book_state(row)
+        rows.append(row)
+        if len(rows) >= limit:
+            break
+    return tuple(rows)
+
+
+def _state_manager_book_contract_rows(
+    payload: dict[str, Any],
+    *,
+    limit: int,
+) -> tuple[dict[str, Any], ...]:
+    rows: list[dict[str, Any]] = []
+    group_order = {"current": 0, "next": 1}
+    side_order = {"UP": 0, "DOWN": 1}
+    asset_order = {"BTC": 0, "ETH": 1}
+    for group in ("current", "next"):
+        for raw_contract in payload.get(group, ()):
+            contract = dict(raw_contract)
+            window = dict(contract.get("window", {}))
+            asset = str(window.get("asset", "")).upper()
+            interval = str(window.get("interval", ""))
+            start_ts = str(window.get("start_ts", ""))
+            expiry_ts = str(window.get("end_ts", ""))
+            contract_id = _state_manager_contract_id(
+                asset=asset,
+                interval=interval,
+                start_ts=start_ts,
+            )
+            market_slug = contract_id
+            for token_key in ("up", "down"):
+                token = dict(contract.get(token_key, {}))
+                side = str(token.get("side", token_key)).upper()
+                rows.append(
+                    {
+                        "contract_id": contract_id,
+                        "market_slug": market_slug,
+                        "asset": asset,
+                        "side": side,
+                        "token_id": token.get("token_id", ""),
+                        "start_ts": start_ts,
+                        "expiry_ts": expiry_ts,
+                        "window": group,
+                        "_sort": (
+                            asset_order.get(asset, len(asset_order)),
+                            _sort_datetime(start_ts),
+                            group_order[group],
+                            side_order.get(side, len(side_order)),
+                        ),
+                    }
+                )
+    rows.sort(key=lambda row: row["_sort"])
+    shaped = []
+    for row in rows[:limit]:
+        shaped.append({key: value for key, value in row.items() if key != "_sort"})
+    return tuple(shaped)
+
+
+def _normalize_orderbook_row(row: dict[str, Any]) -> dict[str, Any]:
+    bid = _positive_number_or_none(row.get("best_bid"))
+    ask = _positive_number_or_none(row.get("best_ask"))
+    normalized = dict(row)
+    normalized["best_bid"] = bid
+    normalized["best_ask"] = ask
+    normalized["bid_size_top"] = (
+        _positive_number_or_none(row.get("bid_size_top")) if bid is not None else None
+    )
+    normalized["ask_size_top"] = (
+        _positive_number_or_none(row.get("ask_size_top")) if ask is not None else None
+    )
+    normalized["spread"] = _positive_spread(row.get("spread"), bid=bid, ask=ask)
+    normalized["bids"] = _positive_book_levels(row.get("bids", ()))
+    normalized["asks"] = _positive_book_levels(row.get("asks", ()))
+    return normalized
+
+
+def _book_state(row: dict[str, Any]) -> str:
+    has_bid = row.get("best_bid") is not None
+    has_ask = row.get("best_ask") is not None
+    if has_bid and has_ask:
+        return "ok"
+    if not has_bid and not has_ask:
+        return "no_bid_ask"
+    if not has_bid:
+        return "no_bid"
+    return "no_ask"
+
+
+def _positive_book_levels(rows: Any) -> list[dict[str, Any]]:
+    levels: list[dict[str, Any]] = []
+    raw_rows = rows if isinstance(rows, (list, tuple)) else ()
+    for raw_level in raw_rows:
+        if not isinstance(raw_level, dict):
+            continue
+        price = _positive_number_or_none(raw_level.get("price"))
+        size = _positive_number_or_none(raw_level.get("size"))
+        if price is None or size is None:
+            continue
+        level = dict(raw_level)
+        level["price"] = price
+        level["size"] = size
+        levels.append(level)
+    return levels
+
+
+def _positive_spread(value: object, *, bid: float | None, ask: float | None) -> float | None:
+    spread = _positive_number_or_none(value)
+    if spread is not None:
+        return spread
+    if bid is None or ask is None:
+        return None
+    computed = ask - bid
+    return computed if computed > 0 else None
+
+
+def _positive_number_or_none(value: object) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(cast(Any, value))
+    except (TypeError, ValueError):
+        return None
+    if number <= 0:
+        return None
+    return number
+
+
+def _sort_datetime(value: str) -> datetime:
+    try:
+        return _parse_datetime(value)
+    except ValueError:
+        return datetime.max.replace(tzinfo=timezone.utc)
 
 
 def _state_manager_contract_rows(
@@ -247,6 +513,7 @@ def _state_manager_contract_rows(
     limit: int,
 ) -> tuple[dict[str, Any], ...]:
     rows: list[dict[str, Any]] = []
+    targets_by_slug = _targets_by_market_slug(payload)
     for group in ("current", "next", "next_next"):
         for raw_contract in payload.get(group, ()):
             contract = dict(raw_contract)
@@ -262,22 +529,44 @@ def _state_manager_contract_rows(
             )
             for token_key in ("up", "down"):
                 token = dict(contract.get(token_key, {}))
-                rows.append(
-                    {
-                        "contract_id": contract_id,
-                        "asset": asset,
-                        "side": str(token.get("side", token_key)).upper(),
-                        "token_id": token.get("token_id", ""),
-                        "threshold_type": "above" if token_key == "up" else "below",
-                        "settlement_symbol": f"{asset}/USD" if asset else "",
-                        "start_ts": start_ts,
-                        "expiry_ts": expiry_ts,
-                        "window": group,
-                    }
-                )
+                row = {
+                    "contract_id": contract_id,
+                    "asset": asset,
+                    "side": str(token.get("side", token_key)).upper(),
+                    "token_id": token.get("token_id", ""),
+                    "threshold_type": "above" if token_key == "up" else "below",
+                    "settlement_symbol": f"{asset}/USD" if asset else "",
+                    "start_ts": start_ts,
+                    "expiry_ts": expiry_ts,
+                    "window": group,
+                }
+                _copy_matching_target_fields(row, targets_by_slug, market_slug=contract_id)
+                rows.append(row)
                 if len(rows) >= limit:
                     return tuple(rows)
     return tuple(rows)
+
+
+def _targets_by_market_slug(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {
+        str(row.get("market_slug", "")).casefold(): dict(row)
+        for row in payload.get("targets", ())
+        if isinstance(row, dict) and row.get("market_slug")
+    }
+
+
+def _copy_matching_target_fields(
+    row: dict[str, Any],
+    targets_by_slug: dict[str, dict[str, Any]],
+    *,
+    market_slug: str | None = None,
+) -> None:
+    slug = row.get("market_slug", "") if market_slug is None else market_slug
+    target = targets_by_slug.get(str(slug).casefold())
+    if target is None:
+        return
+    for key in TARGET_FIELDS:
+        row[key] = target.get(key)
 
 
 def _state_manager_contract_id(*, asset: str, interval: str, start_ts: str) -> str:

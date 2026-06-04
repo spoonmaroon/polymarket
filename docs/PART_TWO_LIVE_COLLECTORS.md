@@ -113,6 +113,49 @@ because the Rust status file does not contain full venue rule text; do not
 synthesize rule text. `features.decision_snapshots remains empty until probability`
 because no probability model or decision policy exists yet.
 
+The normalizer sidecar does not compute probability outputs by default. Runtime
+probability generation is opt-in via `--enable-probabilities`; the current live
+collector/normalizer lane should stay pre-probability unless that flag is
+deliberately enabled for a separate validation run. The runtime API probability
+endpoint is also disabled by default and requires
+`POLYMARKET_ENABLE_RUNTIME_PROBABILITIES=1` before it will read or compute
+probability outputs for display.
+
+## Runtime API And Cockpit Display
+
+The cockpit should prefer `/api/runtime/live/stream`, which emits `event: live`
+SSE messages whose `data` body matches `/api/runtime/live`. If the stream drops,
+the cockpit falls back to polling `/api/runtime/live`. The legacy `/status`,
+`/monitor`, and `/gates` endpoints remain for manual debugging and compatibility.
+
+The live payload combines status, gates, monitor rows, and compact latency
+metadata from one status-file read in normal operation. The stream interval is
+an API display cadence; WebSocket collection remains primary, and REST orderbook
+backup cadence remains a backup path.
+
+The market table groups a BTC/ETH 5m window into one binary market row because
+operator reasoning is market-level. Internally, the Up and Down CLOB token books
+stay separate because venue liquidity, execution math, and paper-trade replay
+are token-level. The selected book panel renders both token books for the
+selected market.
+
+The normalizer writes `validation.market_outcome_history` for expired recorded
+markets from official Polymarket CLOB market metadata when that source marks a
+known Up or Down token as `winner=true`. `computed_winner` remains nullable for
+JSON/schema compatibility and is not populated as an outcome label. If the
+official source is unavailable or ambiguous, `official_winner` stays pending.
+
+The normalizer also writes `data/live/outcomes.json` from its writer-owned
+DuckDB connection. `/api/runtime/outcomes` reads that live file first so the
+read-only API and cockpit do not contend with the normalizer's long-lived DuckDB
+writer connection. Outcome-history refresh is intentionally throttled relative
+to the hot state loop because outcomes only change after market expiry and
+should not burn CPU on every 0.1s normalization pass.
+Official outcome refresh checks the newest expired market windows first and is
+capped by `POLYMARKET_OFFICIAL_OUTCOME_REFRESH_LIMIT` in the live normalizer, so
+a slow or pending CLOB response cannot walk the whole historical contract set
+inside one hot-loop cycle.
+
 ## Source Rules
 
 - Polymarket website chart prices are not model truth.

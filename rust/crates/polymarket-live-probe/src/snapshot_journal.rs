@@ -200,6 +200,7 @@ mod tests {
             chainlink_prices: vec![],
             proxy_prices: vec![],
             orderbooks: vec![],
+            targets: vec![],
             freshness: vec![],
             health_flags: vec![],
         };

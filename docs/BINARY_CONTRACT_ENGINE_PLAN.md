@@ -1027,6 +1027,18 @@ Important rule note: some Up/Down markets use the end price relative to the star
 | `rule_text_hash` | Hash of the rule text at collection time. |
 | `resolution_status` | Pending, proposed, disputed, resolved, canceled, or invalid. |
 
+Implementation boundary: one short-dated Up/Down market has two venue outcome
+tokens. Operator displays may group the Up and Down token books into one market
+row, but storage, replay, execution math, and any future paper fills must keep
+token ids and token-level books separate.
+
+Outcome history labels must come from the venue/onchain source of truth.
+`official_winner` is populated only when Polymarket CLOB market metadata marks a
+known Up or Down token as `winner=true`. `computed_winner` remains nullable only
+for schema compatibility and must not be treated as a contract result. If the
+official source is missing, ambiguous, disputed, or unmappable, the market stays
+pending.
+
 ## 2.3 Settlement-source hierarchy
 
 The settlement-source layer should use the following hierarchy:

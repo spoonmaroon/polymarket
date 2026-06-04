@@ -12,6 +12,7 @@ from polymarket_engine.domain.market_state import DecisionState, OrderBookObserv
 from polymarket_engine.probability.schema import ProbabilityInput, ProbabilityOutput
 from polymarket_engine.storage import duckdb_store
 from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
+from polymarket_engine.storage.duckdb_store import MarketOutcomeRecord
 
 
 T = TypeVar("T")
@@ -249,6 +250,56 @@ def test_store_inserts_probability_output_with_json_artifacts(tmp_path: Path) ->
     assert json.loads(input_json)["state_id"] == state.state_id
     assert json.loads(input_json)["z_path"] == probability_input.z_path
     assert json.loads(output_json)["diagnostics"]["paths"] == 1000
+
+
+def test_store_upserts_and_reads_market_outcome_history(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.duckdb"
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    start_ts = datetime(2026, 5, 31, 20, 0, tzinfo=timezone.utc)
+    expiry_ts = datetime(2026, 5, 31, 20, 5, tzinfo=timezone.utc)
+
+    written = store.upsert_market_outcome_records(
+        (
+            MarketOutcomeRecord(
+                market_id="btc-updown-5m-1780264500",
+                condition_id="0xbtc",
+                market_slug="btc-updown-5m-1780264500",
+                asset="BTC",
+                interval="5m",
+                start_ts=start_ts,
+                expiry_ts=expiry_ts,
+                up_token_id="up-token",
+                down_token_id="down-token",
+                threshold_price=104_000.0,
+                threshold_event_ts=start_ts,
+                threshold_observed_ts=start_ts,
+                end_price=104_001.0,
+                end_event_ts=expiry_ts,
+                end_observed_ts=expiry_ts,
+                computed_winner=None,
+                computed_label_source=None,
+                computed_at=None,
+                official_winner="UP",
+                winning_token_id="up-token",
+                official_resolution_status="resolved",
+                official_label_source="polymarket_clob_market",
+                official_resolved_at=expiry_ts,
+                rule_hash="hash",
+                mismatch=None,
+            ),
+        )
+    )
+
+    rows = store.market_outcome_history(limit=4)
+
+    assert written == 1
+    assert rows[0]["market_id"] == "btc-updown-5m-1780264500"
+    assert rows[0]["computed_winner"] is None
+    assert rows[0]["official_winner"] == "UP"
+    assert rows[0]["winning_token_id"] == "up-token"
+    assert rows[0]["official_resolution_status"] == "resolved"
+    assert rows[0]["mismatch"] is None
 
 
 def test_store_context_reuses_one_duckdb_connection(

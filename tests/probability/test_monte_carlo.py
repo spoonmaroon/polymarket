@@ -7,12 +7,15 @@ from polymarket_engine.probability.monte_carlo import run_seeded_monte_carlo, sc
 from polymarket_engine.probability.schema import ProbabilityInput
 
 
-def _probability_input(side: str = "UP") -> ProbabilityInput:
+def _probability_input(side: str = "UP", comparison_operator: str | None = None) -> ProbabilityInput:
+    if comparison_operator is None:
+        comparison_operator = ">=" if side == "UP" else "<"
     return ProbabilityInput(
         state_id=f"state-{side}",
         asof_ts=datetime(2026, 6, 2, 17, 0, tzinfo=timezone.utc),
         asset="BTC",
         side=side,
+        comparison_operator=comparison_operator,
         seconds_left=120.0,
         settlement_price=100.0,
         threshold=100.0,
@@ -43,6 +46,58 @@ def test_score_paths_counts_terminal_and_no_touch_wins_for_explicit_up_paths() -
     assert output.model_version == "mc-fixture"
     assert output.seed == 7
     assert output.diagnostics == {"path_count": 2, "steps": 2, "model": "explicit_paths"}
+
+
+@pytest.mark.parametrize(
+    ("side", "comparison_operator", "expected_finish"),
+    (
+        ("UP", ">", 0.0),
+        ("UP", ">=", 1.0),
+        ("DOWN", "<", 0.0),
+        ("DOWN", "<=", 1.0),
+    ),
+)
+def test_score_paths_honors_exact_contract_comparison_operator(
+    side: str,
+    comparison_operator: str,
+    expected_finish: float,
+) -> None:
+    probability_input = _probability_input(side=side, comparison_operator=comparison_operator)
+
+    output = score_paths(
+        probability_input,
+        paths=((100.0, 100.0),),
+        model_version="mc-fixture",
+        seed=7,
+    )
+
+    assert output.p_finish == pytest.approx(expected_finish)
+
+
+@pytest.mark.parametrize(
+    ("side", "comparison_operator", "start_price"),
+    (
+        ("UP", ">", 100.0),
+        ("UP", ">=", 99.99),
+        ("DOWN", "<", 100.0),
+        ("DOWN", "<=", 100.01),
+    ),
+)
+def test_score_paths_sets_no_touch_zero_when_start_is_already_wrong_side(
+    side: str,
+    comparison_operator: str,
+    start_price: float,
+) -> None:
+    probability_input = _probability_input(side=side, comparison_operator=comparison_operator)
+
+    output = score_paths(
+        probability_input,
+        paths=((start_price, 101.0 if side == "UP" else 99.0),),
+        model_version="mc-fixture",
+        seed=7,
+    )
+
+    assert output.p_no_touch == pytest.approx(0.0)
 
 
 def test_run_seeded_monte_carlo_is_deterministic_for_same_seed() -> None:

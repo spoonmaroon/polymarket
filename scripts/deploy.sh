@@ -156,7 +156,7 @@ if [ "$USE_PREBUILT" = "1" ]; then
   if ! (
     export POLYMARKET_COLLECTOR_IMAGE="$COLLECTOR_IMAGE"
     export POLYMARKET_NORMALIZER_IMAGE="$NORMALIZER_IMAGE"
-    compose -f "$COMPOSE_FILE" up -d collector normalizer
+    compose -f "$COMPOSE_FILE" up -d collector normalizer api
   ) >> "$LOG_FILE" 2>&1; then
     LOG "docker compose failed"
     exit 1
@@ -167,7 +167,7 @@ else
     exit 1
   fi
   export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-1}"
-  if ! compose -f "$COMPOSE_FILE" up -d --build collector normalizer >> "$LOG_FILE" 2>&1; then
+  if ! compose -f "$COMPOSE_FILE" up -d --build collector normalizer api >> "$LOG_FILE" 2>&1; then
     LOG "docker compose failed"
     exit 1
   fi
@@ -193,5 +193,5 @@ for _ in $(seq 1 "$DEPLOY_SMOKE_ATTEMPTS"); do
 done
 
 LOG "collector smoke failed; leaving container logs in docker compose"
-compose -f "$COMPOSE_FILE" logs --tail=80 collector normalizer >> "$LOG_FILE" 2>&1 || true
+compose -f "$COMPOSE_FILE" logs --tail=80 collector normalizer api >> "$LOG_FILE" 2>&1 || true
 exit 1

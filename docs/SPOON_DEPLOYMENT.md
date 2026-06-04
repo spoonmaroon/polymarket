@@ -32,7 +32,7 @@ cd /home/spoon/polymarket
 cp deploy/collector/.env.example deploy/collector/.env
 sed -i "s/^POLYMARKET_UID=.*/POLYMARKET_UID=$(id -u)/" deploy/collector/.env
 sed -i "s/^POLYMARKET_GID=.*/POLYMARKET_GID=$(id -g)/" deploy/collector/.env
-docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml up -d --build collector normalizer
+docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml up -d --build collector normalizer api
 python3 scripts/check_collector_status.py --status-path /home/spoon/polymarket-data/live/status.json --max-status-age-seconds 30 --max-price-age-ms 30000 --max-orderbook-age-ms 30000 --max-websocket-event-age-ms 30000
 ```
 
@@ -56,7 +56,9 @@ THEPC is the active runtime host. Do not use blind auto-pull for this lane. The
 Mac-side helper below builds pinned Linux images, creates a git bundle for the
 exact local commit, streams the bundle and image tarballs into THEPC's Ubuntu
 WSL environment, runs the existing prebuilt-image deploy gate, and finishes with
-the collector status check.
+the collector status check. The same deploy also installs the matching
+`polymarket-cockpit-tui` binary to `/home/ender/bin/polymarket-cockpit-tui`, so
+the Windows desktop shortcut opens the TUI for the deployed commit.
 
 ```bash
 cd /Users/goon/polymarket
@@ -70,11 +72,13 @@ Defaults:
 - `PC_REPO=/home/ender/polymarket`
 - `PC_BUNDLE=/home/ender/polymarket.bundle`
 - `PC_DATA_DIR=/home/ender/polymarket-data`
+- `PC_BIN_DIR=/home/ender/bin`
 - `PC_NORMALIZER_INTERVAL_SECONDS=0.1`
 
 Set `PC_DEPLOY_BUILD_IMAGES=0` only when matching
 `dist/docker/polymarket-rust-collector-<sha>.tar` and
-`dist/docker/polymarket-normalizer-<sha>.tar` already exist for the checked-out
+`dist/docker/polymarket-normalizer-<sha>.tar` plus
+`dist/docker/polymarket-cockpit-tui-<sha>` already exist for the checked-out
 commit.
 
 ### Spoon Deploy
@@ -116,16 +120,15 @@ The deploy script fetches the configured deploy ref, refuses dirty server worktr
 It only skips a rebuild/restart when both the checked-out commit and the deployed marker match the target commit, so a manual `git pull` cannot accidentally leave an older healthy container running.
 If `deploy/collector/.env` exists, the deploy script uses it explicitly. The collector is read-only and runs Chainlink RTDS plus Polymarket CLOB WebSocket state-manager mode with `POLYMARKET_INTERVAL=5m`.
 
-For branch testing before merge:
+For manual deploy testing, pin the exact `main` commit or full SHA being tested:
 
 ```bash
 POLYMARKET_DEPLOY_REF=origin/main DEPLOY_FORCE=1 /home/spoon/polymarket/scripts/deploy.sh
 ```
 
-When testing the raw-normalizer deployment before merge, deploy explicitly with
-`POLYMARKET_DEPLOY_REF=origin/codex/rust-raw-normalizer`. Do not let spoon's
-local `main` remain ahead of `origin/main` after the branch is ready; either
-merge/push main or keep the deploy ref explicit.
+GitHub should stay clean with `main` as the only long-lived branch. Do not let
+a runtime host's local `main` remain ahead of `origin/main`; push `main` first,
+then deploy the pinned commit.
 
 ## Retention
 
@@ -204,26 +207,82 @@ du -sh /home/spoon/polymarket-data/*
 
 ## Read-Only Cockpit TUI
 
-The `polymarket-cockpit-tui` is read-only. It polls the engine API for runtime
-status, gate failures, freshness, latency, health, storage, and optional
-container state. It must not place orders, deploy containers, rebuild images,
-write collector state, restart services, or access auth secrets.
+The `polymarket-cockpit-tui` is read-only. It consumes
+`/api/runtime/live/stream` first, falls back to `/api/runtime/live`, and keeps
+the legacy `/status`, `/monitor`, and `/gates` endpoints for manual debugging.
+It displays runtime status, gate failures, freshness, latency, health, grouped
+market books, cached probability outputs, and read-only outcome history. It must
+not place orders, deploy containers, rebuild images, write collector state,
+restart services, or access auth secrets.
+
+Cached probability outputs are display-only. The deployed normalizer sidecar
+does not pass `--enable-probabilities`, so live runtime on THEPC remains
+pre-probability unless an operator explicitly starts a separate opt-in run. The
+FastAPI probability endpoint also stays disabled unless
+`POLYMARKET_ENABLE_RUNTIME_PROBABILITIES=1` is set.
+
+Live data changes should appear through the runtime API polling path. TUI code,
+layout, or parser changes require a fresh THEPC deploy and reopening the
+desktop shortcut so the new binary is loaded.
+
+Each displayed BTC/ETH 5m row is one binary market window. The CLOB books remain
+separate Up and Down token books internally, and the selected Book panel renders
+both sides for the chosen market. The Outcomes tab shows only the official
+winner, winning token id, and status. Labels come from Polymarket CLOB market
+metadata where a known Up or Down token has `winner=true`; if the source is
+missing or ambiguous, the row stays pending.
+
+The Market tab `K` column is the read-only Chainlink start-reference target for
+the market window as surfaced by the Rust state-manager status payload. Current
+windows should show a numeric `K`; future windows can show `pending` until the
+start tick has been observed. The Market tab also keeps a bounded in-memory
+BTC/ETH price path panel with the active target label for each asset. This chart
+is display state only and is rebuilt from runtime price rows after reopening the
+TUI.
+
+Expired market rows stay visible for the normal handoff window, and can remain
+visible longer while a fresh pending outcome feed is actively tracking that
+market. Once the TUI first sees an official winner for that market, the row
+remains visible for 30 seconds so the Market tab can show the handoff, then it
+disappears and the Outcomes tab remains the history surface. A stale pending
+outcome feed must not pin an expired row forever.
+
+The normalizer publishes outcome history to
+`/var/lib/polymarket/live/outcomes.json`, and the API reads that file before any
+DuckDB fallback. This avoids read contention with the normalizer's live writer
+connection while preserving `validation.market_outcome_history` for replay and
+audit. The normalizer refreshes outcome history on a slower cadence than the hot
+state loop so expired-market labeling does not dominate the 0.1s runtime path.
+Each official outcome refresh is also capped by
+`POLYMARKET_OFFICIAL_OUTCOME_REFRESH_LIMIT` and processes the newest expired
+market windows first. Keep the cap small on live collector hosts; use explicit
+offline/backfill jobs for deep historical labeling.
 
 Local API:
 
 ```bash
 uv run uvicorn polymarket_engine.app:app --host 127.0.0.1 --port 8000
-cargo run --manifest-path rust/Cargo.toml -p polymarket-cockpit-tui -- --engine-api-url http://127.0.0.1:8000 --poll-interval-ms 250
+cargo run --manifest-path rust/Cargo.toml -p polymarket-cockpit-tui -- --engine-api-url http://127.0.0.1:8000 --poll-interval-ms 1000
 ```
 
 THEPC over Tailscale, using a configurable URL:
 
 ```bash
-cargo run --manifest-path rust/Cargo.toml -p polymarket-cockpit-tui -- --engine-api-url http://100.72.104.49:8000 --poll-interval-ms 250
+cargo run --manifest-path rust/Cargo.toml -p polymarket-cockpit-tui -- --engine-api-url http://100.72.104.49:8000 --poll-interval-ms 1000
 ```
 
-Container status is an operator-only API-side feature. Leave it disabled unless
-the API process is deliberately started with
+Endpoint smoke checks:
+
+```bash
+curl -fsS "$POLYMARKET_ENGINE_API_URL/api/runtime/live?limit=8" | python3 -m json.tool | head -80
+curl -fsS -N "$POLYMARKET_ENGINE_API_URL/api/runtime/live/stream?limit=8&interval_ms=250&max_events=1" | head -20
+curl -fsS "$POLYMARKET_ENGINE_API_URL/api/runtime/outcomes?limit=8" | python3 -m json.tool | head -80
+```
+
+The deploy compose file runs `collector`, `normalizer`, and `api` with
+`restart: unless-stopped`, so the API should come back with Docker after a host
+restart. Container status is an operator-only API-side feature; enable it only
+for an API process that has Docker CLI access and
 `POLYMARKET_ENABLE_CONTAINER_STATUS=1`.
 
 ## No-Auth Latency Probe

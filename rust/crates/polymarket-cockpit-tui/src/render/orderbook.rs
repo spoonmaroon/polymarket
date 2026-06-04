@@ -7,64 +7,73 @@ use ratatui::{
     widgets::{Block, Cell, Row, Table},
 };
 
-use crate::{render::market, state::AppState, status::RuntimeBookLevel};
+use crate::{
+    state::AppState,
+    status::{RuntimeBookLevel, RuntimeOrderbookRow},
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BookDisplayRow {
-    pub contract: String,
+    pub side: String,
+    pub bid_size: String,
     pub bid: String,
     pub ask: String,
+    pub ask_size: String,
 }
 
 pub fn book_title(app: &AppState) -> String {
-    app.selected_orderbook()
-        .map(|orderbook| format!("Book: {}", market::book_contract_label(orderbook)))
+    app.selected_market_group()
+        .map(|group| format!("Book: {}", group.label))
         .unwrap_or_else(|| "Book".to_string())
 }
 
 pub fn book_rows(app: &AppState) -> Vec<BookDisplayRow> {
-    let Some(orderbook) = app.selected_orderbook() else {
+    let Some(group) = app.selected_market_group() else {
         return Vec::new();
     };
 
+    let mut rows = Vec::new();
+    if let Some(up) = group.up {
+        rows.extend(side_book_rows("UP", up));
+    }
+    if let Some(down) = group.down {
+        rows.extend(side_book_rows("DOWN", down));
+    }
+    rows
+}
+
+fn side_book_rows(side: &str, orderbook: &RuntimeOrderbookRow) -> Vec<BookDisplayRow> {
     let mut bids = orderbook.bids.iter().collect::<Vec<_>>();
+    bids.retain(|level| level_price(level).is_some() && level_size(level).is_some());
     bids.sort_by(|left, right| compare_level_price_desc(left, right));
     let bids = bids.into_iter().take(6).collect::<Vec<_>>();
     let mut asks = orderbook.asks.iter().collect::<Vec<_>>();
+    asks.retain(|level| level_price(level).is_some() && level_size(level).is_some());
     asks.sort_by(|left, right| compare_level_price_asc(left, right));
     let asks = asks.into_iter().take(6).collect::<Vec<_>>();
     let row_count = bids.len().max(asks.len());
-    let contract = match (orderbook.asset.as_deref(), orderbook.side.as_deref()) {
-        (Some(asset), Some(side)) if !asset.is_empty() && !side.is_empty() => {
-            format!("{asset} {side}")
-        }
-        _ if !orderbook.contract_id.is_empty() => orderbook.contract_id.clone(),
-        _ => "unknown".to_string(),
-    };
 
     (0..row_count)
         .map(|index| BookDisplayRow {
-            contract: contract.clone(),
-            bid: bids.get(index).map_or("-".to_string(), |level| {
-                price_size(level.price.as_deref(), level.size.as_deref())
-            }),
-            ask: asks.get(index).map_or("-".to_string(), |level| {
-                price_size(level.price.as_deref(), level.size.as_deref())
-            }),
+            side: if index == 0 { side } else { "" }.to_string(),
+            bid_size: bids
+                .get(index)
+                .and_then(|level| positive_scalar(level.size.as_deref()))
+                .unwrap_or_else(|| "-".to_string()),
+            bid: bids
+                .get(index)
+                .and_then(|level| positive_scalar(level.price.as_deref()))
+                .unwrap_or_else(|| "-".to_string()),
+            ask: asks
+                .get(index)
+                .and_then(|level| positive_scalar(level.price.as_deref()))
+                .unwrap_or_else(|| "-".to_string()),
+            ask_size: asks
+                .get(index)
+                .and_then(|level| positive_scalar(level.size.as_deref()))
+                .unwrap_or_else(|| "-".to_string()),
         })
         .collect()
-}
-
-fn price_size(price: Option<&str>, size: Option<&str>) -> String {
-    let Some(price) = price.filter(|value| !value.is_empty()) else {
-        return "-".to_string();
-    };
-
-    if let Some(size) = size.filter(|value| !value.is_empty()) {
-        format!("{price} x{size}")
-    } else {
-        price.to_string()
-    }
 }
 
 fn compare_level_price_asc(left: &RuntimeBookLevel, right: &RuntimeBookLevel) -> Ordering {
@@ -86,7 +95,31 @@ fn compare_level_price_desc(left: &RuntimeBookLevel, right: &RuntimeBookLevel) -
 }
 
 fn level_price(level: &RuntimeBookLevel) -> Option<f64> {
-    level.price.as_deref()?.parse::<f64>().ok()
+    positive_number(level.price.as_deref())
+}
+
+fn level_size(level: &RuntimeBookLevel) -> Option<f64> {
+    positive_number(level.size.as_deref())
+}
+
+fn positive_scalar(value: Option<&str>) -> Option<String> {
+    let value = value?.trim();
+    if value.is_empty() {
+        return None;
+    }
+    let Ok(number) = value.parse::<f64>() else {
+        return Some(value.to_string());
+    };
+    if number <= 0.0 {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
+fn positive_number(value: Option<&str>) -> Option<f64> {
+    let number = value?.trim().parse::<f64>().ok()?;
+    if number > 0.0 { Some(number) } else { None }
 }
 
 pub fn render(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
@@ -94,15 +127,19 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         .into_iter()
         .map(|row| {
             Row::new(vec![
-                Cell::from(row.contract),
+                Cell::from(row.side),
+                Cell::from(row.bid_size),
                 Cell::from(row.bid),
                 Cell::from(row.ask),
+                Cell::from(row.ask_size),
             ])
         })
         .collect::<Vec<_>>();
     let rows = if rows.is_empty() {
         vec![Row::new(vec![
             Cell::from("monitor pending"),
+            Cell::from("-"),
+            Cell::from("-"),
             Cell::from("-"),
             Cell::from("-"),
         ])]
@@ -112,12 +149,17 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let table = Table::new(
         rows,
         [
+            ratatui::layout::Constraint::Length(6),
             ratatui::layout::Constraint::Length(12),
-            ratatui::layout::Constraint::Length(16),
-            ratatui::layout::Constraint::Min(16),
+            ratatui::layout::Constraint::Length(8),
+            ratatui::layout::Constraint::Length(8),
+            ratatui::layout::Constraint::Min(12),
         ],
     )
-    .header(Row::new(vec!["Contract", "Bid", "Ask"]).style(Style::default().fg(Color::Cyan)))
+    .header(
+        Row::new(vec!["Side", "Bid Size", "Bid", "Ask", "Ask Size"])
+            .style(Style::default().fg(Color::Cyan)),
+    )
     .block(Block::bordered().title(book_title(app)));
 
     frame.render_widget(table, area);
@@ -133,7 +175,7 @@ mod tests {
     use super::{book_rows, book_title};
 
     #[test]
-    fn book_rows_pair_best_bid_and_ask_levels_for_first_contract() {
+    fn book_rows_pair_best_bid_and_ask_levels_for_selected_market_side() {
         let app = AppState {
             runtime_monitor: Some(RuntimeMonitor {
                 generated_at: "2026-06-03T20:43:20.744215+00:00".to_string(),
@@ -148,6 +190,13 @@ mod tests {
                     side: Some("DOWN".to_string()),
                     event_ts: Some("2026-06-03T20:43:12.101Z".to_string()),
                     observed_ts: Some("2026-06-03T20:43:20.616043736Z".to_string()),
+                    start_ts: Some("2026-06-03T20:40:00Z".to_string()),
+                    expiry_ts: Some("2026-06-03T20:45:00Z".to_string()),
+                    threshold_price: None,
+                    threshold_event_ts: None,
+                    threshold_observed_ts: None,
+                    settlement_price: None,
+                    settlement_event_ts: None,
                     best_bid: Some("0.86".to_string()),
                     best_ask: Some("0.87".to_string()),
                     spread: Some("0.01".to_string()),
@@ -180,11 +229,16 @@ mod tests {
 
         let rows = book_rows(&app);
 
-        assert_eq!(rows[0].contract, "ETH DOWN");
-        assert_eq!(rows[0].bid, "0.86 x33");
-        assert_eq!(rows[0].ask, "0.87 x14.46");
-        assert_eq!(rows[1].bid, "0.84 x10");
-        assert_eq!(rows[1].ask, "0.88 x20");
+        assert_eq!(rows[0].side, "DOWN");
+        assert_eq!(rows[0].bid_size, "33");
+        assert_eq!(rows[0].bid, "0.86");
+        assert_eq!(rows[0].ask, "0.87");
+        assert_eq!(rows[0].ask_size, "14.46");
+        assert_eq!(rows[1].side, "");
+        assert_eq!(rows[1].bid_size, "10");
+        assert_eq!(rows[1].bid, "0.84");
+        assert_eq!(rows[1].ask, "0.88");
+        assert_eq!(rows[1].ask_size, "20");
     }
 
     #[test]
@@ -203,6 +257,13 @@ mod tests {
                     side: Some("UP".to_string()),
                     event_ts: None,
                     observed_ts: Some("2026-06-03T21:22:15Z".to_string()),
+                    start_ts: None,
+                    expiry_ts: None,
+                    threshold_price: None,
+                    threshold_event_ts: None,
+                    threshold_observed_ts: None,
+                    settlement_price: None,
+                    settlement_event_ts: None,
                     best_bid: Some("0.50".to_string()),
                     best_ask: Some("0.51".to_string()),
                     spread: Some("0.01".to_string()),
@@ -235,9 +296,68 @@ mod tests {
 
         let rows = book_rows(&app);
 
-        assert_eq!(rows[0].bid, "0.50 x639.47");
-        assert_eq!(rows[0].ask, "0.51 x603.36");
-        assert_eq!(rows[1].ask, "0.99 x7690.54");
+        assert_eq!(rows[0].bid_size, "639.47");
+        assert_eq!(rows[0].bid, "0.50");
+        assert_eq!(rows[0].ask, "0.51");
+        assert_eq!(rows[0].ask_size, "603.36");
+        assert_eq!(rows[1].ask, "0.99");
+        assert_eq!(rows[1].ask_size, "7690.54");
+    }
+
+    #[test]
+    fn book_rows_hide_nonpositive_levels() {
+        let app = AppState {
+            runtime_monitor: Some(RuntimeMonitor {
+                generated_at: "2026-06-03T21:22:15Z".to_string(),
+                price_rows: Vec::new(),
+                orderbooks: vec![RuntimeOrderbookRow {
+                    venue: Some("polymarket".to_string()),
+                    source_key: Some("polymarket_rust_sdk".to_string()),
+                    market_slug: Some("btc-updown-5m-1780521900".to_string()),
+                    contract_id: "btc-up".to_string(),
+                    token_id: Some("btc-up-token".to_string()),
+                    asset: Some("BTC".to_string()),
+                    side: Some("UP".to_string()),
+                    event_ts: None,
+                    observed_ts: Some("2026-06-03T21:22:15Z".to_string()),
+                    start_ts: None,
+                    expiry_ts: None,
+                    threshold_price: None,
+                    threshold_event_ts: None,
+                    threshold_observed_ts: None,
+                    settlement_price: None,
+                    settlement_event_ts: None,
+                    best_bid: Some("0".to_string()),
+                    best_ask: Some("0.51".to_string()),
+                    spread: None,
+                    bid_size_top: Some("100".to_string()),
+                    ask_size_top: Some("603.36".to_string()),
+                    bids: vec![
+                        RuntimeBookLevel {
+                            price: Some("0".to_string()),
+                            size: Some("100".to_string()),
+                        },
+                        RuntimeBookLevel {
+                            price: Some("0.49".to_string()),
+                            size: Some("0".to_string()),
+                        },
+                    ],
+                    asks: vec![RuntimeBookLevel {
+                        price: Some("0.51".to_string()),
+                        size: Some("603.36".to_string()),
+                    }],
+                }],
+            }),
+            ..Default::default()
+        };
+
+        let rows = book_rows(&app);
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].bid_size, "-");
+        assert_eq!(rows[0].bid, "-");
+        assert_eq!(rows[0].ask, "0.51");
+        assert_eq!(rows[0].ask_size, "603.36");
     }
 
     #[test]
@@ -257,6 +377,13 @@ mod tests {
                         side: Some("UP".to_string()),
                         event_ts: None,
                         observed_ts: Some("2026-06-03T21:05:58Z".to_string()),
+                        start_ts: None,
+                        expiry_ts: None,
+                        threshold_price: None,
+                        threshold_event_ts: None,
+                        threshold_observed_ts: None,
+                        settlement_price: None,
+                        settlement_event_ts: None,
                         best_bid: Some("0.88".to_string()),
                         best_ask: Some("0.89".to_string()),
                         spread: Some("0.01".to_string()),
@@ -281,6 +408,13 @@ mod tests {
                         side: Some("DOWN".to_string()),
                         event_ts: None,
                         observed_ts: Some("2026-06-03T21:05:47Z".to_string()),
+                        start_ts: None,
+                        expiry_ts: None,
+                        threshold_price: None,
+                        threshold_event_ts: None,
+                        threshold_observed_ts: None,
+                        settlement_price: None,
+                        settlement_event_ts: None,
                         best_bid: Some("0.49".to_string()),
                         best_ask: Some("0.50".to_string()),
                         spread: Some("0.01".to_string()),
@@ -303,9 +437,74 @@ mod tests {
 
         let rows = book_rows(&app);
 
-        assert_eq!(book_title(&app), "Book: BTC DOWN 21:10Z");
-        assert_eq!(rows[0].contract, "BTC DOWN");
-        assert_eq!(rows[0].bid, "0.49 x1256.68");
-        assert_eq!(rows[0].ask, "0.50 x702.96");
+        assert!(book_title(&app).starts_with("Book: BTC 5m "));
+        assert_eq!(rows[0].side, "DOWN");
+        assert_eq!(rows[0].bid_size, "1256.68");
+        assert_eq!(rows[0].bid, "0.49");
+        assert_eq!(rows[0].ask, "0.50");
+        assert_eq!(rows[0].ask_size, "702.96");
+    }
+
+    #[test]
+    fn book_rows_render_selected_market_up_and_down_books_together() {
+        let mut app = AppState {
+            runtime_monitor: Some(RuntimeMonitor {
+                generated_at: "2026-06-03T21:22:15Z".to_string(),
+                price_rows: Vec::new(),
+                orderbooks: vec![
+                    orderbook_with_level("BTC", "UP", "btc-updown-5m-1780521900", "0.44", "0.45"),
+                    orderbook_with_level("BTC", "DOWN", "btc-updown-5m-1780521900", "0.55", "0.56"),
+                ],
+            }),
+            ..Default::default()
+        };
+        app.sync_market_selection();
+
+        let title = book_title(&app);
+        let rows = book_rows(&app);
+
+        assert!(title.starts_with("Book: BTC 5m"));
+        assert_eq!(rows[0].side, "UP");
+        assert_eq!(rows[1].side, "DOWN");
+    }
+
+    fn orderbook_with_level(
+        asset: &str,
+        side: &str,
+        market_slug: &str,
+        bid: &str,
+        ask: &str,
+    ) -> RuntimeOrderbookRow {
+        RuntimeOrderbookRow {
+            venue: Some("polymarket".to_string()),
+            source_key: Some("polymarket_rust_sdk".to_string()),
+            market_slug: Some(market_slug.to_string()),
+            contract_id: format!("{asset}-{side}"),
+            token_id: Some(format!("{asset}-{side}-token")),
+            asset: Some(asset.to_string()),
+            side: Some(side.to_string()),
+            event_ts: None,
+            observed_ts: Some("2026-06-03T21:22:15Z".to_string()),
+            start_ts: None,
+            expiry_ts: None,
+            threshold_price: None,
+            threshold_event_ts: None,
+            threshold_observed_ts: None,
+            settlement_price: None,
+            settlement_event_ts: None,
+            best_bid: Some(bid.to_string()),
+            best_ask: Some(ask.to_string()),
+            spread: Some("0.01".to_string()),
+            bid_size_top: None,
+            ask_size_top: None,
+            bids: vec![RuntimeBookLevel {
+                price: Some(bid.to_string()),
+                size: Some("100".to_string()),
+            }],
+            asks: vec![RuntimeBookLevel {
+                price: Some(ask.to_string()),
+                size: Some("200".to_string()),
+            }],
+        }
     }
 }

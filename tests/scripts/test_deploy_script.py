@@ -158,6 +158,35 @@ def test_normalizer_sidecar_is_deployed_and_health_checked() -> None:
     assert "$DATA_DIR/live/normalized_health.json" in script
 
 
+def test_runtime_api_service_is_deployed_with_engine_compose() -> None:
+    compose = (ROOT / "deploy" / "collector" / "docker-compose.yml").read_text(
+        encoding="utf-8"
+    )
+    env_example = (ROOT / "deploy" / "collector" / ".env.example").read_text(
+        encoding="utf-8"
+    )
+    script = (ROOT / "scripts" / "deploy.sh").read_text(encoding="utf-8")
+    pc_script = (ROOT / "scripts" / "deploy_pc.sh").read_text(encoding="utf-8")
+
+    assert "api:" in compose
+    assert "uvicorn" in compose
+    assert "polymarket_engine.app:app" in compose
+    assert "POLYMARKET_STATUS_PATH: /var/lib/polymarket/live/status.json" in compose
+    assert "POLYMARKET_DUCKDB_PATH: /var/lib/polymarket/db/polymarket.duckdb" in compose
+    assert "POLYMARKET_OUTCOME_STATUS_PATH: /var/lib/polymarket/live/outcomes.json" in compose
+    assert "${POLYMARKET_API_PORT:-8000}:8000" in compose
+    assert "POLYMARKET_API_PORT=8000" in env_example
+    assert "POLYMARKET_ENABLE_CONTAINER_STATUS=1" in env_example
+    assert "up -d collector normalizer api" in script
+    assert "up -d --build collector normalizer api" in script
+    assert "logs --tail=80 collector normalizer api" in script
+    assert "docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml ps" in pc_script
+    assert 'get_json("/health")' in pc_script
+    assert 'get_json("/api/runtime/live?limit=8")' in pc_script
+    assert 'get_json("/api/runtime/outcomes?limit=8")' in pc_script
+    assert "/api/runtime/live/stream?limit=8&interval_ms=250&max_events=1" in pc_script
+
+
 def test_compose_and_env_support_prebuilt_image_overrides() -> None:
     compose = (ROOT / "deploy" / "collector" / "docker-compose.yml").read_text(
         encoding="utf-8"
@@ -254,7 +283,7 @@ def test_pc_deploy_script_runs_prebuilt_deploy_gate_with_pc_cadence() -> None:
 
     assert 'PC_NORMALIZER_INTERVAL_SECONDS="${PC_NORMALIZER_INTERVAL_SECONDS:-0.1}"' in script
     assert 'PC_REST_BACKUP_INTERVAL_MS="${PC_REST_BACKUP_INTERVAL_MS:-1000}"' in script
-    assert "POLYMARKET_DEPLOY_USE_PREBUILT=1" in script
+    assert "export POLYMARKET_DEPLOY_USE_PREBUILT=1" in script
     assert 'POLYMARKET_DEPLOY_REF="\\$FULL_SHA"' in script
     assert 'POLYMARKET_EXPECTED_DEPLOY_SHA="\\$FULL_SHA"' in script
     assert 'POLYMARKET_COLLECTOR_IMAGE="\\$COLLECTOR_IMAGE"' in script
@@ -269,6 +298,53 @@ def test_pc_deploy_script_runs_prebuilt_deploy_gate_with_pc_cadence() -> None:
     assert 'POLYMARKET_REST_BACKUP_INTERVAL_MS="\\$PC_REST_BACKUP_INTERVAL_MS"' in script
     assert "scripts/check_collector_status.py" in script
     assert "--expected-prewarm-windows 2" in script
+
+
+def test_pc_deploy_script_refreshes_tui_desktop_launcher() -> None:
+    script = (ROOT / "scripts" / "deploy_pc.sh").read_text(encoding="utf-8")
+
+    assert "open-polymarket-tui.sh" in script
+    assert "open-polymarket-tui.cmd" in script
+    assert "Polymarket TUI.lnk" in script
+    assert "CreateShortcut" in script
+    assert "Checking Polymarket runtime..." in script
+    assert "Runtime already live." in script
+    assert "Runtime not live; starting containers..." in script
+    assert (
+        "docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml "
+        "up -d --no-recreate collector normalizer api"
+    ) in script
+    assert "python3 -c %q" in script
+    assert 'm=p.get("monitor") or {}' in script
+    assert 'len(m.get("orderbooks") or []) > 0' in script
+    assert 'p.get("status",{}).get("counts",{})' not in script
+    assert "--engine-api-url http://127.0.0.1:%s --poll-interval-ms 250" in script
+    assert '"\\$PC_API_PORT"' in script
+    assert "\\\\n' \"\\$PC_API_PORT\"" not in script
+    assert "polymarket-runtime-api" not in script
+
+
+def test_pc_tui_desktop_launcher_logs_failures_and_forces_new_terminal_window() -> None:
+    script = (ROOT / "scripts" / "deploy_pc.sh").read_text(encoding="utf-8")
+
+    assert "open-polymarket-tui.ps1" in script
+    assert "open-polymarket-tui-window.sh" in script
+    assert "polymarket-tui-launch.log" in script
+    assert "Start-Transcript" in script
+    assert "Start-Process -FilePath 'wt.exe'" in script
+    assert "'-w', 'new'" in script
+    assert "Read-Host 'Press Enter to close'" in script
+    assert "\\$shortcut.TargetPath = 'powershell.exe'" in script
+
+
+def test_pc_deploy_script_prevents_powershell_from_consuming_remote_script() -> None:
+    script = (ROOT / "scripts" / "deploy_pc.sh").read_text(encoding="utf-8")
+
+    powershell_index = script.index("powershell.exe -NoProfile")
+    deploy_gate_index = script.index("export POLYMARKET_DEPLOY_USE_PREBUILT=1")
+
+    assert powershell_index < deploy_gate_index
+    assert "< /dev/null" in script[powershell_index:deploy_gate_index]
 
 
 def test_deploy_script_supports_prebuilt_images_with_build_fallback() -> None:
@@ -319,11 +395,13 @@ def test_normalizer_defaults_to_quarter_second_checkpointed_cadence() -> None:
     assert "POLYMARKET_NORMALIZER_INTERVAL_SECONDS=0.25" in env_example
     assert "POLYMARKET_NORMALIZER_INTERVAL_SECONDS:-0.25" in compose
     assert 'INTERVAL_SECONDS="${POLYMARKET_NORMALIZER_INTERVAL_SECONDS:-0.25}"' in entrypoint
+    assert 'OUTCOME_STATUS_PATH="${POLYMARKET_OUTCOME_STATUS_PATH:-$LIVE_DIR/outcomes.json}"' in entrypoint
     assert "run-rust-normalizer-sidecar" in entrypoint
     assert "exec polymarket-engine" in entrypoint
     assert "while true" not in entrypoint
     assert '--interval-seconds "$INTERVAL_SECONDS"' in entrypoint
     assert '--normalized-health-path "$NORMALIZED_HEALTH_PATH"' in entrypoint
+    assert '--outcome-status-path "$OUTCOME_STATUS_PATH"' in entrypoint
 
 
 def test_deploy_script_requires_running_normalizer_before_success() -> None:

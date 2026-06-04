@@ -1,7 +1,8 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use polymarket_runtime_types::{
-    FeedFreshness, NormalizedOrderBook, NormalizedPriceTick, WarmStateSnapshot, WarmedContract,
+    ContractTarget, FeedFreshness, NormalizedOrderBook, NormalizedPriceTick, WarmStateSnapshot,
+    WarmedContract,
 };
 #[cfg(test)]
 use std::cell::Cell;
@@ -142,17 +143,25 @@ impl StateManagerRuntime {
             .read()
             .expect("warmed contracts lock poisoned")
             .clone();
+        let snapshot_now = Utc::now();
         let chainlink_prices = self.latest_prices.snapshot().await;
+        let chainlink_history = self
+            .latest_prices
+            .history_snapshot_for_assets(
+                warmed.iter().map(|contract| contract.window.asset.as_str()),
+            )
+            .await;
+        let token_ids = active_orderbook_token_ids(snapshot_now, &warmed);
         let orderbooks = self
             .book_state
-            .snapshot_for_token_ids(self.token_ids.iter().map(String::as_str))
+            .snapshot_for_token_ids(token_ids.iter().map(String::as_str))
             .await;
-        let snapshot_now = Utc::now();
-        build_snapshot_from_warmed(
+        build_snapshot_from_warmed_inner(
             snapshot_now,
             &self.config,
             &warmed,
             chainlink_prices,
+            chainlink_history,
             orderbooks,
         )
     }
@@ -331,11 +340,49 @@ fn start_hot_decision_worker(
     })
 }
 
+#[cfg(test)]
 pub fn build_snapshot_from_warmed(
     now: DateTime<Utc>,
     config: &StateManagerConfig,
     warmed_contracts: &[WarmedContract],
     chainlink_prices: Vec<NormalizedPriceTick>,
+    orderbooks: Vec<NormalizedOrderBook>,
+) -> Result<WarmStateSnapshot> {
+    build_snapshot_from_warmed_inner(
+        now,
+        config,
+        warmed_contracts,
+        chainlink_prices.clone(),
+        chainlink_prices,
+        orderbooks,
+    )
+}
+
+#[cfg(test)]
+pub fn build_snapshot_from_warmed_with_price_history(
+    now: DateTime<Utc>,
+    config: &StateManagerConfig,
+    warmed_contracts: &[WarmedContract],
+    chainlink_history: Vec<NormalizedPriceTick>,
+    orderbooks: Vec<NormalizedOrderBook>,
+) -> Result<WarmStateSnapshot> {
+    let latest_chainlink = latest_prices_by_symbol(&chainlink_history);
+    build_snapshot_from_warmed_inner(
+        now,
+        config,
+        warmed_contracts,
+        latest_chainlink,
+        chainlink_history,
+        orderbooks,
+    )
+}
+
+fn build_snapshot_from_warmed_inner(
+    now: DateTime<Utc>,
+    config: &StateManagerConfig,
+    warmed_contracts: &[WarmedContract],
+    chainlink_prices: Vec<NormalizedPriceTick>,
+    chainlink_history: Vec<NormalizedPriceTick>,
     orderbooks: Vec<NormalizedOrderBook>,
 ) -> Result<WarmStateSnapshot> {
     let mut current = Vec::new();
@@ -381,11 +428,21 @@ pub fn build_snapshot_from_warmed(
         }
     }
 
+    let active_token_ids = [&current_refs, &next_refs, &next_next_refs]
+        .into_iter()
+        .flat_map(|contracts| contracts.iter())
+        .flat_map(|contract| contract_token_ids(contract))
+        .collect::<HashSet<_>>();
+    let active_orderbooks = orderbooks
+        .into_iter()
+        .filter(|book| active_token_ids.contains(book.token_id.as_str()))
+        .collect::<Vec<_>>();
+
     let freshness = feed_freshness(
         now,
         config,
         &chainlink_prices,
-        &orderbooks,
+        &active_orderbooks,
         &mut health_flags,
     );
     add_missing_feed_flags(
@@ -397,8 +454,13 @@ pub fn build_snapshot_from_warmed(
             .copied()
             .collect::<Vec<_>>()
             .as_slice(),
-        &orderbooks,
+        &active_orderbooks,
         &mut health_flags,
+    );
+    let targets = contract_targets(
+        &[current_refs.as_slice(), next_refs.as_slice()],
+        &chainlink_history,
+        now,
     );
 
     Ok(WarmStateSnapshot {
@@ -408,10 +470,84 @@ pub fn build_snapshot_from_warmed(
         next_next,
         chainlink_prices,
         proxy_prices: vec![],
-        orderbooks,
+        orderbooks: active_orderbooks,
+        targets,
         freshness,
         health_flags,
     })
+}
+
+#[cfg(test)]
+fn latest_prices_by_symbol(history: &[NormalizedPriceTick]) -> Vec<NormalizedPriceTick> {
+    let mut latest_by_symbol = HashMap::new();
+    for tick in history {
+        if tick.source_key != "polymarket_rtds_chainlink" {
+            continue;
+        }
+        let key = price_asset_from_symbol(&tick.symbol);
+        latest_by_symbol
+            .entry(key)
+            .and_modify(|current: &mut NormalizedPriceTick| {
+                if (tick.event_ts, tick.observed_ts) > (current.event_ts, current.observed_ts) {
+                    *current = tick.clone();
+                }
+            })
+            .or_insert_with(|| tick.clone());
+    }
+    let mut latest = latest_by_symbol.into_values().collect::<Vec<_>>();
+    latest.sort_by(|left, right| left.symbol.cmp(&right.symbol));
+    latest
+}
+
+fn contract_targets(
+    contract_groups: &[&[&WarmedContract]],
+    chainlink_history: &[NormalizedPriceTick],
+    now: DateTime<Utc>,
+) -> Vec<ContractTarget> {
+    contract_groups
+        .iter()
+        .flat_map(|contracts| contracts.iter().copied())
+        .map(|contract| {
+            let threshold = if contract.window.start_ts <= now {
+                latest_price_at_or_before(
+                    chainlink_history,
+                    &contract.window.asset,
+                    contract.window.start_ts,
+                    now,
+                )
+            } else {
+                None
+            };
+            let settlement =
+                latest_price_at_or_before(chainlink_history, &contract.window.asset, now, now);
+            ContractTarget {
+                asset: contract.window.asset.clone(),
+                interval: contract.window.interval.clone(),
+                market_slug: contract.window.slug(),
+                start_ts: contract.window.start_ts,
+                end_ts: contract.window.end_ts,
+                threshold_price: threshold.map(|tick| tick.price),
+                threshold_event_ts: threshold.map(|tick| tick.event_ts),
+                threshold_observed_ts: threshold.map(|tick| tick.observed_ts),
+                settlement_price: settlement.map(|tick| tick.price),
+                settlement_event_ts: settlement.map(|tick| tick.event_ts),
+            }
+        })
+        .collect()
+}
+
+fn latest_price_at_or_before<'a>(
+    history: &'a [NormalizedPriceTick],
+    asset: &str,
+    event_ts_lte: DateTime<Utc>,
+    observed_ts_lte: DateTime<Utc>,
+) -> Option<&'a NormalizedPriceTick> {
+    history
+        .iter()
+        .filter(|tick| tick.source_key == "polymarket_rtds_chainlink")
+        .filter(|tick| price_asset_from_symbol(&tick.symbol) == asset.trim().to_ascii_uppercase())
+        .filter(|tick| tick.event_ts <= event_ts_lte && tick.observed_ts <= observed_ts_lte)
+        .max_by_key(|tick| (tick.event_ts, tick.observed_ts))
 }
 
 pub fn subscriptions_from_warmed_contracts(
@@ -669,6 +805,21 @@ fn contract_token_ids(contract: &WarmedContract) -> [&str; 2] {
     ]
 }
 
+fn active_orderbook_token_ids(
+    now: DateTime<Utc>,
+    warmed_contracts: &[WarmedContract],
+) -> Vec<String> {
+    let mut token_ids = warmed_contracts
+        .iter()
+        .filter(|contract| contract.window.end_ts > now)
+        .flat_map(|contract| contract_token_ids(contract))
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    token_ids.sort();
+    token_ids.dedup();
+    token_ids
+}
+
 fn record_missing_orderbook_scan() {
     #[cfg(test)]
     MISSING_ORDERBOOK_SCAN_COUNT.with(|count| count.set(count.get() + 1));
@@ -792,6 +943,16 @@ mod tests {
         }
     }
 
+    fn price_tick(symbol: &str, event_ts: DateTime<Utc>, price: Decimal) -> NormalizedPriceTick {
+        NormalizedPriceTick {
+            source_key: "polymarket_rtds_chainlink".to_owned(),
+            symbol: symbol.to_owned(),
+            event_ts,
+            observed_ts: event_ts,
+            price,
+        }
+    }
+
     #[test]
     fn hot_decision_worker_config_marks_runtime_restart_start() {
         let runtime_started_at = Utc.timestamp_opt(1_780_302_445, 0).unwrap();
@@ -836,6 +997,100 @@ mod tests {
                 .health_flags
                 .contains(&"next_contract_not_warmed:BTC".to_owned())
         );
+    }
+
+    #[test]
+    fn snapshot_filters_orderbooks_to_active_warmed_tokens() {
+        let start = 1_780_302_400;
+        let now = Utc.timestamp_opt(start + 10, 0).unwrap();
+        let config = StateManagerConfig {
+            windows: 2,
+            ..config()
+        };
+        let warmed = vec![
+            warmed("BTC", start - 300, "expired"),
+            warmed("BTC", start, "current"),
+            warmed("BTC", start + 300, "next"),
+        ];
+
+        let snapshot = build_snapshot_from_warmed(
+            now,
+            &config,
+            &warmed,
+            vec![],
+            vec![
+                book("BTC", "UP", "expired-up", now.timestamp_millis()),
+                book("BTC", "UP", "current-up", now.timestamp_millis()),
+                book("BTC", "DOWN", "next-down", now.timestamp_millis()),
+                book("ETH", "UP", "unrelated-up", now.timestamp_millis()),
+            ],
+        )
+        .unwrap();
+
+        let token_ids = snapshot
+            .orderbooks
+            .iter()
+            .map(|book| book.token_id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(token_ids, vec!["current-up", "next-down"]);
+        assert!(
+            !snapshot
+                .health_flags
+                .iter()
+                .any(|flag| flag.contains("expired-up") || flag.contains("unrelated-up")),
+            "unexpected health flags: {:?}",
+            snapshot.health_flags
+        );
+    }
+
+    #[test]
+    fn snapshot_reports_current_window_target_from_chainlink_start_tick() {
+        let start = Utc.timestamp_opt(1_780_302_400, 0).unwrap();
+        let now = start + Duration::seconds(42);
+        let config = StateManagerConfig {
+            assets: vec!["BTC".to_owned()],
+            interval: "5m".to_owned(),
+            windows: 2,
+            prewarm_before_expiry_ms: 30_000,
+            stale_chainlink_after_ms: 3_000,
+            stale_orderbook_after_ms: 3_000,
+            rest_backup_interval_ms: 1_000,
+        };
+        let warmed = vec![
+            warmed("BTC", start.timestamp(), "btc-current"),
+            warmed(
+                "BTC",
+                (start + Duration::seconds(300)).timestamp(),
+                "btc-next",
+            ),
+        ];
+        let history = vec![
+            price_tick(
+                "BTC/USD",
+                start - Duration::seconds(1),
+                Decimal::new(63_900, 0),
+            ),
+            price_tick("BTC/USD", start, Decimal::new(64_000, 0)),
+            price_tick("BTC/USD", now, Decimal::new(64_050, 0)),
+        ];
+        let snapshot =
+            build_snapshot_from_warmed_with_price_history(now, &config, &warmed, history, vec![])
+                .unwrap();
+
+        assert_eq!(snapshot.targets.len(), 2);
+        assert_eq!(snapshot.targets[0].market_slug, "btc-updown-5m-1780302400");
+        assert_eq!(snapshot.targets[0].asset, "BTC");
+        assert_eq!(
+            snapshot.targets[0].threshold_price,
+            Some(Decimal::new(64_000, 0))
+        );
+        assert_eq!(snapshot.targets[0].threshold_event_ts, Some(start));
+        assert_eq!(
+            snapshot.targets[0].settlement_price,
+            Some(Decimal::new(64_050, 0))
+        );
+        assert_eq!(snapshot.targets[1].market_slug, "btc-updown-5m-1780302700");
+        assert_eq!(snapshot.targets[1].threshold_price, None);
     }
 
     #[test]
@@ -980,7 +1235,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn runtime_snapshot_uses_cached_orderbook_token_ids() {
+    async fn runtime_snapshot_uses_active_warmed_orderbook_token_ids() {
         let observed = Utc::now();
         let start = observed.timestamp() - 60;
         let book_state = LiveBookState::default();
@@ -1012,7 +1267,13 @@ mod tests {
         let snapshot = runtime.snapshot(observed).await.unwrap();
 
         assert_eq!(snapshot.orderbooks.len(), 1);
-        assert_eq!(snapshot.orderbooks[0].token_id, "cached-up");
+        assert_eq!(snapshot.orderbooks[0].token_id, "current-up");
+        assert!(
+            !snapshot
+                .orderbooks
+                .iter()
+                .any(|book| book.token_id == "cached-up")
+        );
     }
 
     #[tokio::test]

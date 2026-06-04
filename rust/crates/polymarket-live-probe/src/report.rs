@@ -1,8 +1,8 @@
 use anyhow::Result;
 use chrono::Utc;
 use polymarket_runtime_types::{
-    FeedFreshness, LatencyMark, NormalizedOrderBook, NormalizedPriceTick, PriceDisagreement,
-    ProbeReport, WarmStateSnapshot, WarmedContract,
+    ContractTarget, FeedFreshness, LatencyMark, NormalizedOrderBook, NormalizedPriceTick,
+    PriceDisagreement, ProbeReport, WarmStateSnapshot, WarmedContract,
 };
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
@@ -80,6 +80,7 @@ pub struct StateManagerReport {
     pub chainlink_prices: Vec<NormalizedPriceTick>,
     pub proxy_prices: Vec<NormalizedPriceTick>,
     pub orderbooks: Vec<NormalizedOrderBook>,
+    pub targets: Vec<ContractTarget>,
     pub freshness: Vec<FeedFreshness>,
     pub health_flags: Vec<String>,
     pub subscriptions: Vec<StateManagerSubscription>,
@@ -140,6 +141,7 @@ pub fn build_state_manager_report(input: StateManagerReportInput) -> StateManage
         chainlink_prices: input.snapshot.chainlink_prices,
         proxy_prices: input.snapshot.proxy_prices,
         orderbooks: input.snapshot.orderbooks,
+        targets: input.snapshot.targets,
         freshness: input.snapshot.freshness,
         health_flags: input.snapshot.health_flags,
         subscriptions: input.subscriptions,
@@ -369,8 +371,8 @@ mod tests {
     use super::*;
     use chrono::{TimeZone, Utc};
     use polymarket_runtime_types::{
-        BookLevel, ContractSide, ContractToken, ContractWindow, FeedFreshness, NormalizedOrderBook,
-        NormalizedPriceTick, WarmStateSnapshot, WarmedContract,
+        BookLevel, ContractSide, ContractTarget, ContractToken, ContractWindow, FeedFreshness,
+        NormalizedOrderBook, NormalizedPriceTick, WarmStateSnapshot, WarmedContract,
     };
     use rust_decimal::Decimal;
 
@@ -406,6 +408,7 @@ mod tests {
             chainlink_prices: vec![],
             proxy_prices: vec![],
             orderbooks: vec![],
+            targets: vec![],
             freshness: vec![FeedFreshness {
                 source_key: "polymarket_rtds_chainlink".to_owned(),
                 symbol: "BTC/USD".to_owned(),
@@ -449,6 +452,7 @@ mod tests {
         assert!(value.get("chainlink_prices").unwrap().is_array());
         assert!(value.get("proxy_prices").unwrap().is_array());
         assert!(value.get("orderbooks").unwrap().is_array());
+        assert!(value.get("targets").unwrap().is_array());
         assert!(value.get("freshness").unwrap().is_array());
         assert!(value.get("health_flags").unwrap().is_array());
         assert!(value.get("latency_marks").unwrap().is_array());
@@ -469,6 +473,47 @@ mod tests {
     }
 
     #[test]
+    fn state_manager_report_includes_contract_targets() {
+        let start = Utc.timestamp_opt(1_780_302_400, 0).unwrap();
+        let snapshot = WarmStateSnapshot {
+            observed_ts: start + chrono::Duration::seconds(1),
+            current: vec![],
+            next: vec![],
+            next_next: vec![],
+            chainlink_prices: vec![],
+            proxy_prices: vec![],
+            orderbooks: vec![],
+            targets: vec![ContractTarget {
+                asset: "BTC".to_owned(),
+                interval: "5m".to_owned(),
+                market_slug: "btc-updown-5m-1780302400".to_owned(),
+                start_ts: start,
+                end_ts: start + chrono::Duration::seconds(300),
+                threshold_price: Some(Decimal::new(64_000, 0)),
+                threshold_event_ts: Some(start),
+                threshold_observed_ts: Some(start + chrono::Duration::milliseconds(5)),
+                settlement_price: Some(Decimal::new(64_050, 0)),
+                settlement_event_ts: Some(start + chrono::Duration::seconds(1)),
+            }],
+            freshness: vec![],
+            health_flags: vec![],
+        };
+
+        let report = build_state_manager_report(StateManagerReportInput {
+            elapsed_ms: 1,
+            snapshot,
+            subscriptions: vec![],
+            websocket_status: vec![],
+            hot_decision_telemetry: None,
+        });
+
+        assert_eq!(
+            report.targets[0].threshold_price,
+            Some(Decimal::new(64_000, 0))
+        );
+    }
+
+    #[test]
     fn writes_state_manager_report_as_compact_json_for_fast_status_updates() {
         let observed_ts = Utc.timestamp_opt(1_780_302_400, 0).unwrap();
         let path = temp_status_path("compact-status");
@@ -482,6 +527,7 @@ mod tests {
                 chainlink_prices: vec![],
                 proxy_prices: vec![],
                 orderbooks: vec![],
+                targets: vec![],
                 freshness: vec![],
                 health_flags: vec![],
             },
@@ -540,6 +586,7 @@ mod tests {
                 }],
                 depth_json: serde_json::json!({}),
             }],
+            targets: vec![],
             freshness: vec![],
             health_flags: vec![],
         };
@@ -592,6 +639,7 @@ mod tests {
             chainlink_prices: prices,
             proxy_prices: vec![],
             orderbooks: vec![],
+            targets: vec![],
             freshness: vec![],
             health_flags: vec![],
         };
@@ -626,6 +674,7 @@ mod tests {
             chainlink_prices: vec![],
             proxy_prices: vec![],
             orderbooks: vec![sample_orderbook("token-1", generated_base, generated_base)],
+            targets: vec![],
             freshness: vec![],
             health_flags: vec![],
         };
@@ -674,6 +723,7 @@ mod tests {
                     generated_base - chrono::Duration::milliseconds(9_000),
                 ),
             ],
+            targets: vec![],
             freshness: vec![],
             health_flags: vec![],
         };
@@ -735,6 +785,7 @@ mod tests {
             chainlink_prices: vec![],
             proxy_prices: vec![],
             orderbooks,
+            targets: vec![],
             freshness: vec![],
             health_flags: vec![],
         };
@@ -765,6 +816,7 @@ mod tests {
             chainlink_prices: vec![],
             proxy_prices: vec![],
             orderbooks: vec![],
+            targets: vec![],
             freshness: vec![],
             health_flags: vec!["next_contract_not_warmed".to_owned()],
         };
@@ -793,6 +845,7 @@ mod tests {
             chainlink_prices: vec![],
             proxy_prices: vec![],
             orderbooks: vec![],
+            targets: vec![],
             freshness: vec![],
             health_flags: vec![],
         };

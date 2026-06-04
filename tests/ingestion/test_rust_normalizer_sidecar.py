@@ -19,6 +19,7 @@ from polymarket_engine.ingestion.rust_normalizer_sidecar import (
     run_rust_normalizer_cycle,
     run_rust_normalizer_loop,
 )
+from polymarket_engine.domain.market_state import PriceObservation
 from polymarket_engine.storage import duckdb_store
 from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
 
@@ -28,9 +29,9 @@ def test_sidecar_cycle_normalizes_builds_states_and_writes_health(tmp_path: Path
     db_path = tmp_path / "state.duckdb"
     status_path = tmp_path / "live" / "status.json"
     health_path = tmp_path / "live" / "normalized_health.json"
-    start_ts = datetime(2026, 6, 2, 6, 0, tzinfo=timezone.utc)
-    asof_ts = start_ts + timedelta(minutes=2)
-    _write_raw_tree(raw_root=raw_root, start_ts=start_ts, asof_ts=asof_ts)
+    asof_ts = datetime.now(timezone.utc).replace(microsecond=0)
+    start_ts = asof_ts - timedelta(minutes=2)
+    _write_probability_ready_raw_tree(raw_root=raw_root, start_ts=start_ts, asof_ts=asof_ts)
     _write_status(status_path, start_ts=start_ts, asof_ts=asof_ts)
 
     result = run_rust_normalizer_cycle(
@@ -39,12 +40,13 @@ def test_sidecar_cycle_normalizes_builds_states_and_writes_health(tmp_path: Path
         status_path=status_path,
         normalized_health_path=health_path,
         include_next=False,
+        compute_probabilities=True,
     )
 
     assert result.files == 2
-    assert result.rows_read == 4
+    assert result.rows_read == 7
     assert result.bytes_read > 0
-    assert result.price_ticks_written == 2
+    assert result.price_ticks_written == 5
     assert result.orderbooks_written == 2
     assert result.contracts_upserted == 2
     assert result.states_written == 2
@@ -55,10 +57,49 @@ def test_sidecar_cycle_normalizes_builds_states_and_writes_health(tmp_path: Path
     assert health_path.exists()
     health_payload = json.loads(health_path.read_text(encoding="utf-8"))
     assert health_payload["schema_version"] == "polymarket-normalized-health-v1"
+    probability_path = health_path.with_name("probabilities.json")
+    probability_payload = json.loads(probability_path.read_text(encoding="utf-8"))
+    assert probability_payload["schema_version"] == "polymarket-probability-runtime-v1"
+    assert len(probability_payload["rows"]) == 2
     with duckdb.connect(str(db_path), read_only=True) as conn:
-        assert conn.execute("select count(*) from core.price_ticks").fetchone() == (2,)
+        assert conn.execute("select count(*) from core.price_ticks").fetchone() == (5,)
         assert conn.execute("select count(*) from core.orderbook_snapshots").fetchone() == (2,)
+        assert conn.execute("select count(*) from features.probability_outputs").fetchone() == (2,)
         assert conn.execute("select count(*) from features.asof_state_inputs").fetchone() == (2,)
+
+
+def test_sidecar_cycle_skips_probability_outputs_by_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_root = tmp_path / "raw"
+    db_path = tmp_path / "state.duckdb"
+    status_path = tmp_path / "live" / "status.json"
+    health_path = tmp_path / "live" / "normalized_health.json"
+    asof_ts = datetime.now(timezone.utc).replace(microsecond=0)
+    start_ts = asof_ts - timedelta(minutes=2)
+    _write_probability_ready_raw_tree(raw_root=raw_root, start_ts=start_ts, asof_ts=asof_ts)
+    _write_status(status_path, start_ts=start_ts, asof_ts=asof_ts)
+
+    def fail_compute(*_: object, **__: object) -> int:
+        raise AssertionError("normalizer should not compute probabilities by default")
+
+    monkeypatch.setattr(
+        rust_normalizer_sidecar,
+        "_compute_probability_outputs",
+        fail_compute,
+    )
+
+    result = run_rust_normalizer_cycle(
+        raw_root=raw_root,
+        db_path=db_path,
+        status_path=status_path,
+        normalized_health_path=health_path,
+        include_next=False,
+    )
+
+    assert result.states_written == 2
+    assert result.probability_outputs_written == 0
 
 
 def test_sidecar_cycle_writes_health_when_status_is_missing(tmp_path: Path) -> None:
@@ -82,6 +123,286 @@ def test_sidecar_cycle_writes_health_when_status_is_missing(tmp_path: Path) -> N
     assert result.states_written == 0
     assert result.unavailable == ()
     assert health_path.exists()
+
+
+def test_normalizer_writes_market_outcome_history(tmp_path: Path) -> None:
+    raw_root = tmp_path / "raw"
+    db_path = tmp_path / "state.duckdb"
+    status_path = tmp_path / "live" / "status.json"
+    health_path = tmp_path / "live" / "normalized_health.json"
+    start_ts = datetime(2026, 6, 2, 6, 0, tzinfo=timezone.utc)
+    asof_ts = start_ts + timedelta(minutes=5, seconds=1)
+    _write_raw_tree(raw_root=raw_root, start_ts=start_ts, asof_ts=asof_ts)
+    _write_status(status_path, start_ts=start_ts, asof_ts=asof_ts)
+
+    result = run_rust_normalizer_cycle(
+        raw_root=raw_root,
+        db_path=db_path,
+        status_path=status_path,
+        normalized_health_path=health_path,
+        include_next=False,
+    )
+
+    assert result.market_outcomes_written == 1
+    outcome_path = health_path.with_name("outcomes.json")
+    outcome_payload = json.loads(outcome_path.read_text(encoding="utf-8"))
+    assert outcome_payload["schema_version"] == "polymarket-outcome-runtime-v1"
+    assert outcome_payload["rows"][0]["market"] == "BTC 5m"
+    assert outcome_payload["rows"][0]["computed_winner"] is None
+    assert outcome_payload["rows"][0]["official_winner"] is None
+    assert outcome_payload["rows"][0]["official_resolution_status"] == "pending"
+    with duckdb.connect(str(db_path), read_only=True) as conn:
+        assert conn.execute(
+            "select computed_winner, official_winner, official_resolution_status "
+            "from validation.market_outcome_history"
+        ).fetchone() == (None, None, "pending")
+
+
+def test_upsert_market_outcomes_limits_official_refresh_from_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_limits: list[int | None] = []
+
+    def fake_upsert_official_market_outcomes(**kwargs: Any) -> int:
+        captured_limits.append(kwargs["max_markets"])
+        return 0
+
+    monkeypatch.setenv("POLYMARKET_OFFICIAL_OUTCOME_REFRESH_LIMIT", "2")
+    monkeypatch.setattr(
+        rust_normalizer_sidecar,
+        "upsert_official_market_outcomes",
+        fake_upsert_official_market_outcomes,
+    )
+    monkeypatch.setattr(
+        rust_normalizer_sidecar,
+        "latest_market_outcome_rows_from_connection",
+        lambda *, conn, limit: [],
+    )
+    monkeypatch.setattr(
+        rust_normalizer_sidecar,
+        "write_outcome_history_status",
+        lambda *, out_path, rows: None,
+    )
+
+    rust_normalizer_sidecar._upsert_market_outcomes(
+        store=cast(DuckDbIngestStore, _FakeConnectionStore()),
+        out_path=tmp_path / "outcomes.json",
+    )
+
+    assert captured_limits == [2]
+
+
+def test_upsert_market_outcomes_uses_pending_sweep_limit_from_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_limits: list[int | None] = []
+
+    def fake_upsert_official_market_outcomes(**kwargs: Any) -> int:
+        captured_limits.append(kwargs["pending_sweep_limit"])
+        return 0
+
+    monkeypatch.setenv("POLYMARKET_OFFICIAL_OUTCOME_PENDING_SWEEP_LIMIT", "7")
+    monkeypatch.setattr(
+        rust_normalizer_sidecar,
+        "upsert_official_market_outcomes",
+        fake_upsert_official_market_outcomes,
+    )
+    monkeypatch.setattr(
+        rust_normalizer_sidecar,
+        "latest_market_outcome_rows_from_connection",
+        lambda *, conn, limit: [],
+    )
+    monkeypatch.setattr(
+        rust_normalizer_sidecar,
+        "write_outcome_history_status",
+        lambda *, out_path, rows: None,
+    )
+
+    rust_normalizer_sidecar._upsert_market_outcomes(
+        store=cast(DuckDbIngestStore, _FakeConnectionStore()),
+        out_path=tmp_path / "outcomes.json",
+    )
+
+    assert captured_limits == [7]
+
+
+def test_upsert_market_outcomes_uses_output_limit_from_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_limits: list[int] = []
+
+    def fake_latest_market_outcome_rows_from_connection(**kwargs: Any) -> list[dict[str, Any]]:
+        captured_limits.append(kwargs["limit"])
+        return []
+
+    monkeypatch.setenv("POLYMARKET_OUTCOME_OUTPUT_LIMIT", "1440")
+    monkeypatch.setattr(
+        rust_normalizer_sidecar,
+        "upsert_official_market_outcomes",
+        lambda **_kwargs: 0,
+    )
+    monkeypatch.setattr(
+        rust_normalizer_sidecar,
+        "latest_market_outcome_rows_from_connection",
+        fake_latest_market_outcome_rows_from_connection,
+    )
+    monkeypatch.setattr(
+        rust_normalizer_sidecar,
+        "write_outcome_history_status",
+        lambda *, out_path, rows: None,
+    )
+
+    rust_normalizer_sidecar._upsert_market_outcomes(
+        store=cast(DuckDbIngestStore, _FakeConnectionStore()),
+        out_path=tmp_path / "outcomes.json",
+    )
+
+    assert captured_limits == [1440]
+
+
+def test_write_target_cache_status_uses_asof_chainlink_start_reference(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "state.duckdb"
+    status_path = tmp_path / "live" / "status.json"
+    target_path = tmp_path / "live" / "targets.json"
+    start_ts = datetime(2026, 6, 4, 20, 0, tzinfo=timezone.utc)
+    asof_ts = start_ts + timedelta(minutes=2)
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    store.insert_price_ticks(
+        (
+            PriceObservation(
+                source_key="polymarket_rtds_chainlink",
+                symbol="BTC/USD",
+                event_ts=start_ts,
+                observed_ts=start_ts + timedelta(seconds=3),
+                price=63_500.12,
+            ),
+            PriceObservation(
+                source_key="polymarket_rtds_chainlink",
+                symbol="BTC/USD",
+                event_ts=start_ts + timedelta(seconds=1),
+                observed_ts=start_ts + timedelta(seconds=4),
+                price=63_510.0,
+            ),
+        )
+    )
+    _write_status(status_path, start_ts=start_ts, asof_ts=asof_ts)
+
+    rust_normalizer_sidecar._write_target_cache_status(
+        store=store,
+        status_path=status_path,
+        out_path=target_path,
+        asof_ts=asof_ts,
+    )
+
+    payload = json.loads(target_path.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == "polymarket-target-cache-v1"
+    assert payload["rows"] == [
+        {
+            "asset": "BTC",
+            "interval": "5m",
+            "market_slug": "btc-updown-5m-1780603200",
+            "start_ts": "2026-06-04T20:00:00+00:00",
+            "expiry_ts": "2026-06-04T20:05:00+00:00",
+            "threshold_price": 63_500.12,
+            "threshold_event_ts": "2026-06-04T20:00:00+00:00",
+            "threshold_observed_ts": "2026-06-04T20:00:03+00:00",
+        }
+    ]
+
+
+def test_write_target_cache_status_keeps_future_window_threshold_pending(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "state.duckdb"
+    status_path = tmp_path / "live" / "status.json"
+    target_path = tmp_path / "live" / "targets.json"
+    start_ts = datetime(2026, 6, 4, 20, 5, tzinfo=timezone.utc)
+    asof_ts = datetime(2026, 6, 4, 20, 2, tzinfo=timezone.utc)
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    store.insert_price_ticks(
+        (
+            PriceObservation(
+                source_key="polymarket_rtds_chainlink",
+                symbol="BTC/USD",
+                event_ts=asof_ts - timedelta(seconds=2),
+                observed_ts=asof_ts - timedelta(seconds=1),
+                price=63_500.12,
+            ),
+        )
+    )
+    _write_status(status_path, start_ts=start_ts, asof_ts=asof_ts)
+
+    rust_normalizer_sidecar._write_target_cache_status(
+        store=store,
+        status_path=status_path,
+        out_path=target_path,
+        asof_ts=asof_ts,
+    )
+
+    payload = json.loads(target_path.read_text(encoding="utf-8"))
+    assert payload["rows"][0]["market_slug"] == "btc-updown-5m-1780603500"
+    assert payload["rows"][0]["threshold_price"] is None
+    assert payload["rows"][0]["threshold_event_ts"] is None
+    assert payload["rows"][0]["threshold_observed_ts"] is None
+
+
+def test_sidecar_loop_writes_target_cache_for_active_contracts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_root = tmp_path / "raw"
+    db_path = tmp_path / "state.duckdb"
+    status_path = tmp_path / "live" / "status.json"
+    health_path = tmp_path / "live" / "normalized_health.json"
+    start_ts = datetime(2026, 6, 2, 6, 0, tzinfo=timezone.utc)
+    asof_ts = start_ts + timedelta(minutes=2)
+    _write_raw_tree(raw_root=raw_root, start_ts=start_ts, asof_ts=asof_ts)
+    _write_status(status_path, start_ts=start_ts, asof_ts=asof_ts)
+    monkeypatch.setattr(
+        rust_normalizer_sidecar,
+        "_upsert_market_outcomes",
+        lambda *, store, out_path: 0,
+    )
+    monkeypatch.setattr(
+        "polymarket_engine.ingestion.rust_normalizer_sidecar.time.sleep",
+        lambda _: None,
+    )
+
+    run_rust_normalizer_loop(
+        raw_root=raw_root,
+        db_path=db_path,
+        status_path=status_path,
+        normalized_health_path=health_path,
+        interval_seconds=0.0,
+        include_next=False,
+        max_cycles=1,
+    )
+
+    payload = json.loads(health_path.with_name("targets.json").read_text(encoding="utf-8"))
+    assert payload["schema_version"] == "polymarket-target-cache-v1"
+    assert [
+        {
+            "market_slug": row["market_slug"],
+            "threshold_price": row["threshold_price"],
+            "threshold_event_ts": row["threshold_event_ts"],
+            "threshold_observed_ts": row["threshold_observed_ts"],
+        }
+        for row in payload["rows"]
+    ] == [
+        {
+            "market_slug": "btc-updown-5m-1780380000",
+            "threshold_price": 70_000.0,
+            "threshold_event_ts": "2026-06-02T06:00:00+00:00",
+            "threshold_observed_ts": "2026-06-02T06:00:00+00:00",
+        }
+    ]
 
 
 def test_cadence_sleep_subtracts_cycle_elapsed_time() -> None:
@@ -136,6 +457,102 @@ def test_sidecar_loop_reuses_process_and_sleeps_between_cycles(
     assert _log_values(lines[1])["rows_read"] == "0"
     assert len(sleeps) == 1
     assert 0.0 < sleeps[0] <= 1.25
+
+
+def test_sidecar_loop_throttles_market_outcome_refresh(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_root = tmp_path / "raw"
+    db_path = tmp_path / "state.duckdb"
+    status_path = tmp_path / "live" / "status.json"
+    health_path = tmp_path / "live" / "normalized_health.json"
+    start_ts = datetime(2026, 6, 2, 6, 0, tzinfo=timezone.utc)
+    asof_ts = start_ts + timedelta(minutes=2)
+    _write_raw_tree(raw_root=raw_root, start_ts=start_ts, asof_ts=asof_ts)
+    _write_status(status_path, start_ts=start_ts, asof_ts=asof_ts)
+    outcome_refreshes: list[Path] = []
+
+    def fake_upsert_market_outcomes(*, store: DuckDbIngestStore, out_path: Path) -> int:
+        outcome_refreshes.append(out_path)
+        return 0
+
+    monkeypatch.setattr(
+        rust_normalizer_sidecar,
+        "_upsert_market_outcomes",
+        fake_upsert_market_outcomes,
+    )
+    monkeypatch.setattr(
+        "polymarket_engine.ingestion.rust_normalizer_sidecar.time.sleep",
+        lambda _: None,
+    )
+
+    run_rust_normalizer_loop(
+        raw_root=raw_root,
+        db_path=db_path,
+        status_path=status_path,
+        normalized_health_path=health_path,
+        interval_seconds=0.0,
+        include_next=False,
+        max_cycles=3,
+    )
+
+    assert outcome_refreshes == [health_path.with_name("outcomes.json")]
+
+
+def test_sidecar_loop_retries_pending_outcomes_every_five_seconds(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_root = tmp_path / "raw"
+    db_path = tmp_path / "state.duckdb"
+    status_path = tmp_path / "live" / "status.json"
+    health_path = tmp_path / "live" / "normalized_health.json"
+    start_ts = datetime(2026, 6, 2, 6, 0, tzinfo=timezone.utc)
+    asof_ts = start_ts + timedelta(minutes=2)
+    _write_raw_tree(raw_root=raw_root, start_ts=start_ts, asof_ts=asof_ts)
+    _write_status(status_path, start_ts=start_ts, asof_ts=asof_ts)
+    outcome_refreshes: list[Path] = []
+    monotonic_values = iter((0.0, 0.0, 4.9, 4.9, 5.0))
+
+    def fake_upsert_market_outcomes(*, store: DuckDbIngestStore, out_path: Path) -> int:
+        outcome_refreshes.append(out_path)
+        return 0
+
+    monkeypatch.setattr(
+        rust_normalizer_sidecar,
+        "_upsert_market_outcomes",
+        fake_upsert_market_outcomes,
+    )
+    monkeypatch.setattr(
+        rust_normalizer_sidecar,
+        "_has_expired_pending_official_outcomes",
+        lambda *, store: True,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "polymarket_engine.ingestion.rust_normalizer_sidecar.time.sleep",
+        lambda _: None,
+    )
+    monkeypatch.setattr(
+        "polymarket_engine.ingestion.rust_normalizer_sidecar.time.monotonic",
+        lambda: next(monotonic_values),
+    )
+
+    run_rust_normalizer_loop(
+        raw_root=raw_root,
+        db_path=db_path,
+        status_path=status_path,
+        normalized_health_path=health_path,
+        interval_seconds=0.0,
+        include_next=False,
+        max_cycles=3,
+    )
+
+    assert outcome_refreshes == [
+        health_path.with_name("outcomes.json"),
+        health_path.with_name("outcomes.json"),
+    ]
 
 
 def test_sidecar_loop_initial_cycle_normalizes_only_active_raw_files(
@@ -304,6 +721,85 @@ def test_sidecar_loop_skips_state_build_for_cross_cycle_duplicate_raw_state(
     monkeypatch.setattr(
         "polymarket_engine.ingestion.rust_normalizer_sidecar.time.sleep",
         append_duplicate_raw_row,
+    )
+
+    run_rust_normalizer_loop(
+        raw_root=raw_root,
+        db_path=db_path,
+        status_path=status_path,
+        normalized_health_path=health_path,
+        interval_seconds=0.0,
+        include_next=False,
+        max_cycles=2,
+    )
+
+    lines = [
+        line
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith("normalizer_cycle ")
+    ]
+    assert len(lines) == 2
+    assert _log_values(lines[1])["rows_read"] == "1"
+    assert _log_values(lines[1])["state_skipped"] == "true"
+    assert build_calls == 1
+
+
+def test_sidecar_loop_skips_state_build_for_raw_append_when_status_is_idle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    raw_root = tmp_path / "raw"
+    db_path = tmp_path / "state.duckdb"
+    status_path = tmp_path / "live" / "status.json"
+    health_path = tmp_path / "live" / "normalized_health.json"
+    start_ts = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    asof_ts = start_ts + timedelta(minutes=2)
+    _write_current_hour_raw_tree(raw_root=raw_root, start_ts=start_ts, asof_ts=asof_ts)
+    _write_status(status_path, start_ts=start_ts, asof_ts=asof_ts)
+    changed_path = (
+        raw_root
+        / "polymarket_clob_market_ws"
+        / "best_bid_ask"
+        / f"date={asof_ts.date().isoformat()}"
+        / f"hour={asof_ts.hour:02d}"
+        / "events.jsonl"
+    )
+    real_build = getattr(
+        rust_normalizer_sidecar,
+        "build_current_decision_state_snapshots",
+    )
+    build_calls = 0
+
+    def counting_build(*args: Any, **kwargs: Any) -> Any:
+        nonlocal build_calls
+        build_calls += 1
+        return real_build(*args, **kwargs)
+
+    def append_new_raw_row(_: float) -> None:
+        with changed_path.open("a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(
+                    _orderbook_row(
+                        "up-token",
+                        asof_ts + timedelta(seconds=1),
+                        asof_ts + timedelta(seconds=1),
+                        0.63,
+                        0.66,
+                    ),
+                    separators=(",", ":"),
+                )
+                + "\n"
+            )
+
+    monkeypatch.setattr(
+        "polymarket_engine.ingestion.rust_normalizer_sidecar."
+        "build_current_decision_state_snapshots",
+        counting_build,
+    )
+    monkeypatch.setattr(
+        "polymarket_engine.ingestion.rust_normalizer_sidecar.time.sleep",
+        append_new_raw_row,
     )
 
     run_rust_normalizer_loop(
@@ -1026,7 +1522,7 @@ def test_sidecar_loop_skips_state_build_for_ops_only_status_refresh(
     assert build_calls == 1
 
 
-def test_sidecar_loop_rebuilds_state_when_generated_at_only_changes_without_raw_rows(
+def test_sidecar_loop_skips_state_build_when_only_generated_at_changes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1074,7 +1570,7 @@ def test_sidecar_loop_rebuilds_state_when_generated_at_only_changes_without_raw_
         max_cycles=2,
     )
 
-    assert build_calls == 2
+    assert build_calls == 1
 
 
 def test_sidecar_loop_rebuilds_state_when_status_inputs_change_without_raw_rows(
@@ -1293,6 +1789,39 @@ def _write_raw_tree(*, raw_root: Path, start_ts: datetime, asof_ts: datetime) ->
     )
 
 
+def _write_probability_ready_raw_tree(
+    *,
+    raw_root: Path,
+    start_ts: datetime,
+    asof_ts: datetime,
+) -> None:
+    raw_root.mkdir(parents=True, exist_ok=True)
+    (raw_root / ".polymarket_archive_root").write_text("", encoding="utf-8")
+    _write_jsonl(
+        raw_root
+        / "polymarket_rtds_chainlink"
+        / "price_update"
+        / "date=2026-06-02"
+        / "hour=06"
+        / "events.jsonl",
+        _chainlink_row("BTC/USD", start_ts, start_ts, 70_000.0),
+        _chainlink_row("BTC/USD", asof_ts - timedelta(seconds=4), asof_ts - timedelta(seconds=4), 70_000.0),
+        _chainlink_row("BTC/USD", asof_ts - timedelta(seconds=3), asof_ts - timedelta(seconds=3), 70_050.0),
+        _chainlink_row("BTC/USD", asof_ts - timedelta(seconds=2), asof_ts - timedelta(seconds=2), 70_125.0),
+        _chainlink_row("BTC/USD", asof_ts - timedelta(seconds=1), asof_ts - timedelta(seconds=1), 70_150.0),
+    )
+    _write_jsonl(
+        raw_root
+        / "polymarket_clob_market_ws"
+        / "best_bid_ask"
+        / "date=2026-06-02"
+        / "hour=06"
+        / "events.jsonl",
+        _orderbook_row("up-token", asof_ts - timedelta(seconds=2), asof_ts - timedelta(seconds=1), 0.61, 0.64),
+        _orderbook_row("down-token", asof_ts - timedelta(seconds=2), asof_ts - timedelta(seconds=1), 0.36, 0.39),
+    )
+
+
 def _write_current_hour_raw_tree(*, raw_root: Path, start_ts: datetime, asof_ts: datetime) -> None:
     raw_root.mkdir(parents=True, exist_ok=True)
     (raw_root / ".polymarket_archive_root").write_text("", encoding="utf-8")
@@ -1414,6 +1943,19 @@ def _write_jsonl(path: Path, *rows: dict[str, object]) -> None:
 
 def _log_values(line: str) -> dict[str, str]:
     return dict(part.split("=", maxsplit=1) for part in line.split()[1:])
+
+
+class _FakeConnectionContext:
+    def __enter__(self) -> object:
+        return object()
+
+    def __exit__(self, *_: object) -> None:
+        return None
+
+
+class _FakeConnectionStore:
+    def _connection(self) -> _FakeConnectionContext:
+        return _FakeConnectionContext()
 
 
 class _CountingCheckpointStore(DuckDbIngestStore):

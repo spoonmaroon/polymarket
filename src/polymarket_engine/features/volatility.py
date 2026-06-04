@@ -46,6 +46,18 @@ def log_returns_from_prices(prices: Sequence[PriceObservation]) -> tuple[float, 
     return tuple(returns)
 
 
+def interval_normalized_log_returns_from_prices(
+    prices: Sequence[PriceObservation],
+) -> tuple[float, ...]:
+    ordered = sorted(prices, key=lambda price: (price.event_ts, price.observed_ts))
+    returns: list[float] = []
+    for previous, current in zip(ordered, ordered[1:]):
+        event_interval_seconds = (current.event_ts - previous.event_ts).total_seconds()
+        interval_seconds = event_interval_seconds if event_interval_seconds > 0 else 1.0
+        returns.append(math.log(current.price / previous.price) / math.sqrt(interval_seconds))
+    return tuple(returns)
+
+
 def realized_volatility(returns: Sequence[float], *, window: int) -> float | None:
     if window <= 0:
         raise ValueError("window must be positive")
@@ -184,9 +196,10 @@ def build_volatility_snapshot(
         )
 
     returns = log_returns_from_prices(continuous_prices)
-    short_vol = realized_volatility(returns, window=active_config.short_window)
-    medium_vol = realized_volatility(returns, window=active_config.medium_window)
-    long_vol = realized_volatility(returns, window=active_config.long_window)
+    normalized_returns = interval_normalized_log_returns_from_prices(continuous_prices)
+    short_vol = realized_volatility(normalized_returns, window=active_config.short_window)
+    medium_vol = realized_volatility(normalized_returns, window=active_config.medium_window)
+    long_vol = realized_volatility(normalized_returns, window=active_config.long_window)
     regime = classify_volatility_regime(
         short_vol,
         medium_vol,
@@ -194,7 +207,7 @@ def build_volatility_snapshot(
         contraction_threshold=active_config.contraction_threshold,
     )
     sigma_tau = estimate_sigma_tau(
-        returns,
+        normalized_returns,
         seconds_left,
         short_window=active_config.short_window,
         medium_window=active_config.medium_window,
