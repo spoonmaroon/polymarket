@@ -316,6 +316,58 @@ def test_write_target_cache_status_uses_asof_chainlink_start_reference(
     ]
 
 
+def test_sidecar_loop_writes_target_cache_for_active_contracts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_root = tmp_path / "raw"
+    db_path = tmp_path / "state.duckdb"
+    status_path = tmp_path / "live" / "status.json"
+    health_path = tmp_path / "live" / "normalized_health.json"
+    start_ts = datetime(2026, 6, 2, 6, 0, tzinfo=timezone.utc)
+    asof_ts = start_ts + timedelta(minutes=2)
+    _write_raw_tree(raw_root=raw_root, start_ts=start_ts, asof_ts=asof_ts)
+    _write_status(status_path, start_ts=start_ts, asof_ts=asof_ts)
+    monkeypatch.setattr(
+        rust_normalizer_sidecar,
+        "_upsert_market_outcomes",
+        lambda *, store, out_path: 0,
+    )
+    monkeypatch.setattr(
+        "polymarket_engine.ingestion.rust_normalizer_sidecar.time.sleep",
+        lambda _: None,
+    )
+
+    run_rust_normalizer_loop(
+        raw_root=raw_root,
+        db_path=db_path,
+        status_path=status_path,
+        normalized_health_path=health_path,
+        interval_seconds=0.0,
+        include_next=False,
+        max_cycles=1,
+    )
+
+    payload = json.loads(health_path.with_name("targets.json").read_text(encoding="utf-8"))
+    assert payload["schema_version"] == "polymarket-target-cache-v1"
+    assert [
+        {
+            "market_slug": row["market_slug"],
+            "threshold_price": row["threshold_price"],
+            "threshold_event_ts": row["threshold_event_ts"],
+            "threshold_observed_ts": row["threshold_observed_ts"],
+        }
+        for row in payload["rows"]
+    ] == [
+        {
+            "market_slug": "btc-updown-5m-1780380000",
+            "threshold_price": 70_000.0,
+            "threshold_event_ts": "2026-06-02T06:00:00+00:00",
+            "threshold_observed_ts": "2026-06-02T06:00:00+00:00",
+        }
+    ]
+
+
 def test_cadence_sleep_subtracts_cycle_elapsed_time() -> None:
     assert _cadence_sleep_seconds(
         cycle_started=10.0,

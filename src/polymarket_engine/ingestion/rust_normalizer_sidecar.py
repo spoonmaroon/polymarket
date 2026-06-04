@@ -274,6 +274,7 @@ def run_rust_normalizer_loop(
     normalized_health_path: Path,
     probability_status_path: Path | None = None,
     outcome_status_path: Path | None = None,
+    target_status_path: Path | None = None,
     interval_seconds: float = 1.0,
     include_next: bool = False,
     compute_probabilities: bool = False,
@@ -286,6 +287,7 @@ def run_rust_normalizer_loop(
     outcome_status_path = outcome_status_path or normalized_health_path.with_name(
         "outcomes.json"
     )
+    target_status_path = target_status_path or normalized_health_path.with_name("targets.json")
     with DuckDbIngestStore(db_path) as store:
         store.apply_schema()
         cycles_run = 0
@@ -343,6 +345,7 @@ def run_rust_normalizer_loop(
                     normalized_health_path=normalized_health_path,
                     probability_status_path=probability_status_path,
                     outcome_status_path=outcome_status_path,
+                    target_status_path=target_status_path,
                     include_next=include_next,
                     compute_probabilities=compute_probabilities,
                     reprocess_all=reprocess_all,
@@ -364,6 +367,7 @@ def run_rust_normalizer_loop(
                         normalized_health_path=normalized_health_path,
                         probability_status_path=probability_status_path,
                         outcome_status_path=outcome_status_path,
+                        target_status_path=target_status_path,
                         include_next=include_next,
                         compute_probabilities=compute_probabilities,
                         previous_status_mtime_ns=effective_previous_status_mtime_ns,
@@ -383,6 +387,7 @@ def run_rust_normalizer_loop(
                         normalized_health_path=normalized_health_path,
                         probability_status_path=probability_status_path,
                         outcome_status_path=outcome_status_path,
+                        target_status_path=target_status_path,
                         include_next=include_next,
                         compute_probabilities=compute_probabilities,
                         reprocess_all=reprocess_all,
@@ -412,6 +417,7 @@ def run_rust_normalizer_loop(
                         normalized_health_path=normalized_health_path,
                         probability_status_path=probability_status_path,
                         outcome_status_path=outcome_status_path,
+                        target_status_path=target_status_path,
                         include_next=include_next,
                         compute_probabilities=compute_probabilities,
                         previous_status_mtime_ns=effective_previous_status_mtime_ns,
@@ -438,6 +444,7 @@ def run_rust_normalizer_loop(
                         normalized_health_path=normalized_health_path,
                         probability_status_path=probability_status_path,
                         outcome_status_path=outcome_status_path,
+                        target_status_path=target_status_path,
                         include_next=include_next,
                         compute_probabilities=compute_probabilities,
                         reprocess_all=reprocess_all,
@@ -499,6 +506,7 @@ def _run_changed_rust_normalizer_cycle_with_store(
     state_read_cache: CurrentDecisionStateReadCache | None = None,
     probability_status_path: Path | None = None,
     outcome_status_path: Path | None = None,
+    target_status_path: Path | None = None,
 ) -> RustNormalizerCycleResult:
     cycle_started = time.perf_counter()
     probability_status_path = probability_status_path or normalized_health_path.with_name(
@@ -507,6 +515,7 @@ def _run_changed_rust_normalizer_cycle_with_store(
     outcome_status_path = outcome_status_path or normalized_health_path.with_name(
         "outcomes.json"
     )
+    target_status_path = target_status_path or normalized_health_path.with_name("targets.json")
     changed_paths = tuple(row.path for row in changed_raw_signature)
     if checkpoint_cache is None:
         checkpoints = store.raw_file_checkpoints(changed_paths)
@@ -582,6 +591,12 @@ def _run_changed_rust_normalizer_cycle_with_store(
         if refresh_outcomes
         else 0
     )
+    _write_target_cache_status(
+        store=store,
+        status_path=status_path,
+        out_path=target_status_path,
+        asof_ts=datetime.now(timezone.utc),
+    )
     state_at = time.perf_counter()
 
     health_skipped = not write_health
@@ -623,6 +638,7 @@ def _run_idle_rust_normalizer_cycle_with_store(
     state_read_cache: CurrentDecisionStateReadCache | None = None,
     probability_status_path: Path | None = None,
     outcome_status_path: Path | None = None,
+    target_status_path: Path | None = None,
 ) -> RustNormalizerCycleResult:
     cycle_started = time.perf_counter()
     probability_status_path = probability_status_path or normalized_health_path.with_name(
@@ -631,6 +647,7 @@ def _run_idle_rust_normalizer_cycle_with_store(
     outcome_status_path = outcome_status_path or normalized_health_path.with_name(
         "outcomes.json"
     )
+    target_status_path = target_status_path or normalized_health_path.with_name("targets.json")
     if status_mtime_ns is None:
         status_mtime_ns = _file_mtime_ns(status_path)
     build_state = status_mtime_ns is not None and (
@@ -669,6 +686,12 @@ def _run_idle_rust_normalizer_cycle_with_store(
         )
         if refresh_outcomes
         else 0
+    )
+    _write_target_cache_status(
+        store=store,
+        status_path=status_path,
+        out_path=target_status_path,
+        asof_ts=datetime.now(timezone.utc),
     )
     state_at = time.perf_counter()
 
