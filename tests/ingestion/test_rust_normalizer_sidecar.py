@@ -353,6 +353,53 @@ def test_write_target_cache_status_keeps_future_window_threshold_pending(
     assert payload["rows"][0]["threshold_observed_ts"] is None
 
 
+def test_write_target_cache_status_retries_missing_k_on_later_cycle(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "state.duckdb"
+    status_path = tmp_path / "live" / "status.json"
+    target_path = tmp_path / "live" / "targets.json"
+    start_ts = datetime(2026, 6, 4, 20, 0, tzinfo=timezone.utc)
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    _write_status(status_path, start_ts=start_ts, asof_ts=start_ts + timedelta(seconds=10))
+
+    rust_normalizer_sidecar._write_target_cache_status(
+        store=store,
+        status_path=status_path,
+        out_path=target_path,
+        asof_ts=start_ts + timedelta(seconds=10),
+    )
+    assert (
+        json.loads(target_path.read_text(encoding="utf-8"))["rows"][0][
+            "threshold_price"
+        ]
+        is None
+    )
+
+    store.insert_price_ticks(
+        (
+            PriceObservation(
+                source_key="polymarket_rtds_chainlink",
+                symbol="BTC/USD",
+                event_ts=start_ts,
+                observed_ts=start_ts + timedelta(seconds=20),
+                price=63_500.12,
+            ),
+        )
+    )
+    rust_normalizer_sidecar._write_target_cache_status(
+        store=store,
+        status_path=status_path,
+        out_path=target_path,
+        asof_ts=start_ts + timedelta(seconds=21),
+    )
+
+    payload = json.loads(target_path.read_text(encoding="utf-8"))
+    assert payload["rows"][0]["threshold_price"] == 63_500.12
+    assert payload["rows"][0]["threshold_event_ts"] == "2026-06-04T20:00:00+00:00"
+
+
 def test_sidecar_loop_writes_target_cache_for_active_contracts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
