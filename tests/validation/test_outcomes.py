@@ -176,6 +176,50 @@ def test_official_outcome_preserves_existing_threshold_when_later_price_exists(
     assert row["threshold_observed_ts"] == UTC_START
 
 
+def test_official_outcome_does_not_preserve_future_observed_threshold(
+    tmp_path: Path,
+) -> None:
+    store = seeded_store_with_btc_market(
+        tmp_path,
+        start_price=None,
+        end_price=None,
+    )
+    future_observed_ts = UTC_EXPIRY_PLUS_ONE + timedelta(seconds=1)
+    store.insert_price_ticks(
+        (
+            PriceObservation(
+                source_key="polymarket_rtds_chainlink",
+                symbol="BTC/USD",
+                event_ts=UTC_START,
+                observed_ts=future_observed_ts,
+                price=65_050.0,
+            ),
+        )
+    )
+    upsert_official_market_outcomes(
+        store=store,
+        asof_ts=future_observed_ts,
+        market_payload_source=lambda _condition_id: None,
+    )
+    assert (
+        fetch_outcome(store.db_path, "btc-updown-5m-1780502400")[
+            "threshold_observed_ts"
+        ]
+        == future_observed_ts
+    )
+
+    upsert_official_market_outcomes(
+        store=store,
+        asof_ts=UTC_EXPIRY_PLUS_ONE,
+        market_payload_source=lambda _condition_id: None,
+    )
+
+    row = fetch_outcome(store.db_path, "btc-updown-5m-1780502400")
+    assert row["threshold_price"] is None
+    assert row["threshold_event_ts"] is None
+    assert row["threshold_observed_ts"] is None
+
+
 def test_official_outcome_leaves_threshold_null_when_chainlink_start_reference_missing(
     tmp_path: Path,
 ) -> None:

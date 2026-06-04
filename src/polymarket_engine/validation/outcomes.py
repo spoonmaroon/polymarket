@@ -188,7 +188,11 @@ def upsert_official_market_outcomes(
             existing=existing,
             resolution=resolution,
         )
-        threshold = _preserved_threshold(existing) or _chainlink_tick_at_or_before(
+        threshold = _preserved_threshold(
+            existing,
+            start_ts=up.start_ts,
+            asof_ts=asof_ts,
+        ) or _chainlink_tick_at_or_before(
             store=store,
             symbol=up.settlement_symbol,
             event_ts_lte=up.start_ts,
@@ -680,17 +684,23 @@ def _existing_outcome_fields(store: DuckDbIngestStore, *, market_id: str) -> dic
     }
 
 
-def _preserved_threshold(existing: dict[str, Any]) -> dict[str, Any] | None:
-    if (
-        existing["threshold_price"] is None
-        or existing["threshold_event_ts"] is None
-        or existing["threshold_observed_ts"] is None
-    ):
+def _preserved_threshold(
+    existing: dict[str, Any],
+    *,
+    start_ts: datetime,
+    asof_ts: datetime,
+) -> dict[str, Any] | None:
+    threshold_price = existing["threshold_price"]
+    threshold_event_ts = existing["threshold_event_ts"]
+    threshold_observed_ts = existing["threshold_observed_ts"]
+    if threshold_price is None or threshold_event_ts is None or threshold_observed_ts is None:
+        return None
+    if threshold_event_ts > start_ts or threshold_observed_ts > asof_ts:
         return None
     return {
-        "price": existing["threshold_price"],
-        "event_ts": existing["threshold_event_ts"],
-        "observed_ts": existing["threshold_observed_ts"],
+        "price": threshold_price,
+        "event_ts": threshold_event_ts,
+        "observed_ts": threshold_observed_ts,
     }
 
 
