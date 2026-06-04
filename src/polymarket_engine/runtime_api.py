@@ -34,6 +34,7 @@ def build_runtime_router(
     normalized_health_path: Path = Path("data/live/normalized_health.json"),
     probability_status_path: Path = Path("data/live/probabilities.json"),
     outcome_status_path: Path = Path("data/live/outcomes.json"),
+    target_cache_path: Path = Path("data/live/targets.json"),
     data_dir: Path = Path("data"),
     enable_container_status: bool = False,
     enable_runtime_probabilities: bool = False,
@@ -91,6 +92,7 @@ def build_runtime_router(
                 duckdb_path=duckdb_path,
                 limit=limit,
                 status_path=status_path if status_path.exists() else None,
+                target_cache_path=target_cache_path if target_cache_path.exists() else None,
             )
         except duckdb.Error as exc:
             return _empty_monitor_payload(
@@ -140,6 +142,7 @@ def build_runtime_router(
             status_path=status_path,
             duckdb_path=duckdb_path,
             normalized_health_path=normalized_health_path,
+            target_cache_path=target_cache_path,
             limit=limit,
         )
 
@@ -158,6 +161,7 @@ def build_runtime_router(
                     status_path=status_path,
                     duckdb_path=duckdb_path,
                     normalized_health_path=normalized_health_path,
+                    target_cache_path=target_cache_path,
                     limit=limit,
                 )
                 yield f"event: live\ndata: {json.dumps(payload, separators=(',', ':'))}\n\n"
@@ -287,6 +291,7 @@ def _runtime_live_payload(
     status_path: Path,
     duckdb_path: Path,
     normalized_health_path: Path,
+    target_cache_path: Path,
     limit: int,
 ) -> dict[str, Any]:
     started = time.perf_counter()
@@ -326,7 +331,14 @@ def _runtime_live_payload(
                 payload=payload,
             )
             try:
-                monitor = _snapshot_to_json(snapshot_from_status_payload(payload, limit=limit))
+                target_cache, _target_cache_error = _read_json_or_error(target_cache_path)
+                monitor = _snapshot_to_json(
+                    snapshot_from_status_payload(
+                        payload,
+                        limit=limit,
+                        target_cache=target_cache,
+                    )
+                )
             except (TypeError, ValueError, KeyError) as exc:
                 monitor = _empty_monitor_payload(
                     state="INVALID",

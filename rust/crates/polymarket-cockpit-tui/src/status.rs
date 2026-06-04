@@ -97,6 +97,12 @@ pub struct RuntimeOutcomeRow {
     #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
     pub expiry_ts: Option<String>,
     #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub threshold_price: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub threshold_event_ts: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub threshold_observed_ts: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
     pub computed_winner: Option<String>,
     #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
     pub official_winner: Option<String>,
@@ -438,6 +444,9 @@ mod tests {
                 "market_id": "btc-updown-5m-1780521900",
                 "asset": "BTC",
                 "expiry_ts": "2026-06-03T21:25:00Z",
+                "threshold_price": "64000",
+                "threshold_event_ts": "2026-06-03T21:20:00Z",
+                "threshold_observed_ts": "2026-06-03T21:20:03Z",
                 "computed_winner": null,
                 "official_winner": "UP",
                 "winning_token_id": "up-token",
@@ -449,6 +458,7 @@ mod tests {
         let outcomes: RuntimeOutcomes = serde_json::from_str(payload).unwrap();
 
         assert_eq!(outcomes.rows[0].computed_winner.as_deref(), None);
+        assert_eq!(outcomes.rows[0].threshold_price.as_deref(), Some("64000"));
         assert_eq!(outcomes.rows[0].official_winner.as_deref(), Some("UP"));
         assert_eq!(
             outcomes.rows[0].winning_token_id.as_deref(),

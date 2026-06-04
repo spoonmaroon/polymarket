@@ -299,6 +299,71 @@ def test_state_manager_orderbook_rows_include_matching_contract_target() -> None
     assert snapshot.orderbooks[0]["settlement_event_ts"] == "2026-06-04T07:43:09Z"
 
 
+def test_monitor_uses_target_cache_when_state_manager_target_is_missing(tmp_path: Path) -> None:
+    status_path = tmp_path / "status.json"
+    target_cache_path = tmp_path / "targets.json"
+    current_start = datetime(2026, 6, 4, 20, 0, tzinfo=timezone.utc)
+    status_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "rust-live-probe-state-manager-v1",
+                "mode": "state-manager",
+                "generated_at": "2026-06-04T20:02:00Z",
+                "current": [_state_manager_contract("BTC", current_start, "btc-current")],
+                "next": [],
+                "next_next": [],
+                "chainlink_prices": [],
+                "orderbooks": [],
+                "freshness": [],
+                "latency_marks": [],
+                "health_flags": [],
+                "websocket_status": [],
+                "targets": [
+                    {
+                        "asset": "BTC",
+                        "interval": "5m",
+                        "market_slug": "btc-updown-5m-1780603200",
+                        "start_ts": "2026-06-04T20:00:00Z",
+                        "end_ts": "2026-06-04T20:05:00Z",
+                        "threshold_price": None,
+                        "threshold_event_ts": None,
+                        "threshold_observed_ts": None,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    target_cache_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "polymarket-target-cache-v1",
+                "generated_at": "2026-06-04T20:02:00Z",
+                "rows": [
+                    {
+                        "market_slug": "btc-updown-5m-1780603200",
+                        "threshold_price": "63500.12",
+                        "threshold_event_ts": "2026-06-04T20:00:00Z",
+                        "threshold_observed_ts": "2026-06-04T20:00:03Z",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    snapshot = fetch_monitor_snapshot(
+        tmp_path / "missing.duckdb",
+        limit=8,
+        status_path=status_path,
+        target_cache_path=target_cache_path,
+    )
+
+    assert snapshot.orderbooks[0]["threshold_price"] == "63500.12"
+    assert snapshot.orderbooks[0]["threshold_event_ts"] == "2026-06-04T20:00:00Z"
+    assert snapshot.orderbooks[0]["threshold_observed_ts"] == "2026-06-04T20:00:03Z"
+
+
 def test_monitor_snapshot_shapes_state_manager_books_to_active_current_and_next_rows(
     tmp_path: Path,
 ) -> None:

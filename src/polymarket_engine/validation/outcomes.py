@@ -179,6 +179,18 @@ def upsert_official_market_outcomes(
             existing=existing,
             resolution=resolution,
         )
+        threshold = _chainlink_tick_at_or_before(
+            store=store,
+            symbol=up.settlement_symbol,
+            event_ts_lte=up.start_ts,
+            observed_ts_lte=asof_ts,
+        )
+        end = _chainlink_tick_at_or_before(
+            store=store,
+            symbol=up.settlement_symbol,
+            event_ts_lte=up.expiry_ts,
+            observed_ts_lte=asof_ts,
+        )
         records.append(
             MarketOutcomeRecord(
                 market_id=up.market_id,
@@ -190,12 +202,14 @@ def upsert_official_market_outcomes(
                 expiry_ts=up.expiry_ts,
                 up_token_id=up.token_id,
                 down_token_id=down.token_id,
-                threshold_price=None,
-                threshold_event_ts=None,
-                threshold_observed_ts=None,
-                end_price=None,
-                end_event_ts=None,
-                end_observed_ts=None,
+                threshold_price=threshold["price"] if threshold is not None else None,
+                threshold_event_ts=threshold["event_ts"] if threshold is not None else None,
+                threshold_observed_ts=(
+                    threshold["observed_ts"] if threshold is not None else None
+                ),
+                end_price=end["price"] if end is not None else None,
+                end_event_ts=end["event_ts"] if end is not None else None,
+                end_observed_ts=end["observed_ts"] if end is not None else None,
                 computed_winner=None,
                 computed_label_source=None,
                 computed_at=None,
@@ -447,11 +461,21 @@ def _outcome_status_row_error(rows: list[Any]) -> str | None:
 
 
 def _normalize_outcome_status_rows(rows: list[Any]) -> list[Any]:
+    optional_legacy_fields = (
+        "winning_token_id",
+        "threshold_price",
+        "threshold_event_ts",
+        "threshold_observed_ts",
+        "end_price",
+        "end_event_ts",
+        "end_observed_ts",
+    )
     normalized: list[Any] = []
     for row in rows:
-        if isinstance(row, dict) and "winning_token_id" not in row:
+        if isinstance(row, dict):
             row = dict(row)
-            row["winning_token_id"] = None
+            for field in optional_legacy_fields:
+                row.setdefault(field, None)
         normalized.append(row)
     return normalized
 
@@ -638,6 +662,12 @@ def _runtime_row(row: dict[str, Any]) -> dict[str, Any]:
         "interval": row["interval"],
         "start_ts": _iso_string(row["start_ts"]),
         "expiry_ts": _iso_string(row["expiry_ts"]),
+        "threshold_price": row.get("threshold_price"),
+        "threshold_event_ts": _iso_string(row.get("threshold_event_ts")),
+        "threshold_observed_ts": _iso_string(row.get("threshold_observed_ts")),
+        "end_price": row.get("end_price"),
+        "end_event_ts": _iso_string(row.get("end_event_ts")),
+        "end_observed_ts": _iso_string(row.get("end_observed_ts")),
         "computed_winner": row["computed_winner"],
         "official_winner": row["official_winner"],
         "winning_token_id": row["winning_token_id"],
@@ -667,6 +697,36 @@ def _market_payload_for_condition(
     if condition_id not in payload_cache:
         payload_cache[condition_id] = market_payload_source(condition_id)
     return payload_cache[condition_id]
+
+
+def _chainlink_tick_at_or_before(
+    *,
+    store: DuckDbIngestStore,
+    symbol: str,
+    event_ts_lte: datetime,
+    observed_ts_lte: datetime,
+) -> dict[str, Any] | None:
+    with store._connection() as conn:
+        row = conn.execute(
+            """
+            select price, event_ts::VARCHAR, observed_ts::VARCHAR
+            from core.price_ticks
+            where source_key = 'polymarket_rtds_chainlink'
+              and symbol = ?
+              and event_ts <= ?
+              and observed_ts <= ?
+            order by event_ts desc, observed_ts desc
+            limit 1
+            """,
+            [symbol, event_ts_lte, observed_ts_lte],
+        ).fetchone()
+    if row is None:
+        return None
+    return {
+        "price": row[0],
+        "event_ts": _parse_duckdb_ts(row[1]),
+        "observed_ts": _parse_duckdb_ts(row[2]),
+    }
 
 
 def _preserve_existing_resolved_official_fields(

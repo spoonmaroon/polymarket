@@ -19,6 +19,7 @@ from polymarket_engine.ingestion.rust_normalizer_sidecar import (
     run_rust_normalizer_cycle,
     run_rust_normalizer_loop,
 )
+from polymarket_engine.domain.market_state import PriceObservation
 from polymarket_engine.storage import duckdb_store
 from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
 
@@ -225,6 +226,94 @@ def test_upsert_market_outcomes_uses_pending_sweep_limit_from_env(
     )
 
     assert captured_limits == [7]
+
+
+def test_upsert_market_outcomes_uses_output_limit_from_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_limits: list[int] = []
+
+    def fake_latest_market_outcome_rows_from_connection(**kwargs: Any) -> list[dict[str, Any]]:
+        captured_limits.append(kwargs["limit"])
+        return []
+
+    monkeypatch.setenv("POLYMARKET_OUTCOME_OUTPUT_LIMIT", "1440")
+    monkeypatch.setattr(
+        rust_normalizer_sidecar,
+        "upsert_official_market_outcomes",
+        lambda **_kwargs: 0,
+    )
+    monkeypatch.setattr(
+        rust_normalizer_sidecar,
+        "latest_market_outcome_rows_from_connection",
+        fake_latest_market_outcome_rows_from_connection,
+    )
+    monkeypatch.setattr(
+        rust_normalizer_sidecar,
+        "write_outcome_history_status",
+        lambda *, out_path, rows: None,
+    )
+
+    rust_normalizer_sidecar._upsert_market_outcomes(
+        store=cast(DuckDbIngestStore, _FakeConnectionStore()),
+        out_path=tmp_path / "outcomes.json",
+    )
+
+    assert captured_limits == [1440]
+
+
+def test_write_target_cache_status_uses_asof_chainlink_start_reference(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "state.duckdb"
+    status_path = tmp_path / "live" / "status.json"
+    target_path = tmp_path / "live" / "targets.json"
+    start_ts = datetime(2026, 6, 4, 20, 0, tzinfo=timezone.utc)
+    asof_ts = start_ts + timedelta(minutes=2)
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    store.insert_price_ticks(
+        (
+            PriceObservation(
+                source_key="polymarket_rtds_chainlink",
+                symbol="BTC/USD",
+                event_ts=start_ts,
+                observed_ts=start_ts + timedelta(seconds=3),
+                price=63_500.12,
+            ),
+            PriceObservation(
+                source_key="polymarket_rtds_chainlink",
+                symbol="BTC/USD",
+                event_ts=start_ts + timedelta(seconds=1),
+                observed_ts=start_ts + timedelta(seconds=4),
+                price=63_510.0,
+            ),
+        )
+    )
+    _write_status(status_path, start_ts=start_ts, asof_ts=asof_ts)
+
+    rust_normalizer_sidecar._write_target_cache_status(
+        store=store,
+        status_path=status_path,
+        out_path=target_path,
+        asof_ts=asof_ts,
+    )
+
+    payload = json.loads(target_path.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == "polymarket-target-cache-v1"
+    assert payload["rows"] == [
+        {
+            "asset": "BTC",
+            "interval": "5m",
+            "market_slug": "btc-updown-5m-1780603200",
+            "start_ts": "2026-06-04T20:00:00+00:00",
+            "expiry_ts": "2026-06-04T20:05:00+00:00",
+            "threshold_price": 63_500.12,
+            "threshold_event_ts": "2026-06-04T20:00:00+00:00",
+            "threshold_observed_ts": "2026-06-04T20:00:03+00:00",
+        }
+    ]
 
 
 def test_cadence_sleep_subtracts_cycle_elapsed_time() -> None:

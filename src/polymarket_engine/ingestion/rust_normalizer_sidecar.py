@@ -37,11 +37,12 @@ FULL_RAW_TREE_SCAN_INTERVAL_CYCLES = 240
 IDLE_NORMALIZED_HEALTH_WRITE_INTERVAL_SECONDS = 5.0
 PROBABILITY_OUTPUT_LIMIT = 8
 PROBABILITY_MAX_STATE_AGE_SECONDS = 600.0
-OUTCOME_OUTPUT_LIMIT = 20
+OUTCOME_OUTPUT_LIMIT = 5000
 OUTCOME_REFRESH_INTERVAL_SECONDS = 30.0
 OUTCOME_PENDING_REFRESH_INTERVAL_SECONDS = 5.0
 OUTCOME_REFRESH_MARKET_LIMIT = 4
 OUTCOME_PENDING_SWEEP_LIMIT = 20
+OUTCOME_OUTPUT_LIMIT_ENV = "POLYMARKET_OUTCOME_OUTPUT_LIMIT"
 OFFICIAL_OUTCOME_SOURCE_ENV = "POLYMARKET_OFFICIAL_OUTCOME_SOURCE"
 OFFICIAL_OUTCOME_REFRESH_LIMIT_ENV = "POLYMARKET_OFFICIAL_OUTCOME_REFRESH_LIMIT"
 OFFICIAL_OUTCOME_PENDING_SWEEP_LIMIT_ENV = (
@@ -129,6 +130,7 @@ def run_rust_normalizer_cycle(
     normalized_health_path: Path,
     probability_status_path: Path | None = None,
     outcome_status_path: Path | None = None,
+    target_status_path: Path | None = None,
     include_next: bool = False,
     compute_probabilities: bool = False,
     reprocess_all: bool = False,
@@ -140,6 +142,7 @@ def run_rust_normalizer_cycle(
     outcome_status_path = outcome_status_path or normalized_health_path.with_name(
         "outcomes.json"
     )
+    target_status_path = target_status_path or normalized_health_path.with_name("targets.json")
     with DuckDbIngestStore(db_path) as store:
         return _run_rust_normalizer_cycle_with_store(
             raw_root=raw_root,
@@ -148,6 +151,7 @@ def run_rust_normalizer_cycle(
             normalized_health_path=normalized_health_path,
             probability_status_path=probability_status_path,
             outcome_status_path=outcome_status_path,
+            target_status_path=target_status_path,
             include_next=include_next,
             compute_probabilities=compute_probabilities,
             reprocess_all=reprocess_all,
@@ -172,6 +176,7 @@ def _run_rust_normalizer_cycle_with_store(
     state_read_cache: CurrentDecisionStateReadCache | None = None,
     probability_status_path: Path | None = None,
     outcome_status_path: Path | None = None,
+    target_status_path: Path | None = None,
 ) -> RustNormalizerCycleResult:
     cycle_started = time.perf_counter()
     probability_status_path = probability_status_path or normalized_health_path.with_name(
@@ -180,6 +185,7 @@ def _run_rust_normalizer_cycle_with_store(
     outcome_status_path = outcome_status_path or normalized_health_path.with_name(
         "outcomes.json"
     )
+    target_status_path = target_status_path or normalized_health_path.with_name("targets.json")
     if apply_schema:
         store.apply_schema()
 
@@ -232,6 +238,12 @@ def _run_rust_normalizer_cycle_with_store(
         )
         if refresh_outcomes
         else 0
+    )
+    _write_target_cache_status(
+        store=store,
+        status_path=status_path,
+        out_path=target_status_path,
+        asof_ts=datetime.now(timezone.utc),
     )
     state_at = time.perf_counter()
 
@@ -774,10 +786,141 @@ def _upsert_market_outcomes(*, store: DuckDbIngestStore, out_path: Path) -> int:
     with store._connection() as conn:
         rows = latest_market_outcome_rows_from_connection(
             conn=conn,
-            limit=OUTCOME_OUTPUT_LIMIT,
+            limit=_outcome_output_limit_from_env(),
         )
     write_outcome_history_status(out_path=out_path, rows=rows)
     return written
+
+
+def _write_target_cache_status(
+    *,
+    store: DuckDbIngestStore,
+    status_path: Path,
+    out_path: Path,
+    asof_ts: datetime,
+) -> None:
+    windows = _target_cache_windows(status_path)
+    rows: list[dict[str, Any]] = []
+    with store._connection() as conn:
+        for window in windows:
+            tick = _chainlink_threshold_tick(
+                conn=conn,
+                symbol=f"{window['asset']}/USD",
+                start_ts=window["start_ts"],
+                asof_ts=asof_ts,
+            )
+            rows.append(
+                {
+                    "asset": window["asset"],
+                    "interval": window["interval"],
+                    "market_slug": window["market_slug"],
+                    "start_ts": window["start_ts"].isoformat(),
+                    "expiry_ts": window["expiry_ts"].isoformat(),
+                    "threshold_price": tick["price"] if tick is not None else None,
+                    "threshold_event_ts": (
+                        tick["event_ts"].isoformat() if tick is not None else None
+                    ),
+                    "threshold_observed_ts": (
+                        tick["observed_ts"].isoformat() if tick is not None else None
+                    ),
+                }
+            )
+    payload = {
+        "schema_version": "polymarket-target-cache-v1",
+        "ok": True,
+        "state": "OK",
+        "generated_at": asof_ts.astimezone(timezone.utc).isoformat(),
+        "rows": rows,
+    }
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = out_path.with_suffix(f"{out_path.suffix}.tmp")
+    tmp_path.write_text(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    durable_replace(tmp_path, out_path)
+
+
+def _target_cache_windows(status_path: Path) -> tuple[dict[str, Any], ...]:
+    try:
+        payload = json.loads(status_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return ()
+    if not isinstance(payload, dict):
+        return ()
+    windows: list[dict[str, Any]] = []
+    for group in ("current", "next", "next_next"):
+        raw_contracts = payload.get(group, ())
+        if not isinstance(raw_contracts, list):
+            continue
+        for raw_contract in raw_contracts:
+            if not isinstance(raw_contract, dict):
+                continue
+            window = raw_contract.get("window")
+            if not isinstance(window, dict):
+                continue
+            asset = str(window.get("asset", "")).strip().upper()
+            interval = str(window.get("interval", "")).strip()
+            start_ts = _parse_status_timestamp(window.get("start_ts"))
+            expiry_ts = _parse_status_timestamp(window.get("end_ts"))
+            if not asset or not interval or start_ts is None or expiry_ts is None:
+                continue
+            windows.append(
+                {
+                    "asset": asset,
+                    "interval": interval,
+                    "market_slug": (
+                        f"{asset.lower()}-updown-{interval}-{int(start_ts.timestamp())}"
+                    ),
+                    "start_ts": start_ts,
+                    "expiry_ts": expiry_ts,
+                }
+            )
+    return tuple(windows)
+
+
+def _chainlink_threshold_tick(
+    *,
+    conn: Any,
+    symbol: str,
+    start_ts: datetime,
+    asof_ts: datetime,
+) -> dict[str, Any] | None:
+    row = conn.execute(
+        """
+        select price, event_ts::VARCHAR, observed_ts::VARCHAR
+        from core.price_ticks
+        where source_key = 'polymarket_rtds_chainlink'
+          and symbol = ?
+          and event_ts <= ?
+          and observed_ts <= ?
+        order by event_ts desc, observed_ts desc
+        limit 1
+        """,
+        [symbol, start_ts, asof_ts],
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "price": row[0],
+        "event_ts": _parse_status_timestamp(row[1]),
+        "observed_ts": _parse_status_timestamp(row[2]),
+    }
+
+
+def _parse_status_timestamp(value: object) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _has_expired_pending_official_outcomes(*, store: DuckDbIngestStore) -> bool:
@@ -822,6 +965,13 @@ def _official_outcome_pending_sweep_limit_from_env() -> int | None:
         return OUTCOME_PENDING_SWEEP_LIMIT
     limit = int(raw_limit)
     return limit if limit > 0 else None
+
+
+def _outcome_output_limit_from_env() -> int:
+    raw_limit = os.environ.get(OUTCOME_OUTPUT_LIMIT_ENV)
+    if raw_limit is None or raw_limit.strip() == "":
+        return OUTCOME_OUTPUT_LIMIT
+    return max(20, int(raw_limit))
 
 
 def _write_probability_status(

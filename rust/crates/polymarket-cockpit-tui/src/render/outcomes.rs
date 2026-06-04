@@ -6,7 +6,10 @@ use ratatui::{
     widgets::{Block, Cell, Row, Table},
 };
 
-use crate::state::AppState;
+use crate::{
+    outcome_view::{OutcomeDisplayItem, outcome_display_items},
+    state::AppState,
+};
 
 #[cfg(test)]
 const OUTCOME_VISIBLE_ROWS: usize = 20;
@@ -16,6 +19,7 @@ pub struct OutcomeDisplayRow {
     pub marker: String,
     pub market: String,
     pub expiry: String,
+    pub k: String,
     pub winner: String,
     pub token: String,
     pub status: String,
@@ -32,38 +36,47 @@ pub fn outcome_rows_for_visible_count(
 ) -> Vec<OutcomeDisplayRow> {
     let selected_index = app.effective_outcome_index();
     let visible_rows = visible_rows.max(1);
-
-    app.runtime_outcomes
-        .as_ref()
-        .map(|outcomes| {
-            let display_rows = outcomes
-                .rows
-                .iter()
-                .enumerate()
-                .map(|(index, row)| OutcomeDisplayRow {
-                    marker: if selected_index == Some(index) {
-                        ">"
+    let display_rows =
+        outcome_display_items(app.runtime_outcomes.as_ref(), &app.expanded_outcome_days)
+            .into_iter()
+            .enumerate()
+            .map(|(index, item)| match item {
+                OutcomeDisplayItem::Day {
+                    label,
+                    count,
+                    expanded,
+                    ..
+                } => OutcomeDisplayRow {
+                    marker: marker(selected_index, index),
+                    market: format!("{} {label} ({count})", if expanded { "-" } else { "+" }),
+                    expiry: String::new(),
+                    k: String::new(),
+                    winner: String::new(),
+                    token: String::new(),
+                    status: if expanded {
+                        "expanded".to_string()
                     } else {
-                        " "
-                    }
-                    .to_string(),
+                        "collapsed".to_string()
+                    },
+                },
+                OutcomeDisplayItem::Outcome { row } => OutcomeDisplayRow {
+                    marker: marker(selected_index, index),
                     market: row.market.clone(),
                     expiry: compact_timestamp(row.expiry_ts.as_deref()),
+                    k: format_k(row.threshold_price.as_deref()),
                     winner: optional_as_dash(row.official_winner.as_deref()),
                     token: optional_as_dash(row.winning_token_id.as_deref()),
                     status: row.official_resolution_status.clone(),
-                })
-                .collect::<Vec<_>>();
-            let selected_display_index = display_rows.iter().position(|row| row.marker == ">");
-            let start =
-                visible_outcome_start(display_rows.len(), selected_display_index, visible_rows);
-            display_rows
-                .into_iter()
-                .skip(start)
-                .take(visible_rows)
-                .collect()
-        })
-        .unwrap_or_default()
+                },
+            })
+            .collect::<Vec<_>>();
+    let selected_display_index = display_rows.iter().position(|row| row.marker == ">");
+    let start = visible_outcome_start(display_rows.len(), selected_display_index, visible_rows);
+    display_rows
+        .into_iter()
+        .skip(start)
+        .take(visible_rows)
+        .collect()
 }
 
 pub fn render(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
@@ -75,6 +88,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
                 Cell::from(row.marker),
                 Cell::from(row.market),
                 Cell::from(row.expiry),
+                Cell::from(row.k),
                 Cell::from(row.winner),
                 Cell::from(row.token),
                 Cell::from(row.status),
@@ -89,6 +103,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
             Cell::from("-"),
             Cell::from("-"),
             Cell::from("-"),
+            Cell::from("-"),
         ])]
     } else {
         rows
@@ -97,7 +112,8 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         rows,
         [
             Constraint::Length(2),
-            Constraint::Length(14),
+            Constraint::Length(22),
+            Constraint::Length(12),
             Constraint::Length(12),
             Constraint::Length(8),
             Constraint::Length(16),
@@ -105,12 +121,23 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         ],
     )
     .header(
-        Row::new(vec!["", "Market", "Expiry", "Winner", "Token", "Status"])
-            .style(Style::default().fg(Color::Cyan)),
+        Row::new(vec![
+            "", "Market", "Expiry", "K", "Winner", "Token", "Status",
+        ])
+        .style(Style::default().fg(Color::Cyan)),
     )
     .block(Block::bordered().title("Outcomes"));
 
     frame.render_widget(table, area);
+}
+
+fn marker(selected_index: Option<usize>, index: usize) -> String {
+    if selected_index == Some(index) {
+        ">"
+    } else {
+        " "
+    }
+    .to_string()
 }
 
 fn visible_outcome_start(
@@ -137,6 +164,14 @@ fn optional_as_dash(value: Option<&str>) -> String {
         .to_string()
 }
 
+fn format_k(value: Option<&str>) -> String {
+    value
+        .and_then(|value| value.trim().parse::<f64>().ok())
+        .filter(|value| *value > 0.0)
+        .map(|value| format!("{value:.2}"))
+        .unwrap_or_else(|| "-".to_string())
+}
+
 fn compact_timestamp(timestamp: Option<&str>) -> String {
     let Some(timestamp) = timestamp.filter(|value| !value.is_empty()) else {
         return "-".to_string();
@@ -161,9 +196,25 @@ mod tests {
 
         let rows = outcome_rows(&app);
 
-        assert_eq!(rows[0].winner, "UP");
-        assert_eq!(rows[0].token, "up-token");
-        assert_eq!(rows[0].status, "resolved");
+        assert_eq!(rows[1].winner, "UP");
+        assert_eq!(rows[1].token, "up-token");
+        assert_eq!(rows[1].status, "resolved");
+        assert_eq!(rows[1].k, "63500.12");
+    }
+
+    #[test]
+    fn outcome_rows_group_by_local_day_with_latest_day_expanded() {
+        let app = app_with_expiry_days(vec![
+            ("BTC 5m", "2026-06-04T20:00:00Z"),
+            ("ETH 5m", "2026-06-03T20:00:00Z"),
+        ]);
+
+        let rows = outcome_rows(&app);
+
+        assert!(rows[0].market.contains("Jun 04"));
+        assert_eq!(rows[1].market, "BTC 5m");
+        assert!(rows[2].market.contains("Jun 03"));
+        assert!(!rows.iter().any(|row| row.market == "ETH 5m"));
     }
 
     #[test]
@@ -193,10 +244,6 @@ mod tests {
 
         assert_eq!(rows.len(), 2);
         assert_eq!(rows.last().map(|row| row.marker.as_str()), Some(">"));
-        assert_eq!(
-            rows.last().map(|row| row.market.as_str()),
-            Some("ETH 5m 16:25")
-        );
     }
 
     fn app_with_outcomes(
@@ -209,19 +256,14 @@ mod tests {
                 ok: true,
                 state: "OK".to_string(),
                 generated_at: Some("2026-06-03T22:00:00Z".to_string()),
-                rows: vec![RuntimeOutcomeRow {
-                    market: "BTC 5m".to_string(),
-                    market_id: "btc-updown-5m-1780521900".to_string(),
-                    market_slug: Some("btc-updown-5m-1780521900".to_string()),
-                    asset: Some("BTC".to_string()),
-                    start_ts: None,
-                    expiry_ts: Some("2026-06-03T21:25:00Z".to_string()),
-                    computed_winner: None,
-                    official_winner: official_winner.map(str::to_string),
-                    winning_token_id: winning_token_id.map(str::to_string),
-                    official_resolution_status: official_resolution_status.to_string(),
-                    mismatch: None,
-                }],
+                rows: vec![runtime_outcome(
+                    "BTC 5m",
+                    "btc-updown-5m-1780521900",
+                    "2026-06-03T21:25:00Z",
+                    official_winner,
+                    winning_token_id,
+                    official_resolution_status,
+                )],
             }),
             ..Default::default()
         }
@@ -236,22 +278,70 @@ mod tests {
                 rows: markets
                     .into_iter()
                     .enumerate()
-                    .map(|(index, market)| RuntimeOutcomeRow {
-                        market: market.to_string(),
-                        market_id: format!("market-{index}"),
-                        market_slug: Some(format!("market-{index}")),
-                        asset: Some("BTC".to_string()),
-                        start_ts: None,
-                        expiry_ts: Some("2026-06-03T21:25:00Z".to_string()),
-                        computed_winner: None,
-                        official_winner: Some("UP".to_string()),
-                        winning_token_id: Some(format!("token-{index}")),
-                        official_resolution_status: "resolved".to_string(),
-                        mismatch: None,
+                    .map(|(index, market)| {
+                        runtime_outcome(
+                            market,
+                            &format!("market-{index}"),
+                            "2026-06-03T21:25:00Z",
+                            Some("UP"),
+                            Some(&format!("token-{index}")),
+                            "resolved",
+                        )
                     })
                     .collect(),
             }),
             ..Default::default()
+        }
+    }
+
+    fn app_with_expiry_days(markets: Vec<(&str, &str)>) -> AppState {
+        AppState {
+            runtime_outcomes: Some(RuntimeOutcomes {
+                ok: true,
+                state: "OK".to_string(),
+                generated_at: Some("2026-06-04T22:00:00Z".to_string()),
+                rows: markets
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, (market, expiry_ts))| {
+                        runtime_outcome(
+                            market,
+                            &format!("market-{index}"),
+                            expiry_ts,
+                            Some("UP"),
+                            Some(&format!("token-{index}")),
+                            "resolved",
+                        )
+                    })
+                    .collect(),
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn runtime_outcome(
+        market: &str,
+        market_id: &str,
+        expiry_ts: &str,
+        official_winner: Option<&str>,
+        winning_token_id: Option<&str>,
+        official_resolution_status: &str,
+    ) -> RuntimeOutcomeRow {
+        RuntimeOutcomeRow {
+            market: market.to_string(),
+            market_id: market_id.to_string(),
+            market_slug: Some(market_id.to_string()),
+            asset: market.split_whitespace().next().map(str::to_string),
+            start_ts: None,
+            expiry_ts: Some(expiry_ts.to_string()),
+            threshold_price: Some("63500.12".to_string()),
+            threshold_event_ts: Some("2026-06-04T20:00:00Z".to_string()),
+            threshold_observed_ts: Some("2026-06-04T20:00:03Z".to_string()),
+            computed_winner: None,
+            official_winner: official_winner.map(str::to_string),
+            winning_token_id: winning_token_id.map(str::to_string),
+            official_resolution_status: official_resolution_status.to_string(),
+            mismatch: None,
         }
     }
 }

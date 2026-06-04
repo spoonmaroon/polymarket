@@ -45,9 +45,14 @@ def fetch_monitor_snapshot(
     limit: int = 8,
     lock_retry_seconds: float = 2.0,
     status_path: Path | None = None,
+    target_cache_path: Path | None = None,
 ) -> MonitorSnapshot:
     if status_path is not None and status_path.exists():
-        return _snapshot_from_status(status_path, limit=limit)
+        return _snapshot_from_status(
+            status_path,
+            limit=limit,
+            target_cache_path=target_cache_path,
+        )
 
     if not duckdb_path.exists():
         return MonitorSnapshot(
@@ -190,9 +195,15 @@ def _snapshot_from_status(
     status_path: Path,
     limit: int,
     now: datetime | None = None,
+    target_cache_path: Path | None = None,
 ) -> MonitorSnapshot:
     payload = json.loads(status_path.read_text(encoding="utf-8"))
-    return snapshot_from_status_payload(payload, limit=limit, now=now)
+    return snapshot_from_status_payload(
+        payload,
+        limit=limit,
+        now=now,
+        target_cache=_read_target_cache(target_cache_path),
+    )
 
 
 def snapshot_from_status_payload(
@@ -200,12 +211,16 @@ def snapshot_from_status_payload(
     *,
     limit: int,
     now: datetime | None = None,
+    target_cache: dict[str, Any] | None = None,
 ) -> MonitorSnapshot:
     generated_at = _parse_datetime(payload["generated_at"])
     wall_time = datetime.now(timezone.utc) if now is None else _to_utc(now)
     price_rows = _status_price_rows(payload)
     orderbooks = _status_orderbook_rows(payload, limit=limit)
     contracts = _status_contract_rows(payload, limit=limit)
+    cache_targets = _target_cache_by_market_slug(target_cache, generated_at=generated_at)
+    orderbooks = _merge_cached_targets(orderbooks, cache_targets)
+    contracts = _merge_cached_targets(contracts, cache_targets)
     ingest_counts = tuple(dict(row) for row in payload.get("ingest_counts", ()))
     normalized_health = tuple(dict(row) for row in payload.get("normalized_health", ()))
     source_freshness, orderbook_freshness = _status_freshness_rows(
@@ -249,6 +264,63 @@ def _status_price_rows(payload: dict[str, Any]) -> tuple[dict[str, Any], ...]:
     else:
         rows = payload.get("chainlink_prices", ())
     return tuple(dict(row) for row in rows)
+
+
+def _read_target_cache(target_cache_path: Path | None) -> dict[str, Any] | None:
+    if target_cache_path is None or not target_cache_path.exists():
+        return None
+    try:
+        payload = json.loads(target_cache_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _target_cache_by_market_slug(
+    payload: dict[str, Any] | None,
+    *,
+    generated_at: datetime,
+) -> dict[str, dict[str, Any]]:
+    if payload is None or payload.get("schema_version") != "polymarket-target-cache-v1":
+        return {}
+    rows = payload.get("rows")
+    if not isinstance(rows, list):
+        return {}
+    targets: dict[str, dict[str, Any]] = {}
+    for raw_row in rows:
+        if not isinstance(raw_row, dict):
+            continue
+        row = dict(raw_row)
+        slug = str(row.get("market_slug", "")).casefold()
+        if not slug or row.get("threshold_price") in (None, ""):
+            continue
+        try:
+            observed_ts = _parse_optional_datetime(row.get("threshold_observed_ts"))
+        except (TypeError, ValueError):
+            continue
+        if observed_ts is None or observed_ts > generated_at:
+            continue
+        targets[slug] = row
+    return targets
+
+
+def _merge_cached_targets(
+    rows: tuple[dict[str, Any], ...],
+    targets_by_slug: dict[str, dict[str, Any]],
+) -> tuple[dict[str, Any], ...]:
+    merged: list[dict[str, Any]] = []
+    for raw_row in rows:
+        row = dict(raw_row)
+        target = targets_by_slug.get(str(row.get("market_slug", "")).casefold())
+        if target is not None and row.get("threshold_price") in (None, ""):
+            for field in (
+                "threshold_price",
+                "threshold_event_ts",
+                "threshold_observed_ts",
+            ):
+                row[field] = target.get(field)
+        merged.append(row)
+    return tuple(merged)
 
 
 def _status_contract_rows(payload: dict[str, Any], *, limit: int) -> tuple[dict[str, Any], ...]:

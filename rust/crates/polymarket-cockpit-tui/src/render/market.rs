@@ -56,11 +56,12 @@ pub fn market_rows_for_visible_count(app: &AppState, visible_rows: usize) -> Vec
         .as_ref()
         .map(|monitor| {
             let groups = app.visible_market_groups();
+            let generated_at = app.display_timestamp(&monitor.generated_at);
             let display_rows = market_display_rows(
                 &groups,
                 app.runtime_outcomes.as_ref(),
                 selected_index,
-                &monitor.generated_at,
+                generated_at,
             );
             let selected_display_index = display_rows.iter().position(|row| row.marker == ">");
             let start =
@@ -712,6 +713,47 @@ mod tests {
     }
 
     #[test]
+    fn market_rows_use_stable_display_clock_for_countdown() {
+        let app = AppState {
+            display_now: Some("2026-06-03T21:23:20+00:00".to_string()),
+            runtime_monitor: Some(RuntimeMonitor {
+                generated_at: "2026-06-03T21:23:20.900Z".to_string(),
+                price_rows: Vec::new(),
+                orderbooks: vec![RuntimeOrderbookRow {
+                    venue: Some("polymarket".to_string()),
+                    source_key: Some("polymarket_rust_sdk".to_string()),
+                    market_slug: Some("btc-updown-5m-1780521900".to_string()),
+                    contract_id: "btc-up".to_string(),
+                    token_id: Some("btc-up-token".to_string()),
+                    asset: Some("BTC".to_string()),
+                    side: Some("UP".to_string()),
+                    event_ts: None,
+                    observed_ts: Some("2026-06-03T21:23:18Z".to_string()),
+                    start_ts: None,
+                    expiry_ts: None,
+                    threshold_price: None,
+                    threshold_event_ts: None,
+                    threshold_observed_ts: None,
+                    settlement_price: None,
+                    settlement_event_ts: None,
+                    best_bid: Some("0.45".to_string()),
+                    best_ask: Some("0.46".to_string()),
+                    spread: Some("0.01".to_string()),
+                    bid_size_top: None,
+                    ask_size_top: None,
+                    bids: Vec::new(),
+                    asks: Vec::new(),
+                }],
+            }),
+            ..Default::default()
+        };
+
+        let rows = market_rows(&app);
+
+        assert_eq!(rows[1].tte, "01:40");
+    }
+
+    #[test]
     fn market_rows_show_post_expiration_handoff_timer() {
         let app = AppState {
             runtime_monitor: Some(RuntimeMonitor {
@@ -794,6 +836,9 @@ mod tests {
                     asset: Some("BTC".to_string()),
                     start_ts: Some("2026-06-03T21:20:00Z".to_string()),
                     expiry_ts: Some("2026-06-03T21:25:00Z".to_string()),
+                    threshold_price: None,
+                    threshold_event_ts: None,
+                    threshold_observed_ts: None,
                     computed_winner: None,
                     official_winner: Some("UP".to_string()),
                     winning_token_id: Some("btc-up-token".to_string()),
@@ -834,6 +879,9 @@ mod tests {
                 asset: Some("BTC".to_string()),
                 start_ts: Some("2026-06-03T21:20:00Z".to_string()),
                 expiry_ts: Some("2026-06-03T21:25:00Z".to_string()),
+                threshold_price: None,
+                threshold_event_ts: None,
+                threshold_observed_ts: None,
                 computed_winner: None,
                 official_winner: Some("UP".to_string()),
                 winning_token_id: Some("btc-up-token".to_string()),

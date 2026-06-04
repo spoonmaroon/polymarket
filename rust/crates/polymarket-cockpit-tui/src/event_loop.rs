@@ -22,7 +22,9 @@ use crate::{
 };
 
 type Tui = Terminal<CrosstermBackend<Stdout>>;
-const AUXILIARY_POLL_INTERVAL: Duration = Duration::from_secs(3);
+const PROBABILITY_POLL_INTERVAL: Duration = Duration::from_secs(3);
+const OUTCOME_POLL_INTERVAL: Duration = Duration::from_secs(15);
+const OUTCOME_HISTORY_LIMIT: usize = 5000;
 
 pub async fn run(mut app: AppState, engine_api_url: String, poll_interval_ms: u64) -> Result<()> {
     let mut terminal = TerminalGuard::enter()?;
@@ -90,6 +92,10 @@ fn run_loop(
     let mut redraw_needed = true;
 
     loop {
+        if app.update_display_now(Utc::now()) {
+            redraw_needed = true;
+        }
+
         if drain_runtime_updates(app, runtime_rx) {
             redraw_needed = true;
         }
@@ -145,6 +151,10 @@ fn apply_key(app: &mut AppState, key_code: KeyCode) -> bool {
             app.select_next_outcome();
             false
         }
+        KeyCode::Enter | KeyCode::Char(' ') if app.active_tab == MainTab::Outcomes => {
+            app.toggle_selected_outcome_day();
+            false
+        }
         _ => false,
     }
 }
@@ -172,14 +182,28 @@ impl RuntimeLiveTask {
     ) -> Self {
         let handle = tokio::spawn(async move {
             let client = EngineClient::new(engine_api_url);
-            let auxiliary_client = client.clone();
-            let auxiliary_tx = runtime_tx.clone();
-            let auxiliary_handle = tokio::spawn(async move {
-                let mut interval = tokio::time::interval(AUXILIARY_POLL_INTERVAL);
+            let probability_client = client.clone();
+            let probability_tx = runtime_tx.clone();
+            let probability_handle = tokio::spawn(async move {
+                let mut interval = tokio::time::interval(PROBABILITY_POLL_INTERVAL);
                 loop {
                     interval.tick().await;
-                    if auxiliary_tx
-                        .send(poll_auxiliary_runtime(&auxiliary_client).await)
+                    if probability_tx
+                        .send(poll_probability_runtime(&probability_client).await)
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            });
+            let outcome_client = client.clone();
+            let outcome_tx = runtime_tx.clone();
+            let outcome_handle = tokio::spawn(async move {
+                let mut interval = tokio::time::interval(OUTCOME_POLL_INTERVAL);
+                loop {
+                    interval.tick().await;
+                    if outcome_tx
+                        .send(poll_outcome_runtime(&outcome_client).await)
                         .is_err()
                     {
                         break;
@@ -212,7 +236,8 @@ impl RuntimeLiveTask {
                 }
                 tokio::time::sleep(poll_interval_duration(poll_interval_ms)).await;
             }
-            auxiliary_handle.abort();
+            probability_handle.abort();
+            outcome_handle.abort();
         });
 
         Self { handle }
@@ -303,8 +328,11 @@ async fn poll_runtime(client: &EngineClient) -> RuntimeUpdate {
     let mut outcomes = None;
     let mut display_lag = None;
 
-    let (live_result, probabilities_result, outcomes_result) =
-        tokio::join!(client.live(8), client.probabilities(8), client.outcomes(20));
+    let (live_result, probabilities_result, outcomes_result) = tokio::join!(
+        client.live(8),
+        client.probabilities(8),
+        client.outcomes(OUTCOME_HISTORY_LIMIT)
+    );
 
     match live_result {
         Ok(next_live) => {
@@ -414,9 +442,8 @@ fn runtime_update_from_live(live: RuntimeLive) -> RuntimeUpdate {
     }
 }
 
-async fn poll_auxiliary_runtime(client: &EngineClient) -> RuntimeUpdate {
-    let (probabilities_result, outcomes_result) =
-        tokio::join!(client.probabilities(8), client.outcomes(20));
+async fn poll_probability_runtime(client: &EngineClient) -> RuntimeUpdate {
+    let probabilities_result = client.probabilities(8).await;
     let mut errors = Vec::new();
     let mut update = RuntimeUpdate {
         status: None,
@@ -432,6 +459,26 @@ async fn poll_auxiliary_runtime(client: &EngineClient) -> RuntimeUpdate {
         Ok(probabilities) => update.probabilities = Some(probabilities),
         Err(error) => errors.push(format!("probabilities: {error}")),
     }
+
+    if !errors.is_empty() {
+        update.error = Some(errors.join("; "));
+    }
+    update
+}
+
+async fn poll_outcome_runtime(client: &EngineClient) -> RuntimeUpdate {
+    let outcomes_result = client.outcomes(OUTCOME_HISTORY_LIMIT).await;
+    let mut errors = Vec::new();
+    let mut update = RuntimeUpdate {
+        status: None,
+        gates: None,
+        monitor: None,
+        probabilities: None,
+        outcomes: None,
+        display_lag: None,
+        error: None,
+    };
+
     match outcomes_result {
         Ok(outcomes) => update.outcomes = Some(outcomes),
         Err(error) => errors.push(format!("outcomes: {error}")),
@@ -476,8 +523,9 @@ mod tests {
     use tokio::sync::mpsc;
 
     use super::{
-        AUXILIARY_POLL_INTERVAL, RuntimeUpdate, apply_key, apply_runtime_update,
-        drain_runtime_updates, poll_interval_duration, poll_runtime,
+        OUTCOME_HISTORY_LIMIT, OUTCOME_POLL_INTERVAL, PROBABILITY_POLL_INTERVAL, RuntimeUpdate,
+        apply_key, apply_runtime_update, drain_runtime_updates, poll_interval_duration,
+        poll_runtime,
     };
     use crate::client::EngineClient;
     use crate::{
@@ -550,6 +598,9 @@ mod tests {
                 asset: Some("BTC".to_string()),
                 start_ts: None,
                 expiry_ts: Some("2026-06-03T21:25:00Z".to_string()),
+                threshold_price: None,
+                threshold_event_ts: None,
+                threshold_observed_ts: None,
                 computed_winner: None,
                 official_winner: Some("UP".to_string()),
                 winning_token_id: Some("up-token".to_string()),
@@ -631,7 +682,9 @@ mod tests {
     #[test]
     fn auxiliary_poll_interval_is_slower_than_live_market_polling() {
         assert_eq!(poll_interval_duration(100), Duration::from_millis(100));
-        assert_eq!(AUXILIARY_POLL_INTERVAL, Duration::from_secs(3));
+        assert_eq!(PROBABILITY_POLL_INTERVAL, Duration::from_secs(3));
+        assert_eq!(OUTCOME_POLL_INTERVAL, Duration::from_secs(15));
+        assert_eq!(OUTCOME_HISTORY_LIMIT, 5000);
     }
 
     #[tokio::test]
@@ -854,6 +907,9 @@ mod tests {
                         asset: Some("BTC".to_string()),
                         start_ts: Some("2026-06-03T21:20:00Z".to_string()),
                         expiry_ts: Some("2026-06-03T21:25:00Z".to_string()),
+                        threshold_price: None,
+                        threshold_event_ts: None,
+                        threshold_observed_ts: None,
                         computed_winner: None,
                         official_winner: Some("UP".to_string()),
                         winning_token_id: Some("expired-up-token".to_string()),
@@ -957,6 +1013,9 @@ mod tests {
                         asset: Some("BTC".to_string()),
                         start_ts: None,
                         expiry_ts: Some("2026-06-03T21:25:00Z".to_string()),
+                        threshold_price: None,
+                        threshold_event_ts: None,
+                        threshold_observed_ts: None,
                         computed_winner: None,
                         official_winner: Some("UP".to_string()),
                         winning_token_id: Some("up-token".to_string()),
@@ -970,6 +1029,9 @@ mod tests {
                         asset: Some("ETH".to_string()),
                         start_ts: None,
                         expiry_ts: Some("2026-06-03T21:25:00Z".to_string()),
+                        threshold_price: None,
+                        threshold_event_ts: None,
+                        threshold_observed_ts: None,
                         computed_winner: None,
                         official_winner: Some("DOWN".to_string()),
                         winning_token_id: Some("down-token".to_string()),

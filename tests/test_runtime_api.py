@@ -378,6 +378,22 @@ def test_runtime_outcomes_returns_market_level_history(tmp_path: Path) -> None:
     assert payload["rows"][0]["official_resolution_status"] == "resolved"
 
 
+def test_runtime_outcomes_includes_threshold_fields(tmp_path: Path) -> None:
+    store = _seeded_store_with_outcome(tmp_path, official_winner="UP")
+    app = create_app(status_path=tmp_path / "missing-status.json", duckdb_path=store.db_path)
+
+    response = TestClient(app).get("/api/runtime/outcomes?limit=4")
+
+    assert response.status_code == 200
+    row = response.json()["rows"][0]
+    assert row["threshold_price"] == 70_000.0
+    assert row["threshold_event_ts"] == "2026-06-03T20:00:00+00:00"
+    assert row["threshold_observed_ts"] == "2026-06-03T20:00:00+00:00"
+    assert row["end_price"] == 70_100.0
+    assert row["end_event_ts"] == "2026-06-03T20:05:00+00:00"
+    assert row["end_observed_ts"] == "2026-06-03T20:05:00+00:00"
+
+
 def test_runtime_outcomes_reads_live_outcome_status_file(tmp_path: Path) -> None:
     outcome_status_path = tmp_path / "live" / "outcomes.json"
     outcome_status_path.parent.mkdir()
@@ -978,6 +994,12 @@ def _runtime_outcome_row(asset: str, official_winner: str) -> dict[str, object]:
         "interval": "5m",
         "start_ts": "2026-06-03T20:00:00+00:00",
         "expiry_ts": "2026-06-03T20:05:00+00:00",
+        "threshold_price": None,
+        "threshold_event_ts": None,
+        "threshold_observed_ts": None,
+        "end_price": None,
+        "end_event_ts": None,
+        "end_observed_ts": None,
         "computed_winner": None,
         "official_winner": official_winner,
         "winning_token_id": "up-token" if official_winner == "UP" else "down-token",

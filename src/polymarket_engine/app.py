@@ -20,6 +20,7 @@ def create_app(
     normalized_health_path: Path = Path("data/live/normalized_health.json"),
     probability_status_path: Optional[Path] = None,
     outcome_status_path: Optional[Path] = None,
+    target_cache_path: Optional[Path] = None,
     data_dir: Path = Path("data"),
     enable_container_status: bool | None = None,
     enable_runtime_probabilities: bool | None = None,
@@ -28,6 +29,7 @@ def create_app(
         "probabilities.json"
     )
     outcome_status_path = outcome_status_path or status_path.with_name("outcomes.json")
+    target_cache_path = target_cache_path or status_path.with_name("targets.json")
     app = FastAPI(title="Polymarket Engine", version="0.1.0")
 
     @app.get("/health")
@@ -41,6 +43,7 @@ def create_app(
             normalized_health_path=normalized_health_path,
             probability_status_path=probability_status_path,
             outcome_status_path=outcome_status_path,
+            target_cache_path=target_cache_path,
             data_dir=data_dir,
             enable_container_status=container_status_enabled_from_env()
             if enable_container_status is None
@@ -68,6 +71,10 @@ def create_app_from_env() -> FastAPI:
         outcome_status_path=_env_path(
             "POLYMARKET_OUTCOME_STATUS_PATH",
             Path("data/live/outcomes.json"),
+        ),
+        target_cache_path=_env_path(
+            "POLYMARKET_TARGET_STATUS_PATH",
+            Path("data/live/targets.json"),
         ),
         data_dir=_env_path("POLYMARKET_DATA_DIR", Path("data")),
     )

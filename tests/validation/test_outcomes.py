@@ -107,6 +107,60 @@ def test_official_outcome_uses_only_polymarket_source_payload(
     assert row["mismatch"] is None
 
 
+def test_official_outcome_records_chainlink_threshold_without_computing_winner(
+    tmp_path: Path,
+) -> None:
+    store = seeded_store_with_btc_market(
+        tmp_path,
+        start_price=65_000.0,
+        end_price=65_100.0,
+    )
+
+    upsert_official_market_outcomes(
+        store=store,
+        asof_ts=UTC_EXPIRY_PLUS_ONE,
+        market_payload_source=lambda _condition_id: _polymarket_market_payload(
+            winning_token_id="up-token"
+        ),
+    )
+
+    row = fetch_outcome(store.db_path, "btc-updown-5m-1780502400")
+    assert row["threshold_price"] == 65_000.0
+    assert row["threshold_event_ts"] == UTC_START
+    assert row["threshold_observed_ts"] == UTC_START
+    assert row["end_price"] == 65_100.0
+    assert row["end_event_ts"] == UTC_EXPIRY
+    assert row["end_observed_ts"] == UTC_EXPIRY
+    assert row["computed_winner"] is None
+    assert row["official_winner"] == "UP"
+
+
+def test_official_outcome_leaves_threshold_null_when_chainlink_start_reference_missing(
+    tmp_path: Path,
+) -> None:
+    store = seeded_store_with_btc_market(
+        tmp_path,
+        start_price=None,
+        end_price=65_100.0,
+    )
+
+    upsert_official_market_outcomes(
+        store=store,
+        asof_ts=UTC_EXPIRY_PLUS_ONE,
+        market_payload_source=lambda _condition_id: _polymarket_market_payload(
+            winning_token_id="up-token"
+        ),
+    )
+
+    row = fetch_outcome(store.db_path, "btc-updown-5m-1780502400")
+    assert row["threshold_price"] is None
+    assert row["threshold_event_ts"] is None
+    assert row["threshold_observed_ts"] is None
+    assert row["end_price"] == 65_100.0
+    assert row["computed_winner"] is None
+    assert row["official_winner"] == "UP"
+
+
 def test_latest_market_outcome_rows_reads_history_read_only(tmp_path: Path) -> None:
     store = seeded_store_with_btc_market(
         tmp_path,
@@ -394,7 +448,10 @@ def fetch_outcome(db_path: Path, market_id: str) -> dict[str, object]:
         row = conn.execute(
             """
             select market_id, computed_winner, official_winner, winning_token_id,
-                   official_resolution_status, official_label_source, mismatch
+                   official_resolution_status, official_label_source, mismatch,
+                   threshold_price, threshold_event_ts::VARCHAR,
+                   threshold_observed_ts::VARCHAR, end_price, end_event_ts::VARCHAR,
+                   end_observed_ts::VARCHAR
             from validation.market_outcome_history
             where market_id = ?
             """,
@@ -409,7 +466,19 @@ def fetch_outcome(db_path: Path, market_id: str) -> dict[str, object]:
         "official_resolution_status": row[4],
         "official_label_source": row[5],
         "mismatch": row[6],
+        "threshold_price": row[7],
+        "threshold_event_ts": _parse_optional_ts(row[8]),
+        "threshold_observed_ts": _parse_optional_ts(row[9]),
+        "end_price": row[10],
+        "end_event_ts": _parse_optional_ts(row[11]),
+        "end_observed_ts": _parse_optional_ts(row[12]),
     }
+
+
+def _parse_optional_ts(value: object) -> datetime | None:
+    if value is None:
+        return None
+    return datetime.fromisoformat(str(value).replace("Z", "+00:00")).astimezone(timezone.utc)
 
 
 def _polymarket_market_payload(*, winning_token_id: str) -> dict[str, object]:

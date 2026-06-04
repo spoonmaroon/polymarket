@@ -2,6 +2,7 @@ pub mod client;
 mod event_loop;
 mod layout;
 pub mod market_view;
+pub mod outcome_view;
 mod render;
 mod state;
 pub mod status;

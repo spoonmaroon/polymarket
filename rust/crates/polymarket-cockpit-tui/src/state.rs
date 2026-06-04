@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use chrono::{DateTime, Utc};
 
@@ -68,6 +68,8 @@ pub struct AppState {
     pub runtime_error: Option<String>,
     pub selected_market_key: Option<String>,
     pub selected_outcome_index: Option<usize>,
+    pub expanded_outcome_days: BTreeSet<String>,
+    pub display_now: Option<String>,
     pub price_history: Vec<PriceHistoryPoint>,
 }
 
@@ -86,6 +88,8 @@ impl Default for AppState {
             runtime_error: None,
             selected_market_key: None,
             selected_outcome_index: None,
+            expanded_outcome_days: BTreeSet::new(),
+            display_now: None,
             price_history: Vec::new(),
         }
     }
@@ -324,6 +328,46 @@ impl AppState {
         self.selected_outcome_index = Some((current + count - 1) % count);
     }
 
+    pub fn toggle_selected_outcome_day(&mut self) -> bool {
+        let Some(index) = self.effective_outcome_index() else {
+            return false;
+        };
+        let Some(day_key) = crate::outcome_view::outcome_day_key_at(
+            self.runtime_outcomes.as_ref(),
+            &self.expanded_outcome_days,
+            index,
+        ) else {
+            return false;
+        };
+        if !self.expanded_outcome_days.insert(day_key.clone()) {
+            self.expanded_outcome_days.remove(&day_key);
+        }
+        self.sync_outcome_selection();
+        true
+    }
+
+    #[cfg(test)]
+    pub fn selected_outcome_display_row_is_visible(&self) -> bool {
+        self.effective_outcome_index()
+            .is_some_and(|index| index < self.outcome_count().unwrap_or_default())
+    }
+
+    pub fn update_display_now(&mut self, now: DateTime<Utc>) -> bool {
+        let Some(floored) = DateTime::<Utc>::from_timestamp(now.timestamp(), 0) else {
+            return false;
+        };
+        let next = floored.to_rfc3339();
+        if self.display_now.as_ref() == Some(&next) {
+            return false;
+        }
+        self.display_now = Some(next);
+        true
+    }
+
+    pub fn display_timestamp<'a>(&'a self, fallback: &'a str) -> &'a str {
+        self.display_now.as_deref().unwrap_or(fallback)
+    }
+
     fn orderbook_count(&self) -> Option<usize> {
         self.runtime_monitor
             .as_ref()
@@ -331,9 +375,13 @@ impl AppState {
     }
 
     fn outcome_count(&self) -> Option<usize> {
-        self.runtime_outcomes
-            .as_ref()
-            .map(|outcomes| outcomes.rows.len())
+        self.runtime_outcomes.as_ref().map(|_| {
+            crate::outcome_view::outcome_display_items(
+                self.runtime_outcomes.as_ref(),
+                &self.expanded_outcome_days,
+            )
+            .len()
+        })
     }
 
     fn default_market_index(&self) -> Option<usize> {
@@ -845,7 +893,7 @@ mod tests {
         assert_eq!(app.selected_outcome_index, Some(1));
 
         app.select_next_outcome();
-        assert_eq!(app.selected_outcome_index, Some(0));
+        assert_eq!(app.selected_outcome_index, Some(2));
 
         app.select_previous_outcome();
         assert_eq!(app.selected_outcome_index, Some(1));
@@ -859,11 +907,13 @@ mod tests {
         };
         app.sync_outcome_selection();
         app.select_next_outcome();
+        app.select_next_outcome();
 
         app.runtime_outcomes = Some(outcomes(vec!["BTC 5m 16:25"]));
         app.sync_outcome_selection();
 
-        assert_eq!(app.selected_outcome_index, Some(0));
+        assert_eq!(app.selected_outcome_index, Some(1));
+        assert!(app.selected_outcome_display_row_is_visible());
     }
 
     #[test]
@@ -1137,6 +1187,9 @@ mod tests {
             asset: Some(asset.to_string()),
             start_ts: Some("2026-06-03T21:20:00Z".to_string()),
             expiry_ts: Some("2026-06-03T21:25:00Z".to_string()),
+            threshold_price: None,
+            threshold_event_ts: None,
+            threshold_observed_ts: None,
             computed_winner: None,
             official_winner: None,
             winning_token_id: None,
@@ -1221,6 +1274,9 @@ mod tests {
                     asset: Some("BTC".to_string()),
                     start_ts: None,
                     expiry_ts: Some("2026-06-03T21:25:00Z".to_string()),
+                    threshold_price: None,
+                    threshold_event_ts: None,
+                    threshold_observed_ts: None,
                     computed_winner: None,
                     official_winner: Some("UP".to_string()),
                     winning_token_id: Some(format!("token-{index}")),
