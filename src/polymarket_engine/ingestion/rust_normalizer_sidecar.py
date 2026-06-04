@@ -522,7 +522,7 @@ def _run_changed_rust_normalizer_cycle_with_store(
     if status_mtime_ns is None:
         status_mtime_ns = _file_mtime_ns(status_path)
     build_state = status_mtime_ns is not None and (
-        _observations_written(summary) or status_mtime_ns != previous_status_mtime_ns
+        status_mtime_ns != previous_status_mtime_ns
     )
 
     contracts_upserted = 0

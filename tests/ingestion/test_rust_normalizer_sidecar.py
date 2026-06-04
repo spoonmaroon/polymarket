@@ -438,6 +438,85 @@ def test_sidecar_loop_skips_state_build_for_cross_cycle_duplicate_raw_state(
     assert build_calls == 1
 
 
+def test_sidecar_loop_skips_state_build_for_raw_append_when_status_is_idle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    raw_root = tmp_path / "raw"
+    db_path = tmp_path / "state.duckdb"
+    status_path = tmp_path / "live" / "status.json"
+    health_path = tmp_path / "live" / "normalized_health.json"
+    start_ts = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    asof_ts = start_ts + timedelta(minutes=2)
+    _write_current_hour_raw_tree(raw_root=raw_root, start_ts=start_ts, asof_ts=asof_ts)
+    _write_status(status_path, start_ts=start_ts, asof_ts=asof_ts)
+    changed_path = (
+        raw_root
+        / "polymarket_clob_market_ws"
+        / "best_bid_ask"
+        / f"date={asof_ts.date().isoformat()}"
+        / f"hour={asof_ts.hour:02d}"
+        / "events.jsonl"
+    )
+    real_build = getattr(
+        rust_normalizer_sidecar,
+        "build_current_decision_state_snapshots",
+    )
+    build_calls = 0
+
+    def counting_build(*args: Any, **kwargs: Any) -> Any:
+        nonlocal build_calls
+        build_calls += 1
+        return real_build(*args, **kwargs)
+
+    def append_new_raw_row(_: float) -> None:
+        with changed_path.open("a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(
+                    _orderbook_row(
+                        "up-token",
+                        asof_ts + timedelta(seconds=1),
+                        asof_ts + timedelta(seconds=1),
+                        0.63,
+                        0.66,
+                    ),
+                    separators=(",", ":"),
+                )
+                + "\n"
+            )
+
+    monkeypatch.setattr(
+        "polymarket_engine.ingestion.rust_normalizer_sidecar."
+        "build_current_decision_state_snapshots",
+        counting_build,
+    )
+    monkeypatch.setattr(
+        "polymarket_engine.ingestion.rust_normalizer_sidecar.time.sleep",
+        append_new_raw_row,
+    )
+
+    run_rust_normalizer_loop(
+        raw_root=raw_root,
+        db_path=db_path,
+        status_path=status_path,
+        normalized_health_path=health_path,
+        interval_seconds=0.0,
+        include_next=False,
+        max_cycles=2,
+    )
+
+    lines = [
+        line
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith("normalizer_cycle ")
+    ]
+    assert len(lines) == 2
+    assert _log_values(lines[1])["rows_read"] == "1"
+    assert _log_values(lines[1])["state_skipped"] == "true"
+    assert build_calls == 1
+
+
 def test_sidecar_loop_skips_normalize_when_raw_tree_is_idle(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
