@@ -181,6 +181,10 @@ def test_runtime_api_service_is_deployed_with_engine_compose() -> None:
     assert "up -d --build collector normalizer api" in script
     assert "logs --tail=80 collector normalizer api" in script
     assert "docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml ps" in pc_script
+    assert 'get_json("/health")' in pc_script
+    assert 'get_json("/api/runtime/live?limit=8")' in pc_script
+    assert 'get_json("/api/runtime/outcomes?limit=8")' in pc_script
+    assert "/api/runtime/live/stream?limit=8&interval_ms=250&max_events=1" in pc_script
 
 
 def test_compose_and_env_support_prebuilt_image_overrides() -> None:

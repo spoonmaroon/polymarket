@@ -37,6 +37,7 @@ IDLE_NORMALIZED_HEALTH_WRITE_INTERVAL_SECONDS = 5.0
 PROBABILITY_OUTPUT_LIMIT = 8
 PROBABILITY_MAX_STATE_AGE_SECONDS = 600.0
 OUTCOME_OUTPUT_LIMIT = 20
+OUTCOME_REFRESH_INTERVAL_SECONDS = 30.0
 
 
 @dataclass(frozen=True)
@@ -155,6 +156,7 @@ def _run_rust_normalizer_cycle_with_store(
     previous_status_mtime_ns: int | None = None,
     status_mtime_ns: int | None = None,
     force_state_build: bool = True,
+    refresh_outcomes: bool = True,
     state_read_cache: CurrentDecisionStateReadCache | None = None,
     probability_status_path: Path | None = None,
     outcome_status_path: Path | None = None,
@@ -210,9 +212,13 @@ def _run_rust_normalizer_cycle_with_store(
                 store=store,
                 out_path=probability_status_path,
             )
-    market_outcomes_written = _upsert_market_outcomes(
-        store=store,
-        out_path=outcome_status_path,
+    market_outcomes_written = (
+        _upsert_market_outcomes(
+            store=store,
+            out_path=outcome_status_path,
+        )
+        if refresh_outcomes
+        else 0
     )
     state_at = time.perf_counter()
 
@@ -266,8 +272,13 @@ def run_rust_normalizer_loop(
         orderbook_state_cache: dict[tuple[str, str], tuple[object, ...]] = {}
         state_read_cache = CurrentDecisionStateReadCache()
         last_health_write_monotonic: float | None = None
+        last_outcome_refresh_monotonic: float | None = None
         while True:
             cycle_started = time.monotonic()
+            refresh_outcomes = _outcome_refresh_due(
+                last_outcome_refresh_monotonic=last_outcome_refresh_monotonic,
+                cycle_started=cycle_started,
+            )
             status_signature = _status_state_signature(status_path)
             status_mtime_ns = (
                 status_signature.mtime_ns if status_signature is not None else None
@@ -310,6 +321,7 @@ def run_rust_normalizer_loop(
                     previous_status_mtime_ns=effective_previous_status_mtime_ns,
                     status_mtime_ns=status_mtime_ns,
                     force_state_build=cycles_run == 0,
+                    refresh_outcomes=refresh_outcomes,
                     state_read_cache=state_read_cache,
                 )
                 last_health_write_monotonic = cycle_started
@@ -330,6 +342,7 @@ def run_rust_normalizer_loop(
                         checkpoint_cache=raw_checkpoint_cache,
                         price_state_cache=price_state_cache,
                         orderbook_state_cache=orderbook_state_cache,
+                        refresh_outcomes=refresh_outcomes,
                         state_read_cache=state_read_cache,
                     )
                 else:
@@ -346,6 +359,7 @@ def run_rust_normalizer_loop(
                         previous_status_mtime_ns=effective_previous_status_mtime_ns,
                         status_mtime_ns=status_mtime_ns,
                         force_state_build=True,
+                        refresh_outcomes=refresh_outcomes,
                         state_read_cache=state_read_cache,
                     )
                 last_health_write_monotonic = cycle_started
@@ -374,6 +388,7 @@ def run_rust_normalizer_loop(
                         checkpoint_cache=raw_checkpoint_cache,
                         price_state_cache=price_state_cache,
                         orderbook_state_cache=orderbook_state_cache,
+                        refresh_outcomes=refresh_outcomes,
                         state_read_cache=state_read_cache,
                     )
                     if not result.health_skipped:
@@ -397,11 +412,14 @@ def run_rust_normalizer_loop(
                         status_mtime_ns=status_mtime_ns,
                         force_state_build=cycles_run == 0,
                         write_health=write_health,
+                        refresh_outcomes=refresh_outcomes,
                         state_read_cache=state_read_cache,
                     )
                     if not result.health_skipped:
                         last_health_write_monotonic = cycle_started
             print(_cycle_log_line(result), flush=True)
+            if refresh_outcomes:
+                last_outcome_refresh_monotonic = cycle_started
             previous_status_mtime_ns = status_mtime_ns
             previous_status_signature = status_signature
             if full_scan_due:
@@ -440,6 +458,7 @@ def _run_changed_rust_normalizer_cycle_with_store(
     checkpoint_cache: dict[Path, int] | None = None,
     price_state_cache: dict[tuple[str, str], tuple[object, ...]] | None = None,
     orderbook_state_cache: dict[tuple[str, str], tuple[object, ...]] | None = None,
+    refresh_outcomes: bool = True,
     state_read_cache: CurrentDecisionStateReadCache | None = None,
     probability_status_path: Path | None = None,
     outcome_status_path: Path | None = None,
@@ -517,9 +536,13 @@ def _run_changed_rust_normalizer_cycle_with_store(
                 store=store,
                 out_path=probability_status_path,
             )
-    market_outcomes_written = _upsert_market_outcomes(
-        store=store,
-        out_path=outcome_status_path,
+    market_outcomes_written = (
+        _upsert_market_outcomes(
+            store=store,
+            out_path=outcome_status_path,
+        )
+        if refresh_outcomes
+        else 0
     )
     state_at = time.perf_counter()
 
@@ -557,6 +580,7 @@ def _run_idle_rust_normalizer_cycle_with_store(
     status_mtime_ns: int | None = None,
     force_state_build: bool = False,
     write_health: bool = True,
+    refresh_outcomes: bool = True,
     state_read_cache: CurrentDecisionStateReadCache | None = None,
     probability_status_path: Path | None = None,
     outcome_status_path: Path | None = None,
@@ -598,9 +622,13 @@ def _run_idle_rust_normalizer_cycle_with_store(
                 store=store,
                 out_path=probability_status_path,
             )
-    market_outcomes_written = _upsert_market_outcomes(
-        store=store,
-        out_path=outcome_status_path,
+    market_outcomes_written = (
+        _upsert_market_outcomes(
+            store=store,
+            out_path=outcome_status_path,
+        )
+        if refresh_outcomes
+        else 0
     )
     state_at = time.perf_counter()
 
@@ -915,6 +943,18 @@ def _idle_health_write_due(
     return (
         last_health_write_monotonic is None
         or cycle_started - last_health_write_monotonic >= interval_seconds
+    )
+
+
+def _outcome_refresh_due(
+    *,
+    last_outcome_refresh_monotonic: float | None,
+    cycle_started: float,
+    interval_seconds: float = OUTCOME_REFRESH_INTERVAL_SECONDS,
+) -> bool:
+    return (
+        last_outcome_refresh_monotonic is None
+        or cycle_started - last_outcome_refresh_monotonic >= interval_seconds
     )
 
 

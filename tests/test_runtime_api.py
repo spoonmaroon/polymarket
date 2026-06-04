@@ -386,8 +386,8 @@ def test_runtime_outcomes_reads_live_outcome_status_file(tmp_path: Path) -> None
                 "state": "OK",
                 "generated_at": datetime.now(UTC).isoformat(),
                 "rows": [
-                    {"market": "BTC 5m", "computed_winner": "UP"},
-                    {"market": "ETH 5m", "computed_winner": "DOWN"},
+                    _runtime_outcome_row("BTC", "UP"),
+                    _runtime_outcome_row("ETH", "DOWN"),
                 ],
             }
         ),
@@ -404,7 +404,71 @@ def test_runtime_outcomes_reads_live_outcome_status_file(tmp_path: Path) -> None
     assert response.status_code == 200
     payload = response.json()
     assert payload["ok"] is True
-    assert payload["rows"] == [{"market": "BTC 5m", "computed_winner": "UP"}]
+    assert payload["rows"] == [_runtime_outcome_row("BTC", "UP")]
+
+
+def test_runtime_outcomes_rejects_stale_live_outcome_status_file(tmp_path: Path) -> None:
+    outcome_status_path = tmp_path / "live" / "outcomes.json"
+    outcome_status_path.parent.mkdir()
+    outcome_status_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "polymarket-outcome-runtime-v1",
+                "ok": True,
+                "state": "OK",
+                "generated_at": datetime(2026, 1, 1, tzinfo=UTC).isoformat(),
+                "rows": [_runtime_outcome_row("BTC", "UP")],
+            }
+        ),
+        encoding="utf-8",
+    )
+    app = create_app(
+        status_path=tmp_path / "missing-status.json",
+        duckdb_path=tmp_path / "locked-or-missing.duckdb",
+        outcome_status_path=outcome_status_path,
+    )
+
+    response = TestClient(app).get("/api/runtime/outcomes?limit=1")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["state"] == "STALE"
+    assert "stale" in payload["error"]
+    assert payload["rows"] == [_runtime_outcome_row("BTC", "UP")]
+
+
+def test_runtime_outcomes_rejects_malformed_live_outcome_status_rows(
+    tmp_path: Path,
+) -> None:
+    outcome_status_path = tmp_path / "live" / "outcomes.json"
+    outcome_status_path.parent.mkdir()
+    outcome_status_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "polymarket-outcome-runtime-v1",
+                "ok": True,
+                "state": "OK",
+                "generated_at": datetime.now(UTC).isoformat(),
+                "rows": [{"market": "BTC 5m", "computed_winner": "UP"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    app = create_app(
+        status_path=tmp_path / "missing-status.json",
+        duckdb_path=tmp_path / "locked-or-missing.duckdb",
+        outcome_status_path=outcome_status_path,
+    )
+
+    response = TestClient(app).get("/api/runtime/outcomes?limit=1")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["state"] == "INVALID"
+    assert "missing row field" in payload["error"]
+    assert payload["rows"] == []
 
 
 def test_runtime_monitor_malformed_status_returns_empty_envelope(tmp_path: Path) -> None:
@@ -828,6 +892,22 @@ def _seeded_store_with_outcome(
         )
     )
     return store
+
+
+def _runtime_outcome_row(asset: str, computed_winner: str) -> dict[str, object]:
+    return {
+        "market": f"{asset} 5m",
+        "market_id": f"{asset.lower()}-updown-5m-1780502400",
+        "market_slug": f"{asset.lower()}-updown-5m-1780502400",
+        "asset": asset,
+        "interval": "5m",
+        "start_ts": "2026-06-03T20:00:00+00:00",
+        "expiry_ts": "2026-06-03T20:05:00+00:00",
+        "computed_winner": computed_winner,
+        "official_winner": None,
+        "official_resolution_status": "pending",
+        "mismatch": None,
+    }
 
 
 def test_runtime_containers_enabled_missing_docker_returns_controlled_state(

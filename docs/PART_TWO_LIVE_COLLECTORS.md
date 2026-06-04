@@ -141,7 +141,9 @@ signal.
 The normalizer also writes `data/live/outcomes.json` from its writer-owned
 DuckDB connection. `/api/runtime/outcomes` reads that live file first so the
 read-only API and cockpit do not contend with the normalizer's long-lived DuckDB
-writer connection.
+writer connection. Outcome-history refresh is intentionally throttled relative
+to the hot state loop because outcomes only change after market expiry and
+should not burn CPU on every 0.1s normalization pass.
 
 ## Source Rules
 

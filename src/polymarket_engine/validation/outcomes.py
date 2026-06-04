@@ -18,6 +18,20 @@ from polymarket_engine.storage.atomic import durable_replace
 from polymarket_engine.storage.duckdb_store import DuckDbIngestStore, MarketOutcomeRecord
 
 OUTCOME_HISTORY_SCHEMA_VERSION = "polymarket-outcome-runtime-v1"
+OUTCOME_STATUS_MAX_AGE_SECONDS = 120.0
+OUTCOME_STATUS_REQUIRED_ROW_FIELDS = (
+    "market",
+    "market_id",
+    "market_slug",
+    "asset",
+    "interval",
+    "start_ts",
+    "expiry_ts",
+    "computed_winner",
+    "official_winner",
+    "official_resolution_status",
+    "mismatch",
+)
 
 
 @dataclass(frozen=True)
@@ -264,6 +278,27 @@ def _outcome_status_payload_from_file(
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "rows": [],
         }
+    schema_version = payload.get("schema_version")
+    if schema_version != OUTCOME_HISTORY_SCHEMA_VERSION:
+        return {
+            "ok": False,
+            "state": "INVALID",
+            "error": (
+                "outcome status schema invalid: expected "
+                f"{OUTCOME_HISTORY_SCHEMA_VERSION}, got {schema_version!r}"
+            ),
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "rows": [],
+        }
+    generated_at = _parse_outcome_status_generated_at(payload.get("generated_at"))
+    if generated_at is None:
+        return {
+            "ok": False,
+            "state": "INVALID",
+            "error": "outcome status shape invalid: generated_at must be an ISO timestamp",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "rows": [],
+        }
     rows = payload.get("rows")
     if not isinstance(rows, list):
         return {
@@ -273,9 +308,49 @@ def _outcome_status_payload_from_file(
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "rows": [],
         }
+    row_error = _outcome_status_row_error(rows)
+    if row_error is not None:
+        return {
+            "ok": False,
+            "state": "INVALID",
+            "error": row_error,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "rows": [],
+        }
     limited = dict(payload)
     limited["rows"] = rows[:limit]
+    age_seconds = (datetime.now(timezone.utc) - generated_at).total_seconds()
+    if age_seconds > OUTCOME_STATUS_MAX_AGE_SECONDS:
+        limited["ok"] = False
+        limited["state"] = "STALE"
+        limited["error"] = (
+            f"outcome status stale: age_seconds={age_seconds:.3f} "
+            f"max={OUTCOME_STATUS_MAX_AGE_SECONDS:.3f}"
+        )
     return limited
+
+
+def _parse_outcome_status_generated_at(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return _to_utc(parsed)
+
+
+def _outcome_status_row_error(rows: list[Any]) -> str | None:
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            return f"outcome status shape invalid: row {index} must be an object"
+        for field in OUTCOME_STATUS_REQUIRED_ROW_FIELDS:
+            if field not in row:
+                return (
+                    "outcome status shape invalid: "
+                    f"row {index} missing row field {field}"
+                )
+    return None
 
 
 @contextmanager

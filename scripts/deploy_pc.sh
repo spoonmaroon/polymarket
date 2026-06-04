@@ -202,6 +202,40 @@ python3 scripts/check_collector_status.py \\
   --max-normalized-health-age-ms 30000 \\
   --expected-prewarm-windows 2
 
+POLYMARKET_API_PORT="\$PC_API_PORT" python3 - <<'PY'
+import json
+import os
+import urllib.request
+
+base = f"http://127.0.0.1:{os.environ['POLYMARKET_API_PORT']}"
+
+
+def get_json(path: str) -> dict[str, object]:
+    with urllib.request.urlopen(base + path, timeout=15) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+health = get_json("/health")
+if health.get("status") != "ok":
+    raise SystemExit(f"health smoke failed: {health}")
+
+live = get_json("/api/runtime/live?limit=8")
+if live.get("ok") is not True or not live.get("monitor", {}).get("orderbooks"):
+    raise SystemExit(f"runtime live smoke failed: {live}")
+
+outcomes = get_json("/api/runtime/outcomes?limit=8")
+if outcomes.get("ok") is not True or not isinstance(outcomes.get("rows"), list):
+    raise SystemExit(f"runtime outcomes smoke failed: {outcomes}")
+
+with urllib.request.urlopen(
+    base + "/api/runtime/live/stream?limit=8&interval_ms=250&max_events=1",
+    timeout=15,
+) as response:
+    body = response.read().decode("utf-8")
+if "event: live" not in body or "data: " not in body:
+    raise SystemExit("runtime SSE smoke failed")
+PY
+
 docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml ps
 printf 'THEPC TUI installed %s\\n' "\$PC_BIN_DIR/polymarket-cockpit-tui"
 printf 'THEPC deployed %s\\n' "\$FULL_SHA"

@@ -231,7 +231,8 @@ The normalizer publishes outcome history to
 `/var/lib/polymarket/live/outcomes.json`, and the API reads that file before any
 DuckDB fallback. This avoids read contention with the normalizer's live writer
 connection while preserving `validation.market_outcome_history` for replay and
-audit.
+audit. The normalizer refreshes outcome history on a slower cadence than the hot
+state loop so expired-market labeling does not dominate the 0.1s runtime path.
 
 Local API:
 

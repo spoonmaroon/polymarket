@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Optional
 
 from fastapi import FastAPI
 
@@ -13,11 +14,15 @@ def create_app(
     status_path: Path = Path("data/live/status.json"),
     duckdb_path: Path = Path("data/db/polymarket.duckdb"),
     normalized_health_path: Path = Path("data/live/normalized_health.json"),
-    probability_status_path: Path = Path("data/live/probabilities.json"),
-    outcome_status_path: Path = Path("data/live/outcomes.json"),
+    probability_status_path: Optional[Path] = None,
+    outcome_status_path: Optional[Path] = None,
     data_dir: Path = Path("data"),
     enable_container_status: bool | None = None,
 ) -> FastAPI:
+    probability_status_path = probability_status_path or status_path.with_name(
+        "probabilities.json"
+    )
+    outcome_status_path = outcome_status_path or status_path.with_name("outcomes.json")
     app = FastAPI(title="Polymarket Engine", version="0.1.0")
 
     @app.get("/health")

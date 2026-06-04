@@ -173,6 +173,47 @@ def test_sidecar_loop_reuses_process_and_sleeps_between_cycles(
     assert 0.0 < sleeps[0] <= 1.25
 
 
+def test_sidecar_loop_throttles_market_outcome_refresh(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_root = tmp_path / "raw"
+    db_path = tmp_path / "state.duckdb"
+    status_path = tmp_path / "live" / "status.json"
+    health_path = tmp_path / "live" / "normalized_health.json"
+    start_ts = datetime(2026, 6, 2, 6, 0, tzinfo=timezone.utc)
+    asof_ts = start_ts + timedelta(minutes=2)
+    _write_raw_tree(raw_root=raw_root, start_ts=start_ts, asof_ts=asof_ts)
+    _write_status(status_path, start_ts=start_ts, asof_ts=asof_ts)
+    outcome_refreshes: list[Path] = []
+
+    def fake_upsert_market_outcomes(*, store: DuckDbIngestStore, out_path: Path) -> int:
+        outcome_refreshes.append(out_path)
+        return 0
+
+    monkeypatch.setattr(
+        rust_normalizer_sidecar,
+        "_upsert_market_outcomes",
+        fake_upsert_market_outcomes,
+    )
+    monkeypatch.setattr(
+        "polymarket_engine.ingestion.rust_normalizer_sidecar.time.sleep",
+        lambda _: None,
+    )
+
+    run_rust_normalizer_loop(
+        raw_root=raw_root,
+        db_path=db_path,
+        status_path=status_path,
+        normalized_health_path=health_path,
+        interval_seconds=0.0,
+        include_next=False,
+        max_cycles=3,
+    )
+
+    assert outcome_refreshes == [health_path.with_name("outcomes.json")]
+
+
 def test_sidecar_loop_initial_cycle_normalizes_only_active_raw_files(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
