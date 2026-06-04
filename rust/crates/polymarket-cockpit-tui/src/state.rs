@@ -8,7 +8,7 @@ use crate::outcome_view::{
 };
 use crate::status::{
     RuntimeDisplayLag, RuntimeGates, RuntimeMonitor, RuntimeOrderbookRow, RuntimeOutcomeRow,
-    RuntimeOutcomes, RuntimePriceRow, RuntimeProbabilities, RuntimeStatus,
+    RuntimeOutcomes, RuntimePriceRow, RuntimeProbabilities, RuntimeStatus, RuntimeVolatility,
 };
 
 const EXPIRED_MARKET_HANDOFF_SECONDS: i64 = 60;
@@ -65,6 +65,7 @@ pub struct AppState {
     pub runtime_status: Option<RuntimeStatus>,
     pub runtime_gates: Option<RuntimeGates>,
     pub runtime_monitor: Option<RuntimeMonitor>,
+    pub runtime_volatility: Option<RuntimeVolatility>,
     pub runtime_probabilities: Option<RuntimeProbabilities>,
     pub runtime_outcomes: Option<RuntimeOutcomes>,
     pub resolved_outcome_seen_at: HashMap<String, String>,
@@ -86,6 +87,7 @@ impl Default for AppState {
             runtime_status: None,
             runtime_gates: None,
             runtime_monitor: None,
+            runtime_volatility: None,
             runtime_probabilities: None,
             runtime_outcomes: None,
             resolved_outcome_seen_at: HashMap::new(),

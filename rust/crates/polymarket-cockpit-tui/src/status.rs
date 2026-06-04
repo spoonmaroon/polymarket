@@ -51,7 +51,40 @@ pub struct RuntimeLive {
     pub gates: RuntimeGates,
     pub monitor: RuntimeMonitor,
     #[serde(default)]
+    pub volatility: RuntimeVolatility,
+    #[serde(default)]
     pub latency: RuntimeDisplayLag,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+pub struct RuntimeVolatility {
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub rows: Vec<RuntimeVolatilityRow>,
+    #[serde(default)]
+    pub errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct RuntimeVolatilityRow {
+    pub asset: String,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub asof_ts: Option<String>,
+    #[serde(default)]
+    pub sigma_tau: Option<f64>,
+    #[serde(default)]
+    pub short_realized_vol: Option<f64>,
+    #[serde(default)]
+    pub medium_realized_vol: Option<f64>,
+    #[serde(default)]
+    pub long_realized_vol: Option<f64>,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub volatility_regime: Option<String>,
+    #[serde(default)]
+    pub age_ms: Option<u64>,
+    #[serde(default)]
+    pub flags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
@@ -419,6 +452,21 @@ mod tests {
                 "price_rows": [],
                 "orderbooks": []
             },
+            "volatility": {
+                "state": "OK",
+                "rows": [{
+                    "asset": "BTC",
+                    "asof_ts": "2026-06-03T21:00:00+00:00",
+                    "sigma_tau": 0.0012,
+                    "short_realized_vol": 0.0001,
+                    "medium_realized_vol": 0.0002,
+                    "long_realized_vol": 0.0003,
+                    "volatility_regime": "normal",
+                    "age_ms": 120,
+                    "flags": ["OK"]
+                }],
+                "errors": []
+            },
             "latency": {
                 "status_age_ms": 12,
                 "api_build_ms": 1,
@@ -431,6 +479,12 @@ mod tests {
         assert!(live.ok);
         assert_eq!(live.status.counts.orderbooks, 4);
         assert_eq!(live.latency.status_age_ms, Some(12));
+        assert_eq!(live.volatility.rows[0].asset, "BTC");
+        assert_eq!(live.volatility.rows[0].sigma_tau, Some(0.0012));
+        assert_eq!(
+            live.volatility.rows[0].volatility_regime.as_deref(),
+            Some("normal")
+        );
     }
 
     #[test]

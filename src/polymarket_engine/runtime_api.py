@@ -351,6 +351,7 @@ def _runtime_live_payload(
         server_sent_at=server_sent_at,
         api_build_ms=int((time.perf_counter() - started) * 1000),
     )
+    volatility = _live_volatility_payload(duckdb_path=duckdb_path, limit=limit)
     return {
         "ok": bool(status.get("ok"))
         and bool(gates.get("ok"))
@@ -359,8 +360,115 @@ def _runtime_live_payload(
         "status": status,
         "gates": gates,
         "monitor": monitor,
+        "volatility": volatility,
         "latency": latency,
     }
+
+
+def _live_volatility_payload(*, duckdb_path: Path, limit: int) -> dict[str, Any]:
+    if not duckdb_path.exists():
+        return {
+            "state": "MISSING",
+            "rows": [],
+            "errors": [f"{duckdb_path} missing"],
+        }
+    try:
+        with _connect_read_only_with_retry(duckdb_path, lock_retry_seconds=2.0) as conn:
+            rows = conn.execute(
+                """
+                select
+                    asset,
+                    cast(asof_ts as varchar) as asof_ts,
+                    short_realized_vol,
+                    medium_realized_vol,
+                    long_realized_vol,
+                    sigma_tau,
+                    volatility_regime,
+                    data_quality_flags_json
+                from (
+                    select
+                        state_inputs.*,
+                        row_number() over (
+                            partition by asset
+                            order by asof_ts desc, created_at desc
+                        ) as row_number
+                    from features.asof_state_inputs as state_inputs
+                ) as latest
+                where row_number = 1
+                order by case asset when 'BTC' then 0 when 'ETH' then 1 else 2 end
+                limit ?
+                """,
+                [limit],
+            ).fetchall()
+    except duckdb.Error as exc:
+        return {
+            "state": "INVALID",
+            "rows": [],
+            "errors": [f"DuckDB volatility unavailable: {_format_error(exc)}"],
+        }
+
+    now = datetime.now(timezone.utc)
+    payload_rows = []
+    for row in rows:
+        asof_ts = _parse_timestamp_or_none(row[1])
+        flags = _volatility_flags(row[7], sigma_tau=row[5])
+        payload_rows.append(
+            {
+                "asset": str(row[0]),
+                "asof_ts": None if asof_ts is None else asof_ts.isoformat(),
+                "short_realized_vol": _optional_float(row[2]),
+                "medium_realized_vol": _optional_float(row[3]),
+                "long_realized_vol": _optional_float(row[4]),
+                "sigma_tau": _optional_float(row[5]),
+                "volatility_regime": row[6],
+                "age_ms": None
+                if asof_ts is None
+                else max(0, int((now - asof_ts).total_seconds() * 1000)),
+                "flags": flags,
+            }
+        )
+    return {
+        "state": "OK",
+        "rows": payload_rows,
+        "errors": [],
+    }
+
+
+def _connect_read_only_with_retry(
+    duckdb_path: Path,
+    *,
+    lock_retry_seconds: float,
+) -> duckdb.DuckDBPyConnection:
+    deadline = time.monotonic() + lock_retry_seconds
+    while True:
+        try:
+            return duckdb.connect(str(duckdb_path), read_only=True)
+        except duckdb.IOException as exc:
+            if "Could not set lock" not in str(exc) or time.monotonic() >= deadline:
+                raise
+            time.sleep(0.1)
+
+
+def _volatility_flags(raw_flags: object, *, sigma_tau: object) -> list[str]:
+    flags: list[str] = []
+    if isinstance(raw_flags, str):
+        try:
+            loaded = json.loads(raw_flags)
+        except json.JSONDecodeError:
+            loaded = ["invalid_flags_json"]
+        if isinstance(loaded, list):
+            flags = [str(flag) for flag in loaded]
+        else:
+            flags = ["invalid_flags_json"]
+    if sigma_tau is None and "missing_volatility" not in flags:
+        flags.append("missing_volatility")
+    return flags if flags else ["OK"]
+
+
+def _optional_float(value: object) -> float | None:
+    if value is None:
+        return None
+    return float(value)
 
 
 def _read_json_or_error(path: Path) -> tuple[dict[str, Any] | None, dict[str, str]]:

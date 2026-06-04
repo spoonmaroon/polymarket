@@ -17,7 +17,7 @@ use crate::{
     state::{AppState, MainTab},
     status::{
         RuntimeDisplayLag, RuntimeGates, RuntimeLive, RuntimeMonitor, RuntimeOutcomes,
-        RuntimeProbabilities, RuntimeStatus,
+        RuntimeProbabilities, RuntimeStatus, RuntimeVolatility,
     },
 };
 
@@ -164,6 +164,7 @@ struct RuntimeUpdate {
     status: Option<RuntimeStatus>,
     gates: Option<RuntimeGates>,
     monitor: Option<RuntimeMonitor>,
+    volatility: Option<RuntimeVolatility>,
     probabilities: Option<RuntimeProbabilities>,
     outcomes: Option<RuntimeOutcomes>,
     display_lag: Option<RuntimeDisplayLag>,
@@ -220,6 +221,7 @@ impl RuntimeLiveTask {
                                 status: None,
                                 gates: None,
                                 monitor: None,
+                                volatility: None,
                                 probabilities: None,
                                 outcomes: None,
                                 display_lag: None,
@@ -291,6 +293,10 @@ fn apply_runtime_update(app: &mut AppState, update: RuntimeUpdate) -> bool {
         }
     }
 
+    if let Some(volatility) = update.volatility {
+        changed |= replace_if_changed(&mut app.runtime_volatility, volatility);
+    }
+
     if let Some(probabilities) = update.probabilities {
         changed |= replace_if_changed(&mut app.runtime_probabilities, probabilities);
     }
@@ -324,6 +330,7 @@ async fn poll_runtime(client: &EngineClient) -> RuntimeUpdate {
     let mut status = None;
     let mut gates = None;
     let mut monitor = None;
+    let mut volatility = None;
     let mut probabilities = None;
     let mut outcomes = None;
     let mut display_lag = None;
@@ -339,6 +346,7 @@ async fn poll_runtime(client: &EngineClient) -> RuntimeUpdate {
             status = Some(next_live.status);
             gates = Some(next_live.gates);
             monitor = Some(next_live.monitor);
+            volatility = Some(next_live.volatility);
             display_lag = Some(display_lag_with_receive_ms(
                 next_live.latency,
                 next_live.server_sent_at,
@@ -377,6 +385,7 @@ async fn poll_runtime(client: &EngineClient) -> RuntimeUpdate {
         status,
         gates,
         monitor,
+        volatility,
         probabilities,
         outcomes,
         display_lag,
@@ -435,6 +444,7 @@ fn runtime_update_from_live(live: RuntimeLive) -> RuntimeUpdate {
         status: Some(live.status),
         gates: Some(live.gates),
         monitor: Some(live.monitor),
+        volatility: Some(live.volatility),
         probabilities: None,
         outcomes: None,
         display_lag: Some(display_lag),
@@ -449,6 +459,7 @@ async fn poll_probability_runtime(client: &EngineClient) -> RuntimeUpdate {
         status: None,
         gates: None,
         monitor: None,
+        volatility: None,
         probabilities: None,
         outcomes: None,
         display_lag: None,
@@ -473,6 +484,7 @@ async fn poll_outcome_runtime(client: &EngineClient) -> RuntimeUpdate {
         status: None,
         gates: None,
         monitor: None,
+        volatility: None,
         probabilities: None,
         outcomes: None,
         display_lag: None,
@@ -712,6 +724,7 @@ mod tests {
             status: Some(status("first")),
             gates: None,
             monitor: Some(monitor("65000.00")),
+            volatility: None,
             probabilities: None,
             outcomes: None,
             display_lag: Some(RuntimeDisplayLag {
@@ -728,6 +741,7 @@ mod tests {
                 failures: vec!["stale orderbook".to_string()],
             }),
             monitor: Some(monitor("65185.18")),
+            volatility: None,
             probabilities: Some(probabilities()),
             outcomes: Some(outcomes()),
             display_lag: Some(RuntimeDisplayLag {
@@ -783,6 +797,7 @@ mod tests {
                 status: None,
                 gates: None,
                 monitor: Some(monitor("65000.00")),
+                volatility: None,
                 probabilities: None,
                 outcomes: None,
                 display_lag: None,
@@ -834,6 +849,7 @@ mod tests {
                         "current-up-token",
                     )],
                 }),
+                volatility: None,
                 probabilities: None,
                 outcomes: None,
                 display_lag: None,
@@ -895,6 +911,7 @@ mod tests {
                         "current-up-token",
                     )],
                 }),
+                volatility: None,
                 probabilities: None,
                 outcomes: Some(RuntimeOutcomes {
                     ok: true,
@@ -947,6 +964,7 @@ mod tests {
                 failures: Vec::new(),
             }),
             monitor: Some(monitor("65000.00")),
+            volatility: None,
             probabilities: Some(probabilities()),
             outcomes: Some(outcomes()),
             display_lag: Some(RuntimeDisplayLag {

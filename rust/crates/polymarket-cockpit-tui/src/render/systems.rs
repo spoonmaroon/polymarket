@@ -44,11 +44,32 @@ pub fn systems_summary_lines(app: &AppState) -> Vec<String> {
         }
     }
 
+    if let Some(volatility) = app.runtime_volatility.as_ref() {
+        for row in &volatility.rows {
+            lines.push(format!(
+                "{} sigma={} short={} med={} long={} regime={}",
+                row.asset,
+                format_optional_vol(row.sigma_tau),
+                format_optional_vol(row.short_realized_vol),
+                format_optional_vol(row.medium_realized_vol),
+                format_optional_vol(row.long_realized_vol),
+                row.volatility_regime.as_deref().unwrap_or("-")
+            ));
+        }
+        for error in &volatility.errors {
+            lines.push(format!("volatility_error={error}"));
+        }
+    }
+
     if let Some(error) = &app.runtime_error {
         lines.push(format!("runtime_error={error}"));
     }
 
     lines
+}
+
+fn format_optional_vol(value: Option<f64>) -> String {
+    value.map_or_else(|| "-".to_string(), |value| format!("{value:.5}"))
 }
 
 pub fn render(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
@@ -67,7 +88,10 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
 mod tests {
     use crate::{
         state::AppState,
-        status::{RuntimeCounts, RuntimeDisplayLag, RuntimeGates, RuntimeStatus},
+        status::{
+            RuntimeCounts, RuntimeDisplayLag, RuntimeGates, RuntimeStatus, RuntimeVolatility,
+            RuntimeVolatilityRow,
+        },
     };
 
     use super::systems_summary_lines;
@@ -125,6 +149,36 @@ mod tests {
         assert!(text.contains("status_age_ms=57"));
         assert!(text.contains("state_us=220"));
         assert!(text.contains("tui_rx_ms=8"));
+    }
+
+    #[test]
+    fn systems_summary_shows_live_volatility_diagnostics() {
+        let app = AppState {
+            runtime_volatility: Some(RuntimeVolatility {
+                state: "OK".to_string(),
+                rows: vec![RuntimeVolatilityRow {
+                    asset: "BTC".to_string(),
+                    asof_ts: Some("2026-06-03T21:00:00+00:00".to_string()),
+                    sigma_tau: Some(0.0012),
+                    short_realized_vol: Some(0.0001),
+                    medium_realized_vol: Some(0.0002),
+                    long_realized_vol: Some(0.0003),
+                    volatility_regime: Some("normal".to_string()),
+                    age_ms: Some(120),
+                    flags: vec!["OK".to_string()],
+                }],
+                errors: vec![],
+            }),
+            ..Default::default()
+        };
+
+        let text = systems_summary_lines(&app).join("\n");
+
+        assert!(text.contains("BTC sigma=0.00120"));
+        assert!(text.contains("short=0.00010"));
+        assert!(text.contains("med=0.00020"));
+        assert!(text.contains("long=0.00030"));
+        assert!(text.contains("regime=normal"));
     }
 
     fn runtime_status(ok: bool, health_flags: Vec<String>) -> RuntimeStatus {

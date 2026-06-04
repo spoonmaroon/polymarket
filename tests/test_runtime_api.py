@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timezone
 from pathlib import Path
 from typing import Any, NoReturn
@@ -381,6 +382,70 @@ def test_runtime_live_combines_status_gates_monitor_and_latency(tmp_path: Path) 
     assert payload["latency"]["status_age_ms"] >= 0
     assert payload["latency"]["api_build_ms"] >= 0
     assert payload["latency"]["server_sent_at"].endswith("+00:00")
+
+
+def test_runtime_live_includes_volatility_diagnostics(tmp_path: Path) -> None:
+    status_path = tmp_path / "status.json"
+    _write_status(status_path)
+    db_path = tmp_path / "polymarket.duckdb"
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    btc_state = replace(
+        _decision_state(),
+        state_id="state-btc-up",
+        short_realized_vol=0.0001,
+        medium_realized_vol=0.0002,
+        long_realized_vol=0.0003,
+        sigma_tau=0.0012,
+        volatility_regime="normal",
+    )
+    eth_contract = replace(
+        btc_state.contract,
+        contract_id="eth-market:UP",
+        market_id="eth-market",
+        condition_id="0xeth",
+        slug="eth-updown-5m-1780264500",
+        asset="ETH",
+        token_id="eth-up-token",
+        settlement_symbol="ETH/USD",
+    )
+    eth_state = replace(
+        btc_state,
+        state_id="state-eth-up",
+        contract=eth_contract,
+        threshold=1800.0,
+        settlement_price=1802.0,
+        short_realized_vol=0.0004,
+        medium_realized_vol=0.0005,
+        long_realized_vol=0.0006,
+        sigma_tau=0.0024,
+        volatility_regime="expanding",
+    )
+    store.upsert_contract_spec(btc_state.contract)
+    store.upsert_contract_spec(eth_state.contract)
+    store.upsert_asof_state_inputs((btc_state, eth_state))
+    app = create_app(status_path=status_path, duckdb_path=db_path)
+
+    response = TestClient(app).get("/api/runtime/live?limit=8")
+
+    assert response.status_code == 200
+    volatility = response.json()["volatility"]
+    assert volatility["state"] == "OK"
+    assert volatility["errors"] == []
+    assert len(volatility["rows"]) == 2
+    btc_row = volatility["rows"][0]
+    eth_row = volatility["rows"][1]
+    assert btc_row["asset"] == "BTC"
+    assert btc_row["sigma_tau"] == pytest.approx(0.0012)
+    assert btc_row["short_realized_vol"] == pytest.approx(0.0001)
+    assert btc_row["medium_realized_vol"] == pytest.approx(0.0002)
+    assert btc_row["long_realized_vol"] == pytest.approx(0.0003)
+    assert btc_row["volatility_regime"] == "normal"
+    assert btc_row["age_ms"] >= 0
+    assert btc_row["flags"] == ["OK"]
+    assert eth_row["asset"] == "ETH"
+    assert eth_row["sigma_tau"] == pytest.approx(0.0024)
+    assert eth_row["volatility_regime"] == "expanding"
 
 
 def test_runtime_live_reads_status_once_for_status_backed_payload(
