@@ -1,4 +1,3 @@
-use chrono::{DateTime, Utc};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -9,6 +8,7 @@ use ratatui::{
 
 use crate::{market_view, state::AppState};
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PricePathDisplayRow {
     pub asset: String,
@@ -27,6 +27,7 @@ pub struct PricePathChartModel {
     pub y_bounds: [f64; 2],
 }
 
+#[cfg(test)]
 pub fn price_path_rows(app: &AppState) -> Vec<PricePathDisplayRow> {
     ["BTC", "ETH"]
         .into_iter()
@@ -56,7 +57,7 @@ pub fn price_path_charts(app: &AppState) -> Vec<PricePathChartModel> {
                 .last()
                 .map(|point| format_usd_number(point.price))
                 .unwrap_or_else(|| "-".to_string());
-            let target_value = current_target_value(app, asset);
+            let target_value = selected_target_value(app, asset);
             let price_points = history
                 .into_iter()
                 .enumerate()
@@ -72,9 +73,7 @@ pub fn price_path_charts(app: &AppState) -> Vec<PricePathChartModel> {
             PricePathChartModel {
                 asset: asset.to_string(),
                 latest,
-                target: target_value
-                    .map(|price| format!("K {}", format_usd_number(price)))
-                    .unwrap_or_else(|| "K pending".to_string()),
+                target: target_label(target_value),
                 y_bounds: chart_y_bounds(&price_points, target_value),
                 price_points,
                 target_line,
@@ -143,32 +142,18 @@ fn render_price_chart(frame: &mut Frame<'_>, area: Rect, model: &PricePathChartM
     frame.render_widget(chart, area);
 }
 
+#[cfg(test)]
 fn current_target_label(app: &AppState, asset: &str) -> String {
-    current_target_value(app, asset)
-        .map(|price| format!("K {}", format_usd_number(price)))
-        .unwrap_or_else(|| "K pending".to_string())
+    target_label(selected_target_value(app, asset))
 }
 
-fn current_target_value(app: &AppState, asset: &str) -> Option<f64> {
-    app.runtime_monitor.as_ref().and_then(|monitor| {
-        let generated_at = parse_runtime_timestamp(&monitor.generated_at)?;
-        market_view::market_groups(&monitor.orderbooks)
-            .into_iter()
-            .filter(|group| group.asset.eq_ignore_ascii_case(asset))
-            .filter(|group| active_at(group, generated_at))
-            .find_map(|group| threshold_price(&group))
-    })
-}
-
-fn active_at(group: &market_view::MarketGroup<'_>, generated_at: DateTime<Utc>) -> bool {
-    let Some(start_ts) = group.start_ts else {
-        return false;
-    };
-    let Some(expiry_ts) = group.expiry_ts else {
-        return false;
-    };
-
-    start_ts <= generated_at && generated_at < expiry_ts
+fn selected_target_value(app: &AppState, asset: &str) -> Option<f64> {
+    let group = app.selected_market_group()?;
+    group
+        .asset
+        .eq_ignore_ascii_case(asset)
+        .then(|| threshold_price(&group))
+        .flatten()
 }
 
 fn threshold_price(group: &market_view::MarketGroup<'_>) -> Option<f64> {
@@ -178,6 +163,7 @@ fn threshold_price(group: &market_view::MarketGroup<'_>) -> Option<f64> {
         .find_map(|row| row.threshold_price.as_deref().and_then(parse_positive))
 }
 
+#[cfg(test)]
 fn compact_path(history: &[&crate::state::PriceHistoryPoint]) -> String {
     let samples = history
         .iter()
@@ -232,14 +218,14 @@ fn parse_positive(value: &str) -> Option<f64> {
     (number > 0.0 && number.is_finite()).then_some(number)
 }
 
-fn parse_runtime_timestamp(timestamp: &str) -> Option<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(timestamp)
-        .ok()
-        .map(|timestamp| timestamp.with_timezone(&Utc))
-}
-
 fn format_usd_number(value: f64) -> String {
     add_thousands_separators(&format!("{value:.2}"))
+}
+
+fn target_label(value: Option<f64>) -> String {
+    value
+        .map(|price| format!("K {}", format_usd_number(price)))
+        .unwrap_or_else(|| "K -".to_string())
 }
 
 fn format_axis_number(value: f64) -> String {
@@ -348,6 +334,77 @@ mod tests {
         assert!(btc.y_bounds[1] > 64020.0);
     }
 
+    #[test]
+    fn price_path_target_line_follows_selected_contract() {
+        let mut app = AppState::default();
+        app.apply_runtime_monitor(RuntimeMonitor {
+            generated_at: "2026-06-04T07:43:10Z".to_string(),
+            price_rows: vec![price_row("BTC/USD", "64050")],
+            orderbooks: vec![
+                orderbook_with_window(
+                    "BTC",
+                    "btc-updown-5m-current",
+                    "2026-06-04T07:40:00Z",
+                    "2026-06-04T07:45:00Z",
+                    "64000",
+                ),
+                orderbook_with_window(
+                    "BTC",
+                    "btc-updown-5m-next",
+                    "2026-06-04T07:45:00Z",
+                    "2026-06-04T07:50:00Z",
+                    "64100",
+                ),
+            ],
+        });
+        app.sync_market_selection();
+        app.select_next_market();
+
+        let charts = price_path_charts(&app);
+        let btc = charts
+            .iter()
+            .find(|chart| chart.asset == "BTC")
+            .expect("BTC chart should exist");
+
+        assert_eq!(btc.target, "K 64,100.00");
+        assert_eq!(btc.target_line, vec![(0.0, 64100.0), (1.0, 64100.0)]);
+    }
+
+    #[test]
+    fn price_path_omits_target_line_when_selected_contract_has_no_k() {
+        let mut app = AppState::default();
+        app.apply_runtime_monitor(RuntimeMonitor {
+            generated_at: "2026-06-04T07:43:10Z".to_string(),
+            price_rows: vec![price_row("BTC/USD", "64050")],
+            orderbooks: vec![
+                orderbook_with_window(
+                    "BTC",
+                    "btc-updown-5m-current",
+                    "2026-06-04T07:40:00Z",
+                    "2026-06-04T07:45:00Z",
+                    "64000",
+                ),
+                orderbook_without_threshold(
+                    "BTC",
+                    "btc-updown-5m-next",
+                    "2026-06-04T07:45:00Z",
+                    "2026-06-04T07:50:00Z",
+                ),
+            ],
+        });
+        app.sync_market_selection();
+        app.select_next_market();
+
+        let charts = price_path_charts(&app);
+        let btc = charts
+            .iter()
+            .find(|chart| chart.asset == "BTC")
+            .expect("BTC chart should exist");
+
+        assert_eq!(btc.target, "K -");
+        assert!(btc.target_line.is_empty());
+    }
+
     fn price_row(symbol: &str, price: &str) -> RuntimePriceRow {
         RuntimePriceRow {
             source_key: Some("polymarket_rtds_chainlink".to_string()),
@@ -376,6 +433,17 @@ mod tests {
         expiry_ts: &str,
         threshold_price: &str,
     ) -> RuntimeOrderbookRow {
+        let mut orderbook = orderbook_without_threshold(asset, market_slug, start_ts, expiry_ts);
+        orderbook.threshold_price = Some(threshold_price.to_string());
+        orderbook
+    }
+
+    fn orderbook_without_threshold(
+        asset: &str,
+        market_slug: &str,
+        start_ts: &str,
+        expiry_ts: &str,
+    ) -> RuntimeOrderbookRow {
         RuntimeOrderbookRow {
             venue: Some("polymarket".to_string()),
             source_key: Some("polymarket_rust_sdk".to_string()),
@@ -388,7 +456,7 @@ mod tests {
             observed_ts: Some("2026-06-04T07:43:10Z".to_string()),
             start_ts: Some(start_ts.to_string()),
             expiry_ts: Some(expiry_ts.to_string()),
-            threshold_price: Some(threshold_price.to_string()),
+            threshold_price: None,
             threshold_event_ts: Some("2026-06-04T07:40:00Z".to_string()),
             threshold_observed_ts: Some("2026-06-04T07:40:00.005Z".to_string()),
             settlement_price: Some("64050".to_string()),
