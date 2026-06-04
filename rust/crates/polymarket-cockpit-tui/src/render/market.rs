@@ -8,6 +8,7 @@ use ratatui::{
 
 use crate::{market_view, render::orderbook, state::AppState, status::RuntimeOrderbookRow};
 
+#[cfg(test)]
 const MARKET_VISIBLE_ROWS: usize = 10;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,6 +25,7 @@ pub fn market_header_labels() -> [&'static str; 6] {
     ["", "Market", "UP bid/ask", "DOWN bid/ask", "Spread", "Seen"]
 }
 
+#[cfg(test)]
 pub fn market_rows(app: &AppState) -> Vec<MarketDisplayRow> {
     market_rows_for_visible_count(app, MARKET_VISIBLE_ROWS)
 }
