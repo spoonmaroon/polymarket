@@ -324,6 +324,19 @@ def test_pc_deploy_script_refreshes_tui_desktop_launcher() -> None:
     assert "polymarket-runtime-api" not in script
 
 
+def test_pc_tui_desktop_launcher_logs_failures_and_forces_new_terminal_window() -> None:
+    script = (ROOT / "scripts" / "deploy_pc.sh").read_text(encoding="utf-8")
+
+    assert "open-polymarket-tui.ps1" in script
+    assert "open-polymarket-tui-window.sh" in script
+    assert "polymarket-tui-launch.log" in script
+    assert "Start-Transcript" in script
+    assert "Start-Process -FilePath 'wt.exe'" in script
+    assert "'-w', 'new'" in script
+    assert "Read-Host 'Press Enter to close'" in script
+    assert "\\$shortcut.TargetPath = 'powershell.exe'" in script
+
+
 def test_pc_deploy_script_prevents_powershell_from_consuming_remote_script() -> None:
     script = (ROOT / "scripts" / "deploy_pc.sh").read_text(encoding="utf-8")
 

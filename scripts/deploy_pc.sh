@@ -202,19 +202,66 @@ install -m 755 "\$TUI_BIN" "\$PC_BIN_DIR/polymarket-cockpit-tui"
 } > "\$PC_BIN_DIR/open-polymarket-tui.sh"
 chmod 755 "\$PC_BIN_DIR/open-polymarket-tui.sh"
 
+cat > "\$PC_BIN_DIR/open-polymarket-tui-window.sh" <<'TUI_WINDOW_LAUNCHER'
+#!/usr/bin/env bash
+set +e
+__PC_BIN_DIR__/open-polymarket-tui.sh
+status=\$?
+if [ "\$status" -ne 0 ]; then
+  echo
+  echo "Polymarket TUI exited with status \$status"
+  read -r -p "Press Enter to close"
+fi
+exit "\$status"
+TUI_WINDOW_LAUNCHER
+sed -i "s|__PC_BIN_DIR__|\$PC_BIN_DIR|g" "\$PC_BIN_DIR/open-polymarket-tui-window.sh"
+chmod 755 "\$PC_BIN_DIR/open-polymarket-tui-window.sh"
+
 WINDOWS_USER_DIR="/mnt/c/Users/ender"
 if [ -d "\$WINDOWS_USER_DIR" ]; then
+  cat > "\$WINDOWS_USER_DIR/open-polymarket-tui.ps1" <<'PS_LAUNCHER'
+\$ErrorActionPreference = 'Stop'
+\$logPath = Join-Path \$env:USERPROFILE 'polymarket-tui-launch.log'
+\$arguments = @('-w', 'new', 'new-tab', '--title', 'Polymarket TUI', 'wsl.exe', '-d', '__PC_WSL_DISTRO__', '--', '__PC_BIN_DIR__/open-polymarket-tui-window.sh')
+
+try {
+  Start-Transcript -Path \$logPath -Append | Out-Null
+} catch {
+}
+
+try {
+  Add-Content -Path \$logPath -Value ("launch " + (Get-Date).ToString("o"))
+  Start-Process -FilePath 'wt.exe' -ArgumentList \$arguments -WindowStyle Normal
+} catch {
+  Write-Host 'Failed to launch Windows Terminal for Polymarket TUI.'
+  Write-Host \$_
+  Write-Host 'Falling back to WSL in this PowerShell window.'
+  & wsl.exe -d __PC_WSL_DISTRO__ -- __PC_BIN_DIR__/open-polymarket-tui-window.sh
+  \$exitCode = \$LASTEXITCODE
+  if (\$exitCode -ne 0) {
+    Read-Host 'Press Enter to close'
+  }
+  exit \$exitCode
+} finally {
+  try {
+    Stop-Transcript | Out-Null
+  } catch {
+  }
+}
+PS_LAUNCHER
+  sed -i "s|__PC_BIN_DIR__|\$PC_BIN_DIR|g; s|__PC_WSL_DISTRO__|\$PC_WSL_DISTRO|g" "\$WINDOWS_USER_DIR/open-polymarket-tui.ps1"
   cat > "\$WINDOWS_USER_DIR/open-polymarket-tui.cmd" <<CMD_LAUNCHER
 @echo off
-wt.exe -w 0 new-tab --title "Polymarket TUI" wsl.exe -d \$PC_WSL_DISTRO -- \$PC_BIN_DIR/open-polymarket-tui.sh
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%USERPROFILE%\\open-polymarket-tui.ps1"
 CMD_LAUNCHER
   POWERSHELL_SCRIPT="\$WINDOWS_USER_DIR/AppData/Local/Temp/polymarket-tui-shortcut.ps1"
   cat > "\$POWERSHELL_SCRIPT" <<'PS1'
 \$shortcutPath = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Polymarket TUI.lnk'
-\$targetPath = Join-Path ([Environment]::GetFolderPath('UserProfile')) 'open-polymarket-tui.cmd'
+\$launcherPath = Join-Path ([Environment]::GetFolderPath('UserProfile')) 'open-polymarket-tui.ps1'
 \$shell = New-Object -ComObject WScript.Shell
 \$shortcut = \$shell.CreateShortcut(\$shortcutPath)
-\$shortcut.TargetPath = \$targetPath
+\$shortcut.TargetPath = 'powershell.exe'
+\$shortcut.Arguments = '-NoProfile -ExecutionPolicy Bypass -File "' + \$launcherPath + '"'
 \$shortcut.WorkingDirectory = [Environment]::GetFolderPath('UserProfile')
 \$shortcut.IconLocation = 'C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe,0'
 \$shortcut.WindowStyle = 1
