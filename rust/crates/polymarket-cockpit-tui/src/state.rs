@@ -72,6 +72,7 @@ pub struct AppState {
     pub runtime_error: Option<String>,
     pub selected_market_key: Option<String>,
     pub selected_outcome_index: Option<usize>,
+    pub selected_outcome_anchors: Vec<OutcomeToggleTarget>,
     pub outcome_expansion: OutcomeExpansion,
     pub display_now: Option<String>,
     pub price_history: Vec<PriceHistoryPoint>,
@@ -92,6 +93,7 @@ impl Default for AppState {
             runtime_error: None,
             selected_market_key: None,
             selected_outcome_index: None,
+            selected_outcome_anchors: Vec::new(),
             outcome_expansion: OutcomeExpansion::default(),
             display_now: None,
             price_history: Vec::new(),
@@ -296,14 +298,23 @@ impl AppState {
     pub fn sync_outcome_selection(&mut self) {
         let Some(count) = self.outcome_count().filter(|count| *count > 0) else {
             self.selected_outcome_index = None;
+            self.selected_outcome_anchors.clear();
             return;
         };
 
-        self.selected_outcome_index = Some(
-            self.selected_outcome_index
-                .unwrap_or_default()
-                .min(count - 1),
-        );
+        let index = self
+            .selected_outcome_index
+            .unwrap_or_default()
+            .min(count - 1);
+        if !self.selected_outcome_anchors.is_empty()
+            && self.outcome_anchors_for_index(index) != self.selected_outcome_anchors
+            && let Some(anchor_index) =
+                self.visible_outcome_anchor_index(&self.selected_outcome_anchors)
+        {
+            self.set_selected_outcome_index(anchor_index);
+            return;
+        }
+        self.set_selected_outcome_index(index);
     }
 
     pub fn sync_outcome_expansion_defaults(&mut self) {
@@ -341,7 +352,7 @@ impl AppState {
             return;
         };
         let current = self.effective_outcome_index().unwrap_or_default();
-        self.selected_outcome_index = Some((current + 1) % count);
+        self.set_selected_outcome_index((current + 1) % count);
     }
 
     pub fn select_previous_outcome(&mut self) {
@@ -350,7 +361,7 @@ impl AppState {
             return;
         };
         let current = self.effective_outcome_index().unwrap_or_default();
-        self.selected_outcome_index = Some((current + count - 1) % count);
+        self.set_selected_outcome_index((current + count - 1) % count);
     }
 
     pub fn toggle_selected_outcome(&mut self) -> bool {
@@ -427,6 +438,11 @@ impl AppState {
         })
     }
 
+    fn set_selected_outcome_index(&mut self, index: usize) {
+        self.selected_outcome_index = Some(index);
+        self.selected_outcome_anchors = self.outcome_anchors_for_index(index);
+    }
+
     fn open_default_outcome_section_once(&mut self, day_key: &str) {
         let Some(section_key) =
             default_outcome_section_key(self.runtime_outcomes.as_ref(), day_key)
@@ -456,8 +472,58 @@ impl AppState {
             _ => false,
         });
         if let Some(index) = index {
-            self.selected_outcome_index = Some(index);
+            self.set_selected_outcome_index(index);
         }
+    }
+
+    fn visible_outcome_anchor_index(&self, anchors: &[OutcomeToggleTarget]) -> Option<usize> {
+        let items = outcome_display_items(self.runtime_outcomes.as_ref(), &self.outcome_expansion);
+        anchors.iter().find_map(|anchor| {
+            items.iter().position(|item| match (anchor, item) {
+                (
+                    OutcomeToggleTarget::Day(target_key),
+                    crate::outcome_view::OutcomeDisplayItem::Day { key, .. },
+                ) => key == target_key,
+                (
+                    OutcomeToggleTarget::Section(target_key),
+                    crate::outcome_view::OutcomeDisplayItem::Section { key, .. },
+                ) => key == target_key,
+                _ => false,
+            })
+        })
+    }
+
+    fn outcome_anchors_for_index(&self, index: usize) -> Vec<OutcomeToggleTarget> {
+        let mut day_anchor = None;
+        let mut section_anchor = None;
+        for (item_index, item) in
+            outcome_display_items(self.runtime_outcomes.as_ref(), &self.outcome_expansion)
+                .into_iter()
+                .enumerate()
+        {
+            match item {
+                crate::outcome_view::OutcomeDisplayItem::Day { key, .. } => {
+                    day_anchor = Some(OutcomeToggleTarget::Day(key));
+                    section_anchor = None;
+                }
+                crate::outcome_view::OutcomeDisplayItem::Section { key, day_key, .. } => {
+                    day_anchor = Some(OutcomeToggleTarget::Day(day_key));
+                    section_anchor = Some(OutcomeToggleTarget::Section(key));
+                }
+                crate::outcome_view::OutcomeDisplayItem::Outcome { .. } => {}
+            }
+            if item_index == index {
+                let mut anchors = Vec::new();
+                if let Some(anchor) = section_anchor {
+                    anchors.push(anchor);
+                }
+                if let Some(anchor) = day_anchor {
+                    anchors.push(anchor);
+                }
+                return anchors;
+            }
+        }
+        Vec::new()
     }
 
     fn default_market_index(&self) -> Option<usize> {
@@ -1046,6 +1112,39 @@ mod tests {
     }
 
     #[test]
+    fn collapsing_parent_of_selected_child_keeps_selection_on_parent_header() {
+        let mut app = AppState {
+            runtime_outcomes: Some(outcomes_with_expiries(vec![
+                ("BTC latest", "2026-06-04T21:25:00Z"),
+                ("ETH older", "2026-06-03T21:25:00Z"),
+            ])),
+            ..Default::default()
+        };
+        app.sync_outcome_expansion_defaults();
+        app.outcome_expansion
+            .initialized_days
+            .insert("2026-06-03".to_string());
+        app.outcome_expansion
+            .expanded_days
+            .insert("2026-06-03".to_string());
+        app.outcome_expansion
+            .initialized_sections
+            .insert(outcome_section_key("2026-06-03", "afternoon"));
+        app.outcome_expansion
+            .expanded_sections
+            .insert(outcome_section_key("2026-06-03", "afternoon"));
+        app.sync_outcome_selection();
+        app.select_next_outcome();
+        app.select_next_outcome();
+
+        app.outcome_expansion.expanded_days.remove("2026-06-04");
+        app.sync_outcome_selection();
+
+        assert_eq!(app.selected_outcome_index, Some(0));
+        assert!(app.selected_outcome_display_row_is_visible());
+    }
+
+    #[test]
     fn apply_runtime_monitor_appends_changed_price_history() {
         let mut app = AppState::default();
         let first = RuntimeMonitor {
@@ -1403,6 +1502,34 @@ mod tests {
                     asset: Some("BTC".to_string()),
                     start_ts: None,
                     expiry_ts: Some("2026-06-03T21:25:00Z".to_string()),
+                    threshold_price: None,
+                    threshold_event_ts: None,
+                    threshold_observed_ts: None,
+                    computed_winner: None,
+                    official_winner: Some("UP".to_string()),
+                    winning_token_id: Some(format!("token-{index}")),
+                    official_resolution_status: "resolved".to_string(),
+                    mismatch: None,
+                })
+                .collect(),
+        }
+    }
+
+    fn outcomes_with_expiries(markets: Vec<(&str, &str)>) -> RuntimeOutcomes {
+        RuntimeOutcomes {
+            ok: true,
+            state: "OK".to_string(),
+            generated_at: Some("2026-06-04T22:00:00Z".to_string()),
+            rows: markets
+                .into_iter()
+                .enumerate()
+                .map(|(index, (market, expiry_ts))| RuntimeOutcomeRow {
+                    market: market.to_string(),
+                    market_id: format!("market-{index}"),
+                    market_slug: Some(format!("market-{index}")),
+                    asset: Some("BTC".to_string()),
+                    start_ts: None,
+                    expiry_ts: Some(expiry_ts.to_string()),
                     threshold_price: None,
                     threshold_event_ts: None,
                     threshold_observed_ts: None,
