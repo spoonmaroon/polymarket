@@ -448,6 +448,63 @@ def test_runtime_live_includes_volatility_diagnostics(tmp_path: Path) -> None:
     assert eth_row["volatility_regime"] == "expanding"
 
 
+def test_runtime_live_reads_file_backed_volatility_when_duckdb_is_locked(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    status_path = tmp_path / "live" / "status.json"
+    status_path.parent.mkdir()
+    _write_status(status_path)
+    volatility_status_path = status_path.with_name("volatility.json")
+    volatility_status_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "polymarket-volatility-runtime-v1",
+                "ok": True,
+                "state": "OK",
+                "generated_at": datetime.now(UTC).isoformat(),
+                "source_key": "polymarket_rtds_chainlink",
+                "lookback_limit": 180,
+                "rows": [
+                    {
+                        "asset": "BTC",
+                        "asof_ts": datetime.now(UTC).isoformat(),
+                        "short_realized_vol": 0.0001,
+                        "medium_realized_vol": 0.0002,
+                        "long_realized_vol": 0.0003,
+                        "sigma_tau": 0.0012,
+                        "volatility_regime": "normal",
+                        "flags": ["OK"],
+                    }
+                ],
+                "errors": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    duckdb_path = tmp_path / "polymarket.duckdb"
+    duckdb_path.touch()
+
+    def locked_connect(*_: object, **__: object) -> NoReturn:
+        raise duckdb.IOException("Could not set lock on file")
+
+    monkeypatch.setattr(duckdb, "connect", locked_connect)
+    app = create_app(
+        status_path=status_path,
+        duckdb_path=duckdb_path,
+        volatility_status_path=volatility_status_path,
+    )
+
+    response = TestClient(app).get("/api/runtime/live?limit=8")
+
+    assert response.status_code == 200
+    volatility = response.json()["volatility"]
+    assert volatility["state"] == "OK"
+    assert volatility["errors"] == []
+    assert volatility["rows"][0]["asset"] == "BTC"
+    assert volatility["rows"][0]["sigma_tau"] == pytest.approx(0.0012)
+
+
 def test_runtime_live_reads_status_once_for_status_backed_payload(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -450,6 +450,15 @@ def test_sidecar_loop_writes_target_cache_for_active_contracts(
             "threshold_observed_ts": "2026-06-02T06:00:00+00:00",
         }
     ]
+    volatility_payload = json.loads(
+        health_path.with_name("volatility.json").read_text(encoding="utf-8")
+    )
+    assert volatility_payload["schema_version"] == "polymarket-volatility-runtime-v1"
+    assert volatility_payload["source_key"] == "polymarket_rtds_chainlink"
+    assert volatility_payload["lookback_limit"] == 180
+    assert volatility_payload["rows"][0]["asset"] == "BTC"
+    assert "sigma_tau" in volatility_payload["rows"][0]
+    assert "flags" in volatility_payload["rows"][0]
 
 
 def test_cadence_sleep_subtracts_cycle_elapsed_time() -> None:

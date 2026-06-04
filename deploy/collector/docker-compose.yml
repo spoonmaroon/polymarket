@@ -82,6 +82,7 @@ services:
       POLYMARKET_NORMALIZED_HEALTH_PATH: /var/lib/polymarket/live/normalized_health.json
       POLYMARKET_PROBABILITY_STATUS_PATH: /var/lib/polymarket/live/probabilities.json
       POLYMARKET_OUTCOME_STATUS_PATH: /var/lib/polymarket/live/outcomes.json
+      POLYMARKET_VOLATILITY_STATUS_PATH: /var/lib/polymarket/live/volatility.json
       POLYMARKET_OFFICIAL_OUTCOME_SOURCE: ${POLYMARKET_OFFICIAL_OUTCOME_SOURCE:-clob}
       POLYMARKET_OFFICIAL_OUTCOME_TIMEOUT_SECONDS: ${POLYMARKET_OFFICIAL_OUTCOME_TIMEOUT_SECONDS:-2.0}
       POLYMARKET_OFFICIAL_OUTCOME_REFRESH_LIMIT: ${POLYMARKET_OFFICIAL_OUTCOME_REFRESH_LIMIT:-4}
@@ -129,6 +130,7 @@ services:
       POLYMARKET_NORMALIZED_HEALTH_PATH: /var/lib/polymarket/live/normalized_health.json
       POLYMARKET_PROBABILITY_STATUS_PATH: /var/lib/polymarket/live/probabilities.json
       POLYMARKET_OUTCOME_STATUS_PATH: /var/lib/polymarket/live/outcomes.json
+      POLYMARKET_VOLATILITY_STATUS_PATH: /var/lib/polymarket/live/volatility.json
       POLYMARKET_DATA_DIR: /var/lib/polymarket
       POLYMARKET_ENABLE_CONTAINER_STATUS: ${POLYMARKET_ENABLE_CONTAINER_STATUS:-0}
       POLYMARKET_ENABLE_RUNTIME_PROBABILITIES: ${POLYMARKET_ENABLE_RUNTIME_PROBABILITIES:-0}

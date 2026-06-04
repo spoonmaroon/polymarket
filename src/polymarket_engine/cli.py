@@ -118,6 +118,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         default=Path("data/live/outcomes.json"),
     )
+    sidecar.add_argument(
+        "--volatility-status-path",
+        type=Path,
+        default=Path("data/live/volatility.json"),
+    )
     sidecar.add_argument("--interval-seconds", type=float, default=0.25)
     sidecar.add_argument(
         "--include-next",
@@ -281,6 +286,7 @@ def _run_rust_normalizer_sidecar(args: argparse.Namespace) -> int:
             normalized_health_path=args.normalized_health_path,
             probability_status_path=args.probability_status_path,
             outcome_status_path=args.outcome_status_path,
+            volatility_status_path=args.volatility_status_path,
             include_next=args.include_next,
             compute_probabilities=args.enable_probabilities,
             reprocess_all=args.reprocess_all,
@@ -295,6 +301,7 @@ def _run_rust_normalizer_sidecar(args: argparse.Namespace) -> int:
         normalized_health_path=args.normalized_health_path,
         probability_status_path=args.probability_status_path,
         outcome_status_path=args.outcome_status_path,
+        volatility_status_path=args.volatility_status_path,
         interval_seconds=args.interval_seconds,
         include_next=args.include_next,
         compute_probabilities=args.enable_probabilities,

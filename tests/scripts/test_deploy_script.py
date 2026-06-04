@@ -174,6 +174,7 @@ def test_runtime_api_service_is_deployed_with_engine_compose() -> None:
     assert "POLYMARKET_STATUS_PATH: /var/lib/polymarket/live/status.json" in compose
     assert "POLYMARKET_DUCKDB_PATH: /var/lib/polymarket/db/polymarket.duckdb" in compose
     assert "POLYMARKET_OUTCOME_STATUS_PATH: /var/lib/polymarket/live/outcomes.json" in compose
+    assert "POLYMARKET_VOLATILITY_STATUS_PATH: /var/lib/polymarket/live/volatility.json" in compose
     assert "${POLYMARKET_API_PORT:-8000}:8000" in compose
     assert "POLYMARKET_API_PORT=8000" in env_example
     assert "POLYMARKET_ENABLE_CONTAINER_STATUS=1" in env_example
@@ -396,12 +397,14 @@ def test_normalizer_defaults_to_quarter_second_checkpointed_cadence() -> None:
     assert "POLYMARKET_NORMALIZER_INTERVAL_SECONDS:-0.25" in compose
     assert 'INTERVAL_SECONDS="${POLYMARKET_NORMALIZER_INTERVAL_SECONDS:-0.25}"' in entrypoint
     assert 'OUTCOME_STATUS_PATH="${POLYMARKET_OUTCOME_STATUS_PATH:-$LIVE_DIR/outcomes.json}"' in entrypoint
+    assert 'VOLATILITY_STATUS_PATH="${POLYMARKET_VOLATILITY_STATUS_PATH:-$LIVE_DIR/volatility.json}"' in entrypoint
     assert "run-rust-normalizer-sidecar" in entrypoint
     assert "exec polymarket-engine" in entrypoint
     assert "while true" not in entrypoint
     assert '--interval-seconds "$INTERVAL_SECONDS"' in entrypoint
     assert '--normalized-health-path "$NORMALIZED_HEALTH_PATH"' in entrypoint
     assert '--outcome-status-path "$OUTCOME_STATUS_PATH"' in entrypoint
+    assert '--volatility-status-path "$VOLATILITY_STATUS_PATH"' in entrypoint
 
 
 def test_deploy_script_requires_running_normalizer_before_success() -> None:

@@ -4,7 +4,7 @@ import hashlib
 import json
 import os
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -42,6 +42,7 @@ OUTCOME_REFRESH_INTERVAL_SECONDS = 30.0
 OUTCOME_PENDING_REFRESH_INTERVAL_SECONDS = 5.0
 OUTCOME_REFRESH_MARKET_LIMIT = 4
 OUTCOME_PENDING_SWEEP_LIMIT = 20
+VOLATILITY_STATUS_SCHEMA_VERSION = "polymarket-volatility-runtime-v1"
 OUTCOME_OUTPUT_LIMIT_ENV = "POLYMARKET_OUTCOME_OUTPUT_LIMIT"
 OFFICIAL_OUTCOME_SOURCE_ENV = "POLYMARKET_OFFICIAL_OUTCOME_SOURCE"
 OFFICIAL_OUTCOME_REFRESH_LIMIT_ENV = "POLYMARKET_OFFICIAL_OUTCOME_REFRESH_LIMIT"
@@ -131,6 +132,7 @@ def run_rust_normalizer_cycle(
     probability_status_path: Path | None = None,
     outcome_status_path: Path | None = None,
     target_status_path: Path | None = None,
+    volatility_status_path: Path | None = None,
     include_next: bool = False,
     compute_probabilities: bool = False,
     reprocess_all: bool = False,
@@ -152,6 +154,7 @@ def run_rust_normalizer_cycle(
             probability_status_path=probability_status_path,
             outcome_status_path=outcome_status_path,
             target_status_path=target_status_path,
+            volatility_status_path=volatility_status_path,
             include_next=include_next,
             compute_probabilities=compute_probabilities,
             reprocess_all=reprocess_all,
@@ -177,6 +180,7 @@ def _run_rust_normalizer_cycle_with_store(
     probability_status_path: Path | None = None,
     outcome_status_path: Path | None = None,
     target_status_path: Path | None = None,
+    volatility_status_path: Path | None = None,
 ) -> RustNormalizerCycleResult:
     cycle_started = time.perf_counter()
     probability_status_path = probability_status_path or normalized_health_path.with_name(
@@ -186,6 +190,9 @@ def _run_rust_normalizer_cycle_with_store(
         "outcomes.json"
     )
     target_status_path = target_status_path or normalized_health_path.with_name("targets.json")
+    volatility_status_path = volatility_status_path or normalized_health_path.with_name(
+        "volatility.json"
+    )
     if apply_schema:
         store.apply_schema()
 
@@ -239,11 +246,17 @@ def _run_rust_normalizer_cycle_with_store(
         if refresh_outcomes
         else 0
     )
+    live_status_generated_at = datetime.now(timezone.utc)
     _write_target_cache_status(
         store=store,
         status_path=status_path,
         out_path=target_status_path,
-        asof_ts=datetime.now(timezone.utc),
+        asof_ts=live_status_generated_at,
+    )
+    _write_volatility_status(
+        store=store,
+        out_path=volatility_status_path,
+        generated_at=live_status_generated_at,
     )
     state_at = time.perf_counter()
 
@@ -275,6 +288,7 @@ def run_rust_normalizer_loop(
     probability_status_path: Path | None = None,
     outcome_status_path: Path | None = None,
     target_status_path: Path | None = None,
+    volatility_status_path: Path | None = None,
     interval_seconds: float = 1.0,
     include_next: bool = False,
     compute_probabilities: bool = False,
@@ -288,6 +302,9 @@ def run_rust_normalizer_loop(
         "outcomes.json"
     )
     target_status_path = target_status_path or normalized_health_path.with_name("targets.json")
+    volatility_status_path = volatility_status_path or normalized_health_path.with_name(
+        "volatility.json"
+    )
     with DuckDbIngestStore(db_path) as store:
         store.apply_schema()
         cycles_run = 0
@@ -346,6 +363,7 @@ def run_rust_normalizer_loop(
                     probability_status_path=probability_status_path,
                     outcome_status_path=outcome_status_path,
                     target_status_path=target_status_path,
+                    volatility_status_path=volatility_status_path,
                     include_next=include_next,
                     compute_probabilities=compute_probabilities,
                     reprocess_all=reprocess_all,
@@ -368,6 +386,7 @@ def run_rust_normalizer_loop(
                         probability_status_path=probability_status_path,
                         outcome_status_path=outcome_status_path,
                         target_status_path=target_status_path,
+                        volatility_status_path=volatility_status_path,
                         include_next=include_next,
                         compute_probabilities=compute_probabilities,
                         previous_status_mtime_ns=effective_previous_status_mtime_ns,
@@ -388,6 +407,7 @@ def run_rust_normalizer_loop(
                         probability_status_path=probability_status_path,
                         outcome_status_path=outcome_status_path,
                         target_status_path=target_status_path,
+                        volatility_status_path=volatility_status_path,
                         include_next=include_next,
                         compute_probabilities=compute_probabilities,
                         reprocess_all=reprocess_all,
@@ -418,6 +438,7 @@ def run_rust_normalizer_loop(
                         probability_status_path=probability_status_path,
                         outcome_status_path=outcome_status_path,
                         target_status_path=target_status_path,
+                        volatility_status_path=volatility_status_path,
                         include_next=include_next,
                         compute_probabilities=compute_probabilities,
                         previous_status_mtime_ns=effective_previous_status_mtime_ns,
@@ -445,6 +466,7 @@ def run_rust_normalizer_loop(
                         probability_status_path=probability_status_path,
                         outcome_status_path=outcome_status_path,
                         target_status_path=target_status_path,
+                        volatility_status_path=volatility_status_path,
                         include_next=include_next,
                         compute_probabilities=compute_probabilities,
                         reprocess_all=reprocess_all,
@@ -507,6 +529,7 @@ def _run_changed_rust_normalizer_cycle_with_store(
     probability_status_path: Path | None = None,
     outcome_status_path: Path | None = None,
     target_status_path: Path | None = None,
+    volatility_status_path: Path | None = None,
 ) -> RustNormalizerCycleResult:
     cycle_started = time.perf_counter()
     probability_status_path = probability_status_path or normalized_health_path.with_name(
@@ -516,6 +539,9 @@ def _run_changed_rust_normalizer_cycle_with_store(
         "outcomes.json"
     )
     target_status_path = target_status_path or normalized_health_path.with_name("targets.json")
+    volatility_status_path = volatility_status_path or normalized_health_path.with_name(
+        "volatility.json"
+    )
     changed_paths = tuple(row.path for row in changed_raw_signature)
     if checkpoint_cache is None:
         checkpoints = store.raw_file_checkpoints(changed_paths)
@@ -591,11 +617,17 @@ def _run_changed_rust_normalizer_cycle_with_store(
         if refresh_outcomes
         else 0
     )
+    live_status_generated_at = datetime.now(timezone.utc)
     _write_target_cache_status(
         store=store,
         status_path=status_path,
         out_path=target_status_path,
-        asof_ts=datetime.now(timezone.utc),
+        asof_ts=live_status_generated_at,
+    )
+    _write_volatility_status(
+        store=store,
+        out_path=volatility_status_path,
+        generated_at=live_status_generated_at,
     )
     state_at = time.perf_counter()
 
@@ -639,6 +671,7 @@ def _run_idle_rust_normalizer_cycle_with_store(
     probability_status_path: Path | None = None,
     outcome_status_path: Path | None = None,
     target_status_path: Path | None = None,
+    volatility_status_path: Path | None = None,
 ) -> RustNormalizerCycleResult:
     cycle_started = time.perf_counter()
     probability_status_path = probability_status_path or normalized_health_path.with_name(
@@ -648,6 +681,9 @@ def _run_idle_rust_normalizer_cycle_with_store(
         "outcomes.json"
     )
     target_status_path = target_status_path or normalized_health_path.with_name("targets.json")
+    volatility_status_path = volatility_status_path or normalized_health_path.with_name(
+        "volatility.json"
+    )
     if status_mtime_ns is None:
         status_mtime_ns = _file_mtime_ns(status_path)
     build_state = status_mtime_ns is not None and (
@@ -687,11 +723,17 @@ def _run_idle_rust_normalizer_cycle_with_store(
         if refresh_outcomes
         else 0
     )
+    live_status_generated_at = datetime.now(timezone.utc)
     _write_target_cache_status(
         store=store,
         status_path=status_path,
         out_path=target_status_path,
-        asof_ts=datetime.now(timezone.utc),
+        asof_ts=live_status_generated_at,
+    )
+    _write_volatility_status(
+        store=store,
+        out_path=volatility_status_path,
+        generated_at=live_status_generated_at,
     )
     state_at = time.perf_counter()
 
@@ -862,6 +904,94 @@ def _write_target_cache_status(
         encoding="utf-8",
     )
     durable_replace(tmp_path, out_path)
+
+
+def _write_volatility_status(
+    *,
+    store: DuckDbIngestStore,
+    out_path: Path,
+    generated_at: datetime,
+    limit: int = 8,
+) -> None:
+    with store._connection() as conn:
+        rows = conn.execute(
+            """
+            select
+                asset,
+                cast(asof_ts as varchar) as asof_ts,
+                short_realized_vol,
+                medium_realized_vol,
+                long_realized_vol,
+                sigma_tau,
+                volatility_regime,
+                data_quality_flags_json
+            from (
+                select
+                    state_inputs.*,
+                    row_number() over (
+                        partition by asset
+                        order by asof_ts desc, created_at desc
+                    ) as row_number
+                from features.asof_state_inputs as state_inputs
+            ) as latest
+            where row_number = 1
+            order by case asset when 'BTC' then 0 when 'ETH' then 1 else 2 end
+            limit ?
+            """,
+            [limit],
+        ).fetchall()
+    payload = {
+        "schema_version": VOLATILITY_STATUS_SCHEMA_VERSION,
+        "ok": True,
+        "state": "OK",
+        "generated_at": generated_at.astimezone(timezone.utc).isoformat(),
+        "source_key": "polymarket_rtds_chainlink",
+        "lookback_limit": 180,
+        "rows": [_volatility_status_row(row) for row in rows],
+        "errors": [],
+    }
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = out_path.with_suffix(f"{out_path.suffix}.tmp")
+    tmp_path.write_text(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    durable_replace(tmp_path, out_path)
+
+
+def _volatility_status_row(row: Sequence[Any]) -> dict[str, Any]:
+    return {
+        "asset": str(row[0]),
+        "asof_ts": None if row[1] is None else str(row[1]),
+        "short_realized_vol": _optional_float(row[2]),
+        "medium_realized_vol": _optional_float(row[3]),
+        "long_realized_vol": _optional_float(row[4]),
+        "sigma_tau": _optional_float(row[5]),
+        "volatility_regime": row[6],
+        "flags": _volatility_status_flags(row[7], sigma_tau=row[5]),
+    }
+
+
+def _volatility_status_flags(raw_flags: object, *, sigma_tau: object) -> list[str]:
+    flags: list[str] = []
+    if isinstance(raw_flags, str):
+        try:
+            loaded = json.loads(raw_flags)
+        except json.JSONDecodeError:
+            loaded = ["invalid_flags_json"]
+        if isinstance(loaded, list):
+            flags = [str(flag) for flag in loaded]
+        else:
+            flags = ["invalid_flags_json"]
+    if sigma_tau is None and "missing_volatility" not in flags:
+        flags.append("missing_volatility")
+    return flags if flags else ["OK"]
+
+
+def _optional_float(value: object) -> float | None:
+    if value is None:
+        return None
+    return float(value)
 
 
 def _target_cache_windows(status_path: Path) -> tuple[dict[str, Any], ...]:

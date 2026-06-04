@@ -25,6 +25,7 @@ from polymarket_engine.validation.outcomes import build_outcome_history_payload
 
 
 NORMALIZED_HEALTH_SCHEMA_VERSION = "polymarket-normalized-health-v1"
+VOLATILITY_STATUS_SCHEMA_VERSION = "polymarket-volatility-runtime-v1"
 
 
 def build_runtime_router(
@@ -35,6 +36,7 @@ def build_runtime_router(
     probability_status_path: Path = Path("data/live/probabilities.json"),
     outcome_status_path: Path = Path("data/live/outcomes.json"),
     target_cache_path: Path = Path("data/live/targets.json"),
+    volatility_status_path: Path = Path("data/live/volatility.json"),
     data_dir: Path = Path("data"),
     enable_container_status: bool = False,
     enable_runtime_probabilities: bool = False,
@@ -143,6 +145,7 @@ def build_runtime_router(
             duckdb_path=duckdb_path,
             normalized_health_path=normalized_health_path,
             target_cache_path=target_cache_path,
+            volatility_status_path=volatility_status_path,
             limit=limit,
         )
 
@@ -162,6 +165,7 @@ def build_runtime_router(
                     duckdb_path=duckdb_path,
                     normalized_health_path=normalized_health_path,
                     target_cache_path=target_cache_path,
+                    volatility_status_path=volatility_status_path,
                     limit=limit,
                 )
                 yield f"event: live\ndata: {json.dumps(payload, separators=(',', ':'))}\n\n"
@@ -292,6 +296,7 @@ def _runtime_live_payload(
     duckdb_path: Path,
     normalized_health_path: Path,
     target_cache_path: Path,
+    volatility_status_path: Path,
     limit: int,
 ) -> dict[str, Any]:
     started = time.perf_counter()
@@ -351,7 +356,11 @@ def _runtime_live_payload(
         server_sent_at=server_sent_at,
         api_build_ms=int((time.perf_counter() - started) * 1000),
     )
-    volatility = _live_volatility_payload(duckdb_path=duckdb_path, limit=limit)
+    volatility = _live_volatility_payload(
+        duckdb_path=duckdb_path,
+        volatility_status_path=volatility_status_path,
+        limit=limit,
+    )
     return {
         "ok": bool(status.get("ok"))
         and bool(gates.get("ok"))
@@ -365,7 +374,17 @@ def _runtime_live_payload(
     }
 
 
-def _live_volatility_payload(*, duckdb_path: Path, limit: int) -> dict[str, Any]:
+def _live_volatility_payload(
+    *,
+    duckdb_path: Path,
+    volatility_status_path: Path,
+    limit: int,
+) -> dict[str, Any]:
+    if volatility_status_path.exists():
+        return _live_volatility_payload_from_status_file(
+            volatility_status_path=volatility_status_path,
+            limit=limit,
+        )
     if not duckdb_path.exists():
         return {
             "state": "MISSING",
@@ -407,30 +426,90 @@ def _live_volatility_payload(*, duckdb_path: Path, limit: int) -> dict[str, Any]
             "errors": [f"DuckDB volatility unavailable: {_format_error(exc)}"],
         }
 
-    now = datetime.now(timezone.utc)
-    payload_rows = []
-    for row in rows:
-        asof_ts = _parse_timestamp_or_none(row[1])
-        flags = _volatility_flags(row[7], sigma_tau=row[5])
-        payload_rows.append(
-            {
-                "asset": str(row[0]),
-                "asof_ts": None if asof_ts is None else asof_ts.isoformat(),
-                "short_realized_vol": _optional_float(row[2]),
-                "medium_realized_vol": _optional_float(row[3]),
-                "long_realized_vol": _optional_float(row[4]),
-                "sigma_tau": _optional_float(row[5]),
-                "volatility_regime": row[6],
-                "age_ms": None
-                if asof_ts is None
-                else max(0, int((now - asof_ts).total_seconds() * 1000)),
-                "flags": flags,
-            }
-        )
     return {
         "state": "OK",
-        "rows": payload_rows,
+        "rows": [_volatility_row_from_db_row(row) for row in rows],
         "errors": [],
+    }
+
+
+def _live_volatility_payload_from_status_file(
+    *,
+    volatility_status_path: Path,
+    limit: int,
+) -> dict[str, Any]:
+    payload, read_error = _read_json_or_error(volatility_status_path)
+    if payload is None:
+        return {
+            "state": read_error["state"],
+            "rows": [],
+            "errors": [read_error["error"]],
+        }
+    if payload.get("schema_version") != VOLATILITY_STATUS_SCHEMA_VERSION:
+        return {
+            "state": "INVALID",
+            "rows": [],
+            "errors": [
+                f"volatility status schema invalid: {payload.get('schema_version')!r}"
+            ],
+        }
+    rows = payload.get("rows")
+    if not isinstance(rows, list):
+        return {
+            "state": "INVALID",
+            "rows": [],
+            "errors": ["volatility status shape invalid: rows must be a list"],
+        }
+    raw_errors = payload.get("errors", [])
+    errors = [str(error) for error in raw_errors] if isinstance(raw_errors, list) else []
+    return {
+        "state": str(payload.get("state") or "OK"),
+        "generated_at": payload.get("generated_at"),
+        "source_key": payload.get("source_key"),
+        "lookback_limit": payload.get("lookback_limit"),
+        "rows": [
+            _volatility_row_from_mapping(row)
+            for row in rows[:limit]
+            if isinstance(row, dict)
+        ],
+        "errors": errors,
+    }
+
+
+def _volatility_row_from_db_row(row: Sequence[Any]) -> dict[str, Any]:
+    return _volatility_row_from_mapping(
+        {
+            "asset": row[0],
+            "asof_ts": row[1],
+            "short_realized_vol": row[2],
+            "medium_realized_vol": row[3],
+            "long_realized_vol": row[4],
+            "sigma_tau": row[5],
+            "volatility_regime": row[6],
+            "data_quality_flags_json": row[7],
+        }
+    )
+
+
+def _volatility_row_from_mapping(row: dict[str, Any]) -> dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    asof_ts = _parse_timestamp_or_none(row.get("asof_ts"))
+    sigma_tau = _optional_float(row.get("sigma_tau"))
+    return {
+        "asset": str(row.get("asset")),
+        "asof_ts": None if asof_ts is None else asof_ts.isoformat(),
+        "short_realized_vol": _optional_float(row.get("short_realized_vol")),
+        "medium_realized_vol": _optional_float(row.get("medium_realized_vol")),
+        "long_realized_vol": _optional_float(row.get("long_realized_vol")),
+        "sigma_tau": sigma_tau,
+        "volatility_regime": row.get("volatility_regime"),
+        "age_ms": None
+        if asof_ts is None
+        else max(0, int((now - asof_ts).total_seconds() * 1000)),
+        "flags": _volatility_flags(
+            row.get("flags", row.get("data_quality_flags_json")),
+            sigma_tau=sigma_tau,
+        ),
     }
 
 
@@ -451,7 +530,9 @@ def _connect_read_only_with_retry(
 
 def _volatility_flags(raw_flags: object, *, sigma_tau: object) -> list[str]:
     flags: list[str] = []
-    if isinstance(raw_flags, str):
+    if isinstance(raw_flags, list):
+        flags = [str(flag) for flag in raw_flags]
+    elif isinstance(raw_flags, str):
         try:
             loaded = json.loads(raw_flags)
         except json.JSONDecodeError:

@@ -8,6 +8,7 @@ STATUS_PATH="${POLYMARKET_STATUS_PATH:-$LIVE_DIR/status.json}"
 NORMALIZED_HEALTH_PATH="${POLYMARKET_NORMALIZED_HEALTH_PATH:-$LIVE_DIR/normalized_health.json}"
 PROBABILITY_STATUS_PATH="${POLYMARKET_PROBABILITY_STATUS_PATH:-$LIVE_DIR/probabilities.json}"
 OUTCOME_STATUS_PATH="${POLYMARKET_OUTCOME_STATUS_PATH:-$LIVE_DIR/outcomes.json}"
+VOLATILITY_STATUS_PATH="${POLYMARKET_VOLATILITY_STATUS_PATH:-$LIVE_DIR/volatility.json}"
 INTERVAL_SECONDS="${POLYMARKET_NORMALIZER_INTERVAL_SECONDS:-0.25}"
 
 if [ ! -f "$RAW_DIR/.polymarket_archive_root" ]; then
@@ -24,5 +25,6 @@ exec polymarket-engine run-rust-normalizer-sidecar \
   --normalized-health-path "$NORMALIZED_HEALTH_PATH" \
   --probability-status-path "$PROBABILITY_STATUS_PATH" \
   --outcome-status-path "$OUTCOME_STATUS_PATH" \
+  --volatility-status-path "$VOLATILITY_STATUS_PATH" \
   --interval-seconds "$INTERVAL_SECONDS" \
   --include-next
