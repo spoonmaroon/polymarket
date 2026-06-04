@@ -11,6 +11,7 @@ const EXPIRED_MARKET_HANDOFF_SECONDS: i64 = 60;
 const PENDING_OUTCOME_FRESHNESS_SECONDS: i64 = 20;
 const RESOLVED_OUTCOME_RETENTION_SECONDS: i64 = 30;
 const MAX_PRICE_HISTORY_POINTS: usize = 240;
+const MAX_VISIBLE_MARKET_GROUPS_PER_ASSET: usize = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MainTab {
@@ -215,10 +216,11 @@ impl AppState {
             return Vec::new();
         };
 
-        crate::market_view::market_groups(&monitor.orderbooks)
+        let groups = crate::market_view::market_groups(&monitor.orderbooks)
             .into_iter()
             .filter(|group| self.should_retain_group_after_expiry(group, &monitor.generated_at))
-            .collect()
+            .collect();
+        cap_market_groups_per_asset(groups, &monitor.generated_at)
     }
 
     pub fn should_retain_group_after_expiry(
@@ -478,6 +480,87 @@ fn parse_runtime_timestamp(timestamp: &str) -> Option<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(timestamp)
         .ok()
         .map(|timestamp| timestamp.with_timezone(&Utc))
+}
+
+fn cap_market_groups_per_asset<'a>(
+    groups: Vec<crate::market_view::MarketGroup<'a>>,
+    generated_at: &str,
+) -> Vec<crate::market_view::MarketGroup<'a>> {
+    let Some(generated_at) = parse_runtime_timestamp(generated_at) else {
+        return cap_market_groups_by_asset_order(groups);
+    };
+
+    let mut assets: Vec<String> = Vec::new();
+    for group in &groups {
+        if !assets
+            .iter()
+            .any(|asset| asset.eq_ignore_ascii_case(&group.asset))
+        {
+            assets.push(group.asset.clone());
+        }
+    }
+
+    let mut selected_keys: HashSet<String> = HashSet::new();
+    for asset in assets {
+        let asset_groups = groups
+            .iter()
+            .filter(|group| group.asset.eq_ignore_ascii_case(&asset))
+            .collect::<Vec<_>>();
+        let mut selected_for_asset: Vec<String> = asset_groups
+            .iter()
+            .copied()
+            .filter(|group| !group_expired_at(group, generated_at))
+            .take(MAX_VISIBLE_MARKET_GROUPS_PER_ASSET)
+            .map(|group| group.key.clone())
+            .collect();
+
+        if selected_for_asset.len() < MAX_VISIBLE_MARKET_GROUPS_PER_ASSET {
+            let mut expired_groups = asset_groups
+                .iter()
+                .copied()
+                .filter(|group| group_expired_at(group, generated_at))
+                .collect::<Vec<_>>();
+            expired_groups.sort_by(|left, right| {
+                market_group_expiry_timestamp(right).cmp(&market_group_expiry_timestamp(left))
+            });
+            for group in expired_groups {
+                if selected_for_asset.len() >= MAX_VISIBLE_MARKET_GROUPS_PER_ASSET {
+                    break;
+                }
+                selected_for_asset.push(group.key.clone());
+            }
+        }
+
+        selected_keys.extend(selected_for_asset);
+    }
+
+    groups
+        .into_iter()
+        .filter(|group| selected_keys.contains(&group.key))
+        .collect()
+}
+
+fn cap_market_groups_by_asset_order<'a>(
+    groups: Vec<crate::market_view::MarketGroup<'a>>,
+) -> Vec<crate::market_view::MarketGroup<'a>> {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    groups
+        .into_iter()
+        .filter(|group| {
+            let count = counts.entry(group.asset.to_ascii_uppercase()).or_default();
+            if *count >= MAX_VISIBLE_MARKET_GROUPS_PER_ASSET {
+                return false;
+            }
+            *count += 1;
+            true
+        })
+        .collect()
+}
+
+fn market_group_expiry_timestamp(group: &crate::market_view::MarketGroup<'_>) -> i64 {
+    group
+        .expiry_ts
+        .map_or(i64::MIN, |timestamp| timestamp.timestamp())
 }
 
 fn outcome_matches_group(
@@ -942,6 +1025,86 @@ mod tests {
         assert!(!retain_at(&app, "2026-06-03T21:26:01Z"));
     }
 
+    #[test]
+    fn visible_market_groups_caps_each_asset_to_three_and_keeps_current_windows() {
+        let mut app = AppState {
+            runtime_monitor: Some(RuntimeMonitor {
+                generated_at: "2026-06-03T21:06:30Z".to_string(),
+                price_rows: Vec::new(),
+                orderbooks: vec![
+                    orderbook_with_expiry("BTC", "UP", "btc-updown-5m-old", "2026-06-03T21:00:00Z"),
+                    orderbook_with_expiry(
+                        "BTC",
+                        "UP",
+                        "btc-updown-5m-recent",
+                        "2026-06-03T21:05:00Z",
+                    ),
+                    orderbook_with_expiry(
+                        "BTC",
+                        "UP",
+                        "btc-updown-5m-current",
+                        "2026-06-03T21:10:00Z",
+                    ),
+                    orderbook_with_expiry(
+                        "BTC",
+                        "UP",
+                        "btc-updown-5m-next",
+                        "2026-06-03T21:15:00Z",
+                    ),
+                    orderbook_with_expiry("ETH", "UP", "eth-updown-5m-old", "2026-06-03T21:00:00Z"),
+                    orderbook_with_expiry(
+                        "ETH",
+                        "UP",
+                        "eth-updown-5m-recent",
+                        "2026-06-03T21:05:00Z",
+                    ),
+                    orderbook_with_expiry(
+                        "ETH",
+                        "UP",
+                        "eth-updown-5m-current",
+                        "2026-06-03T21:10:00Z",
+                    ),
+                    orderbook_with_expiry(
+                        "ETH",
+                        "UP",
+                        "eth-updown-5m-next",
+                        "2026-06-03T21:15:00Z",
+                    ),
+                ],
+            }),
+            ..Default::default()
+        };
+        app.apply_runtime_outcomes(RuntimeOutcomes {
+            ok: true,
+            state: "OK".to_string(),
+            generated_at: Some("2026-06-03T21:06:30Z".to_string()),
+            rows: vec![
+                pending_outcome("BTC", "btc-updown-5m-old"),
+                pending_outcome("BTC", "btc-updown-5m-recent"),
+                pending_outcome("ETH", "eth-updown-5m-old"),
+                pending_outcome("ETH", "eth-updown-5m-recent"),
+            ],
+        });
+
+        let visible_slugs = app
+            .visible_market_groups()
+            .into_iter()
+            .map(|group| group.market_slug)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            visible_slugs,
+            vec![
+                "btc-updown-5m-recent",
+                "btc-updown-5m-current",
+                "btc-updown-5m-next",
+                "eth-updown-5m-recent",
+                "eth-updown-5m-current",
+                "eth-updown-5m-next",
+            ]
+        );
+    }
+
     fn price_row(symbol: &str, price: &str) -> RuntimePriceRow {
         RuntimePriceRow {
             source_key: Some("polymarket_rtds_chainlink".to_string()),
@@ -1030,6 +1193,17 @@ mod tests {
             bids: Vec::new(),
             asks: Vec::new(),
         }
+    }
+
+    fn orderbook_with_expiry(
+        asset: &str,
+        side: &str,
+        market_slug: &str,
+        expiry_ts: &str,
+    ) -> RuntimeOrderbookRow {
+        let mut row = orderbook(asset, side, market_slug, "2026-06-03T21:06:29Z");
+        row.expiry_ts = Some(expiry_ts.to_string());
+        row
     }
 
     fn outcomes(markets: Vec<&str>) -> RuntimeOutcomes {

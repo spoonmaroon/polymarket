@@ -897,30 +897,36 @@ mod tests {
                 generated_at: "2026-06-03T21:06:00Z".to_string(),
                 price_rows: Vec::new(),
                 orderbooks: (0..8)
-                    .map(|index| RuntimeOrderbookRow {
-                        venue: Some("polymarket".to_string()),
-                        source_key: Some("polymarket_rust_sdk".to_string()),
-                        market_slug: Some(format!("btc-updown-5m-1780521{index:03}")),
-                        contract_id: format!("btc-row-{index}"),
-                        token_id: Some(format!("btc-row-{index}-token")),
-                        asset: Some("BTC".to_string()),
-                        side: Some(if index % 2 == 0 { "UP" } else { "DOWN" }.to_string()),
-                        event_ts: None,
-                        observed_ts: Some(format!("2026-06-03T21:05:5{index}Z")),
-                        start_ts: None,
-                        expiry_ts: None,
-                        threshold_price: None,
-                        threshold_event_ts: None,
-                        threshold_observed_ts: None,
-                        settlement_price: None,
-                        settlement_event_ts: None,
-                        best_bid: Some(format!("0.{index}1")),
-                        best_ask: Some(format!("0.{index}2")),
-                        spread: Some("0.01".to_string()),
-                        bid_size_top: None,
-                        ask_size_top: None,
-                        bids: Vec::new(),
-                        asks: Vec::new(),
+                    .map(|index| {
+                        let asset = if index < 4 { "BTC" } else { "ETH" };
+                        RuntimeOrderbookRow {
+                            venue: Some("polymarket".to_string()),
+                            source_key: Some("polymarket_rust_sdk".to_string()),
+                            market_slug: Some(format!(
+                                "{}-updown-5m-1780521{index:03}",
+                                asset.to_ascii_lowercase()
+                            )),
+                            contract_id: format!("{asset}-row-{index}"),
+                            token_id: Some(format!("{asset}-row-{index}-token")),
+                            asset: Some(asset.to_string()),
+                            side: Some(if index % 2 == 0 { "UP" } else { "DOWN" }.to_string()),
+                            event_ts: None,
+                            observed_ts: Some(format!("2026-06-03T21:05:5{index}Z")),
+                            start_ts: None,
+                            expiry_ts: None,
+                            threshold_price: None,
+                            threshold_event_ts: None,
+                            threshold_observed_ts: None,
+                            settlement_price: None,
+                            settlement_event_ts: None,
+                            best_bid: Some(format!("0.{index}1")),
+                            best_ask: Some(format!("0.{index}2")),
+                            spread: Some("0.01".to_string()),
+                            bid_size_top: None,
+                            ask_size_top: None,
+                            bids: Vec::new(),
+                            asks: Vec::new(),
+                        }
                     })
                     .collect(),
             }),
@@ -931,10 +937,10 @@ mod tests {
 
         let rows = market_rows(&app);
 
-        assert_eq!(app.selected_market_index(), Some(7));
+        assert_eq!(app.selected_market_index(), Some(5));
         assert!(rows.len() <= 10);
         assert_eq!(rows.last().map(|row| row.marker.as_str()), Some(">"));
-        assert_eq!(rows.last().map(|row| row.down.as_str()), Some("0.71/0.72"));
+        assert_eq!(rows.last().map(|row| row.up.as_str()), Some("0.61/0.62"));
     }
 
     #[test]
@@ -944,30 +950,36 @@ mod tests {
                 generated_at: "2026-06-03T21:06:00Z".to_string(),
                 price_rows: Vec::new(),
                 orderbooks: (0..12)
-                    .map(|index| RuntimeOrderbookRow {
-                        venue: Some("polymarket".to_string()),
-                        source_key: Some("polymarket_rust_sdk".to_string()),
-                        market_slug: Some(format!("btc-updown-5m-1780522{index:03}")),
-                        contract_id: format!("btc-row-{index}"),
-                        token_id: Some(format!("btc-row-{index}-token")),
-                        asset: Some("BTC".to_string()),
-                        side: Some(if index % 2 == 0 { "UP" } else { "DOWN" }.to_string()),
-                        event_ts: None,
-                        observed_ts: Some(format!("2026-06-03T21:05:{index:02}Z")),
-                        start_ts: None,
-                        expiry_ts: None,
-                        threshold_price: None,
-                        threshold_event_ts: None,
-                        threshold_observed_ts: None,
-                        settlement_price: None,
-                        settlement_event_ts: None,
-                        best_bid: Some(format!("0.{index}1")),
-                        best_ask: Some(format!("0.{index}2")),
-                        spread: Some("0.01".to_string()),
-                        bid_size_top: None,
-                        ask_size_top: None,
-                        bids: Vec::new(),
-                        asks: Vec::new(),
+                    .map(|index| {
+                        let asset = if index < 6 { "BTC" } else { "ETH" };
+                        RuntimeOrderbookRow {
+                            venue: Some("polymarket".to_string()),
+                            source_key: Some("polymarket_rust_sdk".to_string()),
+                            market_slug: Some(format!(
+                                "{}-updown-5m-1780522{index:03}",
+                                asset.to_ascii_lowercase()
+                            )),
+                            contract_id: format!("{asset}-row-{index}"),
+                            token_id: Some(format!("{asset}-row-{index}-token")),
+                            asset: Some(asset.to_string()),
+                            side: Some(if index % 2 == 0 { "UP" } else { "DOWN" }.to_string()),
+                            event_ts: None,
+                            observed_ts: Some(format!("2026-06-03T21:05:{index:02}Z")),
+                            start_ts: None,
+                            expiry_ts: None,
+                            threshold_price: None,
+                            threshold_event_ts: None,
+                            threshold_observed_ts: None,
+                            settlement_price: None,
+                            settlement_event_ts: None,
+                            best_bid: Some(format!("0.{index}1")),
+                            best_ask: Some(format!("0.{index}2")),
+                            spread: Some("0.01".to_string()),
+                            bid_size_top: None,
+                            ask_size_top: None,
+                            bids: Vec::new(),
+                            asks: Vec::new(),
+                        }
                     })
                     .collect(),
             }),
@@ -978,13 +990,10 @@ mod tests {
 
         let rows = market_rows_for_visible_count(&app, 4);
 
-        assert_eq!(app.selected_market_index(), Some(11));
+        assert_eq!(app.selected_market_index(), Some(5));
         assert_eq!(rows.len(), 4);
         assert_eq!(rows.last().map(|row| row.marker.as_str()), Some(">"));
-        assert_eq!(
-            rows.last().map(|row| row.down.as_str()),
-            Some("0.111/0.112")
-        );
+        assert_eq!(rows.last().map(|row| row.up.as_str()), Some("0.81/0.82"));
     }
 
     #[test]
