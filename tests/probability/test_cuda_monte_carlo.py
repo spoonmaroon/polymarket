@@ -142,8 +142,10 @@ def test_cuda_multi_seed_aggregates_p_hat_and_confidence(
             ),
         )
     )
+    calls = []
 
-    def fake_single_seed(*_: object, **__: object) -> module.ProbabilityOutput:
+    def fake_single_seed(probability_input_arg: object, **kwargs: object) -> module.ProbabilityOutput:
+        calls.append((probability_input_arg, kwargs))
         return next(outputs)
 
     monkeypatch.setattr(module, "run_cuda_monte_carlo", fake_single_seed)
@@ -166,3 +168,55 @@ def test_cuda_multi_seed_aggregates_p_hat_and_confidence(
     assert result.diagnostics["paths_per_seed"] == 10_000
     assert result.diagnostics["path_count"] == 30_000
     assert [row["seed"] for row in result.diagnostics["seed_runs"]] == [11, 22, 33]
+    assert calls == [
+        (
+            probability_input,
+            {
+                "path_count": 10_000,
+                "steps": 120,
+                "seed": 11,
+            },
+        ),
+        (
+            probability_input,
+            {
+                "path_count": 10_000,
+                "steps": 120,
+                "seed": 22,
+            },
+        ),
+        (
+            probability_input,
+            {
+                "path_count": 10_000,
+                "steps": 120,
+                "seed": 33,
+            },
+        ),
+    ]
+
+
+def test_cuda_multi_seed_rejects_nonpositive_paths_per_seed() -> None:
+    module = importlib.import_module("polymarket_engine.probability.cuda_monte_carlo")
+
+    with pytest.raises(ValueError, match="paths_per_seed"):
+        module.run_cuda_monte_carlo_multi_seed(
+            _probability_input(),
+            paths_per_seed=0,
+            steps=120,
+            seed=11,
+            seed_count=3,
+        )
+
+
+def test_cuda_multi_seed_rejects_nonpositive_seed_count() -> None:
+    module = importlib.import_module("polymarket_engine.probability.cuda_monte_carlo")
+
+    with pytest.raises(ValueError, match="seed_count"):
+        module.run_cuda_monte_carlo_multi_seed(
+            _probability_input(),
+            paths_per_seed=10_000,
+            steps=120,
+            seed=11,
+            seed_count=0,
+        )
