@@ -484,6 +484,10 @@ def _runtime_detail_from_diagnostics(diagnostics: Mapping[str, Any]) -> dict[str
             "gate_reasons",
         ),
         "generator_metadata": generator_metadata,
+        "simulation_preview": _optional_json_object(
+            diagnostics.get("simulation_preview"),
+            "simulation_preview",
+        ),
     }
 
 
@@ -501,6 +505,14 @@ def _metadata_mapping(value: object, field_name: str) -> dict[str, Any]:
     metadata = _optional_mapping(value, field_name)
     assert metadata is not None
     return dict(sorted((str(key), item) for key, item in metadata.items()))
+
+
+def _optional_json_object(value: object, field_name: str) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    mapping = _optional_mapping(value, field_name)
+    assert mapping is not None
+    return dict(mapping)
 
 
 def _optional_runtime_float(value: object, field_name: str) -> float | None:

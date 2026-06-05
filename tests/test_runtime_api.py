@@ -1127,6 +1127,27 @@ def test_runtime_probabilities_exposes_persisted_ensemble_and_gate_diagnostics(
                 "snapshot_id": "weights-2026-06-05T20:00Z",
                 "source": "fixture_losses",
             },
+            "simulation_preview": {
+                "path_count": 1000,
+                "steps": 20,
+                "start_price": 100.0,
+                "threshold": 100.0,
+                "comparison_operator": ">=",
+                "terminal_win_count": 670,
+                "no_touch_win_count": 720,
+                "sampled_paths": [
+                    {
+                        "index": 0,
+                        "terminal_win": True,
+                        "no_touch_win": True,
+                        "points": [100.0, 100.2, 100.5],
+                    }
+                ],
+                "terminal_histogram": [
+                    {"lower": 99.5, "upper": 100.0, "count": 330},
+                    {"lower": 100.0, "upper": 100.5, "count": 670},
+                ],
+            },
         },
     )
     store = DuckDbIngestStore(db_path)
@@ -1169,6 +1190,13 @@ def test_runtime_probabilities_exposes_persisted_ensemble_and_gate_diagnostics(
         "snapshot_id": "weights-2026-06-05T20:00Z",
         "source": "fixture_losses",
     }
+    assert row["simulation_preview"]["path_count"] == 1000
+    assert row["simulation_preview"]["sampled_paths"][0]["points"] == [
+        100.0,
+        100.2,
+        100.5,
+    ]
+    assert row["simulation_preview"]["terminal_histogram"][1]["count"] == 670
 
 
 def _contract() -> ContractSpec:

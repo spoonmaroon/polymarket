@@ -22,7 +22,8 @@ fees, spread, slippage, data latency, and path-reversal risk.
 - API: FastAPI read-only runtime endpoints
 - Live runtime: Rust SDK state-manager on THEPC
 - Operator UI: read-only Rust cockpit TUI
-- Research scaffold: `probability_core`, replay tables, and retired React/Vite UI
+- Browser UI: read-only Probability Runtime preview for latest probability rows
+- Research scaffold: `probability_core` and replay tables
 - Execution mode: paper/read-only by design
 
 Start with [SETUP.md](SETUP.md). Normal development should merge back to

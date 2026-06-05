@@ -121,11 +121,36 @@ def test_run_seeded_monte_carlo_is_deterministic_for_same_seed() -> None:
     assert 0.0 <= first.p_no_touch <= 1.0
     assert first.seed == 123
     assert first.model_version == "offline-lognormal-chainlink-sigma-v1"
-    assert first.diagnostics == {
-        "path_count": 1000,
-        "steps": 20,
-        "model": "offline_lognormal_chainlink_sigma",
-    }
+    assert first.diagnostics["path_count"] == 1000
+    assert first.diagnostics["steps"] == 20
+    assert first.diagnostics["model"] == "offline_lognormal_chainlink_sigma"
+
+
+def test_run_seeded_monte_carlo_exposes_bounded_simulation_preview() -> None:
+    probability_input = _probability_input()
+
+    output = run_seeded_monte_carlo(
+        probability_input,
+        path_count=1000,
+        steps=20,
+        seed=123,
+    )
+
+    preview = output.diagnostics["simulation_preview"]
+    assert preview["path_count"] == 1000
+    assert preview["steps"] == 20
+    assert preview["start_price"] == pytest.approx(100.0)
+    assert preview["threshold"] == pytest.approx(100.0)
+    assert preview["comparison_operator"] == ">="
+    assert preview["terminal_win_count"] <= 1000
+    assert preview["no_touch_win_count"] <= 1000
+    assert len(preview["sampled_paths"]) == 24
+    assert len(preview["sampled_paths"][0]["points"]) == 21
+    assert preview["sampled_paths"][0]["points"][0] == pytest.approx(100.0)
+    assert isinstance(preview["sampled_paths"][0]["terminal_win"], bool)
+    assert isinstance(preview["sampled_paths"][0]["no_touch_win"], bool)
+    assert len(preview["terminal_histogram"]) == 16
+    assert sum(bucket["count"] for bucket in preview["terminal_histogram"]) == 1000
 
 
 def test_run_seeded_monte_carlo_rejects_generated_nonfinite_prices() -> None:

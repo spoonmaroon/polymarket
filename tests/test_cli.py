@@ -654,6 +654,7 @@ async def test_run_rust_normalizer_sidecar_loop_command_dispatches(
             "normalized_health_path": tmp_path / "live" / "normalized_health.json",
             "probability_status_path": Path("data/live/probabilities.json"),
             "outcome_status_path": Path("data/live/outcomes.json"),
+            "volatility_status_path": Path("data/live/volatility.json"),
             "interval_seconds": 1.5,
             "include_next": True,
             "compute_probabilities": False,

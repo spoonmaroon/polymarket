@@ -8,6 +8,10 @@ import numpy as np
 
 from polymarket_engine.probability.schema import ProbabilityInput, ProbabilityOutput
 
+MAX_PREVIEW_PATHS = 24
+MAX_PREVIEW_POINTS = 24
+TERMINAL_HISTOGRAM_BINS = 16
+
 
 def score_paths(
     probability_input: ProbabilityInput,
@@ -67,6 +71,11 @@ def run_seeded_monte_carlo(
             "path_count": path_count,
             "steps": steps,
             "model": "offline_lognormal_chainlink_sigma",
+            "simulation_preview": _simulation_preview(
+                probability_input,
+                path_rows=path_rows,
+                counts=counts,
+            ),
         },
     )
 
@@ -101,6 +110,89 @@ def _score_validated_paths(
             all(_price_satisfies_contract(probability_input, price) for price in path)
         )
     return {"terminal_wins": terminal_wins, "no_touch_wins": no_touch_wins}
+
+
+def _simulation_preview(
+    probability_input: ProbabilityInput,
+    *,
+    path_rows: tuple[tuple[float, ...], ...],
+    counts: dict[str, int],
+) -> dict[str, Any]:
+    sampled_path_indices = _evenly_spaced_indices(
+        len(path_rows),
+        min(MAX_PREVIEW_PATHS, len(path_rows)),
+    )
+    sampled_point_indices = _evenly_spaced_indices(
+        len(path_rows[0]),
+        min(MAX_PREVIEW_POINTS, len(path_rows[0])),
+    )
+    terminal_prices = tuple(path[-1] for path in path_rows)
+    return {
+        "path_count": len(path_rows),
+        "steps": len(path_rows[0]) - 1,
+        "start_price": probability_input.settlement_price,
+        "threshold": probability_input.threshold,
+        "comparison_operator": probability_input.comparison_operator,
+        "terminal_win_count": counts["terminal_wins"],
+        "no_touch_win_count": counts["no_touch_wins"],
+        "sampled_paths": [
+            _sampled_path_payload(
+                probability_input,
+                path_rows[path_index],
+                path_index=path_index,
+                sampled_point_indices=sampled_point_indices,
+            )
+            for path_index in sampled_path_indices
+        ],
+        "terminal_histogram": _terminal_histogram(terminal_prices),
+    }
+
+
+def _sampled_path_payload(
+    probability_input: ProbabilityInput,
+    path: tuple[float, ...],
+    *,
+    path_index: int,
+    sampled_point_indices: tuple[int, ...],
+) -> dict[str, Any]:
+    return {
+        "index": path_index,
+        "terminal_win": _price_satisfies_contract(probability_input, path[-1]),
+        "no_touch_win": all(_price_satisfies_contract(probability_input, price) for price in path),
+        "points": [path[index] for index in sampled_point_indices],
+    }
+
+
+def _terminal_histogram(terminal_prices: tuple[float, ...]) -> list[dict[str, Any]]:
+    lower_bound = min(terminal_prices)
+    upper_bound = max(terminal_prices)
+    if lower_bound == upper_bound:
+        return [{"lower": lower_bound, "upper": upper_bound, "count": len(terminal_prices)}]
+
+    bin_count = min(TERMINAL_HISTOGRAM_BINS, len(terminal_prices))
+    width = (upper_bound - lower_bound) / bin_count
+    counts = [0] * bin_count
+    for price in terminal_prices:
+        index = min(bin_count - 1, int((price - lower_bound) / width))
+        counts[index] += 1
+    return [
+        {
+            "lower": lower_bound + width * index,
+            "upper": lower_bound + width * (index + 1),
+            "count": count,
+        }
+        for index, count in enumerate(counts)
+    ]
+
+
+def _evenly_spaced_indices(length: int, count: int) -> tuple[int, ...]:
+    if count <= 0:
+        return ()
+    if count >= length:
+        return tuple(range(length))
+    if count == 1:
+        return (0,)
+    return tuple(round(index * (length - 1) / (count - 1)) for index in range(count))
 
 
 def _price_satisfies_contract(probability_input: ProbabilityInput, price: float) -> bool:

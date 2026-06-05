@@ -140,7 +140,7 @@ Core tables:
 - labels after expiry
 - incidents and kill-switch events
 
-Dashboard purpose: show current contracts, model probability, executable edge, risk gates, source quality, and decision history.
+Dashboard purpose: show current contracts, model probability, executable edge, risk gates, source quality, and decision history. The browser Probability Runtime is a read-only preview surface: it prioritizes Monte Carlo sampled paths, terminal distribution, generator weights, and gate output for the selected contract. It does not place orders and does not imply live grid-cache support until the grid layer exists.
 
 ### 11. Failure Modes and Operational Safety
 
@@ -1504,6 +1504,8 @@ The research plan should explicitly test the following:
 ## 6.7 Cached grids and refresh rules
 
 A full Monte Carlo run on every tick is unnecessary. The live path should use cached probability grids and refresh only when the state changes enough to matter.
+
+Implementation status as of 2026-06-05: the cached probability-grid layer is not built yet. The current runtime path reads persisted probability outputs first, can compute and persist deterministic offline Monte Carlo outputs from as-of inputs when enabled, and exposes a bounded `simulation_preview` diagnostic for UI inspection. The browser Probability Runtime shows those sampled paths and terminal histograms when the diagnostics exist; it must not be treated as evidence that grid interpolation or grid refresh rules are active.
 
 | Trigger | Action |
 |----|----|
