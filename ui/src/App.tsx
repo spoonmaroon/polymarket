@@ -1286,13 +1286,20 @@ function toApiState<T>(result: { payload: T | null; error: string | null }): Api
   };
 }
 
-function toProbabilityApiState(
+export function toProbabilityApiState(
   result: { payload: ProbabilityPayload | null; error: string | null },
   previous: ApiState<ProbabilityPayload>,
 ): ApiState<ProbabilityPayload> {
   const next = toApiState(result);
   const previousRows = safeRows(previous.payload);
   const nextRows = safeRows(next.payload);
+  if (!result.error && next.payload && previousRows.length > 0 && nextRows.length === 0) {
+    return {
+      ...next,
+      payload: previous.payload,
+      notice: "Monte Carlo refresh pending; keeping last populated grid.",
+    };
+  }
   if (!result.error && next.payload && previousRows.length > 0 && nextRows.length > 0) {
     return {
       ...next,
