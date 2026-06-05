@@ -22,7 +22,9 @@ fi
 
 if [[ -n "${nvidia_smi}" ]]; then
   echo "${nvidia_smi}"
-  "${nvidia_smi}" --query-gpu=name,driver_version,compute_cap,memory.total --format=csv
+  if ! "${nvidia_smi}" --query-gpu=name,driver_version,compute_cap,memory.total --format=csv; then
+    echo "WARNING: nvidia-smi query failed"
+  fi
 else
   echo "MISSING: nvidia-smi"
 fi

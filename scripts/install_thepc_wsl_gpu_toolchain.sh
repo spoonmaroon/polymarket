@@ -6,12 +6,26 @@ if [[ ! -r /proc/version ]] || ! grep -qi microsoft /proc/version; then
   exit 2
 fi
 
-host_name="$(hostname)"
-if [[ "${POLYMARKET_ALLOW_NON_THEPC:-}" != "1" ]] && [[ ! "${host_name}" =~ ^[Tt][Hh][Ee][Pp][Cc]$ ]]; then
-  echo "This installer only runs on THEPC WSL by default." >&2
-  echo "Detected hostname: ${host_name}" >&2
-  echo "Set POLYMARKET_ALLOW_NON_THEPC=1 to override intentionally." >&2
-  exit 2
+if [[ "${POLYMARKET_ALLOW_NON_THEPC:-}" != "1" ]]; then
+  host_name="$(hostname)"
+  if [[ ! "${host_name}" =~ ^[Tt][Hh][Ee][Pp][Cc]$ ]]; then
+    echo "This installer only runs on THEPC WSL Ubuntu by default." >&2
+    echo "Detected hostname: ${host_name}" >&2
+    echo "Set POLYMARKET_ALLOW_NON_THEPC=1 to override intentionally." >&2
+    exit 2
+  fi
+
+  if [[ ! -r /etc/os-release ]] || ! grep -Eq '^ID=ubuntu$|^ID="ubuntu"$' /etc/os-release; then
+    echo "This installer requires Ubuntu inside THEPC WSL by default." >&2
+    echo "Detected OS:" >&2
+    if [[ -r /etc/os-release ]]; then
+      sed -n '1,8p' /etc/os-release >&2
+    else
+      echo "MISSING: /etc/os-release" >&2
+    fi
+    echo "Set POLYMARKET_ALLOW_NON_THEPC=1 to override intentionally." >&2
+    exit 2
+  fi
 fi
 
 sudo apt-get update
