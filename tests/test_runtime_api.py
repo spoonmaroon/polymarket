@@ -17,6 +17,7 @@ from polymarket_engine.domain.contracts import ContractSpec
 from polymarket_engine.domain.market_state import DataQualityFlag
 from polymarket_engine.domain.market_state import DecisionState
 from polymarket_engine.probability.schema import ProbabilityInput, ProbabilityOutput
+from polymarket_engine.runtime_api import _volatility_flags
 from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
 
 
@@ -56,6 +57,28 @@ def _write_status(path: Path) -> None:
         ),
         encoding="utf-8",
     )
+
+
+def test_runtime_volatility_flags_filter_orderbook_decision_flags() -> None:
+    raw_flags = [
+        "stale_source",
+        "missing_orderbook",
+        "incomplete_orderbook",
+        "stale_orderbook",
+        "source_disagreement",
+    ]
+
+    flags = _volatility_flags(raw_flags, sigma_tau=0.0012)
+
+    assert flags == ["stale_source"]
+
+
+def test_runtime_volatility_flags_keep_missing_volatility_without_orderbook_noise() -> None:
+    raw_flags = ["incomplete_orderbook"]
+
+    flags = _volatility_flags(raw_flags, sigma_tau=None)
+
+    assert flags == ["missing_volatility"]
 
 
 def test_runtime_status_reads_state_manager_file(tmp_path: Path) -> None:

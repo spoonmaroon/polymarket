@@ -26,6 +26,7 @@ from polymarket_engine.validation.outcomes import build_outcome_history_payload
 
 NORMALIZED_HEALTH_SCHEMA_VERSION = "polymarket-normalized-health-v1"
 VOLATILITY_STATUS_SCHEMA_VERSION = "polymarket-volatility-runtime-v1"
+VOLATILITY_STATUS_FLAGS = frozenset({"stale_source", "missing_volatility", "invalid_flags_json"})
 
 
 def build_runtime_router(
@@ -541,6 +542,7 @@ def _volatility_flags(raw_flags: object, *, sigma_tau: object) -> list[str]:
             flags = [str(flag) for flag in loaded]
         else:
             flags = ["invalid_flags_json"]
+    flags = [flag for flag in flags if flag in VOLATILITY_STATUS_FLAGS]
     if sigma_tau is None and "missing_volatility" not in flags:
         flags.append("missing_volatility")
     return flags if flags else ["OK"]

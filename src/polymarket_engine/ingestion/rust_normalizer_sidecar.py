@@ -43,6 +43,7 @@ OUTCOME_PENDING_REFRESH_INTERVAL_SECONDS = 5.0
 OUTCOME_REFRESH_MARKET_LIMIT = 4
 OUTCOME_PENDING_SWEEP_LIMIT = 20
 VOLATILITY_STATUS_SCHEMA_VERSION = "polymarket-volatility-runtime-v1"
+VOLATILITY_STATUS_FLAGS = frozenset({"stale_source", "missing_volatility", "invalid_flags_json"})
 OUTCOME_OUTPUT_LIMIT_ENV = "POLYMARKET_OUTCOME_OUTPUT_LIMIT"
 OFFICIAL_OUTCOME_SOURCE_ENV = "POLYMARKET_OFFICIAL_OUTCOME_SOURCE"
 OFFICIAL_OUTCOME_REFRESH_LIMIT_ENV = "POLYMARKET_OFFICIAL_OUTCOME_REFRESH_LIMIT"
@@ -983,6 +984,7 @@ def _volatility_status_flags(raw_flags: object, *, sigma_tau: object) -> list[st
             flags = [str(flag) for flag in loaded]
         else:
             flags = ["invalid_flags_json"]
+    flags = [flag for flag in flags if flag in VOLATILITY_STATUS_FLAGS]
     if sigma_tau is None and "missing_volatility" not in flags:
         flags.append("missing_volatility")
     return flags if flags else ["OK"]

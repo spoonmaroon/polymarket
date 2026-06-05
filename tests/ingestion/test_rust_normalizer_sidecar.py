@@ -16,12 +16,37 @@ from polymarket_engine.ingestion import rust_normalizer_sidecar
 from polymarket_engine.ingestion.rust_event_normalizer import RustEventNormalizeResult
 from polymarket_engine.ingestion.rust_normalizer_sidecar import (
     _cadence_sleep_seconds,
+    _volatility_status_flags,
     run_rust_normalizer_cycle,
     run_rust_normalizer_loop,
 )
 from polymarket_engine.domain.market_state import PriceObservation
 from polymarket_engine.storage import duckdb_store
 from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
+
+
+def test_volatility_status_flags_filter_orderbook_decision_flags() -> None:
+    raw_flags = json.dumps(
+        [
+            "stale_source",
+            "missing_orderbook",
+            "incomplete_orderbook",
+            "stale_orderbook",
+            "source_disagreement",
+        ]
+    )
+
+    flags = _volatility_status_flags(raw_flags, sigma_tau=0.0012)
+
+    assert flags == ["stale_source"]
+
+
+def test_volatility_status_flags_keep_missing_volatility_without_orderbook_noise() -> None:
+    raw_flags = json.dumps(["incomplete_orderbook"])
+
+    flags = _volatility_status_flags(raw_flags, sigma_tau=None)
+
+    assert flags == ["missing_volatility"]
 
 
 def test_sidecar_cycle_normalizes_builds_states_and_writes_health(tmp_path: Path) -> None:
