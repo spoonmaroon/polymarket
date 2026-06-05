@@ -3,12 +3,13 @@ use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 use rand_distr::{Distribution, Normal};
 use rayon::prelude::*;
+use serde_json::json;
+use std::time::Instant;
 
 use crate::backend::SimulationBackend;
 use crate::schema::{
-    PercentilePath, ProbabilityInput, SamplePath, SimulationArtifacts, SimulationBackendKind,
-    SimulationConfig, SimulationDiagnostics, SimulationRun, TerminalHistogram,
-    TerminalHistogramBin,
+    HistogramBin, PercentilePoint, ProbabilityInput, SimulationArtifacts, SimulationBackendKind,
+    SimulationConfig, SimulationRun,
 };
 use crate::scoring::score_path;
 
@@ -17,7 +18,6 @@ pub struct CpuRayonBackend;
 
 #[derive(Clone, Debug)]
 struct PathResult {
-    path_index: usize,
     prices: Vec<f64>,
     terminal: bool,
     no_touch: bool,
@@ -28,6 +28,7 @@ impl SimulationBackend for CpuRayonBackend {
         validate_input(input)?;
         validate_config(config)?;
 
+        let started_at = Instant::now();
         let per_step_sigma = input.sigma_tau / (config.steps as f64).sqrt();
         let normal = Normal::new(0.0, per_step_sigma)
             .map_err(|error| anyhow::anyhow!("invalid normal distribution: {error}"))?;
@@ -55,12 +56,12 @@ impl SimulationBackend for CpuRayonBackend {
             model_version: config.model_version.clone(),
             seed: config.seed,
             backend: SimulationBackendKind::CpuRayon,
-            diagnostics: SimulationDiagnostics {
-                path_count: config.path_count,
-                steps: config.steps,
-                elapsed_ms: 0,
-                per_step_sigma,
-            },
+            diagnostics: json!({
+                "path_count": config.path_count,
+                "steps": config.steps,
+                "elapsed_ms": started_at.elapsed().as_millis(),
+                "per_step_sigma": per_step_sigma,
+            }),
             artifacts,
         })
     }
@@ -115,7 +116,6 @@ fn simulate_path(
 
     let score = score_path(input, &prices);
     Ok(PathResult {
-        path_index,
         prices,
         terminal: score.terminal,
         no_touch: score.no_touch,
@@ -128,42 +128,50 @@ fn path_seed(seed: u64, path_index: usize) -> u64 {
 }
 
 fn build_artifacts(path_results: &[PathResult], sample_path_limit: usize) -> SimulationArtifacts {
-    let mut sorted_by_terminal = path_results.iter().collect::<Vec<_>>();
-    sorted_by_terminal.sort_by(|left, right| {
-        terminal_price(left)
-            .partial_cmp(&terminal_price(right))
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    let sample_paths = path_results
+        .iter()
+        .take(sample_path_limit)
+        .map(|result| result.prices.clone())
+        .collect::<Vec<_>>();
 
     SimulationArtifacts {
-        percentile_paths: percentile_paths(&sorted_by_terminal),
-        sample_paths: path_results
-            .iter()
-            .take(sample_path_limit)
-            .map(|result| SamplePath {
-                path_index: result.path_index,
-                prices: result.prices.clone(),
-            })
-            .collect(),
+        percentile_paths: percentile_points(&sample_paths),
+        sample_paths,
         terminal_histogram: terminal_histogram(path_results, 10),
     }
 }
 
-fn percentile_paths(sorted_by_terminal: &[&PathResult]) -> Vec<PercentilePath> {
-    if sorted_by_terminal.is_empty() {
+fn percentile_points(sample_paths: &[Vec<f64>]) -> Vec<PercentilePoint> {
+    let Some(first_path) = sample_paths.first() else {
         return Vec::new();
-    }
+    };
 
-    [0.1, 0.5, 0.9]
-        .into_iter()
-        .map(|percentile| {
-            let index = percentile_index(sorted_by_terminal.len(), percentile);
-            PercentilePath {
-                percentile,
-                path: sorted_by_terminal[index].prices.clone(),
+    (0..first_path.len())
+        .map(|step| {
+            let mut prices = sample_paths
+                .iter()
+                .filter_map(|path| path.get(step).copied())
+                .collect::<Vec<_>>();
+            prices.sort_by(|left, right| {
+                left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            PercentilePoint {
+                step,
+                p05: percentile_value(&prices, 0.05),
+                p25: percentile_value(&prices, 0.25),
+                p50: percentile_value(&prices, 0.50),
+                p75: percentile_value(&prices, 0.75),
+                p95: percentile_value(&prices, 0.95),
             }
         })
         .collect()
+}
+
+fn percentile_value(sorted_values: &[f64], percentile: f64) -> f64 {
+    if sorted_values.is_empty() {
+        return 0.0;
+    }
+    sorted_values[percentile_index(sorted_values.len(), percentile)]
 }
 
 fn percentile_index(len: usize, percentile: f64) -> usize {
@@ -171,21 +179,17 @@ fn percentile_index(len: usize, percentile: f64) -> usize {
     ((last_index as f64) * percentile).round() as usize
 }
 
-fn terminal_histogram(path_results: &[PathResult], bin_count: usize) -> TerminalHistogram {
+fn terminal_histogram(path_results: &[PathResult], bin_count: usize) -> Vec<HistogramBin> {
     let terminals = path_results.iter().map(terminal_price).collect::<Vec<_>>();
     let min = terminals.iter().copied().fold(f64::INFINITY, f64::min);
     let max = terminals.iter().copied().fold(f64::NEG_INFINITY, f64::max);
 
     if (max - min).abs() < f64::EPSILON {
-        return TerminalHistogram {
-            min,
-            max,
-            bins: vec![TerminalHistogramBin {
-                lower: min,
-                upper: max,
-                count: terminals.len(),
-            }],
-        };
+        return vec![HistogramBin {
+            min_price: min,
+            max_price: max,
+            count: terminals.len(),
+        }];
     }
 
     let width = (max - min) / bin_count as f64;
@@ -196,20 +200,18 @@ fn terminal_histogram(path_results: &[PathResult], bin_count: usize) -> Terminal
         counts[index] += 1;
     }
 
-    let bins = counts
+    counts
         .into_iter()
         .enumerate()
         .map(|(index, count)| {
-            let lower = min + width * index as f64;
-            TerminalHistogramBin {
-                lower,
-                upper: lower + width,
+            let min_price = min + width * index as f64;
+            HistogramBin {
+                min_price,
+                max_price: min_price + width,
                 count,
             }
         })
-        .collect();
-
-    TerminalHistogram { min, max, bins }
+        .collect()
 }
 
 fn terminal_price(path_result: &PathResult) -> f64 {
@@ -262,7 +264,19 @@ mod tests {
         let first = backend.run(&input(), &config()).unwrap();
         let second = backend.run(&input(), &config()).unwrap();
 
-        assert_eq!(first, second);
+        assert_eq!(first.state_id, second.state_id);
+        assert_eq!(first.asof_ts, second.asof_ts);
+        assert_eq!(first.p_finish, second.p_finish);
+        assert_eq!(first.p_no_touch, second.p_no_touch);
+        assert_eq!(first.z_path, second.z_path);
+        assert_eq!(first.model_version, second.model_version);
+        assert_eq!(first.seed, second.seed);
+        assert_eq!(first.backend, second.backend);
+        assert_eq!(first.artifacts, second.artifacts);
+        assert_eq!(
+            first.diagnostics["per_step_sigma"],
+            second.diagnostics["per_step_sigma"]
+        );
     }
 
     #[test]
@@ -273,10 +287,42 @@ mod tests {
         assert!((0.0..=1.0).contains(&run.p_finish));
         assert!((0.0..=1.0).contains(&run.p_no_touch));
         assert_eq!(run.backend, SimulationBackendKind::CpuRayon);
-        assert_eq!(run.diagnostics.path_count, 512);
-        assert_eq!(run.diagnostics.steps, 8);
-        assert!(run.diagnostics.per_step_sigma > 0.0);
-        assert_eq!(run.diagnostics.elapsed_ms, 0);
+        assert!(run.diagnostics.is_object());
+        assert_eq!(run.diagnostics["path_count"], 512);
+        assert_eq!(run.diagnostics["steps"], 8);
+        assert!(run.diagnostics["per_step_sigma"].as_f64().unwrap() > 0.0);
+        assert!(run.diagnostics["elapsed_ms"].as_u64().is_some());
+    }
+
+    #[test]
+    fn cpu_backend_artifacts_match_planned_schema_shape() {
+        let backend = CpuRayonBackend;
+        let run = backend.run(&input(), &config()).unwrap();
+
+        assert_eq!(run.artifacts.sample_paths.len(), 3);
+        assert!(
+            run.artifacts
+                .sample_paths
+                .iter()
+                .all(|path| path.len() == config().steps + 1)
+        );
+        assert_eq!(run.artifacts.percentile_paths.len(), config().steps + 1);
+        assert_eq!(run.artifacts.percentile_paths[0].step, 0);
+        assert!(run.artifacts.percentile_paths[0].p05 > 0.0);
+        assert_eq!(
+            run.artifacts
+                .terminal_histogram
+                .iter()
+                .map(|bin| bin.count)
+                .sum::<usize>(),
+            config().path_count
+        );
+        assert!(
+            run.artifacts
+                .terminal_histogram
+                .iter()
+                .all(|bin| bin.min_price <= bin.max_price)
+        );
     }
 
     #[test]

@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
@@ -72,48 +73,31 @@ pub struct SimulationRun {
     pub model_version: String,
     pub seed: u64,
     pub backend: SimulationBackendKind,
-    pub diagnostics: SimulationDiagnostics,
+    pub diagnostics: Value,
     pub artifacts: SimulationArtifacts,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct SimulationDiagnostics {
-    pub path_count: usize,
-    pub steps: usize,
-    pub elapsed_ms: u128,
-    pub per_step_sigma: f64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct SimulationArtifacts {
-    pub percentile_paths: Vec<PercentilePath>,
-    pub sample_paths: Vec<SamplePath>,
-    pub terminal_histogram: TerminalHistogram,
+    pub percentile_paths: Vec<PercentilePoint>,
+    pub sample_paths: Vec<Vec<f64>>,
+    pub terminal_histogram: Vec<HistogramBin>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct PercentilePath {
-    pub percentile: f64,
-    pub path: Vec<f64>,
+pub struct PercentilePoint {
+    pub step: usize,
+    pub p05: f64,
+    pub p25: f64,
+    pub p50: f64,
+    pub p75: f64,
+    pub p95: f64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct SamplePath {
-    pub path_index: usize,
-    pub prices: Vec<f64>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct TerminalHistogram {
-    pub min: f64,
-    pub max: f64,
-    pub bins: Vec<TerminalHistogramBin>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct TerminalHistogramBin {
-    pub lower: f64,
-    pub upper: f64,
+pub struct HistogramBin {
+    pub min_price: f64,
+    pub max_price: f64,
     pub count: usize,
 }
 
@@ -122,7 +106,8 @@ mod tests {
     use chrono::{TimeZone, Utc};
 
     use super::{
-        Asset, ComparisonOperator, ProbabilityInput, Side, SimulationBackendKind, SimulationConfig,
+        Asset, ComparisonOperator, HistogramBin, PercentilePoint, ProbabilityInput, Side,
+        SimulationArtifacts, SimulationBackendKind, SimulationConfig, SimulationRun,
     };
 
     #[test]
@@ -201,5 +186,70 @@ mod tests {
         assert_eq!(value["backend"], "cpu_rayon");
         assert_eq!(value["model_version"], "cpu-ref-v1");
         assert_eq!(value["sample_path_limit"], 4);
+    }
+
+    #[test]
+    fn simulation_run_uses_json_diagnostics_object() {
+        let run = SimulationRun {
+            state_id: "state-1".to_string(),
+            asof_ts: Utc.with_ymd_and_hms(2026, 6, 5, 12, 0, 0).unwrap(),
+            p_finish: 0.42,
+            p_no_touch: 0.58,
+            z_path: 0.5,
+            model_version: "cpu-ref-v1".to_string(),
+            seed: 7,
+            backend: SimulationBackendKind::CpuRayon,
+            diagnostics: serde_json::json!({
+                "path_count": 1024,
+                "steps": 16,
+                "elapsed_ms": 3,
+                "per_step_sigma": 0.01
+            }),
+            artifacts: SimulationArtifacts::default(),
+        };
+
+        let value = serde_json::to_value(&run).unwrap();
+
+        assert!(value["diagnostics"].is_object());
+        assert_eq!(value["diagnostics"]["path_count"], 1024);
+        assert_eq!(value["diagnostics"]["steps"], 16);
+        assert_eq!(value["diagnostics"]["elapsed_ms"], 3);
+        assert_eq!(value["diagnostics"]["per_step_sigma"], 0.01);
+    }
+
+    #[test]
+    fn simulation_artifacts_keep_planned_json_field_names() {
+        let artifacts = SimulationArtifacts {
+            percentile_paths: vec![PercentilePoint {
+                step: 1,
+                p05: 95.0,
+                p25: 97.0,
+                p50: 100.0,
+                p75: 103.0,
+                p95: 105.0,
+            }],
+            sample_paths: vec![vec![100.0, 101.0]],
+            terminal_histogram: vec![HistogramBin {
+                min_price: 99.0,
+                max_price: 101.0,
+                count: 7,
+            }],
+        };
+
+        let value = serde_json::to_value(&artifacts).unwrap();
+
+        assert!(value.get("percentile_paths").is_some());
+        assert!(value.get("sample_paths").is_some());
+        assert!(value.get("terminal_histogram").is_some());
+        assert_eq!(value["percentile_paths"][0]["step"], 1);
+        assert_eq!(value["percentile_paths"][0]["p05"], 95.0);
+        assert_eq!(value["percentile_paths"][0]["p25"], 97.0);
+        assert_eq!(value["percentile_paths"][0]["p50"], 100.0);
+        assert_eq!(value["percentile_paths"][0]["p75"], 103.0);
+        assert_eq!(value["percentile_paths"][0]["p95"], 105.0);
+        assert_eq!(value["sample_paths"][0][0], 100.0);
+        assert_eq!(value["terminal_histogram"][0]["min_price"], 99.0);
+        assert_eq!(value["terminal_histogram"][0]["max_price"], 101.0);
+        assert_eq!(value["terminal_histogram"][0]["count"], 7);
     }
 }
