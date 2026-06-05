@@ -1,5 +1,5 @@
 use anyhow::{Result, bail};
-use cudarc::driver::{CudaContext, LaunchConfig, PushKernelArg};
+use cudarc::driver::{CudaContext, CudaFunction, CudaStream, LaunchConfig, PushKernelArg};
 use cudarc::nvrtc::compile_ptx;
 use polymarket_probability_core::backend::SimulationBackend;
 use polymarket_probability_core::schema::{
@@ -9,6 +9,7 @@ use polymarket_probability_core::schema::{
 use serde_json::json;
 use std::any::Any;
 use std::panic::{self, AssertUnwindSafe};
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Instant;
 
@@ -16,8 +17,36 @@ const SMOKE_KERNEL: &str = include_str!("../kernels/smoke.cu");
 const MONTE_CARLO_KERNEL: &str = include_str!("../kernels/monte_carlo.cu");
 static CUDA_PANIC_HOOK_LOCK: Mutex<()> = Mutex::new(());
 
-#[derive(Clone, Copy, Debug, Default)]
-pub struct CudaBackend;
+#[derive(Debug, Default)]
+pub struct CudaBackend {
+    runtime: Mutex<Option<CudaRuntime>>,
+}
+
+impl CudaBackend {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn run_cached_monte_carlo(
+        &self,
+        input: &ProbabilityInput,
+        config: &SimulationConfig,
+        per_step_sigma: f64,
+    ) -> Result<CudaCounts> {
+        let mut runtime_guard = self
+            .runtime
+            .lock()
+            .map_err(|_| anyhow::anyhow!("CUDA runtime cache mutex poisoned"))?;
+        let cache_hit = runtime_guard.is_some();
+        if runtime_guard.is_none() {
+            *runtime_guard = Some(CudaRuntime::new()?);
+        }
+        let runtime = runtime_guard
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("CUDA runtime cache failed to initialize"))?;
+        runtime.run_monte_carlo(input, config, per_step_sigma, cache_hit)
+    }
+}
 
 impl SimulationBackend for CudaBackend {
     fn run(&self, input: &ProbabilityInput, config: &SimulationConfig) -> Result<SimulationRun> {
@@ -26,7 +55,8 @@ impl SimulationBackend for CudaBackend {
 
         let started_at = Instant::now();
         let per_step_sigma = input.sigma_tau / (config.steps as f64).sqrt();
-        let counts = catch_cuda_panic(|| run_cuda_monte_carlo(input, config, per_step_sigma))?;
+        let counts =
+            catch_cuda_panic(|| self.run_cached_monte_carlo(input, config, per_step_sigma))?;
 
         Ok(SimulationRun {
             state_id: input.state_id.clone(),
@@ -42,6 +72,7 @@ impl SimulationBackend for CudaBackend {
                 "steps": config.steps,
                 "elapsed_ms": started_at.elapsed().as_millis(),
                 "per_step_sigma": per_step_sigma,
+                "cuda_cache_hit": counts.cache_hit,
                 "gpu": counts.gpu,
             }),
             artifacts: SimulationArtifacts::default(),
@@ -53,6 +84,14 @@ impl SimulationBackend for CudaBackend {
 struct CudaCounts {
     terminal_count: u64,
     no_touch_count: u64,
+    cache_hit: bool,
+    gpu: serde_json::Value,
+}
+
+#[derive(Debug)]
+struct CudaRuntime {
+    stream: Arc<CudaStream>,
+    function: CudaFunction,
     gpu: serde_json::Value,
 }
 
@@ -100,66 +139,79 @@ fn cuda_smoke_add_one_inner(input: &[f64]) -> Result<Vec<f64>> {
     Ok(stream.clone_dtoh(&output_dev)?)
 }
 
-fn run_cuda_monte_carlo(
-    input: &ProbabilityInput,
-    config: &SimulationConfig,
-    per_step_sigma: f64,
-) -> Result<CudaCounts> {
-    let ptx = compile_ptx(MONTE_CARLO_KERNEL)?;
-    let ctx = CudaContext::new(0)?;
-    let gpu_name = ctx.name().unwrap_or_else(|_| "unknown".to_string());
-    let compute_capability = ctx.compute_capability().ok();
-    let stream = ctx.default_stream();
-    let module = ctx.load_module(ptx)?;
-    let function = module.load_function("simulate_monte_carlo")?;
+impl CudaRuntime {
+    fn new() -> Result<Self> {
+        let ptx = compile_ptx(MONTE_CARLO_KERNEL)?;
+        let ctx = CudaContext::new(0)?;
+        let gpu_name = ctx.name().unwrap_or_else(|_| "unknown".to_string());
+        let compute_capability = ctx.compute_capability().ok();
+        let stream = ctx.default_stream();
+        let module = ctx.load_module(ptx)?;
+        let function = module.load_function("simulate_monte_carlo")?;
 
-    let cuda_input = CudaSimulationInput {
-        settlement_price: input.settlement_price,
-        threshold: input.threshold,
-        per_step_sigma,
-        seed: config.seed,
-        path_count: u64::try_from(config.path_count)?,
-        steps: u32::try_from(config.steps)?,
-        operator: operator_code(input.comparison_operator),
-    };
-    let mut counts_dev = stream.alloc_zeros::<u64>(3)?;
-
-    let mut builder = stream.launch_builder(&function);
-    builder.arg(&cuda_input);
-    builder.arg(&mut counts_dev);
-    unsafe {
-        builder.launch(LaunchConfig::for_num_elems(u32::try_from(
-            config.path_count,
-        )?))?;
+        Ok(Self {
+            stream,
+            function,
+            gpu: json!({
+                "device_ordinal": ctx.ordinal(),
+                "name": gpu_name,
+                "compute_capability": compute_capability
+                    .map(|(major, minor)| format!("{major}.{minor}"))
+                    .unwrap_or_else(|| "unknown".to_string()),
+            }),
+        })
     }
 
-    stream.synchronize()?;
+    fn run_monte_carlo(
+        &self,
+        input: &ProbabilityInput,
+        config: &SimulationConfig,
+        per_step_sigma: f64,
+        cache_hit: bool,
+    ) -> Result<CudaCounts> {
+        let cuda_input = CudaSimulationInput {
+            settlement_price: input.settlement_price,
+            threshold: input.threshold,
+            per_step_sigma,
+            seed: config.seed,
+            path_count: u64::try_from(config.path_count)?,
+            steps: u32::try_from(config.steps)?,
+            operator: operator_code(input.comparison_operator),
+        };
+        let mut counts_dev = self.stream.alloc_zeros::<u64>(3)?;
 
-    let counts = stream.clone_dtoh(&counts_dev)?;
-    let terminal_count = *counts
-        .first()
-        .ok_or_else(|| anyhow::anyhow!("CUDA kernel did not return terminal count"))?;
-    let no_touch_count = *counts
-        .get(1)
-        .ok_or_else(|| anyhow::anyhow!("CUDA kernel did not return no-touch count"))?;
-    let invalid_price_count = *counts
-        .get(2)
-        .ok_or_else(|| anyhow::anyhow!("CUDA kernel did not return invalid price count"))?;
-    if invalid_price_count > 0 {
-        bail!("CUDA generated invalid path prices on {invalid_price_count} paths");
+        let mut builder = self.stream.launch_builder(&self.function);
+        builder.arg(&cuda_input);
+        builder.arg(&mut counts_dev);
+        unsafe {
+            builder.launch(LaunchConfig::for_num_elems(u32::try_from(
+                config.path_count,
+            )?))?;
+        }
+
+        self.stream.synchronize()?;
+
+        let counts = self.stream.clone_dtoh(&counts_dev)?;
+        let terminal_count = *counts
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("CUDA kernel did not return terminal count"))?;
+        let no_touch_count = *counts
+            .get(1)
+            .ok_or_else(|| anyhow::anyhow!("CUDA kernel did not return no-touch count"))?;
+        let invalid_price_count = *counts
+            .get(2)
+            .ok_or_else(|| anyhow::anyhow!("CUDA kernel did not return invalid price count"))?;
+        if invalid_price_count > 0 {
+            bail!("CUDA generated invalid path prices on {invalid_price_count} paths");
+        }
+
+        Ok(CudaCounts {
+            terminal_count,
+            no_touch_count,
+            cache_hit,
+            gpu: self.gpu.clone(),
+        })
     }
-
-    Ok(CudaCounts {
-        terminal_count,
-        no_touch_count,
-        gpu: json!({
-            "device_ordinal": ctx.ordinal(),
-            "name": gpu_name,
-            "compute_capability": compute_capability
-                .map(|(major, minor)| format!("{major}.{minor}"))
-                .unwrap_or_else(|| "unknown".to_string()),
-        }),
-    })
 }
 
 fn validate_input(input: &ProbabilityInput) -> Result<()> {

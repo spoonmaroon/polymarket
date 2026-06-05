@@ -11,7 +11,7 @@ use polymarket_probability_cuda::CudaBackend;
 
 fn main() -> anyhow::Result<()> {
     let args = BenchmarkArgs::parse()?;
-    let backend = CudaBackend;
+    let backend = CudaBackend::default();
     let row = run_case(&backend, &args, SimulationBackendKind::Cuda)?;
     println!("{row}");
     Ok(())
