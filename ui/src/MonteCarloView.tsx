@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Bar,
   BarChart,
@@ -25,6 +25,8 @@ export function MonteCarloView() {
   const [selectedArtifact, setSelectedArtifact] =
     useState<SimulationArtifact | null>(null);
   const [artifactError, setArtifactError] = useState<string | null>(null);
+  const artifactRequestId = useRef(0);
+  const artifactAbort = useRef<AbortController | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -58,19 +60,44 @@ export function MonteCarloView() {
     () =>
       rows.map((row) => ({
         contract: compactContract(row.contract),
-        p_finish: row.p_finish ?? 0,
-        p_no_touch: row.p_no_touch ?? 0,
+        p_finish: row.p_finish,
+        p_no_touch: row.p_no_touch,
       })),
     [rows],
   );
+  const chartHasValues = chartRows.some(
+    (row) => row.p_finish !== null || row.p_no_touch !== null,
+  );
+
+  useEffect(() => {
+    return () => {
+      artifactAbort.current?.abort();
+    };
+  }, []);
 
   const loadArtifact = async (artifactId: string) => {
+    artifactAbort.current?.abort();
+    const requestId = artifactRequestId.current + 1;
+    artifactRequestId.current = requestId;
+    const controller = new AbortController();
+    artifactAbort.current = controller;
+
     try {
       setArtifactError(null);
-      setSelectedArtifact(await fetchSimulationArtifact(artifactId));
+      const artifact = await fetchSimulationArtifact(artifactId, controller.signal);
+      if (artifactRequestId.current === requestId && !controller.signal.aborted) {
+        setSelectedArtifact(artifact);
+      }
     } catch (exc) {
+      if (controller.signal.aborted || artifactRequestId.current !== requestId) {
+        return;
+      }
       setArtifactError(exc instanceof Error ? exc.message : String(exc));
       setSelectedArtifact(null);
+    } finally {
+      if (artifactRequestId.current === requestId) {
+        artifactAbort.current = null;
+      }
     }
   };
 
@@ -102,7 +129,7 @@ export function MonteCarloView() {
             <h2>Probability Summary</h2>
             <span>cached outputs</span>
           </div>
-          {chartRows.length ? (
+          {chartHasValues ? (
             <ResponsiveContainer width="100%" height={300}>
               <BarChart data={chartRows} margin={{ top: 8, right: 16, left: 0, bottom: 8 }}>
                 <CartesianGrid stroke="#d8ded7" strokeDasharray="3 3" vertical={false} />
@@ -110,7 +137,7 @@ export function MonteCarloView() {
                 <YAxis domain={[0, 1]} tickLine={false} axisLine={false} />
                 <Tooltip
                   formatter={(value) =>
-                    typeof value === "number" ? value.toFixed(3) : value
+                    typeof value === "number" ? value.toFixed(3) : "-"
                   }
                 />
                 <Legend />
@@ -167,9 +194,9 @@ export function MonteCarloView() {
             </thead>
             <tbody>
               {rows.length ? (
-                rows.map((row) => (
+                rows.map((row, index) => (
                   <MonteCarloTableRow
-                    key={`${row.contract}-${row.artifact_id ?? row.model_version ?? "row"}`}
+                    key={monteCarloRowKey(row, index)}
                     row={row}
                     onArtifact={loadArtifact}
                   />
@@ -260,6 +287,19 @@ function EmptyState({ state }: { state: string }) {
 
 function compactContract(contract: string) {
   return contract.length > 18 ? `${contract.slice(0, 15)}...` : contract;
+}
+
+function monteCarloRowKey(row: MonteCarloRow, index: number) {
+  return (
+    row.artifact_id ??
+    [
+      row.contract,
+      row.model_version ?? "model",
+      row.backend ?? "backend",
+      row.age_ms ?? "age",
+      index,
+    ].join("|")
+  );
 }
 
 function formatProbability(value: number | null) {

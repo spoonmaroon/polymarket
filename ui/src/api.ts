@@ -41,9 +41,11 @@ export async function fetchMonteCarloStatus(limit = 8): Promise<MonteCarloStatus
 
 export async function fetchSimulationArtifact(
   artifactId: string,
+  signal?: AbortSignal,
 ): Promise<SimulationArtifact> {
   const response = await fetch(
     `/api/runtime/simulation-artifacts/${encodeURIComponent(artifactId)}`,
+    { signal },
   );
   if (!response.ok) {
     throw new Error(`Simulation artifact failed: ${response.status}`);

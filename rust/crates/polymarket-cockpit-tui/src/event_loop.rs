@@ -280,19 +280,19 @@ fn apply_runtime_update(app: &mut AppState, update: RuntimeUpdate) -> bool {
         changed |= replace_if_changed(&mut app.runtime_gates, gates);
     }
 
-    if let Some(outcomes) = update.outcomes {
-        if app.apply_runtime_outcomes(outcomes) {
-            app.sync_outcome_selection();
-            app.sync_market_selection();
-            changed = true;
-        }
+    if let Some(outcomes) = update.outcomes
+        && app.apply_runtime_outcomes(outcomes)
+    {
+        app.sync_outcome_selection();
+        app.sync_market_selection();
+        changed = true;
     }
 
-    if let Some(monitor) = update.monitor {
-        if app.apply_runtime_monitor(monitor) {
-            app.sync_market_selection();
-            changed = true;
-        }
+    if let Some(monitor) = update.monitor
+        && app.apply_runtime_monitor(monitor)
+    {
+        app.sync_market_selection();
+        changed = true;
     }
 
     if let Some(volatility) = update.volatility {
@@ -338,14 +338,12 @@ async fn poll_runtime(client: &EngineClient) -> RuntimeUpdate {
     let mut monitor = None;
     let mut volatility = None;
     let mut probabilities = None;
-    let mut monte_carlo = None;
     let mut outcomes = None;
     let mut display_lag = None;
 
-    let (live_result, probabilities_result, monte_carlo_result, outcomes_result) = tokio::join!(
+    let (live_result, probabilities_result, outcomes_result) = tokio::join!(
         client.live(8),
         client.probabilities(8),
-        client.monte_carlo_status(8),
         client.outcomes(OUTCOME_HISTORY_LIMIT)
     );
 
@@ -384,11 +382,6 @@ async fn poll_runtime(client: &EngineClient) -> RuntimeUpdate {
         Err(error) => errors.push(format!("probabilities: {error}")),
     }
 
-    match monte_carlo_result {
-        Ok(next_monte_carlo) => monte_carlo = Some(next_monte_carlo),
-        Err(error) => errors.push(format!("monte_carlo: {error}")),
-    }
-
     match outcomes_result {
         Ok(next_outcomes) => outcomes = Some(next_outcomes),
         Err(error) => errors.push(format!("outcomes: {error}")),
@@ -400,7 +393,7 @@ async fn poll_runtime(client: &EngineClient) -> RuntimeUpdate {
         monitor,
         volatility,
         probabilities,
-        monte_carlo,
+        monte_carlo: None,
         outcomes,
         display_lag,
         error: if errors.is_empty() {
@@ -560,7 +553,7 @@ mod tests {
     use super::{
         OUTCOME_HISTORY_LIMIT, OUTCOME_POLL_INTERVAL, PROBABILITY_POLL_INTERVAL, RuntimeUpdate,
         apply_key, apply_runtime_update, drain_runtime_updates, poll_interval_duration,
-        poll_runtime,
+        poll_probability_runtime, poll_runtime,
     };
     use crate::client::EngineClient;
     use crate::{
@@ -745,7 +738,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn poll_runtime_fetches_live_probabilities_monte_carlo_and_outcomes_concurrently() {
+    async fn poll_runtime_fetches_live_probabilities_and_outcomes_concurrently() {
         let engine_api_url = delayed_runtime_api_url(Duration::from_millis(200));
         let client = EngineClient::new(engine_api_url);
         let started = Instant::now();
@@ -757,10 +750,31 @@ mod tests {
         assert!(update.gates.is_some());
         assert!(update.monitor.is_some());
         assert!(update.probabilities.is_some());
-        assert!(update.monte_carlo.is_some());
+        assert!(update.monte_carlo.is_none());
         assert!(update.outcomes.is_some());
         assert_eq!(update.display_lag.unwrap().status_age_ms, Some(12));
         assert_eq!(update.error, None);
+    }
+
+    #[tokio::test]
+    async fn auxiliary_probability_poll_fetches_and_applies_monte_carlo_status() {
+        let engine_api_url = delayed_runtime_api_url(Duration::from_millis(50));
+        let client = EngineClient::new(engine_api_url);
+
+        let update = poll_probability_runtime(&client).await;
+
+        assert!(update.probabilities.is_some());
+        assert!(update.monte_carlo.is_some());
+        assert!(update.outcomes.is_none());
+
+        let mut app = AppState::default();
+        assert!(apply_runtime_update(&mut app, update));
+        assert_eq!(
+            app.runtime_monte_carlo.as_ref().unwrap().rows[0]
+                .artifact_id
+                .as_deref(),
+            Some("artifact-1")
+        );
     }
 
     #[test]
