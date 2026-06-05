@@ -23,6 +23,7 @@ pub enum MainTab {
     Systems,
     Market,
     Probability,
+    Volatility,
     Outcomes,
     Logs,
 }
@@ -34,6 +35,7 @@ impl MainTab {
             MainTab::Systems,
             MainTab::Market,
             MainTab::Probability,
+            MainTab::Volatility,
             MainTab::Outcomes,
             MainTab::Logs,
         ]
@@ -45,6 +47,7 @@ impl MainTab {
             MainTab::Systems => "Systems",
             MainTab::Market => "Market",
             MainTab::Probability => "Probability",
+            MainTab::Volatility => "Volatility",
             MainTab::Outcomes => "Outcomes",
             MainTab::Logs => "Logs",
         }
@@ -890,6 +893,7 @@ mod tests {
                 "Systems",
                 "Market",
                 "Probability",
+                "Volatility",
                 "Outcomes",
                 "Logs"
             ]

@@ -269,6 +269,7 @@ mod tests {
                     flags: vec!["OK".to_string()],
                 }],
                 errors: vec![],
+                ..RuntimeVolatility::default()
             }),
             ..Default::default()
         };

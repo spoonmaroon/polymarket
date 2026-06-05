@@ -39,6 +39,10 @@ pub fn render(frame: &mut Frame<'_>, app: &AppState) {
             probability::render(frame, body.primary, app);
             systems::render(frame, body.secondary, app);
         }
+        MainTab::Volatility => {
+            systems::render(frame, body.primary, app);
+            systems::render(frame, body.secondary, app);
+        }
         MainTab::Outcomes => {
             outcomes::render(frame, body.primary, app);
             systems::render(frame, body.secondary, app);

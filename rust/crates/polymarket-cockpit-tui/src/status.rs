@@ -60,6 +60,12 @@ pub struct RuntimeLive {
 pub struct RuntimeVolatility {
     #[serde(default)]
     pub state: String,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub generated_at: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub source_key: Option<String>,
+    #[serde(default)]
+    pub lookback_limit: Option<u64>,
     #[serde(default)]
     pub rows: Vec<RuntimeVolatilityRow>,
     #[serde(default)]
@@ -454,6 +460,9 @@ mod tests {
             },
             "volatility": {
                 "state": "OK",
+                "generated_at": "2026-06-03T21:00:00+00:00",
+                "source_key": "polymarket_rtds_chainlink",
+                "lookback_limit": 180,
                 "rows": [{
                     "asset": "BTC",
                     "asof_ts": "2026-06-03T21:00:00+00:00",
@@ -485,6 +494,15 @@ mod tests {
             live.volatility.rows[0].volatility_regime.as_deref(),
             Some("normal")
         );
+        assert_eq!(
+            live.volatility.generated_at.as_deref(),
+            Some("2026-06-03T21:00:00+00:00")
+        );
+        assert_eq!(
+            live.volatility.source_key.as_deref(),
+            Some("polymarket_rtds_chainlink")
+        );
+        assert_eq!(live.volatility.lookback_limit, Some(180));
     }
 
     #[test]
