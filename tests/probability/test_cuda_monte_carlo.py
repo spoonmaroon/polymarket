@@ -248,6 +248,15 @@ def test_prior_sensitivity_rows_are_distribution_based() -> None:
     assert all("log_return_quantile" in row for row in rows)
 
 
+def test_cuda_cpu_row_conversion_accepts_nested_python_lists() -> None:
+    module = importlib.import_module("polymarket_engine.probability.cuda_monte_carlo")
+    rows = [[100.0, 101.25, 102.5], [100.0, 99.75, 98.5]]
+
+    converted = tuple(module._float_tuple_from_cpu_row(row) for row in rows)
+
+    assert converted == ((100.0, 101.25, 102.5), (100.0, 99.75, 98.5))
+
+
 def test_prior_sensitivity_aggregation_weights_by_sample_count() -> None:
     module = importlib.import_module("polymarket_engine.probability.cuda_monte_carlo")
 

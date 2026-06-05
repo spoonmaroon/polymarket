@@ -205,18 +205,18 @@ def _simulation_preview_from_cuda(
     sampled_path_indices = _evenly_spaced_indices(path_count, min(24, path_count))
     sampled_point_indices = _evenly_spaced_indices(point_count, min(24, point_count))
     sampled_full_paths = cp.asnumpy(full_paths[list(sampled_path_indices), :])
-    terminal_prices_cpu = tuple(float(price) for price in cp.asnumpy(terminal_prices).tolist())
+    terminal_prices_cpu = _float_tuple_from_cpu_row(cp.asnumpy(terminal_prices))
     sampled_path_rows = tuple(
-        tuple(float(price) for price in sampled_full_paths[index].tolist())
+        _float_tuple_from_cpu_row(sampled_full_paths[index])
         for index in range(len(sampled_path_indices))
     )
     sensitivity_count = min(2048, path_count)
     terminal_wins_cpu = tuple(
-        bool(value) for value in cp.asnumpy(terminal_wins_mask[:sensitivity_count]).tolist()
+        bool(value) for value in _to_cpu_list(cp.asnumpy(terminal_wins_mask[:sensitivity_count]))
     )
     sensitivity_paths = tuple(
-        tuple(float(price) for price in row.tolist())
-        for row in cp.asnumpy(full_paths[:sensitivity_count, :]).tolist()
+        _float_tuple_from_cpu_row(row)
+        for row in cp.asnumpy(full_paths[:sensitivity_count, :])
     )
     sensitivity_terminal_wins = terminal_wins_cpu[: len(sensitivity_paths)]
     return {
@@ -243,6 +243,16 @@ def _simulation_preview_from_cuda(
             terminal_wins=sensitivity_terminal_wins,
         ),
     }
+
+
+def _to_cpu_list(values: Any) -> Any:
+    if hasattr(values, "tolist"):
+        return values.tolist()
+    return values
+
+
+def _float_tuple_from_cpu_row(values: Any) -> tuple[float, ...]:
+    return tuple(float(price) for price in _to_cpu_list(values))
 
 
 def _prior_sensitivity_from_cpu_paths(
