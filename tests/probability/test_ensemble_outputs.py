@@ -254,3 +254,46 @@ def test_reduce_generator_runs_clamps_stress_overlay_against_lognormal_baseline_
     assert output.p_finish == pytest.approx(0.58)
     assert output.p_no_touch == pytest.approx(0.76)
     assert output.z_path == pytest.approx(0.90)
+
+
+def test_reduce_generator_runs_caps_and_redistributes_dominant_stress_weight() -> None:
+    runs = (
+        _run(GeneratorId.LOGNORMAL_BASELINE, p_finish=0.01, p_no_touch=0.20, z_path=0.10),
+        _run(GeneratorId.STRESS_OVERLAY, p_finish=0.99, p_no_touch=0.99, z_path=2.00),
+    )
+    weights = {
+        GeneratorId.LOGNORMAL_BASELINE: 0.01,
+        GeneratorId.STRESS_OVERLAY: 0.99,
+    }
+
+    output = reduce_generator_runs(
+        runs,
+        weights,
+        sparse_scope=False,
+        calibration_penalty=0.0,
+        stale_weight_penalty=0.0,
+    )
+
+    assert output.effective_weights[GeneratorId.STRESS_OVERLAY] == pytest.approx(0.15)
+    assert output.effective_weights[GeneratorId.LOGNORMAL_BASELINE] == pytest.approx(0.85)
+    assert output.p_finish == pytest.approx(0.01)
+    assert output.p_no_touch == pytest.approx(0.20)
+    assert output.z_path == pytest.approx(0.10)
+
+
+def test_reduce_generator_runs_rejects_stress_only_reduction() -> None:
+    with pytest.raises(ValueError, match="non-stress"):
+        reduce_generator_runs(
+            (
+                _run(
+                    GeneratorId.STRESS_OVERLAY,
+                    p_finish=0.10,
+                    p_no_touch=0.20,
+                    z_path=-1.0,
+                ),
+            ),
+            {GeneratorId.STRESS_OVERLAY: 1.0},
+            sparse_scope=False,
+            calibration_penalty=0.0,
+            stale_weight_penalty=0.0,
+        )

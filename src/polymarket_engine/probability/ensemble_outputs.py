@@ -8,6 +8,8 @@ from statistics import median
 
 from polymarket_engine.probability.generator_contracts import GeneratorId, GeneratorRun, GeneratorWeight
 
+DEFAULT_STRESS_WEIGHT_CAP = 0.15
+
 
 @dataclass(frozen=True)
 class EnsembleOutput:
@@ -41,21 +43,26 @@ def reduce_generator_runs(
     stale_weight_penalty: float,
     *,
     runtime_asof_ts: datetime | None = None,
+    stress_weight_cap: float = DEFAULT_STRESS_WEIGHT_CAP,
 ) -> EnsembleOutput:
     if not runs:
         raise ValueError("runs must not be empty")
     _require_bool(sparse_scope, "sparse_scope")
     _require_nonnegative_finite(calibration_penalty, "calibration_penalty")
     _require_nonnegative_finite(stale_weight_penalty, "stale_weight_penalty")
+    _require_probability(stress_weight_cap, "stress_weight_cap")
 
     run_by_id = {_coerce_generator_id(run.generator_id): run for run in runs}
     weight_by_id = _coerce_weights(weights, runtime_asof_ts=runtime_asof_ts)
-    effective_weights = _normalize_weights(
-        {
-            generator_id: weight_by_id[generator_id]
-            for generator_id in run_by_id
-            if generator_id in weight_by_id
-        }
+    effective_weights = _cap_stress_weight(
+        _normalize_weights(
+            {
+                generator_id: weight_by_id[generator_id]
+                for generator_id in run_by_id
+                if generator_id in weight_by_id
+            }
+        ),
+        stress_weight_cap=stress_weight_cap,
     )
     if set(effective_weights) != set(run_by_id):
         missing = ", ".join(
@@ -185,6 +192,34 @@ def _normalize_weights(weights: Mapping[GeneratorId, float]) -> dict[GeneratorId
     if total <= 0 or not math.isfinite(total):
         raise ValueError("weights must sum to a positive finite value")
     return {generator_id: weight / total for generator_id, weight in weights.items()}
+
+
+def _cap_stress_weight(
+    weights: dict[GeneratorId, float],
+    *,
+    stress_weight_cap: float,
+) -> dict[GeneratorId, float]:
+    stress_weight = weights.get(GeneratorId.STRESS_OVERLAY)
+    if stress_weight is None:
+        return weights
+    if len(weights) == 1:
+        raise ValueError("stress overlay requires at least one non-stress generator")
+    if stress_weight <= stress_weight_cap:
+        return weights
+
+    non_stress_total = sum(
+        weight for generator_id, weight in weights.items() if generator_id != GeneratorId.STRESS_OVERLAY
+    )
+    if non_stress_total <= 0:
+        raise ValueError("stress overlay requires positive non-stress weight")
+
+    excess = stress_weight - stress_weight_cap
+    capped = dict(weights)
+    capped[GeneratorId.STRESS_OVERLAY] = stress_weight_cap
+    for generator_id, weight in tuple(weights.items()):
+        if generator_id != GeneratorId.STRESS_OVERLAY:
+            capped[generator_id] = weight + excess * (weight / non_stress_total)
+    return _normalize_weights(capped)
 
 
 def _coerce_generator_id(value: GeneratorId) -> GeneratorId:
