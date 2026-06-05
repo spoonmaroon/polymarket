@@ -165,3 +165,45 @@ const streamMcNext = toProbabilityEventApiState(
 assert.equal(streamMcNext.payload?.rows?.length, 1);
 assert.equal(streamMcNext.payload?.rows?.[0]?.p_hat, 0.72);
 assert.equal(streamMcNext.source, "stream");
+
+const preview = {
+  sampled_paths: [{ index: 0, terminal_win: true, no_touch_win: false, points: [1, 2, 3] }],
+};
+const previousWithPreview = {
+  ...previous,
+  payload: {
+    ...previous.payload,
+    rows: [
+      {
+        ...previous.payload.rows[0],
+        asof_ts: "2099-06-05T20:54:59Z",
+        simulation_preview: preview,
+      },
+    ],
+  },
+};
+const pollWithoutPreview = toProbabilityApiState(
+  {
+    payload: {
+      ok: true,
+      state: "OK",
+      generated_at: "2099-06-05T20:55:10Z",
+      rows: [
+        {
+          contract_id: "btc-up",
+          asset: "BTC",
+          side: "UP",
+          expiry_ts: "2099-06-05T21:00:00Z",
+          valid_until: "2099-06-05T20:55:30Z",
+          asof_ts: "2099-06-05T20:55:10Z",
+          p_hat: 0.64,
+        },
+      ],
+    },
+    error: null,
+  },
+  previousWithPreview,
+);
+
+assert.equal(pollWithoutPreview.payload?.rows?.length, 1);
+assert.deepEqual(pollWithoutPreview.payload?.rows?.[0]?.simulation_preview, preview);

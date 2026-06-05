@@ -1580,13 +1580,7 @@ function mergeProbabilityPreviews(
       }
       const previousRow = probabilityPreviewKeys(row)
         .map((key) => previousRowsByKey.get(key))
-        .find(
-          (candidate) =>
-            candidate?.simulation_preview &&
-            candidate.asof_ts &&
-            row.asof_ts &&
-            candidate.asof_ts === row.asof_ts,
-        );
+        .find((candidate) => candidate?.simulation_preview);
       if (!previousRow?.simulation_preview) {
         return row;
       }
