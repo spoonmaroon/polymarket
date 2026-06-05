@@ -348,6 +348,26 @@ def test_reduce_generator_runs_reports_clean_when_no_risk_labels_apply() -> None
     assert output.uncertainty_buffer == pytest.approx(0.015)
 
 
+def test_reduce_generator_runs_reports_wrong_side_for_negative_z_path() -> None:
+    output = reduce_generator_runs(
+        (
+            _run(
+                GeneratorId.LOGNORMAL_BASELINE,
+                p_finish=0.62,
+                p_no_touch=0.80,
+                z_path=-2.0,
+            ),
+        ),
+        {GeneratorId.LOGNORMAL_BASELINE: 1.0},
+        sparse_scope=False,
+        calibration_penalty=0.0,
+        stale_weight_penalty=0.0,
+    )
+
+    assert output.z_path == pytest.approx(-2.0)
+    assert output.path_diagnosis == ("WRONG_SIDE",)
+
+
 def test_reduce_generator_runs_rejects_future_label_weight_artifact_at_runtime() -> None:
     future_weight = GeneratorWeight(
         generator_id=GeneratorId.LOGNORMAL_BASELINE,

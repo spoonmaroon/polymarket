@@ -96,6 +96,18 @@ def test_evaluate_probability_gates_waits_on_terminal_or_near_threshold_risk() -
     )
 
 
+def test_evaluate_probability_gates_blocks_wrong_side_z_path_even_when_edge_clears() -> None:
+    result = evaluate_probability_gates(
+        _ensemble(p_finish=0.95, z_path=-2.0, path_diagnosis=("CLEAN",)),
+        _quality(executable_entry_price=0.40),
+    )
+
+    assert result.decision_hint == "BLOCK"
+    assert "WRONG_SIDE" in result.reasons
+    assert "Z_PATH_BELOW_FLOOR" not in result.reasons
+    assert result.edge_after_costs > result.required_edge
+
+
 @pytest.mark.parametrize(
     ("ensemble", "hard_failures", "expected_reason"),
     (

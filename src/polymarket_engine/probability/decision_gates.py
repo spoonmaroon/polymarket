@@ -74,7 +74,9 @@ def evaluate_probability_gates(
     if ensemble.p_no_touch < p_no_touch_floor:
         required_edge += 0.02
         reasons.append("P_NO_TOUCH_BELOW_FLOOR")
-    if abs(ensemble.z_path) < z_path_floor:
+    if ensemble.z_path < 0:
+        required_edge += 0.02
+    elif ensemble.z_path < z_path_floor:
         required_edge += 0.02
         reasons.append("Z_PATH_BELOW_FLOOR")
 
@@ -127,7 +129,9 @@ def _block_reasons(
         blockers.append("MC_DISPERSION")
     if ensemble.uncertainty_buffer > uncertainty_block_threshold:
         blockers.append("UNCERTAINTY_BUFFER")
-    for label in ("SPARSE", "STALE_OR_UNSAFE"):
+    if ensemble.z_path < 0:
+        blockers.append("WRONG_SIDE")
+    for label in ("SPARSE", "STALE_OR_UNSAFE", "WRONG_SIDE"):
         if label in ensemble.path_diagnosis and label not in blockers:
             blockers.append(label)
     return blockers

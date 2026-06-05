@@ -166,7 +166,9 @@ def _diagnose_path(
     labels: list[str] = []
     if sparse:
         labels.append("SPARSE")
-    if abs(z_path) < 0.5:
+    if z_path < 0:
+        labels.append("WRONG_SIDE")
+    elif z_path < 0.5:
         labels.append("NEAR_THRESHOLD")
     if p_no_touch < 0.55:
         labels.append("TERMINAL_ONLY")
