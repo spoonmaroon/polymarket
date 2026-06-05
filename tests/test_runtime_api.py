@@ -964,6 +964,107 @@ def test_runtime_probabilities_runs_cached_read_only_mc_and_persists_output(
         assert conn.execute("select count(*) from features.probability_outputs").fetchone() == (1,)
 
 
+def test_runtime_probabilities_marks_backend_in_diagnostics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("POLYMARKET_PROBABILITY_BACKEND", "python_numpy")
+    db_path = tmp_path / "polymarket.duckdb"
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    state = _decision_state()
+    store.upsert_contract_spec(state.contract)
+    store.upsert_asof_state_input(state)
+    app = create_app(
+        status_path=tmp_path / "missing-status.json",
+        duckdb_path=db_path,
+        enable_runtime_probabilities=True,
+    )
+
+    response = TestClient(app).get("/api/runtime/probabilities?limit=4")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    with duckdb.connect(str(db_path)) as conn:
+        (output_json,) = conn.execute(
+            "select output_json from features.probability_outputs"
+        ).fetchone()
+    diagnostics = json.loads(output_json)["diagnostics"]
+    assert diagnostics["backend_request"] == "python_numpy"
+    assert diagnostics["backend"] == "python_numpy"
+    assert diagnostics["native_available"] is False
+
+
+def test_runtime_probabilities_backend_env_is_passed_to_native_wrapper_and_persisted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("POLYMARKET_PROBABILITY_BACKEND", "cpu_rayon")
+    captured: dict[str, Any] = {}
+    db_path = tmp_path / "polymarket.duckdb"
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    state = _decision_state()
+    store.upsert_contract_spec(state.contract)
+    store.upsert_asof_state_input(state)
+
+    def fake_native_or_python(
+        probability_input: ProbabilityInput,
+        *,
+        path_count: int,
+        steps: int,
+        seed: int,
+        backend: str = "cpu_rayon",
+    ) -> ProbabilityOutput:
+        captured["backend"] = backend
+        captured["path_count"] = path_count
+        captured["steps"] = steps
+        captured["seed"] = seed
+        return ProbabilityOutput(
+            state_id=probability_input.state_id,
+            asof_ts=probability_input.asof_ts,
+            p_finish=0.5,
+            p_no_touch=0.25,
+            z_path=probability_input.z_path,
+            model_version="fixture-native-wrapper-v1",
+            seed=seed,
+            diagnostics={
+                "path_count": path_count,
+                "steps": steps,
+                "backend_request": backend,
+                "backend": "cpu_rayon",
+                "native_available": True,
+            },
+        )
+
+    monkeypatch.setattr(
+        "polymarket_engine.probability.runtime.run_native_or_python",
+        fake_native_or_python,
+    )
+    app = create_app(
+        status_path=tmp_path / "missing-status.json",
+        duckdb_path=db_path,
+        enable_runtime_probabilities=True,
+    )
+
+    response = TestClient(app).get("/api/runtime/probabilities?limit=4")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert captured["backend"] == "cpu_rayon"
+    assert captured["path_count"] == 1024
+    assert captured["steps"] == 2
+    assert isinstance(captured["seed"], int)
+    assert payload["rows"][0]["model_version"] == "fixture-native-wrapper-v1"
+    with duckdb.connect(str(db_path)) as conn:
+        (output_json,) = conn.execute(
+            "select output_json from features.probability_outputs"
+        ).fetchone()
+    assert json.loads(output_json)["diagnostics"]["native_available"] is True
+
+
 def test_runtime_probabilities_returns_empty_envelope_for_missing_duckdb(
     tmp_path: Path,
 ) -> None:

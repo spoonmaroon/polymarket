@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -11,7 +12,7 @@ from typing import Any, cast
 
 import duckdb
 
-from polymarket_engine.probability.monte_carlo import run_seeded_monte_carlo
+from polymarket_engine.probability.native import run_native_or_python
 from polymarket_engine.probability.schema import ProbabilityInput, ProbabilityOutput
 from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
 
@@ -319,11 +320,12 @@ def _compute_and_persist_rows(
         seed = _seed_for_input(probability_input)
         steps = _steps_for_input(probability_input)
         try:
-            output = run_seeded_monte_carlo(
+            output = run_native_or_python(
                 probability_input,
                 path_count=DEFAULT_PROBABILITY_PATH_COUNT,
                 steps=steps,
                 seed=seed,
+                backend=os.environ.get("POLYMARKET_PROBABILITY_BACKEND", "cpu_rayon"),
             )
             output_id = _output_id(probability_input, output)
             store.insert_probability_output(

@@ -5,6 +5,7 @@ members = [
     "crates/polymarket-live-probe",
     "crates/polymarket-cockpit-tui",
     "crates/polymarket-probability-core",
+    "crates/polymarket-probability-native",
 ]
 
 [workspace.package]
@@ -33,3 +34,4 @@ rand = "0.9"
 rand_chacha = "0.9"
 rand_distr = "0.5"
 rayon = "1.10"
+pyo3 = { version = "0.28.3", features = ["extension-module"] }
