@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from polymarket_engine.probability.path_policy import runtime_path_count_for_seconds_left
@@ -60,3 +62,11 @@ def test_runtime_seed_policy_reports_total_paths(
     assert runtime_paths_per_seed_for_seconds_left(seconds_left) == expected_paths_per_seed
     assert runtime_seed_count_for_seconds_left(seconds_left) == expected_seed_count
     assert runtime_total_path_count_for_seconds_left(seconds_left) == expected_total
+
+
+@pytest.mark.parametrize("seconds_left", (True, False, math.nan, math.inf, -math.inf))
+def test_runtime_total_path_count_policy_rejects_non_finite_inputs(
+    seconds_left: float,
+) -> None:
+    with pytest.raises(ValueError, match="seconds_left must be finite"):
+        runtime_total_path_count_for_seconds_left(seconds_left)
