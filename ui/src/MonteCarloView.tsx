@@ -296,7 +296,6 @@ function monteCarloRowKey(row: MonteCarloRow, index: number) {
       row.contract,
       row.model_version ?? "model",
       row.backend ?? "backend",
-      row.age_ms ?? "age",
       index,
     ].join("|")
   );
