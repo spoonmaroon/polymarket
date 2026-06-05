@@ -38,20 +38,23 @@ mkdir -p "${REPO_ROOT}/docs/reports"
   rustc --version
   cargo --version
   echo
-  echo "## CPU Rayon"
+  echo "## Build"
   (
     cd "${REPO_ROOT}/rust"
-    cargo test -p polymarket-probability-core \
-      cpu_backend_outputs_probability_range_and_diagnostics \
-      --release -- --nocapture
+    cargo build --release -p polymarket-probability-core --example benchmark_cpu
+    cargo build --release -p polymarket-probability-cuda --example benchmark_cuda
   )
   echo
-  echo "## CUDA"
+  echo "## Timed Runs"
+  echo
+  echo "| case | backend | paths | steps | iterations | avg_ms | min_ms | median_ms | max_ms | p_finish | p_no_touch |"
+  echo "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
   (
     cd "${REPO_ROOT}/rust"
-    cargo test -p polymarket-probability-cuda \
-      cuda_backend_outputs_probability_range_backend_and_diagnostics \
-      --release -- --ignored --nocapture
+    target/release/examples/benchmark_cpu live-small 8192 64 5
+    target/release/examples/benchmark_cuda live-small 8192 64 5
+    target/release/examples/benchmark_cpu visual-large 100000 300 3
+    target/release/examples/benchmark_cuda visual-large 100000 300 3
   )
   echo
   echo "## Decision Rules"
