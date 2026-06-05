@@ -23,14 +23,15 @@ cargo 1.96.0 (30a34c682 2026-05-25)
 
 | case | backend | paths | steps | iterations | avg_ms | min_ms | median_ms | max_ms | p_finish | p_no_touch |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| live-small | cpu_rayon | 8192 | 64 | 5 | 1.473 | 0.912 | 1.580 | 2.025 | 0.154907 | 0.000000 |
-| live-small | cuda | 8192 | 64 | 5 | 219.126 | 174.968 | 182.822 | 371.406 | 0.163940 | 0.000000 |
-| visual-large | cpu_rayon | 100000 | 300 | 3 | 41.425 | 39.342 | 39.810 | 45.123 | 0.161590 | 0.000000 |
-| visual-large | cuda | 100000 | 300 | 3 | 220.927 | 176.471 | 181.786 | 304.524 | 0.157970 | 0.000000 |
-| sweep-large | cpu_rayon | 1000000 | 300 | 1 | 397.410 | 397.410 | 397.410 | 397.410 | 0.158641 | 0.000000 |
-| sweep-large | cuda | 1000000 | 300 | 1 | 476.844 | 476.844 | 476.844 | 476.844 | 0.158436 | 0.000000 |
+| live-small | cpu_rayon | 8192 | 64 | 5 | 2.488 | 1.050 | 1.521 | 5.513 | 0.154907 | 0.000000 |
+| live-small | cuda | 8192 | 64 | 5 | 61.179 | 1.226 | 1.234 | 300.961 | 0.163940 | 0.000000 |
+| visual-large | cpu_rayon | 100000 | 300 | 3 | 51.802 | 48.967 | 51.083 | 55.358 | 0.161590 | 0.000000 |
+| visual-large | cuda | 100000 | 300 | 3 | 120.694 | 16.417 | 17.075 | 328.589 | 0.157970 | 0.000000 |
+| sweep-large | cpu_rayon | 1000000 | 300 | 1 | 552.190 | 552.190 | 552.190 | 552.190 | 0.158641 | 0.000000 |
+| sweep-large | cuda | 1000000 | 300 | 1 | 499.706 | 499.706 | 499.706 | 499.706 | 0.158436 | 0.000000 |
 
 ## Decision Rules
-- Use CPU for live cached probability runs and the tested visualization sizes until CUDA context/module reuse is implemented.
-- Re-benchmark CUDA after persistent context/module caching or much larger batched generator sweeps.
+- Use CPU for live cached probability runs when measured latency is lower at the target path count.
+- Use CUDA only for workloads where the warm-cache benchmark beats CPU after context/module reuse.
+- Re-benchmark CUDA again before large batched generator sweeps, especially if path counts or artifact emission change.
 - Keep TUI/API reading cached outputs only.
