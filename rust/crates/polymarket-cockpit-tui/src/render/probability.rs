@@ -15,6 +15,7 @@ pub struct ProbabilityDisplayRow {
     pub p_no_touch: String,
     pub edge_required: String,
     pub gate: String,
+    pub wave: String,
     pub diagnosis: String,
     pub weights: String,
     pub cache: String,
@@ -27,13 +28,14 @@ pub struct ProbabilityTableModel {
     pub rows: Vec<Vec<String>>,
 }
 
-pub fn probability_header_labels() -> [&'static str; 9] {
+pub fn probability_header_labels() -> [&'static str; 10] {
     [
         "Contract",
         "p_finish",
         "p_no_touch",
         "edge/req",
         "gate",
+        "wave",
         "diag",
         "weights",
         "cache",
@@ -55,6 +57,7 @@ pub fn probability_table(app: &AppState) -> ProbabilityTableModel {
                         row.p_no_touch,
                         row.edge_required,
                         row.gate,
+                        row.wave,
                         row.diagnosis,
                         row.weights,
                         row.cache,
@@ -69,6 +72,7 @@ pub fn probability_table(app: &AppState) -> ProbabilityTableModel {
         headers: probability_header_labels().to_vec(),
         rows: vec![vec![
             "probability pending".to_string(),
+            "-".to_string(),
             "-".to_string(),
             "-".to_string(),
             "-".to_string(),
@@ -105,6 +109,7 @@ fn probability_row(row: &RuntimeProbabilityRow) -> ProbabilityDisplayRow {
         p_no_touch: format_probability(row.p_no_touch),
         edge_required: edge_required(row),
         gate: gate_label(row),
+        wave: wave_label(row),
         diagnosis: diagnosis(row),
         weights: weights(row),
         cache: cache_label(row),
@@ -138,6 +143,22 @@ fn gate_label(row: &RuntimeProbabilityRow) -> String {
         Some(value) => value.to_string(),
         None => "-".to_string(),
     }
+}
+
+fn wave_label(row: &RuntimeProbabilityRow) -> String {
+    let Some(phase) = row.wave_phase.as_deref() else {
+        return "-".to_string();
+    };
+    let score = row
+        .wave_score
+        .map(|value| format!(" {value:.2}"))
+        .unwrap_or_default();
+    let markers = if row.wave_markers.is_empty() {
+        String::new()
+    } else {
+        format!(" {}", row.wave_markers.join("/"))
+    };
+    format!("{phase}{score}{markers}")
 }
 
 fn diagnosis(row: &RuntimeProbabilityRow) -> String {
@@ -332,6 +353,7 @@ fn probability_widths(_column_count: usize) -> Vec<Constraint> {
         Constraint::Length(16),
         Constraint::Length(18),
         Constraint::Length(18),
+        Constraint::Length(18),
         Constraint::Length(20),
         Constraint::Min(12),
     ]
@@ -395,6 +417,12 @@ mod tests {
                     edge_after_costs: Some(0.019),
                     required_edge: Some(0.086),
                     gate_reasons: vec!["NEAR_THRESHOLD".to_string()],
+                    wave_score: Some(0.87),
+                    wave_phase: Some("breaking".to_string()),
+                    wave_reasons: vec!["EDGE_OK".to_string(), "PRICE_90".to_string()],
+                    wave_markers: vec!["P90".to_string()],
+                    dynamic_edge: Some(0.045),
+                    dynamic_required_edge: Some(0.030),
                     generator_metadata: [(
                         "snapshot_id".to_string(),
                         serde_json::json!("weights-1"),
@@ -415,6 +443,7 @@ mod tests {
                 "p_no_touch",
                 "edge/req",
                 "gate",
+                "wave",
                 "diag",
                 "weights",
                 "cache",
@@ -426,6 +455,7 @@ mod tests {
         assert_eq!(rows[0].p_no_touch, "0.315");
         assert_eq!(rows[0].edge_required, "0.019/0.086");
         assert_eq!(rows[0].gate, "WAIT");
+        assert_eq!(rows[0].wave, "breaking 0.87 P90");
         assert_eq!(rows[0].diagnosis, "FRAGILE,NEAR_THRESHOLD");
         assert_eq!(rows[0].weights, "emp 30% log 55% stress 15%");
         assert_eq!(rows[0].cache, "HIT n=10000 until 21:06:30");
@@ -512,6 +542,7 @@ mod tests {
                 "-".to_string(),
                 "-".to_string(),
                 "-".to_string(),
+                "-".to_string(),
             ]
         );
     }
@@ -576,6 +607,12 @@ mod tests {
             edge_after_costs: None,
             required_edge: None,
             gate_reasons: Vec::new(),
+            wave_score: None,
+            wave_phase: None,
+            wave_reasons: Vec::new(),
+            wave_markers: Vec::new(),
+            dynamic_edge: None,
+            dynamic_required_edge: None,
             generator_metadata: Default::default(),
         }
     }

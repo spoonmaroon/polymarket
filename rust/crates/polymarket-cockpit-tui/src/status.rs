@@ -218,6 +218,18 @@ pub struct RuntimeProbabilityRow {
     #[serde(default)]
     pub gate_reasons: Vec<String>,
     #[serde(default)]
+    pub wave_score: Option<f64>,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub wave_phase: Option<String>,
+    #[serde(default)]
+    pub wave_reasons: Vec<String>,
+    #[serde(default)]
+    pub wave_markers: Vec<String>,
+    #[serde(default)]
+    pub dynamic_edge: Option<f64>,
+    #[serde(default)]
+    pub dynamic_required_edge: Option<f64>,
+    #[serde(default)]
     pub generator_metadata: BTreeMap<String, serde_json::Value>,
 }
 
@@ -504,6 +516,12 @@ mod tests {
                 "edge_after_costs": 0.019,
                 "required_edge": 0.086,
                 "gate_reasons": ["NEAR_THRESHOLD"],
+                "wave_score": 0.87,
+                "wave_phase": "breaking",
+                "wave_reasons": ["EDGE_OK", "PRICE_90"],
+                "wave_markers": ["P90"],
+                "dynamic_edge": 0.045,
+                "dynamic_required_edge": 0.030,
                 "u_gen": 0.046,
                 "cache_key": "BTC|UP|h300|t0-30|z0.75-1.00|sigma0.010-0.015|volnormal|eventnone|risknormal|genoffline-lognormal-chainlink-sigma-v1",
                 "cache_status": "HIT",
@@ -579,6 +597,18 @@ mod tests {
         assert_eq!(probabilities.rows[0].edge_after_costs, Some(0.019));
         assert_eq!(probabilities.rows[0].required_edge, Some(0.086));
         assert_eq!(probabilities.rows[0].gate_reasons, vec!["NEAR_THRESHOLD"]);
+        assert_eq!(probabilities.rows[0].wave_score, Some(0.87));
+        assert_eq!(
+            probabilities.rows[0].wave_phase.as_deref(),
+            Some("breaking")
+        );
+        assert_eq!(
+            probabilities.rows[0].wave_reasons,
+            vec!["EDGE_OK", "PRICE_90"]
+        );
+        assert_eq!(probabilities.rows[0].wave_markers, vec!["P90"]);
+        assert_eq!(probabilities.rows[0].dynamic_edge, Some(0.045));
+        assert_eq!(probabilities.rows[0].dynamic_required_edge, Some(0.030));
         assert_eq!(
             probabilities.rows[0].generator_metadata["snapshot_id"],
             serde_json::json!("weights-1")
