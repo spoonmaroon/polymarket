@@ -111,6 +111,9 @@ fn validate_input(input: &ProbabilityInput) -> Result<()> {
 }
 
 fn validate_config(config: &SimulationConfig) -> Result<()> {
+    if config.backend != SimulationBackendKind::CpuRayon {
+        bail!("CpuRayonBackend requires CpuRayon simulation backend config");
+    }
     if config.path_count == 0 {
         bail!("path_count must be positive");
     }
@@ -476,6 +479,15 @@ mod tests {
         let mut bad_version = config();
         bad_version.model_version = " ".to_string();
         assert!(backend.run(&input(), &bad_version).is_err());
+    }
+
+    #[test]
+    fn cpu_backend_rejects_mismatched_backend_config() {
+        let backend = CpuRayonBackend;
+        let mut bad_config = config();
+        bad_config.backend = SimulationBackendKind::Cuda;
+
+        assert!(backend.run(&input(), &bad_config).is_err());
     }
 
     #[test]
