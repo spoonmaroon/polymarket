@@ -210,11 +210,18 @@ h3 {
 
 .probability-row {
   display: grid;
-  grid-template-columns: minmax(220px, 1.6fr) minmax(88px, 0.55fr) minmax(88px, 0.55fr) minmax(124px, 0.75fr) minmax(112px, 0.7fr) minmax(72px, 0.4fr);
+  grid-template-columns:
+    minmax(190px, 1.25fr)
+    minmax(72px, 0.45fr)
+    minmax(82px, 0.45fr)
+    minmax(88px, 0.45fr)
+    minmax(100px, 0.55fr)
+    minmax(94px, 0.55fr)
+    minmax(64px, 0.35fr);
   gap: 10px;
   align-items: center;
   width: 100%;
-  min-width: 840px;
+  min-width: 920px;
   border: 0;
   border-bottom: 1px solid #2a2f34;
   padding: 10px 12px;
@@ -438,6 +445,67 @@ svg {
   border-color: rgba(55, 192, 172, 0.55);
   color: #a6e8df;
   background: rgba(55, 192, 172, 0.12);
+}
+
+.wave-badge {
+  display: inline-grid;
+  grid-template-columns: auto auto;
+  align-items: center;
+  gap: 2px 6px;
+  min-width: 92px;
+  max-width: 150px;
+  border: 1px solid #3a4248;
+  border-radius: 6px;
+  padding: 5px 7px;
+  color: #d8dedb;
+  background: #20252a;
+  font-size: 11px;
+  font-weight: 780;
+  line-height: 1.1;
+}
+
+.wave-badge span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wave-badge strong {
+  color: #f7f8f4;
+  font-size: 11px;
+}
+
+.wave-badge small {
+  grid-column: 1 / -1;
+  overflow: hidden;
+  color: #aab3b0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wave-forming {
+  border-color: rgba(86, 189, 143, 0.55);
+  background: rgba(86, 189, 143, 0.10);
+}
+
+.wave-breaking {
+  border-color: rgba(211, 184, 90, 0.62);
+  background: rgba(211, 184, 90, 0.12);
+}
+
+.wave-late {
+  border-color: rgba(223, 143, 76, 0.62);
+  background: rgba(223, 143, 76, 0.13);
+}
+
+.wave-missed {
+  border-color: rgba(213, 91, 91, 0.62);
+  background: rgba(213, 91, 91, 0.13);
+}
+
+.wave-none {
+  border-color: #3a4147;
+  background: #1d2226;
 }
 
 .detail-section {
