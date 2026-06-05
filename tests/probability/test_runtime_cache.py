@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
+
+import pytest
 
 from polymarket_engine.probability import runtime
 from polymarket_engine.probability.runtime import ProbabilityRuntimeCache
 
 
 def test_runtime_cache_timestamps_after_successful_payload_build(
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     monotonic_times = iter((100.0, 102.0, 102.1))
@@ -30,7 +33,7 @@ def test_runtime_cache_timestamps_after_successful_payload_build(
             "limit": limit,
         }
 
-    monkeypatch.setattr(runtime.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(time, "monotonic", fake_monotonic)
     monkeypatch.setattr(runtime, "build_probability_payload", fake_build_probability_payload)
 
     cache = ProbabilityRuntimeCache(min_interval_seconds=1.0)

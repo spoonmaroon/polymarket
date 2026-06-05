@@ -280,19 +280,19 @@ fn apply_runtime_update(app: &mut AppState, update: RuntimeUpdate) -> bool {
         changed |= replace_if_changed(&mut app.runtime_gates, gates);
     }
 
-    if let Some(outcomes) = update.outcomes {
-        if app.apply_runtime_outcomes(outcomes) {
-            app.sync_outcome_selection();
-            app.sync_market_selection();
-            changed = true;
-        }
+    if let Some(outcomes) = update.outcomes
+        && app.apply_runtime_outcomes(outcomes)
+    {
+        app.sync_outcome_selection();
+        app.sync_market_selection();
+        changed = true;
     }
 
-    if let Some(monitor) = update.monitor {
-        if app.apply_runtime_monitor(monitor) {
-            app.sync_market_selection();
-            changed = true;
-        }
+    if let Some(monitor) = update.monitor
+        && app.apply_runtime_monitor(monitor)
+    {
+        app.sync_market_selection();
+        changed = true;
     }
 
     if let Some(volatility) = update.volatility {

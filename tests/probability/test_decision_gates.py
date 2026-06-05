@@ -1,3 +1,5 @@
+from typing import Any
+
 import pytest
 
 from polymarket_engine.probability.decision_gates import (
@@ -35,7 +37,7 @@ def _quality(
     source_age_ms: int = 300,
     book_age_ms: int = 250,
     latency_ms: int = 150,
-    hard_failures: object = (),
+    hard_failures: Any = (),
     source_fresh: bool = True,
     book_fresh: bool = True,
 ) -> ExecutableQualityInput:

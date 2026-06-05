@@ -3,6 +3,7 @@ import inspect
 import importlib
 import sys
 from datetime import datetime, timezone
+from types import ModuleType
 
 import pytest
 
@@ -31,10 +32,16 @@ def test_cuda_module_import_does_not_import_cupy(monkeypatch: pytest.MonkeyPatch
     sys.modules.pop("polymarket_engine.probability.cuda_monte_carlo", None)
     real_import = builtins.__import__
 
-    def reject_cupy_import(name: str, *args: object, **kwargs: object) -> object:
+    def reject_cupy_import(
+        name: str,
+        globals: dict[str, object] | None = None,
+        locals: dict[str, object] | None = None,
+        fromlist: tuple[str, ...] = (),
+        level: int = 0,
+    ) -> ModuleType:
         if name == "cupy" or name.startswith("cupy."):
             raise AssertionError("cuda_monte_carlo must not import CuPy at module import time")
-        return real_import(name, *args, **kwargs)
+        return real_import(name, globals, locals, fromlist, level)
 
     monkeypatch.setattr(builtins, "__import__", reject_cupy_import)
 
@@ -47,10 +54,16 @@ def test_cuda_monte_carlo_raises_clear_error_when_cupy_missing(
     module = importlib.import_module("polymarket_engine.probability.cuda_monte_carlo")
     real_import = builtins.__import__
 
-    def missing_cupy(name: str, *args: object, **kwargs: object) -> object:
+    def missing_cupy(
+        name: str,
+        globals: dict[str, object] | None = None,
+        locals: dict[str, object] | None = None,
+        fromlist: tuple[str, ...] = (),
+        level: int = 0,
+    ) -> ModuleType:
         if name == "cupy" or name.startswith("cupy."):
             raise ModuleNotFoundError("No module named 'cupy'")
-        return real_import(name, *args, **kwargs)
+        return real_import(name, globals, locals, fromlist, level)
 
     monkeypatch.setattr(builtins, "__import__", missing_cupy)
 

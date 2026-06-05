@@ -1,5 +1,6 @@
 import math
 from datetime import datetime, timezone
+from typing import Any, cast
 
 import pytest
 
@@ -66,7 +67,7 @@ def test_generator_result_validates_probability_and_path_outputs() -> None:
 
 
 def test_generator_result_defensively_freezes_diagnostics() -> None:
-    diagnostics = {
+    diagnostics: dict[str, Any] = {
         "source": {"name": "fixture"},
         "lags": [1, 2],
     }
@@ -77,8 +78,8 @@ def test_generator_result_defensively_freezes_diagnostics() -> None:
         z_path=0.42,
         diagnostics=diagnostics,
     )
-    diagnostics["source"]["name"] = "mutated"
-    diagnostics["lags"].append(3)
+    cast(dict[str, Any], diagnostics["source"])["name"] = "mutated"
+    cast(list[int], diagnostics["lags"]).append(3)
     diagnostics["new"] = "leak"
 
     assert result.diagnostics_json_dict() == {
@@ -86,7 +87,7 @@ def test_generator_result_defensively_freezes_diagnostics() -> None:
         "lags": [1, 2],
     }
     with pytest.raises(TypeError):
-        result.diagnostics["new"] = "blocked"
+        cast(dict[str, Any], result.diagnostics)["new"] = "blocked"
 
 
 @pytest.mark.parametrize(
@@ -108,7 +109,7 @@ def test_generator_result_rejects_non_json_diagnostics(
             p_finish=0.62,
             p_no_touch=0.81,
             z_path=0.42,
-            diagnostics=invalid_diagnostics,
+            diagnostics=cast(Any, invalid_diagnostics),
         )
 
 
@@ -125,7 +126,7 @@ def test_generator_result_rejects_non_json_diagnostics(
     ),
 )
 def test_generator_result_rejects_invalid_fields(field_name: str, invalid_value: object) -> None:
-    values = {
+    values: dict[str, Any] = {
         "p_finish": 0.54,
         "p_no_touch": 0.72,
         "z_path": 0.30,
@@ -167,8 +168,8 @@ def test_generator_run_carries_metadata_scope_conditioning_and_result() -> None:
 
 
 def test_generator_run_defensively_freezes_conditioning_and_diagnostics() -> None:
-    conditioning = {"bucket": {"z_path": "near"}, "lags": [1, 2]}
-    diagnostics = {"inputs": {"rows": 20}, "warnings": []}
+    conditioning: dict[str, Any] = {"bucket": {"z_path": "near"}, "lags": [1, 2]}
+    diagnostics: dict[str, Any] = {"inputs": {"rows": 20}, "warnings": []}
 
     run = GeneratorRun(
         generator_id=GeneratorId.EMPIRICAL_CONDITIONAL,
@@ -183,17 +184,17 @@ def test_generator_run_defensively_freezes_conditioning_and_diagnostics() -> Non
         asof_ts=_asof(),
         diagnostics=diagnostics,
     )
-    conditioning["bucket"]["z_path"] = "mutated"
-    conditioning["lags"].append(3)
-    diagnostics["inputs"]["rows"] = 99
-    diagnostics["warnings"].append("leak")
+    cast(dict[str, Any], conditioning["bucket"])["z_path"] = "mutated"
+    cast(list[int], conditioning["lags"]).append(3)
+    cast(dict[str, Any], diagnostics["inputs"])["rows"] = 99
+    cast(list[str], diagnostics["warnings"]).append("leak")
 
     assert run.conditioning_json_dict() == {"bucket": {"z_path": "near"}, "lags": [1, 2]}
     assert run.diagnostics_json_dict() == {"inputs": {"rows": 20}, "warnings": []}
     with pytest.raises(TypeError):
-        run.conditioning["new"] = "blocked"
+        cast(dict[str, Any], run.conditioning)["new"] = "blocked"
     with pytest.raises(TypeError):
-        run.diagnostics["new"] = "blocked"
+        cast(dict[str, Any], run.diagnostics)["new"] = "blocked"
 
 
 @pytest.mark.parametrize(
@@ -213,7 +214,7 @@ def test_generator_run_rejects_non_json_conditioning_or_diagnostics(
     field_name: str,
     invalid_value: object,
 ) -> None:
-    values = {
+    values: dict[str, Any] = {
         "generator_id": GeneratorId.BLOCK_BOOTSTRAP,
         "generator_name": "Block bootstrap",
         "generator_version": "block-v1",
@@ -252,7 +253,7 @@ def test_generator_run_rejects_non_json_conditioning_or_diagnostics(
     ),
 )
 def test_generator_run_rejects_invalid_fields(field_name: str, invalid_value: object) -> None:
-    values = {
+    values: dict[str, Any] = {
         "generator_id": GeneratorId.BLOCK_BOOTSTRAP,
         "generator_name": "Block bootstrap",
         "generator_version": "block-v1",
@@ -315,7 +316,7 @@ def test_historical_validation_window_rejects_invalid_fields(
     field_name: str,
     invalid_value: object,
 ) -> None:
-    values = {
+    values: dict[str, Any] = {
         "asof_ts": datetime(2026, 6, 5, 16, 0, tzinfo=timezone.utc),
         "evaluated_through_ts": datetime(2026, 6, 5, 17, 0, tzinfo=timezone.utc),
         "label_window_seconds": 3600,
@@ -352,7 +353,7 @@ def test_generator_weight_accepts_optional_score() -> None:
     ),
 )
 def test_generator_weight_rejects_invalid_fields(field_name: str, invalid_value: object) -> None:
-    values = {
+    values: dict[str, Any] = {
         "generator_id": GeneratorId.LOGNORMAL_BASELINE,
         "weight": 0.20,
         "scope": _scope(),

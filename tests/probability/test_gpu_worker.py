@@ -1,6 +1,8 @@
 import json
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import cast
 
 import duckdb
 import pytest
@@ -211,7 +213,7 @@ def test_cuda_probability_worker_loop_clears_active_rows_on_duckdb_lock(
         raise StopLoop
 
     monkeypatch.setattr(gpu_worker, "run_cuda_probability_worker_cycle", locked_cycle)
-    monkeypatch.setattr(gpu_worker.time, "sleep", stop_after_sleep)
+    monkeypatch.setattr(time, "sleep", stop_after_sleep)
 
     with pytest.raises(StopLoop):
         gpu_worker.run_cuda_probability_worker_loop(
@@ -305,7 +307,7 @@ def test_cuda_probability_worker_reads_only_non_expired_probability_inputs(
     captured: list[bool | None] = []
 
     def fake_inputs(**kwargs: object) -> tuple[tuple[object, ...], int]:
-        captured.append(kwargs.get("active_only"))
+        captured.append(cast(bool | None, kwargs.get("active_only")))
         return (), 0
 
     monkeypatch.setattr(gpu_worker, "latest_probability_inputs", fake_inputs)
