@@ -300,11 +300,7 @@ fn apply_runtime_update(app: &mut AppState, update: RuntimeUpdate) -> bool {
     }
 
     if let Some(probabilities) = update.probabilities {
-        let log_line = monte_carlo_log_line(&probabilities);
-        if replace_if_changed(&mut app.runtime_probabilities, probabilities) {
-            changed = true;
-            changed |= push_log(app, log_line);
-        }
+        changed |= apply_probability_update(app, probabilities);
     }
 
     if let Some(display_lag) = update.display_lag {
@@ -323,6 +319,31 @@ fn apply_runtime_update(app: &mut AppState, update: RuntimeUpdate) -> bool {
     }
 
     changed
+}
+
+fn apply_probability_update(app: &mut AppState, probabilities: RuntimeProbabilities) -> bool {
+    if probabilities.rows.is_empty()
+        && let Some(previous) = app
+            .runtime_probabilities
+            .as_ref()
+            .filter(|previous| !previous.rows.is_empty())
+    {
+        return push_log(
+            app,
+            format!(
+                "mc pending rows=0 retaining_last={} at={}",
+                previous.rows.len(),
+                probabilities.generated_at
+            ),
+        );
+    }
+
+    let log_line = monte_carlo_log_line(&probabilities);
+    if replace_if_changed(&mut app.runtime_probabilities, probabilities) {
+        push_log(app, log_line);
+        return true;
+    }
+    false
 }
 
 fn push_log(app: &mut AppState, line: String) -> bool {
@@ -783,6 +804,14 @@ mod tests {
         }
     }
 
+    fn empty_probabilities() -> RuntimeProbabilities {
+        RuntimeProbabilities {
+            generated_at: "2026-06-03T21:06:03Z".to_string(),
+            cached: false,
+            rows: Vec::new(),
+        }
+    }
+
     fn outcomes() -> RuntimeOutcomes {
         RuntimeOutcomes {
             ok: true,
@@ -1019,6 +1048,50 @@ mod tests {
             vec![
                 "mc rows=1 BTC=UP gates=NO_HINT:1 cache=HIT:1 asof=2026-06-03T21:06:00Z gen=2026-06-03T21:06:00Z valid=2026-06-03T21:06:00Z->2026-06-03T21:06:30Z at=2026-06-03T21:06:00Z"
             ]
+        );
+    }
+
+    #[test]
+    fn apply_runtime_update_retains_last_non_empty_probabilities_during_rollover_gap() {
+        let mut app = AppState::default();
+
+        assert!(apply_runtime_update(
+            &mut app,
+            RuntimeUpdate {
+                status: None,
+                gates: None,
+                monitor: None,
+                volatility: None,
+                probabilities: Some(probabilities()),
+                outcomes: None,
+                display_lag: None,
+                error: None,
+            },
+        ));
+        assert!(apply_runtime_update(
+            &mut app,
+            RuntimeUpdate {
+                status: None,
+                gates: None,
+                monitor: None,
+                volatility: None,
+                probabilities: Some(empty_probabilities()),
+                outcomes: None,
+                display_lag: None,
+                error: None,
+            },
+        ));
+
+        let probabilities = app
+            .runtime_probabilities
+            .as_ref()
+            .expect("last good probabilities should remain visible");
+        assert_eq!(probabilities.rows.len(), 1);
+        assert_eq!(probabilities.rows[0].contract, "BTC 5m UP");
+        assert!(
+            app.logs.iter().any(|line| {
+                line == "mc pending rows=0 retaining_last=1 at=2026-06-03T21:06:03Z"
+            })
         );
     }
 
