@@ -96,7 +96,7 @@ def test_spoon_docs_record_vps_cadence_revisit() -> None:
 
     assert "THEPC" in text
     assert "current normalizer cadence" in text
-    assert "POLYMARKET_NORMALIZER_INTERVAL_SECONDS=0.1" in text
+    assert "POLYMARKET_NORMALIZER_INTERVAL_SECONDS=1.0" in text
     assert "POLYMARKET_NORMALIZER_INTERVAL_SECONDS=0.25" in text
     assert "home-server CPU compromise" in text
     assert "After VPS migration" in text

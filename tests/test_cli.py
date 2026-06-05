@@ -198,6 +198,26 @@ def test_parse_run_rust_normalizer_sidecar_enable_probabilities_arg() -> None:
     assert args.enable_probabilities is True
 
 
+def test_parse_run_cuda_probability_worker_defaults() -> None:
+    args = parse_args(
+        [
+            "run-cuda-probability-worker",
+            "--duckdb-path",
+            "data/db/polymarket.duckdb",
+        ]
+    )
+
+    assert args.command == "run-cuda-probability-worker"
+    assert args.duckdb_path == Path("data/db/polymarket.duckdb")
+    assert args.probability_status_path == Path("data/live/probabilities.json")
+    assert args.probability_inputs_path is None
+    assert args.max_input_snapshot_age_seconds == 10.0
+    assert args.interval_seconds == 1.0
+    assert args.limit == 24
+    assert args.valid_seconds == 30
+    assert args.once is False
+
+
 def test_run_rust_normalizer_sidecar_defaults_to_quarter_second_cadence() -> None:
     args = parse_args(
         [
@@ -640,6 +660,11 @@ async def test_run_rust_normalizer_sidecar_once_command(
     assert payload["elapsed_ms"] >= 0
     assert payload["contracts_upserted"] == 2
     assert health_path.exists()
+    input_snapshot = json.loads(
+        health_path.with_name("probability_inputs.json").read_text(encoding="utf-8")
+    )
+    assert input_snapshot["schema_version"] == "polymarket-probability-inputs-v1"
+    assert input_snapshot["ok"] is True
 
 
 @pytest.mark.anyio

@@ -184,6 +184,11 @@ def build_runtime_router(
     @router.get("/probabilities")
     def runtime_probabilities(limit: int = 8) -> dict[str, Any]:
         if not enable_runtime_probabilities:
+            if probability_status_path.exists():
+                return _probability_status_payload(
+                    probability_status_path=probability_status_path,
+                    limit=limit,
+                )
             return _probabilities_disabled_payload()
         try:
             payload = probability_cache.payload(duckdb_path=duckdb_path, limit=limit)

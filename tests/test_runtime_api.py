@@ -995,6 +995,46 @@ def test_runtime_probabilities_disabled_by_default_returns_empty_envelope(
     assert payload["errors"] == []
 
 
+def test_runtime_probabilities_disabled_runtime_reads_gpu_status_file(
+    tmp_path: Path,
+) -> None:
+    probability_status_path = tmp_path / "live" / "probabilities.json"
+    probability_status_path.parent.mkdir()
+    probability_status_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "polymarket-probability-runtime-v1",
+                "ok": True,
+                "state": "OK",
+                "generated_at": datetime.now(UTC).isoformat(),
+                "cached": False,
+                "model_version": "cached-grid-v1",
+                "rows": [
+                    {"contract": "BTC 5m UP", "asset": "BTC", "side": "UP"},
+                    {"contract": "BTC 5m DOWN", "asset": "BTC", "side": "DOWN"},
+                ],
+                "skipped": 0,
+                "errors": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    app = create_app(
+        status_path=tmp_path / "missing-status.json",
+        duckdb_path=tmp_path / "missing.duckdb",
+        probability_status_path=probability_status_path,
+        enable_runtime_probabilities=False,
+    )
+
+    response = TestClient(app).get("/api/runtime/probabilities?limit=1")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["state"] == "OK"
+    assert payload["rows"] == [{"contract": "BTC 5m UP", "asset": "BTC", "side": "UP"}]
+
+
 def test_runtime_probabilities_runs_cached_read_only_mc_and_persists_output(
     tmp_path: Path,
 ) -> None:

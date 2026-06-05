@@ -18,12 +18,12 @@ from polymarket_engine.probability.grid_cache import lookup_probability_grid_ent
 from polymarket_engine.probability.grid_cache import ProbabilityGridHit
 from polymarket_engine.probability.grid_cache import upsert_probability_grid_entry
 from polymarket_engine.probability.monte_carlo import run_seeded_monte_carlo
+from polymarket_engine.probability.path_policy import runtime_path_count_for_seconds_left
 from polymarket_engine.probability.schema import ProbabilityInput, ProbabilityOutput
 from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
 
 
 DEFAULT_PROBABILITY_CACHE_SECONDS = 1.0
-DEFAULT_PROBABILITY_PATH_COUNT = 1024
 DEFAULT_PROBABILITY_MAX_STATE_AGE_SECONDS = 600.0
 DEFAULT_PROBABILITY_GRID_VALID_SECONDS = 30.0
 
@@ -59,7 +59,7 @@ class ProbabilityRuntimeCache:
 
         payload = build_probability_payload(duckdb_path=duckdb_path, limit=limit)
         self._cached_payload = dict(payload)
-        self._cached_at_monotonic = now_monotonic
+        self._cached_at_monotonic = time.monotonic()
         return payload
 
 
@@ -423,10 +423,11 @@ def _compute_and_persist_rows(
         probability_input = runtime_input.probability_input
         seed = _seed_for_input(probability_input)
         steps = _steps_for_input(probability_input)
+        path_count = runtime_path_count_for_seconds_left(probability_input.seconds_left)
         try:
             output = run_seeded_monte_carlo(
                 probability_input,
-                path_count=DEFAULT_PROBABILITY_PATH_COUNT,
+                path_count=path_count,
                 steps=steps,
                 seed=seed,
             )
@@ -443,6 +444,7 @@ def _compute_and_persist_rows(
                 "start_ts": runtime_input.start_ts.isoformat(),
                 "expiry_ts": runtime_input.expiry_ts.isoformat(),
                 "asof_ts": probability_input.asof_ts.isoformat(),
+                "path_count": path_count,
             }
             entry = grid_entry_from_probability_input(
                 probability_input,
@@ -452,7 +454,7 @@ def _compute_and_persist_rows(
                 p_finish=output.p_finish,
                 p_no_touch=output.p_no_touch,
                 u_gen=0.0,
-                path_count=DEFAULT_PROBABILITY_PATH_COUNT,
+                path_count=path_count,
                 seed=seed,
                 volatility_regime=runtime_input.volatility_regime,
                 generator_version=output.model_version,

@@ -181,6 +181,7 @@ def test_runtime_api_service_is_deployed_with_engine_compose() -> None:
     assert "up -d collector normalizer api" in script
     assert "up -d --build collector normalizer api" in script
     assert "logs --tail=80 collector normalizer api" in script
+    assert "gpu-probability-worker" not in script
     assert "docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml ps" in pc_script
     assert 'get_json("/health")' in pc_script
     assert 'get_json("/api/runtime/live?limit=8")' in pc_script
@@ -207,6 +208,7 @@ def test_compose_and_env_support_prebuilt_image_overrides() -> None:
     assert "POLYMARKET_NORMALIZER_INTERVAL_SECONDS=0.25" in env_example
     assert "POLYMARKET_COLLECTOR_IMAGE=polymarket-rust-collector:latest" in env_example
     assert "POLYMARKET_NORMALIZER_IMAGE=polymarket-normalizer:latest" in env_example
+    assert "POLYMARKET_CUDA_PROBABILITY_IMAGE=polymarket-cuda-probability:latest" in env_example
 
 
 def test_pc_image_build_script_exports_docker_tarballs_and_manifest() -> None:
@@ -262,6 +264,7 @@ def test_prebuilt_image_deploy_script_loads_images_and_uses_deploy_fast_path() -
     assert "POLYMARKET_EXPECTED_DEPLOY_SHA='$FULL_SHA'" in script
     assert "POLYMARKET_COLLECTOR_IMAGE='$COLLECTOR_IMAGE'" in script
     assert "POLYMARKET_NORMALIZER_IMAGE='$NORMALIZER_IMAGE'" in script
+    assert "POLYMARKET_CUDA_PROBABILITY_IMAGE" not in script
     assert "POLYMARKET_DATA_DIR='$POLYMARKET_DATA_DIR'" in script
     assert "check_collector_status.py" in script
     assert "--expected-prewarm-windows 2" in script
@@ -281,18 +284,21 @@ def test_pc_deploy_script_streams_bundle_and_images_into_wsl() -> None:
     assert "cat >" in script
     assert 'polymarket-rust-collector-${SHORT_SHA}.tar' in script
     assert 'polymarket-normalizer-${SHORT_SHA}.tar' in script
+    assert 'polymarket-cuda-probability-${SHORT_SHA}.tar' in script
 
 
 def test_pc_deploy_script_runs_prebuilt_deploy_gate_with_pc_cadence() -> None:
     script = (ROOT / "scripts" / "deploy_pc.sh").read_text(encoding="utf-8")
 
-    assert 'PC_NORMALIZER_INTERVAL_SECONDS="${PC_NORMALIZER_INTERVAL_SECONDS:-0.1}"' in script
+    assert 'PC_NORMALIZER_INTERVAL_SECONDS="${PC_NORMALIZER_INTERVAL_SECONDS:-1.0}"' in script
     assert 'PC_REST_BACKUP_INTERVAL_MS="${PC_REST_BACKUP_INTERVAL_MS:-1000}"' in script
     assert "export POLYMARKET_DEPLOY_USE_PREBUILT=1" in script
     assert 'POLYMARKET_DEPLOY_REF="\\$FULL_SHA"' in script
     assert 'POLYMARKET_EXPECTED_DEPLOY_SHA="\\$FULL_SHA"' in script
     assert 'POLYMARKET_COLLECTOR_IMAGE="\\$COLLECTOR_IMAGE"' in script
     assert 'POLYMARKET_NORMALIZER_IMAGE="\\$NORMALIZER_IMAGE"' in script
+    assert 'POLYMARKET_CUDA_PROBABILITY_IMAGE="\\$CUDA_PROBABILITY_IMAGE"' in script
+    assert 'docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml up -d gpu-probability-worker' in script
     assert 'POLYMARKET_DATA_DIR="\\$PC_DATA_DIR"' in script
     assert 'DEPLOY_FORCE=1' in script
     assert (
@@ -317,8 +323,9 @@ def test_pc_deploy_script_refreshes_tui_desktop_launcher() -> None:
     assert "Runtime not live; starting containers..." in script
     assert (
         "docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml "
-        "up -d --no-recreate collector normalizer api"
+        "up -d --no-recreate collector normalizer api gpu-probability-worker"
     ) in script
+    assert 'docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml ps --services --status running gpu-probability-worker' in script
     assert "python3 -c %q" in script
     assert 'm=p.get("monitor") or {}' in script
     assert 'len(m.get("orderbooks") or []) > 0' in script
@@ -385,8 +392,9 @@ def test_deploy_script_supports_prebuilt_images_with_build_fallback() -> None:
     assert '[ "$USE_PREBUILT" != "1" ] && [ "$LOCAL" = "$REMOTE" ]' in script
     assert 'export POLYMARKET_COLLECTOR_IMAGE="$COLLECTOR_IMAGE"' in script
     assert 'export POLYMARKET_NORMALIZER_IMAGE="$NORMALIZER_IMAGE"' in script
-    assert 'compose -f "$COMPOSE_FILE" up -d collector normalizer' in script
-    assert 'compose -f "$COMPOSE_FILE" up -d --build collector normalizer' in script
+    assert 'POLYMARKET_CUDA_PROBABILITY_IMAGE' not in script
+    assert 'compose -f "$COMPOSE_FILE" up -d collector normalizer api' in script
+    assert 'compose -f "$COMPOSE_FILE" up -d --build collector normalizer api' in script
     assert 'export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-1}"' in script
 
 
@@ -411,13 +419,13 @@ def test_normalizer_defaults_to_quarter_second_checkpointed_cadence() -> None:
     ).read_text(encoding="utf-8")
 
     assert "POLYMARKET_NORMALIZER_INTERVAL_SECONDS=0.25" in env_example
-    assert "POLYMARKET_NORMALIZER_ENABLE_PROBABILITIES=1" in env_example
-    assert "POLYMARKET_ENABLE_RUNTIME_PROBABILITIES=1" in env_example
+    assert "POLYMARKET_NORMALIZER_ENABLE_PROBABILITIES=0" in env_example
+    assert "POLYMARKET_ENABLE_RUNTIME_PROBABILITIES=0" in env_example
     assert "POLYMARKET_NORMALIZER_INTERVAL_SECONDS:-0.25" in compose
-    assert "POLYMARKET_NORMALIZER_ENABLE_PROBABILITIES:-1" in compose
-    assert "POLYMARKET_ENABLE_RUNTIME_PROBABILITIES:-1" in compose
+    assert "POLYMARKET_NORMALIZER_ENABLE_PROBABILITIES:-0" in compose
+    assert "POLYMARKET_ENABLE_RUNTIME_PROBABILITIES:-0" in compose
     assert 'INTERVAL_SECONDS="${POLYMARKET_NORMALIZER_INTERVAL_SECONDS:-0.25}"' in entrypoint
-    assert 'ENABLE_PROBABILITIES="${POLYMARKET_NORMALIZER_ENABLE_PROBABILITIES:-1}"' in entrypoint
+    assert 'ENABLE_PROBABILITIES="${POLYMARKET_NORMALIZER_ENABLE_PROBABILITIES:-0}"' in entrypoint
     assert 'OUTCOME_STATUS_PATH="${POLYMARKET_OUTCOME_STATUS_PATH:-$LIVE_DIR/outcomes.json}"' in entrypoint
     assert 'VOLATILITY_STATUS_PATH="${POLYMARKET_VOLATILITY_STATUS_PATH:-$LIVE_DIR/volatility.json}"' in entrypoint
     assert "run-rust-normalizer-sidecar" in entrypoint

@@ -386,6 +386,26 @@ def test_state_manager_status_accepts_healthy_websocket_rows(
     assert script.main() == 0
 
 
+def test_state_manager_status_accepts_connected_websocket_without_first_event(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = _load_script()
+    status = _fresh_state_manager_status()
+    websocket_status = status["websocket_status"]
+    assert isinstance(websocket_status, list)
+    assert isinstance(websocket_status[1], dict)
+    websocket_status[1]["last_event_age_ms"] = None
+    status_path = tmp_path / "status.json"
+    status_path.write_text(json.dumps(status), encoding="utf-8")
+    monkeypatch.setattr(
+        "sys.argv",
+        ["check_collector_status.py", "--status-path", str(status_path)],
+    )
+
+    assert script.main() == 0
+
+
 def test_state_manager_status_rejects_stale_raw_websocket_journal(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -438,6 +458,40 @@ def test_state_manager_status_accepts_fresh_raw_websocket_journals(
         raw_root,
         "polymarket_clob_market_ws/best_bid_ask",
         mtime_age_seconds=0.0,
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "check_collector_status.py",
+            "--status-path",
+            str(status_path),
+            "--raw-root",
+            str(raw_root),
+            "--max-raw-event-age-ms",
+            "10000",
+        ],
+    )
+
+    assert script.main() == 0
+
+
+def test_state_manager_status_does_not_require_fresh_clob_raw_journal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = _load_script()
+    status_path = tmp_path / "status.json"
+    raw_root = tmp_path / "raw"
+    status_path.write_text(json.dumps(_fresh_state_manager_status()), encoding="utf-8")
+    _write_raw_event_journal(
+        raw_root,
+        "polymarket_rtds_chainlink/price_update",
+        mtime_age_seconds=0.0,
+    )
+    _write_raw_event_journal(
+        raw_root,
+        "polymarket_clob_market_ws/best_bid_ask",
+        mtime_age_seconds=60.0,
     )
     monkeypatch.setattr(
         "sys.argv",

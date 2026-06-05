@@ -39,11 +39,11 @@ python3 scripts/check_collector_status.py --status-path /home/spoon/polymarket-d
 Set `POLYMARKET_PREWARM_WINDOWS=2` or rely on the compose default so spoon warms
 BTC/ETH current and next 5m windows.
 On THEPC, the current normalizer cadence is
-`POLYMARKET_NORMALIZER_INTERVAL_SECONDS=0.1`. The older spoon sidecar used
+`POLYMARKET_NORMALIZER_INTERVAL_SECONDS=1.0`. The older spoon sidecar used
 `POLYMARKET_NORMALIZER_INTERVAL_SECONDS=0.25` as a home-server CPU compromise.
-After VPS migration, re-test the normalizer on the new host and keep or return
-to `POLYMARKET_NORMALIZER_INTERVAL_SECONDS=0.1` only if CPU headroom, DuckDB
-freshness, and status latency stay healthy.
+After VPS migration, re-test the normalizer on the new host and lower the
+interval only if CPU headroom, DuckDB freshness, CUDA worker lock behavior, and
+status latency stay healthy.
 
 ## Production Image Deploy
 
@@ -76,7 +76,7 @@ Defaults:
 - `PC_BUNDLE=/home/ender/polymarket.bundle`
 - `PC_DATA_DIR=/home/ender/polymarket-data`
 - `PC_BIN_DIR=/home/ender/bin`
-- `PC_NORMALIZER_INTERVAL_SECONDS=0.1`
+- `PC_NORMALIZER_INTERVAL_SECONDS=1.0`
 
 Set `PC_DEPLOY_BUILD_IMAGES=0` only when matching
 `dist/docker/polymarket-rust-collector-<sha>.tar` and
@@ -242,13 +242,13 @@ when the built files exist, while `/api/*` routes keep precedence. The browser
 polls `/api/runtime/live` and `/api/runtime/probabilities`; it shows missing or
 disabled probability fields as health state, not as operator actions.
 
-Cached probability outputs are display-only. The deployed normalizer sidecar
-passes `--enable-probabilities` by default and maintains the read-only
-probability grid/status file for the API and THEPC monitors. The FastAPI
-probability endpoint is also enabled by default for display. Set
-`POLYMARKET_NORMALIZER_ENABLE_PROBABILITIES=0` or
-`POLYMARKET_ENABLE_RUNTIME_PROBABILITIES=0` only when intentionally running a
-pre-probability diagnostic lane.
+Cached probability outputs are display-only. The deployed normalizer and API
+default CPU runtime probability generation off; the PC-only
+`gpu-probability-worker` container refreshes `features.probability_grid_cache`
+and `/var/lib/polymarket/live/probabilities.json` with NVIDIA CUDA/CuPy. Keep
+`POLYMARKET_NORMALIZER_ENABLE_PROBABILITIES=0` and
+`POLYMARKET_ENABLE_RUNTIME_PROBABILITIES=0` unless intentionally moving Monte
+Carlo load back onto the CPU path.
 
 Live data changes should appear through the runtime API polling path. TUI code,
 layout, or parser changes require a fresh THEPC deploy and reopening the

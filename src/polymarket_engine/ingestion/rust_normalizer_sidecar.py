@@ -10,6 +10,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+import duckdb
+
 from polymarket_engine.features.rust_decision_snapshots import (
     CurrentDecisionStateReadCache,
     UnavailableDecisionState,
@@ -24,6 +26,7 @@ from polymarket_engine.ingestion.rust_event_normalizer import (
     normalize_rust_event_tree,
 )
 from polymarket_engine.probability.runtime import build_probability_payload_from_store
+from polymarket_engine.probability.runtime import latest_probability_inputs_from_connection
 from polymarket_engine.storage.atomic import durable_replace
 from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
 from polymarket_engine.validation.outcomes import PolymarketClobMarketPayloadSource
@@ -35,6 +38,7 @@ from polymarket_engine.validation.outcomes import write_outcome_history_status
 FULL_RAW_TREE_SCAN_INTERVAL_CYCLES = 240
 IDLE_NORMALIZED_HEALTH_WRITE_INTERVAL_SECONDS = 5.0
 PROBABILITY_OUTPUT_LIMIT = 8
+PROBABILITY_INPUT_LIMIT = 24
 PROBABILITY_MAX_STATE_AGE_SECONDS = 600.0
 OUTCOME_OUTPUT_LIMIT = 5000
 OUTCOME_REFRESH_INTERVAL_SECONDS = 30.0
@@ -247,6 +251,11 @@ def _run_rust_normalizer_cycle_with_store(
         else 0
     )
     live_status_generated_at = datetime.now(timezone.utc)
+    _write_probability_input_snapshot(
+        store=store,
+        out_path=normalized_health_path.with_name("probability_inputs.json"),
+        generated_at=live_status_generated_at,
+    )
     _write_target_cache_status(
         store=store,
         status_path=status_path,
@@ -618,6 +627,11 @@ def _run_changed_rust_normalizer_cycle_with_store(
         else 0
     )
     live_status_generated_at = datetime.now(timezone.utc)
+    _write_probability_input_snapshot(
+        store=store,
+        out_path=normalized_health_path.with_name("probability_inputs.json"),
+        generated_at=live_status_generated_at,
+    )
     _write_target_cache_status(
         store=store,
         status_path=status_path,
@@ -724,6 +738,11 @@ def _run_idle_rust_normalizer_cycle_with_store(
         else 0
     )
     live_status_generated_at = datetime.now(timezone.utc)
+    _write_probability_input_snapshot(
+        store=store,
+        out_path=normalized_health_path.with_name("probability_inputs.json"),
+        generated_at=live_status_generated_at,
+    )
     _write_target_cache_status(
         store=store,
         status_path=status_path,
@@ -818,6 +837,59 @@ def _compute_probability_outputs(*, store: DuckDbIngestStore, out_path: Path) ->
         )
     rows = payload.get("rows")
     return len(rows) if isinstance(rows, list) else 0
+
+
+def _write_probability_input_snapshot(
+    *,
+    store: DuckDbIngestStore,
+    out_path: Path,
+    generated_at: datetime,
+) -> None:
+    errors: list[str] = []
+    rows: list[dict[str, Any]] = []
+    skipped = 0
+    try:
+        with store._connection() as conn:
+            inputs, skipped = latest_probability_inputs_from_connection(
+                conn=conn,
+                limit=PROBABILITY_INPUT_LIMIT,
+                max_state_age_seconds=PROBABILITY_MAX_STATE_AGE_SECONDS,
+                active_only=True,
+            )
+    except (duckdb.Error, json.JSONDecodeError, TypeError, ValueError) as exc:
+        inputs = ()
+        errors.append(f"probability input snapshot unavailable: {type(exc).__name__}: {exc}")
+
+    for runtime_input in inputs:
+        rows.append(
+            {
+                "contract": runtime_input.contract,
+                "contract_id": runtime_input.contract_id,
+                "market_slug": runtime_input.market_slug,
+                "start_ts": runtime_input.start_ts.isoformat(),
+                "expiry_ts": runtime_input.expiry_ts.isoformat(),
+                "volatility_regime": runtime_input.volatility_regime,
+                "flags": list(runtime_input.flags),
+                "probability_input": runtime_input.probability_input.to_json_dict(),
+            }
+        )
+
+    payload = {
+        "schema_version": "polymarket-probability-inputs-v1",
+        "ok": not errors,
+        "state": "OK" if not errors else "PARTIAL",
+        "generated_at": generated_at.astimezone(timezone.utc).isoformat(),
+        "rows": rows,
+        "skipped": skipped,
+        "errors": errors,
+    }
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = out_path.with_suffix(f"{out_path.suffix}.tmp")
+    tmp_path.write_text(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    durable_replace(tmp_path, out_path)
 
 
 def _state_build_unavailable(exc: ValueError) -> UnavailableDecisionState:

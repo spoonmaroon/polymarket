@@ -88,7 +88,7 @@ services:
       POLYMARKET_OFFICIAL_OUTCOME_REFRESH_LIMIT: ${POLYMARKET_OFFICIAL_OUTCOME_REFRESH_LIMIT:-4}
       POLYMARKET_OFFICIAL_OUTCOME_PENDING_SWEEP_LIMIT: ${POLYMARKET_OFFICIAL_OUTCOME_PENDING_SWEEP_LIMIT:-20}
       POLYMARKET_NORMALIZER_INTERVAL_SECONDS: ${POLYMARKET_NORMALIZER_INTERVAL_SECONDS:-0.25}
-      POLYMARKET_NORMALIZER_ENABLE_PROBABILITIES: ${POLYMARKET_NORMALIZER_ENABLE_PROBABILITIES:-1}
+      POLYMARKET_NORMALIZER_ENABLE_PROBABILITIES: ${POLYMARKET_NORMALIZER_ENABLE_PROBABILITIES:-0}
     volumes:
       - ${POLYMARKET_DATA_DIR:-/home/spoon/polymarket-data}/raw:/var/lib/polymarket/raw
       - ${POLYMARKET_DATA_DIR:-/home/spoon/polymarket-data}/db:/var/lib/polymarket/db
@@ -134,7 +134,7 @@ services:
       POLYMARKET_VOLATILITY_STATUS_PATH: /var/lib/polymarket/live/volatility.json
       POLYMARKET_DATA_DIR: /var/lib/polymarket
       POLYMARKET_ENABLE_CONTAINER_STATUS: ${POLYMARKET_ENABLE_CONTAINER_STATUS:-0}
-      POLYMARKET_ENABLE_RUNTIME_PROBABILITIES: ${POLYMARKET_ENABLE_RUNTIME_PROBABILITIES:-1}
+      POLYMARKET_ENABLE_RUNTIME_PROBABILITIES: ${POLYMARKET_ENABLE_RUNTIME_PROBABILITIES:-0}
     ports:
       - "${POLYMARKET_API_PORT:-8000}:8000"
     volumes:
@@ -148,3 +148,32 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
+
+  gpu-probability-worker:
+    build:
+      context: ../..
+      dockerfile: deploy/gpu/Dockerfile
+    image: ${POLYMARKET_CUDA_PROBABILITY_IMAGE:-polymarket-cuda-probability:latest}
+    restart: unless-stopped
+    user: "${POLYMARKET_UID:-1000}:${POLYMARKET_GID:-1000}"
+    depends_on:
+      - normalizer
+    environment:
+      TZ: ${POLYMARKET_DISPLAY_TZ:-America/Chicago}
+      POLYMARKET_DUCKDB_PATH: /var/lib/polymarket/db/polymarket.duckdb
+      POLYMARKET_PROBABILITY_STATUS_PATH: /var/lib/polymarket/live/probabilities.json
+      POLYMARKET_CUDA_PROBABILITY_INTERVAL_SECONDS: ${POLYMARKET_CUDA_PROBABILITY_INTERVAL_SECONDS:-1.0}
+      POLYMARKET_CUDA_PROBABILITY_LIMIT: ${POLYMARKET_CUDA_PROBABILITY_LIMIT:-24}
+      POLYMARKET_CUDA_PROBABILITY_VALID_SECONDS: ${POLYMARKET_CUDA_PROBABILITY_VALID_SECONDS:-30}
+    volumes:
+      - ${POLYMARKET_DATA_DIR:-/home/spoon/polymarket-data}/raw:/var/lib/polymarket/raw
+      - ${POLYMARKET_DATA_DIR:-/home/spoon/polymarket-data}/db:/var/lib/polymarket/db
+      - ${POLYMARKET_DATA_DIR:-/home/spoon/polymarket-data}/live:/var/lib/polymarket/live
+      - ${POLYMARKET_DATA_DIR:-/home/spoon/polymarket-data}/logs:/var/lib/polymarket/logs
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${POLYMARKET_CUDA_GPU_COUNT:-1}
+              capabilities: [gpu]

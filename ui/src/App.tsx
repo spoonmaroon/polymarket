@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 const LIVE_LIMIT = 12;
 const PROBABILITY_LIMIT = 24;
@@ -189,6 +189,7 @@ type MarketMonitorRow = {
   key: string;
   asset: string;
   marketSlug: string;
+  startTs?: string;
   expiryTs?: string;
   threshold?: string | number | null;
   up?: RuntimeOrderbookRow;
@@ -228,31 +229,32 @@ export function App() {
     useState<ApiState<ProbabilityPayload>>(emptyProbabilities);
   const rows = safeRows(probabilities.payload);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const requestSequenceRef = useRef(0);
   const marketRows = useMemo(
     () =>
       buildMarketMonitorRows(
         live.payload?.monitor?.orderbooks,
         rows,
         live.payload?.volatility?.rows,
+        Date.now(),
       ),
     [live.payload?.monitor?.orderbooks, live.payload?.volatility?.rows, rows],
   );
-  const selectedRow = useMemo(
-    () => rows.find((row) => rowKey(row) === selectedId) ?? rows[0] ?? null,
-    [rows, selectedId],
-  );
+  const selectedRow = selectProbabilityRow(rows, selectedId, Date.now());
 
   useEffect(() => {
     let active = true;
 
     async function poll() {
+      const requestSequence = requestSequenceRef.current + 1;
+      requestSequenceRef.current = requestSequence;
       const [liveResult, probabilityResult] = await Promise.all([
         fetchJson<RuntimeLivePayload>(`/api/runtime/live?limit=${LIVE_LIMIT}`),
         fetchJson<ProbabilityPayload>(
           `/api/runtime/probabilities?limit=${PROBABILITY_LIMIT}`,
         ),
       ]);
-      if (!active) {
+      if (!active || requestSequence !== requestSequenceRef.current) {
         return;
       }
       setLive(toApiState(liveResult));
@@ -269,11 +271,15 @@ export function App() {
 
   useEffect(() => {
     if (rows.length === 0) {
-      setSelectedId(null);
+      if (selectedId !== null) {
+        setSelectedId(null);
+      }
       return;
     }
-    if (!selectedId || !rows.some((row) => rowKey(row) === selectedId)) {
-      setSelectedId(rowKey(rows[0]));
+    const preferredRow = selectProbabilityRow(rows, selectedId, Date.now());
+    const preferredKey = preferredRow ? rowKey(preferredRow) : null;
+    if (preferredKey !== selectedId) {
+      setSelectedId(preferredKey);
     }
   }, [rows, selectedId]);
 
@@ -560,21 +566,23 @@ function SelectedDetails({
   }
 
   const preview = parseSimulationPreview(row.simulation_preview);
-  const pairRows = currentMarketRows(marketRows);
+  const pairRows = currentMarketRows(marketRows, Date.now());
   const selectedMarketRow = marketRowForProbability(row, marketRows);
+  const timingLabel = contractTimingLabel(row, Date.now());
   return (
     <section className="panel detail-panel">
       <div className="simulation-head">
         <div>
           <p className="panel-kicker">Selected contract</p>
           <h2>{contractLabel(row)}</h2>
-          <p>{selectedContractSubtitle(row)}</p>
+          <p>{selectedContractSubtitle(row, timingLabel)}</p>
         </div>
         <GatePill value={row.decision_hint} />
       </div>
 
       <div className="hero-metrics">
         <Metric label="Monte Carlo" value={formatProbability(row.p_finish)} />
+        <Metric label={timingLabel} value={formatTimestamp(row.expiry_ts)} />
         <Metric label="edge / required" value={formatEdge(row)} />
         <Metric label="sigma_tau" value={formatSmall(row.sigma_tau)} />
         <Metric label="runtime sample n" value={formatInteger(row.path_count)} />
@@ -626,7 +634,10 @@ function ContractPairSelector({
           <div className="pair-card" key={marketRow.key}>
             <div>
               <strong>{marketRow.asset}</strong>
-              <span>Expires {formatTimestamp(marketRow.expiryTs)}</span>
+              <span>
+                {capitalizeLabel(marketTimingLabel(marketRow, Date.now()))} / Expires{" "}
+                {formatTimestamp(marketRow.expiryTs)}
+              </span>
             </div>
             <div className="pair-actions">
               <PairProbabilityButton
@@ -1179,6 +1190,47 @@ function safeRows(payload: ProbabilityPayload | null): ProbabilityRow[] {
   return Array.isArray(payload?.rows) ? payload.rows.filter(isRecord) : [];
 }
 
+function selectProbabilityRow(
+  rows: ProbabilityRow[],
+  selectedId: string | null,
+  nowMs: number,
+) {
+  if (rows.length === 0) {
+    return null;
+  }
+  const selectedRow = selectedId
+    ? rows.find((row) => rowKey(row) === selectedId) ?? null
+    : null;
+  const preferredPool = selectedRow?.asset
+    ? rows.filter((row) => normalizeAsset(row.asset) === normalizeAsset(selectedRow.asset))
+    : rows;
+  const globalPreferredRow = preferredProbabilityRow(rows, nowMs);
+  const preferredRow =
+    preferredProbabilityRow(preferredPool, nowMs) ?? globalPreferredRow;
+  if (!selectedRow) {
+    return globalPreferredRow;
+  }
+  if (!preferredRow) {
+    return selectedRow;
+  }
+  const selectedRank = contractTimingRank(selectedRow, nowMs);
+  const globalPreferredRank = globalPreferredRow
+    ? contractTimingRank(globalPreferredRow, nowMs)
+    : Number.POSITIVE_INFINITY;
+  if (globalPreferredRow && globalPreferredRank < selectedRank) {
+    return globalPreferredRow;
+  }
+  const preferredRank = contractTimingRank(preferredRow, nowMs);
+  if (selectedRank <= preferredRank && selectedRank <= 1) {
+    return selectedRow;
+  }
+  return preferredRow;
+}
+
+function preferredProbabilityRow(rows: ProbabilityRow[], nowMs: number) {
+  return [...rows].sort((left, right) => compareProbabilityPreference(left, right, nowMs))[0] ?? null;
+}
+
 function mergeProbabilityPreviews(
   previous: ProbabilityPayload | null,
   next: ProbabilityPayload,
@@ -1186,7 +1238,9 @@ function mergeProbabilityPreviews(
   const previousRowsByKey = new Map<string, ProbabilityRow>();
   for (const row of safeRows(previous)) {
     if (row.simulation_preview) {
-      previousRowsByKey.set(probabilityIdentityKey(row), row);
+      for (const key of probabilityPreviewKeys(row)) {
+        previousRowsByKey.set(key, row);
+      }
     }
   }
   if (previousRowsByKey.size === 0 || !Array.isArray(next.rows)) {
@@ -1198,7 +1252,15 @@ function mergeProbabilityPreviews(
       if (row.simulation_preview) {
         return row;
       }
-      const previousRow = previousRowsByKey.get(probabilityIdentityKey(row));
+      const previousRow = probabilityPreviewKeys(row)
+        .map((key) => previousRowsByKey.get(key))
+        .find(
+          (candidate) =>
+            candidate?.simulation_preview &&
+            candidate.asof_ts &&
+            row.asof_ts &&
+            candidate.asof_ts === row.asof_ts,
+        );
       if (!previousRow?.simulation_preview) {
         return row;
       }
@@ -1210,31 +1272,38 @@ function mergeProbabilityPreviews(
   };
 }
 
-function probabilityIdentityKey(row: ProbabilityRow) {
-  return (
-    row.contract_id ??
-    row.output_id ??
-    marketSideKey(row.market_slug, row.asset, row.expiry_ts, row.side) ??
-    `${contractLabel(row)}|${row.expiry_ts ?? ""}`
-  );
+function probabilityPreviewKeys(row: ProbabilityRow) {
+  return [
+    currentNextIdentityKey(row),
+    row.contract_id ? `contract|${row.contract_id}|${normalizeSide(row.side)}` : null,
+    row.output_id ? `output|${row.output_id}` : null,
+    marketSideKey(row.market_slug, row.asset, row.expiry_ts, row.side, row.start_ts),
+    `${contractLabel(row)}|${row.start_ts ?? ""}|${row.expiry_ts ?? ""}|${normalizeSide(
+      row.side,
+    )}`,
+  ].filter((key): key is string => Boolean(key));
+}
+
+function currentNextIdentityKey(row: ProbabilityRow) {
+  const asset = normalizeAsset(row.asset);
+  const side = normalizeSide(row.side);
+  const startTs = row.start_ts ?? row.cache_start_ts;
+  const expiryTs = row.expiry_ts ?? row.cache_expiry_ts;
+  if (!asset || !side || !expiryTs) {
+    return null;
+  }
+  return `window|${asset}|${side}|${startTs ?? ""}|${expiryTs}`;
 }
 
 function buildMarketMonitorRows(
   orderbooks: RuntimeOrderbookRow[] | undefined,
   probabilities: ProbabilityRow[],
   volatilityRows: RuntimeVolatilityRow[] | undefined,
+  nowMs: number,
 ): MarketMonitorRow[] {
-  const probabilityByMarketSide = new Map<string, ProbabilityRow>();
-  for (const row of probabilities) {
-    const key = marketSideKey(row.market_slug, row.asset, row.expiry_ts, row.side);
-    if (key) {
-      probabilityByMarketSide.set(key, row);
-    }
-  }
-
   const volatilityByAsset = new Map<string, RuntimeVolatilityRow>();
   for (const row of volatilityRows ?? []) {
-    const asset = row.asset?.trim().toUpperCase();
+    const asset = normalizeAsset(row.asset);
     if (asset) {
       volatilityByAsset.set(asset, row);
     }
@@ -1245,8 +1314,13 @@ function buildMarketMonitorRows(
     if (!isRecord(orderbook)) {
       continue;
     }
-    const asset = orderbook.asset?.trim().toUpperCase() || assetFromSlug(orderbook.market_slug);
-    const key = orderbook.market_slug ?? `${asset}-${orderbook.expiry_ts ?? ""}`;
+    const asset = normalizeAsset(orderbook.asset) || assetFromSlug(orderbook.market_slug);
+    const key = marketGroupKey(
+      orderbook.market_slug,
+      asset,
+      orderbook.expiry_ts,
+      orderbook.start_ts,
+    );
     if (!key) {
       continue;
     }
@@ -1256,32 +1330,59 @@ function buildMarketMonitorRows(
         key,
         asset,
         marketSlug: orderbook.market_slug ?? key,
+        startTs: orderbook.start_ts,
         expiryTs: orderbook.expiry_ts,
         threshold: orderbook.threshold_price,
         volatility: volatilityByAsset.get(asset),
       } satisfies MarketMonitorRow);
+    group.startTs ||= orderbook.start_ts;
     group.expiryTs ||= orderbook.expiry_ts;
     group.threshold ??= orderbook.threshold_price;
-    if (orderbook.side?.toUpperCase() === "UP") {
+    if (normalizeSide(orderbook.side) === "UP") {
       group.up = orderbook;
-    } else if (orderbook.side?.toUpperCase() === "DOWN") {
+    } else if (normalizeSide(orderbook.side) === "DOWN") {
       group.down = orderbook;
     }
     grouped.set(key, group);
   }
 
-  return [...grouped.values()].map((row) => ({
-    ...row,
-    upProbability: probabilityByMarketSide.get(
-      marketSideKey(row.marketSlug, row.asset, row.expiryTs, "UP") ?? "",
-    ),
-    downProbability: probabilityByMarketSide.get(
-      marketSideKey(row.marketSlug, row.asset, row.expiryTs, "DOWN") ?? "",
-    ),
-  }));
+  for (const probability of probabilities) {
+    const asset = normalizeAsset(probability.asset) || assetFromSlug(probability.market_slug);
+    const key = marketGroupKey(
+      probability.market_slug,
+      asset,
+      probability.expiry_ts,
+      probability.start_ts,
+    );
+    if (!key) {
+      continue;
+    }
+    const group =
+      grouped.get(key) ??
+      ({
+        key,
+        asset,
+        marketSlug: probability.market_slug ?? key,
+        startTs: probability.start_ts,
+        expiryTs: probability.expiry_ts,
+        volatility: volatilityByAsset.get(asset),
+      } satisfies MarketMonitorRow);
+    group.startTs ||= probability.start_ts;
+    group.expiryTs ||= probability.expiry_ts;
+    group.volatility ||= volatilityByAsset.get(asset);
+    const side = normalizeSide(probability.side);
+    if (side === "UP") {
+      group.upProbability = preferProbabilitySide(group.upProbability, probability);
+    } else if (side === "DOWN") {
+      group.downProbability = preferProbabilitySide(group.downProbability, probability);
+    }
+    grouped.set(key, group);
+  }
+
+  return [...grouped.values()].sort((left, right) => compareMarketPreference(left, right, nowMs));
 }
 
-function currentMarketRows(rows: MarketMonitorRow[]) {
+function currentMarketRows(rows: MarketMonitorRow[], nowMs: number) {
   const preferredAssets = ["BTC", "ETH"];
   return preferredAssets.flatMap((asset) => {
     const candidates = rows
@@ -1291,16 +1392,163 @@ function currentMarketRows(rows: MarketMonitorRow[]) {
           (row.upProbability || row.downProbability) &&
           row.expiryTs,
       )
-      .sort(compareMarketExpiry);
-    const current =
-      candidates.find((row) => row.threshold !== undefined && row.threshold !== null) ??
-      candidates[0];
+      .sort((left, right) => compareMarketPreference(left, right, nowMs));
+    const current = candidates[0];
     return current ? [current] : [];
   });
 }
 
-function compareMarketExpiry(left: MarketMonitorRow, right: MarketMonitorRow) {
-  return timestampMs(left.expiryTs) - timestampMs(right.expiryTs);
+function compareMarketPreference(left: MarketMonitorRow, right: MarketMonitorRow, nowMs: number) {
+  const timing = compareContractTiming(left, right, nowMs);
+  if (timing !== 0) {
+    return timing;
+  }
+  const completeness =
+    probabilitySideCount(right.upProbability, right.downProbability) -
+    probabilitySideCount(left.upProbability, left.downProbability);
+  if (completeness !== 0) {
+    return completeness;
+  }
+  return compareAssetPreference(left.asset, right.asset);
+}
+
+function compareProbabilityPreference(left: ProbabilityRow, right: ProbabilityRow, nowMs: number) {
+  const timing = compareContractTiming(left, right, nowMs);
+  if (timing !== 0) {
+    return timing;
+  }
+  const asset = compareAssetPreference(left.asset, right.asset);
+  if (asset !== 0) {
+    return asset;
+  }
+  return compareOptionalTimestampDesc(left.asof_ts, right.asof_ts);
+}
+
+function compareContractTiming(
+  left: Pick<ProbabilityRow, "start_ts" | "expiry_ts"> | MarketMonitorRow,
+  right: Pick<ProbabilityRow, "start_ts" | "expiry_ts"> | MarketMonitorRow,
+  nowMs: number,
+) {
+  const leftRank = contractTimingRank(left, nowMs);
+  const rightRank = contractTimingRank(right, nowMs);
+  if (leftRank !== rightRank) {
+    return leftRank - rightRank;
+  }
+  if (leftRank === 2) {
+    return contractExpiryMs(right) - contractExpiryMs(left);
+  }
+  const leftStart = contractStartMs(left);
+  const rightStart = contractStartMs(right);
+  const start =
+    Number.isFinite(leftStart) && Number.isFinite(rightStart)
+      ? leftStart - rightStart
+      : 0;
+  if (start !== 0) {
+    return start;
+  }
+  return compareFiniteTimestamp(contractExpiryMs(left), contractExpiryMs(right));
+}
+
+function contractTimingRank(
+  row: Pick<ProbabilityRow, "start_ts" | "expiry_ts"> | MarketMonitorRow,
+  nowMs: number,
+) {
+  const start = contractStartMs(row);
+  const expiry = contractExpiryMs(row);
+  if (Number.isFinite(start) && Number.isFinite(expiry) && start <= nowMs && nowMs < expiry) {
+    return 0;
+  }
+  if (
+    (Number.isFinite(start) && nowMs < start) ||
+    (!Number.isFinite(start) && Number.isFinite(expiry) && nowMs < expiry)
+  ) {
+    return 1;
+  }
+  if (Number.isFinite(expiry)) {
+    return 2;
+  }
+  return 3;
+}
+
+function contractTimingLabel(
+  row: Pick<ProbabilityRow, "start_ts" | "expiry_ts"> | MarketMonitorRow,
+  nowMs: number,
+) {
+  const rank = contractTimingRank(row, nowMs);
+  if (rank === 0) {
+    return "current";
+  }
+  if (rank === 1) {
+    return "next";
+  }
+  if (rank === 2) {
+    return "expired";
+  }
+  return "pending";
+}
+
+function marketTimingLabel(row: MarketMonitorRow, nowMs: number) {
+  return contractTimingLabel(row, nowMs);
+}
+
+function contractStartMs(row: Pick<ProbabilityRow, "start_ts"> | MarketMonitorRow) {
+  return timestampMs("startTs" in row ? row.startTs : row.start_ts);
+}
+
+function contractExpiryMs(row: Pick<ProbabilityRow, "expiry_ts"> | MarketMonitorRow) {
+  return timestampMs("expiryTs" in row ? row.expiryTs : row.expiry_ts);
+}
+
+function compareFiniteTimestamp(leftMs: number, rightMs: number) {
+  if (Number.isFinite(leftMs) && Number.isFinite(rightMs)) {
+    return leftMs - rightMs;
+  }
+  if (Number.isFinite(leftMs)) {
+    return -1;
+  }
+  if (Number.isFinite(rightMs)) {
+    return 1;
+  }
+  return 0;
+}
+
+function compareOptionalTimestampDesc(left?: string, right?: string) {
+  const leftMs = timestampMs(left);
+  const rightMs = timestampMs(right);
+  if (Number.isFinite(leftMs) && Number.isFinite(rightMs)) {
+    return rightMs - leftMs;
+  }
+  if (Number.isFinite(leftMs)) {
+    return -1;
+  }
+  if (Number.isFinite(rightMs)) {
+    return 1;
+  }
+  return 0;
+}
+
+function probabilitySideCount(up?: ProbabilityRow, down?: ProbabilityRow) {
+  return (up ? 1 : 0) + (down ? 1 : 0);
+}
+
+function compareAssetPreference(left?: string, right?: string) {
+  return assetPreferenceRank(left) - assetPreferenceRank(right);
+}
+
+function assetPreferenceRank(asset?: string) {
+  const normalized = normalizeAsset(asset);
+  const preferred = ["BTC", "ETH"].indexOf(normalized);
+  return preferred === -1 ? Number.MAX_SAFE_INTEGER : preferred;
+}
+
+function preferProbabilitySide(existing: ProbabilityRow | undefined, next: ProbabilityRow) {
+  if (!existing) {
+    return next;
+  }
+  if (!existing.simulation_preview && next.simulation_preview) {
+    return next;
+  }
+  return compareOptionalTimestampDesc(next.asof_ts, existing.asof_ts) <= 0 ? next : existing;
 }
 
 function timestampMs(value?: string | number | null) {
@@ -1315,7 +1563,13 @@ function timestampMs(value?: string | number | null) {
 }
 
 function marketRowForProbability(row: ProbabilityRow, marketRows: MarketMonitorRow[]) {
-  const selectedKey = marketSideKey(row.market_slug, row.asset, row.expiry_ts, row.side);
+  const selectedKey = marketSideKey(
+    row.market_slug,
+    row.asset,
+    row.expiry_ts,
+    row.side,
+    row.start_ts,
+  );
   return (
     marketRows.find((marketRow) => {
       const upKey = marketSideKey(
@@ -1323,12 +1577,14 @@ function marketRowForProbability(row: ProbabilityRow, marketRows: MarketMonitorR
         marketRow.asset,
         marketRow.expiryTs,
         "UP",
+        marketRow.startTs,
       );
       const downKey = marketSideKey(
         marketRow.marketSlug,
         marketRow.asset,
         marketRow.expiryTs,
         "DOWN",
+        marketRow.startTs,
       );
       return selectedKey === upKey || selectedKey === downKey;
     }) ??
@@ -1429,7 +1685,13 @@ function orderbookForSide(row: ProbabilityRow, marketRow?: MarketMonitorRow) {
 }
 
 function rowKey(row: ProbabilityRow) {
-  return row.output_id ?? row.contract_id ?? `${contractLabel(row)}-${row.asof_ts ?? ""}`;
+  return (
+    marketSideKey(row.market_slug, row.asset, row.expiry_ts, row.side, row.start_ts) ??
+    currentNextIdentityKey(row) ??
+    row.output_id ??
+    row.contract_id ??
+    `${contractLabel(row)}-${row.asof_ts ?? ""}`
+  );
 }
 
 function contractLabel(row: ProbabilityRow) {
@@ -1437,9 +1699,17 @@ function contractLabel(row: ProbabilityRow) {
   return (row.contract ?? assetSide) || "Unknown contract";
 }
 
-function selectedContractSubtitle(row: ProbabilityRow) {
+function capitalizeLabel(value: string) {
+  if (!value) {
+    return value;
+  }
+  return `${value.slice(0, 1).toUpperCase()}${value.slice(1)}`;
+}
+
+function selectedContractSubtitle(row: ProbabilityRow, timingLabel: string) {
   const expiry = formatTimestamp(row.expiry_ts);
-  return expiry === "pending" ? "Expiry pending" : `Expires ${expiry}`;
+  const label = capitalizeLabel(timingLabel);
+  return expiry === "pending" ? `${label} / expiry pending` : `${label} / expires ${expiry}`;
 }
 
 function probabilityEmptyBody(state: ApiState<ProbabilityPayload>) {
@@ -1580,20 +1850,52 @@ function marketSideKey(
   asset?: string,
   expiryTs?: string,
   side?: string,
+  startTs?: string,
 ): string | null {
-  const normalizedSide = side?.trim().toUpperCase();
+  const normalizedSide = normalizeSide(side);
   if (!normalizedSide) {
     return null;
   }
-  if (marketSlug?.trim()) {
-    return `${marketSlug.trim().toLowerCase()}|${normalizedSide}`;
-  }
-  const normalizedAsset = asset?.trim().toUpperCase();
   const normalizedExpiry = expiryTs?.trim();
+  const normalizedStart = startTs?.trim();
+  if (marketSlug?.trim()) {
+    return `${marketSlug.trim().toLowerCase()}|${normalizedStart ?? ""}|${
+      normalizedExpiry ?? ""
+    }|${normalizedSide}`;
+  }
+  const normalizedAsset = normalizeAsset(asset);
   if (!normalizedAsset || !normalizedExpiry) {
     return null;
   }
-  return `${normalizedAsset}|${normalizedExpiry}|${normalizedSide}`;
+  return `${normalizedAsset}|${normalizedStart ?? ""}|${normalizedExpiry}|${normalizedSide}`;
+}
+
+function marketGroupKey(
+  marketSlug?: string,
+  asset?: string,
+  expiryTs?: string,
+  startTs?: string,
+) {
+  const normalizedAsset = normalizeAsset(asset);
+  const normalizedExpiry = expiryTs?.trim();
+  const normalizedStart = startTs?.trim();
+  if (marketSlug?.trim()) {
+    return `${marketSlug.trim().toLowerCase()}|${normalizedStart ?? ""}|${
+      normalizedExpiry ?? ""
+    }`;
+  }
+  if (!normalizedAsset || !normalizedExpiry) {
+    return null;
+  }
+  return `${normalizedAsset}|${normalizedStart ?? ""}|${normalizedExpiry}`;
+}
+
+function normalizeAsset(value?: string) {
+  return value?.trim().toUpperCase() ?? "";
+}
+
+function normalizeSide(value?: string) {
+  return value?.trim().toUpperCase() ?? "";
 }
 
 function assetFromSlug(value?: string) {
