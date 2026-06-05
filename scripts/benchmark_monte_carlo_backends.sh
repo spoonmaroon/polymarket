@@ -55,11 +55,13 @@ mkdir -p "${REPO_ROOT}/docs/reports"
     target/release/examples/benchmark_cuda live-small 8192 64 5
     target/release/examples/benchmark_cpu visual-large 100000 300 3
     target/release/examples/benchmark_cuda visual-large 100000 300 3
+    target/release/examples/benchmark_cpu sweep-large 1000000 300 1
+    target/release/examples/benchmark_cuda sweep-large 1000000 300 1
   )
   echo
   echo "## Decision Rules"
-  echo "- Use CPU for small live runs if CUDA launch overhead dominates."
-  echo "- Use CUDA for large visualization runs, backtests, calibration sweeps, and generator ensembles."
+  echo "- Use CPU for live cached probability runs and the tested visualization sizes until CUDA context/module reuse is implemented."
+  echo "- Re-benchmark CUDA after persistent context/module caching or much larger batched generator sweeps."
   echo "- Keep TUI/API reading cached outputs only."
 } | tee "${REPORT}"
 
