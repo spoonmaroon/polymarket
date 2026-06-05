@@ -6,6 +6,14 @@ if [[ ! -r /proc/version ]] || ! grep -qi microsoft /proc/version; then
   exit 2
 fi
 
+host_name="$(hostname)"
+if [[ "${POLYMARKET_ALLOW_NON_THEPC:-}" != "1" ]] && [[ ! "${host_name}" =~ ^[Tt][Hh][Ee][Pp][Cc]$ ]]; then
+  echo "This installer only runs on THEPC WSL by default." >&2
+  echo "Detected hostname: ${host_name}" >&2
+  echo "Set POLYMARKET_ALLOW_NON_THEPC=1 to override intentionally." >&2
+  exit 2
+fi
+
 sudo apt-get update
 sudo apt-get install -y \
   build-essential \
@@ -36,11 +44,11 @@ sudo apt-get update
 sudo apt-get install -y cuda-toolkit-13-2
 
 touch "${HOME}/.profile"
-if ! grep -q '/usr/local/cuda/bin' "${HOME}/.profile"; then
-  {
-    echo 'export PATH=/usr/local/cuda/bin:${PATH}'
-    echo 'export LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/lib/wsl/lib:${LD_LIBRARY_PATH:-}'
-  } >> "${HOME}/.profile"
+if ! grep -qF 'export PATH=/usr/local/cuda/bin:${PATH}' "${HOME}/.profile"; then
+  echo 'export PATH=/usr/local/cuda/bin:${PATH}' >> "${HOME}/.profile"
+fi
+if ! grep -qF 'export LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/lib/wsl/lib:${LD_LIBRARY_PATH:-}' "${HOME}/.profile"; then
+  echo 'export LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/lib/wsl/lib:${LD_LIBRARY_PATH:-}' >> "${HOME}/.profile"
 fi
 
 echo "Restart the shell or run:"

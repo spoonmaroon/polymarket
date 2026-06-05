@@ -13,9 +13,16 @@ uname -a
 
 echo
 echo "== GPU =="
+nvidia_smi=""
 if command -v nvidia-smi >/dev/null 2>&1; then
-  command -v nvidia-smi
-  nvidia-smi --query-gpu=name,driver_version,compute_cap,memory.total --format=csv
+  nvidia_smi="$(command -v nvidia-smi)"
+elif [[ -x /usr/lib/wsl/lib/nvidia-smi ]]; then
+  nvidia_smi="/usr/lib/wsl/lib/nvidia-smi"
+fi
+
+if [[ -n "${nvidia_smi}" ]]; then
+  echo "${nvidia_smi}"
+  "${nvidia_smi}" --query-gpu=name,driver_version,compute_cap,memory.total --format=csv
 else
   echo "MISSING: nvidia-smi"
 fi
