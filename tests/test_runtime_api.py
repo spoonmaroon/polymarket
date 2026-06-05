@@ -1118,6 +1118,69 @@ def test_runtime_probabilities_uses_safe_grid_cache_before_mc(
         assert conn.execute("select count(*) from features.probability_outputs").fetchone() == (0,)
 
 
+def test_runtime_probabilities_adds_wave_signal_to_grid_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "polymarket.duckdb"
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    state = replace(_decision_state(), best_bid=0.89, best_ask=0.90, executable_price=0.90)
+    probability_input = ProbabilityInput.from_decision_state(state)
+    store.upsert_contract_spec(state.contract)
+    store.upsert_asof_state_input(state)
+    entry = grid_entry_from_probability_input(
+        probability_input,
+        market_slug=state.contract.slug,
+        start_ts=state.contract.start_ts,
+        expiry_ts=state.contract.expiry_ts,
+        p_finish=0.97,
+        p_no_touch=0.86,
+        u_gen=0.046,
+        path_count=10_000,
+        seed=20260605,
+        volatility_regime=state.volatility_regime,
+        training_cutoff_ts=state.asof_ts,
+        max_event_ts=state.asof_ts,
+        max_observed_ts=state.asof_ts,
+        generated_at=datetime.now(UTC),
+        valid_from=datetime.now(UTC) - timedelta(seconds=1),
+        valid_until=datetime.now(UTC) + timedelta(seconds=30),
+        diagnostics={
+            "gate": {
+                "edge_after_costs": 0.045,
+                "required_edge": 0.030,
+                "decision_hint": "TRADE_CANDIDATE",
+            }
+        },
+    )
+    upsert_probability_grid_entry(store, entry)
+
+    def fail_compute(*_: object, **__: object) -> NoReturn:
+        raise AssertionError("probability API should use safe probability grid cache")
+
+    monkeypatch.setattr(
+        "polymarket_engine.probability.runtime._compute_and_persist_rows",
+        fail_compute,
+    )
+    app = create_app(
+        status_path=tmp_path / "missing-status.json",
+        duckdb_path=db_path,
+        enable_runtime_probabilities=True,
+    )
+
+    response = TestClient(app).get("/api/runtime/probabilities?limit=4")
+
+    assert response.status_code == 200
+    row = response.json()["rows"][0]
+    assert row["wave_phase"] == "breaking"
+    assert row["wave_markers"] == ["P90"]
+    assert row["wave_score"] == pytest.approx(1.0)
+    assert row["dynamic_edge"] == pytest.approx(0.045)
+    assert row["dynamic_required_edge"] == pytest.approx(0.030)
+    assert "EDGE_OK" in row["wave_reasons"]
+
+
 def test_runtime_probabilities_returns_empty_envelope_for_missing_duckdb(
     tmp_path: Path,
 ) -> None:
@@ -1388,6 +1451,31 @@ def test_runtime_probabilities_refreshes_grid_on_miss_even_with_persisted_output
     assert payload["rows"][0]["grid_cache"]["market_slug"] == state.contract.slug
     with duckdb.connect(str(db_path), read_only=True) as conn:
         assert conn.execute("select count(*) from features.probability_grid_cache").fetchone() == (1,)
+
+
+def test_runtime_probabilities_adds_wave_signal_to_refresh_rows(tmp_path: Path) -> None:
+    db_path = tmp_path / "polymarket.duckdb"
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    state = replace(_decision_state(), best_bid=0.93, best_ask=0.94, executable_price=0.94)
+    store.upsert_contract_spec(state.contract)
+    store.upsert_asof_state_input(state)
+    app = create_app(
+        status_path=tmp_path / "missing-status.json",
+        duckdb_path=db_path,
+        enable_runtime_probabilities=True,
+    )
+
+    response = TestClient(app).get("/api/runtime/probabilities?limit=4")
+
+    assert response.status_code == 200
+    row = response.json()["rows"][0]
+    assert row["cache_status"] == "REFRESH"
+    assert "wave_phase" in row
+    assert "wave_score" in row
+    assert "dynamic_edge" in row
+    assert "dynamic_required_edge" in row
+    assert row["wave_markers"] == ["P90"]
 
 
 def test_persisted_probability_rows_expose_ensemble_and_gate_diagnostics(
