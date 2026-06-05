@@ -37,6 +37,7 @@ def test_pc_deploy_probability_smoke_requires_fresh_cuda_rows() -> None:
     assert 'row.get("generator_version") not in cuda_generator_versions' in script
     assert 'int(row.get("path_count") or 0) < 10_000' in script
     assert "required_contracts" in script
+    assert "last_good_rows" in script
     assert '("BTC", "UP")' in script
     assert '("BTC", "DOWN")' in script
     assert '("ETH", "UP")' in script

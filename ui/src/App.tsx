@@ -214,6 +214,7 @@ type ProbabilityPayload = {
   cached?: boolean;
   model_version?: string | null;
   rows?: ProbabilityRow[];
+  last_good_rows?: ProbabilityRow[];
   nowcast_rows?: ProbabilityRow[];
   skipped?: number;
   errors?: unknown[];
@@ -1348,7 +1349,10 @@ export function toProbabilityApiState(
   result: { payload: ProbabilityPayload | null; error: string | null },
   previous: ApiState<ProbabilityPayload>,
 ): ApiState<ProbabilityPayload> {
-  const next = toApiState(result);
+  const next = toApiState({
+    ...result,
+    payload: materializeLastGoodProbabilityRows(result.payload),
+  });
   if (result.error || !next.payload) {
     return next;
   }
@@ -1398,6 +1402,22 @@ function retainPreviousProbabilityRows(
     };
   }
   return next;
+}
+
+function materializeLastGoodProbabilityRows(
+  payload: ProbabilityPayload | null,
+): ProbabilityPayload | null {
+  if (!payload || (Array.isArray(payload.rows) && payload.rows.length > 0)) {
+    return payload;
+  }
+  const lastGoodRows = Array.isArray(payload.last_good_rows) ? payload.last_good_rows : [];
+  if (lastGoodRows.length === 0) {
+    return payload;
+  }
+  return {
+    ...payload,
+    rows: lastGoodRows,
+  };
 }
 
 function markProbabilityRowsHeldForRefresh(

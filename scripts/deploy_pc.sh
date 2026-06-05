@@ -462,6 +462,8 @@ def cuda_probability_payload_ready(payload):
         return False
     rows = payload.get("rows")
     if not isinstance(rows, list) or not rows:
+        rows = payload.get("last_good_rows")
+    if not isinstance(rows, list) or not rows:
         return False
     now = datetime.now(timezone.utc)
     required_contracts = {("BTC", "UP"), ("BTC", "DOWN"), ("ETH", "UP"), ("ETH", "DOWN")}

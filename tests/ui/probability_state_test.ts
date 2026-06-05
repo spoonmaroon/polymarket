@@ -44,6 +44,38 @@ assert.equal(next.payload?.rows?.[0]?.contract_id, "btc-up");
 assert.equal(next.payload?.state, "OK");
 assert.equal(next.notice, "Monte Carlo refresh pending; keeping last populated grid.");
 
+const initialNowcast = toProbabilityApiState(
+  {
+    payload: {
+      ok: true,
+      state: "NOWCAST",
+      generated_at: "2099-06-05T20:55:01Z",
+      rows: [],
+      last_good_rows: [
+        {
+          contract_id: "btc-up",
+          asset: "BTC",
+          side: "UP",
+          expiry_ts: "2099-06-05T21:00:00Z",
+          valid_until: "2099-06-05T20:55:30Z",
+          p_hat: 0.58,
+        },
+      ],
+    },
+    error: null,
+  },
+  {
+    status: "loading" as const,
+    payload: null,
+    error: null,
+    notice: null,
+    updatedAt: null,
+  },
+);
+
+assert.equal(initialNowcast.payload?.rows?.length, 1);
+assert.equal(filterGraphableProbabilityRows(initialNowcast.payload).length, 1);
+
 const rolloverPrevious = {
   ...previous,
   updatedAt: Date.now(),
