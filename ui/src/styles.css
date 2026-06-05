@@ -26,8 +26,8 @@ button {
   display: grid;
   min-height: 100vh;
   align-content: start;
-  gap: 10px;
-  padding: 12px;
+  gap: 8px;
+  padding: 10px;
 }
 
 .topbar {
@@ -38,7 +38,7 @@ button {
   border: 1px solid #2a2f34;
   border-radius: 8px;
   background: #171a1d;
-  padding: 12px 14px;
+  padding: 9px 12px;
 }
 
 h1,
@@ -52,7 +52,7 @@ dd {
 
 h1 {
   color: #f7f8f4;
-  font-size: 25px;
+  font-size: 21px;
   font-weight: 780;
   line-height: 1.05;
   letter-spacing: 0;
@@ -85,7 +85,7 @@ h3 {
 .mode-lock {
   border: 1px solid rgba(55, 192, 172, 0.45);
   border-radius: 6px;
-  padding: 8px 10px;
+  padding: 6px 8px;
   color: #a6e8df;
   background: rgba(55, 192, 172, 0.08);
   font-size: 12px;
@@ -97,7 +97,7 @@ h3 {
 .status-strip {
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 8px;
+  gap: 6px;
 }
 
 .status-note {
@@ -108,17 +108,22 @@ h3 {
   font-size: 12px;
 }
 
+.status-note-info {
+  border-left-color: #37c0ac;
+  color: #a6e8df;
+}
+
 .runtime-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 380px;
-  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: 8px;
   align-items: start;
 }
 
 .main-stack,
 .side-stack {
   display: grid;
-  gap: 10px;
+  gap: 8px;
   min-width: 0;
 }
 
@@ -137,7 +142,7 @@ h3 {
   justify-content: space-between;
   gap: 12px;
   border-bottom: 1px solid #2a2f34;
-  padding: 13px 14px;
+  padding: 9px 12px;
 }
 
 .panel-kicker {
@@ -153,7 +158,7 @@ h3 {
   border: 1px solid #2a2f34;
   border-radius: 6px;
   background: #111417;
-  padding: 9px 10px;
+  padding: 7px 8px;
 }
 
 .metric span {
@@ -199,8 +204,76 @@ h3 {
 .detail-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  padding: 8px 12px;
+}
+
+.market-table {
+  display: grid;
+  overflow-x: auto;
+}
+
+.market-row {
+  display: grid;
+  grid-template-columns:
+    minmax(150px, 1.2fr) minmax(78px, 0.6fr) minmax(92px, 0.7fr)
+    minmax(86px, 0.65fr) minmax(66px, 0.45fr) minmax(100px, 0.75fr)
+    minmax(76px, 0.48fr) minmax(76px, 0.5fr);
   gap: 8px;
-  padding: 10px 14px;
+  align-items: center;
+  min-width: 840px;
+  border-bottom: 1px solid #2a2f34;
+  padding: 8px 10px;
+  color: #eef1ef;
+  font-size: 13px;
+}
+
+.market-head {
+  color: #9ba4a9;
+  background: #14171a;
+  font-size: 10px;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.market-name {
+  min-width: 0;
+}
+
+.market-name strong,
+.market-name small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.market-name strong {
+  color: #f7f8f4;
+  font-size: 14px;
+}
+
+.market-name small {
+  margin-top: 2px;
+  color: #879096;
+  font-size: 11px;
+}
+
+.probability-chip {
+  min-height: 24px;
+  border: 1px solid rgba(55, 192, 172, 0.35);
+  border-radius: 6px;
+  color: #a6e8df;
+  background: rgba(55, 192, 172, 0.08);
+  font-size: 12px;
+  font-weight: 850;
+  cursor: pointer;
+}
+
+.probability-chip:hover,
+.selected-probability {
+  border-color: rgba(55, 192, 172, 0.72);
+  background: rgba(55, 192, 172, 0.18);
 }
 
 .probability-table {
@@ -217,7 +290,7 @@ h3 {
   min-width: 840px;
   border: 0;
   border-bottom: 1px solid #2a2f34;
-  padding: 10px 12px;
+  padding: 8px 10px;
   color: #eef1ef;
   background: transparent;
   text-align: left;
@@ -267,15 +340,14 @@ button.probability-row:hover,
 
 .details-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 300px;
-  gap: 10px;
-  padding: 0 14px 12px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+  padding: 0 12px 10px;
 }
 
 .path-chart,
-.chart-empty,
-.metadata-panel {
-  min-height: 320px;
+.chart-empty {
+  min-height: 250px;
   border: 1px solid #2a2f34;
   border-radius: 7px;
   background:
@@ -283,6 +355,13 @@ button.probability-row:hover,
     linear-gradient(90deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px),
     #111417;
   background-size: 42px 42px;
+}
+
+.metadata-panel {
+  min-height: 0;
+  border: 1px solid #2a2f34;
+  border-radius: 7px;
+  background: #111417;
 }
 
 .path-chart {
@@ -308,7 +387,7 @@ button.probability-row:hover,
 svg {
   width: 100%;
   height: 100%;
-  min-height: 260px;
+  min-height: 205px;
 }
 
 .threshold-line {
@@ -357,7 +436,7 @@ svg {
 }
 
 .empty-state {
-  min-height: 180px;
+  min-height: 120px;
 }
 
 .metadata-panel {
@@ -442,9 +521,47 @@ svg {
 
 .detail-section {
   display: grid;
-  gap: 10px;
+  gap: 8px;
   border-top: 1px solid #2a2f34;
-  padding: 12px;
+  padding: 10px;
+}
+
+.volatility-strip {
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+}
+
+.volatility-card {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 4px 8px;
+  align-items: baseline;
+  border: 1px solid #2a2f34;
+  border-radius: 6px;
+  background: #111417;
+  padding: 7px 8px;
+}
+
+.volatility-card span {
+  color: #f7f8f4;
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.volatility-card strong {
+  color: #a6e8df;
+  font-size: 14px;
+}
+
+.volatility-card small {
+  grid-column: 2;
+  overflow: hidden;
+  color: #8b9499;
+  font-size: 11px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .weight-bars {

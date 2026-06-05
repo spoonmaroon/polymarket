@@ -10,6 +10,7 @@ type ApiState<T> = {
   status: "loading" | "ready" | "error";
   payload: T | null;
   error: string | null;
+  notice: string | null;
   updatedAt: number | null;
 };
 
@@ -37,7 +38,7 @@ type RuntimeMonitor = {
   ok?: boolean;
   state?: string;
   generated_at?: string;
-  orderbooks?: unknown[];
+  orderbooks?: RuntimeOrderbookRow[];
   contracts?: unknown[];
   health_flags?: unknown[];
   latency_marks?: unknown[];
@@ -46,13 +47,43 @@ type RuntimeMonitor = {
   hot_decision_telemetry?: unknown;
 };
 
+type RuntimeOrderbookRow = {
+  market_slug?: string;
+  contract_id?: string;
+  token_id?: string;
+  asset?: string;
+  side?: string;
+  start_ts?: string;
+  expiry_ts?: string;
+  threshold_price?: string | number | null;
+  best_bid?: number | string | null;
+  best_ask?: number | string | null;
+  spread?: number | string | null;
+  bid_size_top?: number | string | null;
+  ask_size_top?: number | string | null;
+  event_ts?: string;
+  observed_ts?: string;
+};
+
 type RuntimeVolatility = {
   state?: string;
   generated_at?: string;
   source_key?: string;
   lookback_limit?: number;
-  rows?: unknown[];
+  rows?: RuntimeVolatilityRow[];
   errors?: unknown[];
+};
+
+type RuntimeVolatilityRow = {
+  asset?: string;
+  asof_ts?: string;
+  sigma_tau?: number | null;
+  short_realized_vol?: number | null;
+  medium_realized_vol?: number | null;
+  long_realized_vol?: number | null;
+  volatility_regime?: string;
+  age_ms?: number;
+  flags?: string[];
 };
 
 type RuntimeLivePayload = {
@@ -152,10 +183,24 @@ type ProbabilityPayload = {
   cache?: JsonRecord;
 };
 
+type MarketMonitorRow = {
+  key: string;
+  asset: string;
+  marketSlug: string;
+  expiryTs?: string;
+  threshold?: string | number | null;
+  up?: RuntimeOrderbookRow;
+  down?: RuntimeOrderbookRow;
+  upProbability?: ProbabilityRow;
+  downProbability?: ProbabilityRow;
+  volatility?: RuntimeVolatilityRow;
+};
+
 const emptyLive: ApiState<RuntimeLivePayload> = {
   status: "loading",
   payload: null,
   error: null,
+  notice: null,
   updatedAt: null,
 };
 
@@ -163,6 +208,7 @@ const emptyProbabilities: ApiState<ProbabilityPayload> = {
   status: "loading",
   payload: null,
   error: null,
+  notice: null,
   updatedAt: null,
 };
 
@@ -172,6 +218,15 @@ export function App() {
     useState<ApiState<ProbabilityPayload>>(emptyProbabilities);
   const rows = safeRows(probabilities.payload);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const marketRows = useMemo(
+    () =>
+      buildMarketMonitorRows(
+        live.payload?.monitor?.orderbooks,
+        rows,
+        live.payload?.volatility?.rows,
+      ),
+    [live.payload?.monitor?.orderbooks, live.payload?.volatility?.rows, rows],
+  );
   const selectedRow = useMemo(
     () => rows.find((row) => rowKey(row) === selectedId) ?? rows[0] ?? null,
     [rows, selectedId],
@@ -191,7 +246,7 @@ export function App() {
         return;
       }
       setLive(toApiState(liveResult));
-      setProbabilities(toApiState(probabilityResult));
+      setProbabilities((previous) => toProbabilityApiState(probabilityResult, previous));
     }
 
     void poll();
@@ -231,16 +286,22 @@ export function App() {
 
       <section className="runtime-grid" aria-label="Runtime dashboard">
         <section className="main-stack">
+          <MarketMonitor
+            rows={marketRows}
+            selectedProbabilityKey={selectedRow ? rowKey(selectedRow) : null}
+            onSelectProbability={setSelectedId}
+          />
+          <SelectedDetails row={selectedRow} probabilities={probabilities.payload} />
           <ProbabilityTable
             rows={rows}
             selectedKey={selectedRow ? rowKey(selectedRow) : null}
             onSelect={setSelectedId}
             state={probabilities}
           />
-          <SelectedDetails row={selectedRow} probabilities={probabilities.payload} />
         </section>
         <aside className="side-stack">
           <SystemHealth live={live} probabilities={probabilities} />
+          <CompactVolatility volatility={live.payload?.volatility ?? null} />
           <GateAndWeights row={selectedRow} />
         </aside>
       </section>
@@ -285,7 +346,94 @@ function StatusStrip({
       {probabilities.error ? (
         <div className="status-note">Probability API: {probabilities.error}</div>
       ) : null}
+      {probabilities.notice ? (
+        <div className="status-note status-note-info">{probabilities.notice}</div>
+      ) : null}
     </section>
+  );
+}
+
+function MarketMonitor({
+  rows,
+  selectedProbabilityKey,
+  onSelectProbability,
+}: {
+  rows: MarketMonitorRow[];
+  selectedProbabilityKey: string | null;
+  onSelectProbability: (key: string) => void;
+}) {
+  return (
+    <section className="panel market-panel">
+      <PanelHeader
+        title="Market Monitor"
+        subtitle="Orderbook, target, probability, and volatility context by market."
+      />
+      {rows.length === 0 ? (
+        <EmptyState title="No markets" body="Waiting for live orderbooks." />
+      ) : (
+        <div className="market-table" role="table" aria-label="Market probabilities">
+          <div className="market-row market-head" role="row">
+            <span>Market</span>
+            <span>Expiry</span>
+            <span>K</span>
+            <span>UP bid/ask</span>
+            <span>P UP</span>
+            <span>DOWN bid/ask</span>
+            <span>P DOWN</span>
+            <span>Vol</span>
+          </div>
+          {rows.map((row) => (
+            <div className="market-row" key={row.key} role="row">
+              <span className="market-name">
+                <strong>{row.asset}</strong>
+                <small>{shortSlug(row.marketSlug)}</small>
+              </span>
+              <span>{formatTimestamp(row.expiryTs)}</span>
+              <span>{formatThreshold(row.threshold)}</span>
+              <span>{formatQuote(row.up)}</span>
+              <ProbabilityButton
+                row={row.upProbability}
+                selectedKey={selectedProbabilityKey}
+                onSelect={onSelectProbability}
+              />
+              <span>{formatQuote(row.down)}</span>
+              <ProbabilityButton
+                row={row.downProbability}
+                selectedKey={selectedProbabilityKey}
+                onSelect={onSelectProbability}
+              />
+              <span>{formatSmall(row.volatility?.sigma_tau ?? undefined)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ProbabilityButton({
+  row,
+  selectedKey,
+  onSelect,
+}: {
+  row?: ProbabilityRow;
+  selectedKey: string | null;
+  onSelect: (key: string) => void;
+}) {
+  if (!row) {
+    return <span>-</span>;
+  }
+  const key = rowKey(row);
+  return (
+    <button
+      className={
+        key === selectedKey ? "probability-chip selected-probability" : "probability-chip"
+      }
+      onClick={() => onSelect(key)}
+      type="button"
+    >
+      {formatProbability(row.p_finish)}
+    </button>
   );
 }
 
@@ -303,8 +451,8 @@ function ProbabilityTable({
   return (
     <section className="panel probability-panel">
       <PanelHeader
-        title="Probability Outputs"
-        subtitle="Polling /api/runtime/probabilities. Rows are display-only."
+        title="Probability Diagnostics"
+        subtitle="Full cached-grid row diagnostics from /api/runtime/probabilities."
       />
       {rows.length === 0 ? (
         <EmptyState
@@ -388,7 +536,6 @@ function SelectedDetails({
 
       <div className="details-layout">
         <MonteCarloCanvas preview={preview} row={row} />
-        <MetadataPanel title="Cache Metadata" entries={cacheMetadataEntries(probabilities, row)} />
       </div>
 
       <div className="simulation-footer">
@@ -450,6 +597,34 @@ function SystemHealth({
           ]}
         />
       </section>
+    </section>
+  );
+}
+
+function CompactVolatility({ volatility }: { volatility: RuntimeVolatility | null }) {
+  const rows = Array.isArray(volatility?.rows) ? volatility.rows : [];
+  return (
+    <section className="panel compact-volatility">
+      <PanelHeader
+        title="Volatility"
+        subtitle={compactList([
+          volatility?.state,
+          volatility?.source_key ? shortSource(volatility.source_key) : undefined,
+        ])}
+      />
+      {rows.length === 0 ? (
+        <EmptyState title="Vol pending" body="Waiting for BTC/ETH volatility rows." />
+      ) : (
+        <div className="volatility-strip">
+          {rows.map((row) => (
+            <div className="volatility-card" key={row.asset ?? JSON.stringify(row)}>
+              <span>{row.asset ?? "-"}</span>
+              <strong>{formatSmall(row.sigma_tau ?? undefined)}</strong>
+              <small>{compactList([row.volatility_regime, formatAge(row.age_ms)])}</small>
+            </div>
+          ))}
+        </div>
+      )}
     </section>
   );
 }
@@ -668,12 +843,94 @@ function toApiState<T>(result: { payload: T | null; error: string | null }): Api
     status: result.error ? "error" : "ready",
     payload: result.payload,
     error: result.error,
+    notice: null,
     updatedAt: Date.now(),
   };
 }
 
+function toProbabilityApiState(
+  result: { payload: ProbabilityPayload | null; error: string | null },
+  previous: ApiState<ProbabilityPayload>,
+): ApiState<ProbabilityPayload> {
+  const next = toApiState(result);
+  const previousRows = safeRows(previous.payload);
+  const nextRows = safeRows(next.payload);
+  if (!result.error && next.payload && nextRows.length === 0 && previousRows.length > 0) {
+    return {
+      ...previous,
+      status: "ready",
+      error: null,
+      notice: `Probability rollover returned 0 rows; showing last ${previousRows.length}.`,
+      updatedAt: Date.now(),
+    };
+  }
+  return next;
+}
+
 function safeRows(payload: ProbabilityPayload | null): ProbabilityRow[] {
   return Array.isArray(payload?.rows) ? payload.rows.filter(isRecord) : [];
+}
+
+function buildMarketMonitorRows(
+  orderbooks: RuntimeOrderbookRow[] | undefined,
+  probabilities: ProbabilityRow[],
+  volatilityRows: RuntimeVolatilityRow[] | undefined,
+): MarketMonitorRow[] {
+  const probabilityByMarketSide = new Map<string, ProbabilityRow>();
+  for (const row of probabilities) {
+    const key = marketSideKey(row.market_slug, row.asset, row.expiry_ts, row.side);
+    if (key) {
+      probabilityByMarketSide.set(key, row);
+    }
+  }
+
+  const volatilityByAsset = new Map<string, RuntimeVolatilityRow>();
+  for (const row of volatilityRows ?? []) {
+    const asset = row.asset?.trim().toUpperCase();
+    if (asset) {
+      volatilityByAsset.set(asset, row);
+    }
+  }
+
+  const grouped = new Map<string, MarketMonitorRow>();
+  for (const orderbook of orderbooks ?? []) {
+    if (!isRecord(orderbook)) {
+      continue;
+    }
+    const asset = orderbook.asset?.trim().toUpperCase() || assetFromSlug(orderbook.market_slug);
+    const key = orderbook.market_slug ?? `${asset}-${orderbook.expiry_ts ?? ""}`;
+    if (!key) {
+      continue;
+    }
+    const group =
+      grouped.get(key) ??
+      ({
+        key,
+        asset,
+        marketSlug: orderbook.market_slug ?? key,
+        expiryTs: orderbook.expiry_ts,
+        threshold: orderbook.threshold_price,
+        volatility: volatilityByAsset.get(asset),
+      } satisfies MarketMonitorRow);
+    group.expiryTs ||= orderbook.expiry_ts;
+    group.threshold ??= orderbook.threshold_price;
+    if (orderbook.side?.toUpperCase() === "UP") {
+      group.up = orderbook;
+    } else if (orderbook.side?.toUpperCase() === "DOWN") {
+      group.down = orderbook;
+    }
+    grouped.set(key, group);
+  }
+
+  return [...grouped.values()].map((row) => ({
+    ...row,
+    upProbability: probabilityByMarketSide.get(
+      marketSideKey(row.marketSlug, row.asset, row.expiryTs, "UP") ?? "",
+    ),
+    downProbability: probabilityByMarketSide.get(
+      marketSideKey(row.marketSlug, row.asset, row.expiryTs, "DOWN") ?? "",
+    ),
+  }));
 }
 
 function rowKey(row: ProbabilityRow) {
@@ -846,6 +1103,35 @@ function compactList(values: Array<string | undefined>) {
   return values.filter(Boolean).join(" / ");
 }
 
+function marketSideKey(
+  marketSlug?: string,
+  asset?: string,
+  expiryTs?: string,
+  side?: string,
+): string | null {
+  const normalizedSide = side?.trim().toUpperCase();
+  if (!normalizedSide) {
+    return null;
+  }
+  if (marketSlug?.trim()) {
+    return `${marketSlug.trim().toLowerCase()}|${normalizedSide}`;
+  }
+  const normalizedAsset = asset?.trim().toUpperCase();
+  const normalizedExpiry = expiryTs?.trim();
+  if (!normalizedAsset || !normalizedExpiry) {
+    return null;
+  }
+  return `${normalizedAsset}|${normalizedExpiry}|${normalizedSide}`;
+}
+
+function assetFromSlug(value?: string) {
+  return value?.split("-")[0]?.toUpperCase() || "UNKNOWN";
+}
+
+function shortSlug(value: string) {
+  return value.replace("-updown-", " ");
+}
+
 function compactValue(value: unknown): string {
   if (value === null || value === undefined) {
     return "";
@@ -884,6 +1170,32 @@ function formatSigned(value?: number) {
 
 function formatOptional(value?: number | null) {
   return isFiniteNumber(value) ? value.toFixed(3) : "-";
+}
+
+function formatQuote(row?: RuntimeOrderbookRow) {
+  if (!row) {
+    return "-";
+  }
+  return `${formatPriceLevel(row.best_bid)}/${formatPriceLevel(row.best_ask)}`;
+}
+
+function formatPriceLevel(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value.toFixed(2);
+  }
+  if (typeof value === "string" && value.trim()) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number.toFixed(2) : value;
+  }
+  return "-";
+}
+
+function formatThreshold(value: unknown) {
+  const number = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+  if (!Number.isFinite(number)) {
+    return "pending";
+  }
+  return formatPrice(number);
 }
 
 function formatEdge(row: ProbabilityRow) {
@@ -1030,4 +1342,8 @@ function formatPrice(value: number) {
     return value.toLocaleString("en-US", { maximumFractionDigits: 0 });
   }
   return value.toFixed(2);
+}
+
+function shortSource(value: string) {
+  return value.replace(/^polymarket_/, "");
 }
