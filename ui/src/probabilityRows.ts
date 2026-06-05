@@ -1,6 +1,7 @@
 export type ProbabilityRowForGraph = {
   expiry_ts?: string;
   cache_expiry_ts?: string;
+  refresh_display_until?: string;
   valid_until?: string;
   [key: string]: unknown;
 };
@@ -45,12 +46,15 @@ export function filterGraphableProbabilityRows<Row extends ProbabilityRowForGrap
 
 export function isGraphableProbabilityRow(row: ProbabilityRowForGraph, nowMs: number) {
   const expiryMs = timestampMs(row.expiry_ts ?? row.cache_expiry_ts);
+  const refreshDisplayUntilMs = timestampMs(row.refresh_display_until);
+  const heldForRefresh =
+    Number.isFinite(refreshDisplayUntilMs) && refreshDisplayUntilMs > nowMs;
   const expiryIsFresh = Number.isFinite(expiryMs) && expiryMs > nowMs;
-  if (!expiryIsFresh) {
+  if (!expiryIsFresh && !heldForRefresh) {
     return false;
   }
   const validUntilMs = timestampMs(row.valid_until);
-  return !Number.isFinite(validUntilMs) || validUntilMs > nowMs;
+  return heldForRefresh || !Number.isFinite(validUntilMs) || validUntilMs > nowMs;
 }
 
 export function probabilityDisplayValue(row?: ProbabilityValueRow | null) {

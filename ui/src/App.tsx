@@ -10,6 +10,7 @@ import {
 const LIVE_LIMIT = 12;
 const PROBABILITY_LIMIT = 24;
 const POLL_INTERVAL_MS = 2500;
+const MC_REFRESH_HOLD_MS = 15000;
 
 type JsonRecord = Record<string, unknown>;
 
@@ -175,6 +176,7 @@ type ProbabilityRow = {
   generated_at?: string;
   valid_from?: string;
   valid_until?: string;
+  refresh_display_until?: string;
   time_bucket?: string;
   z_path_bucket?: string;
   sigma_bucket?: string;
@@ -1293,11 +1295,21 @@ export function toProbabilityApiState(
   const next = toApiState(result);
   const previousRows = safeRows(previous.payload);
   const nextRows = safeRows(next.payload);
-  if (!result.error && next.payload && previousRows.length > 0 && nextRows.length === 0) {
+  const previousRawRows = Array.isArray(previous.payload?.rows) ? previous.payload.rows : [];
+  const nowMs = Date.now();
+  const holdUntilMs = (previous.updatedAt ?? nowMs) + MC_REFRESH_HOLD_MS;
+  if (
+    !result.error &&
+    next.payload &&
+    previousRawRows.length > 0 &&
+    nextRows.length === 0 &&
+    holdUntilMs > nowMs
+  ) {
     return {
       ...next,
-      payload: previous.payload,
+      payload: markProbabilityRowsHeldForRefresh(previous.payload, holdUntilMs),
       notice: "Monte Carlo refresh pending; keeping last populated grid.",
+      updatedAt: previous.updatedAt,
     };
   }
   if (!result.error && next.payload && previousRows.length > 0 && nextRows.length > 0) {
@@ -1307,6 +1319,23 @@ export function toProbabilityApiState(
     };
   }
   return next;
+}
+
+function markProbabilityRowsHeldForRefresh(
+  payload: ProbabilityPayload | null,
+  holdUntilMs: number,
+): ProbabilityPayload | null {
+  if (!payload || !Array.isArray(payload.rows)) {
+    return payload;
+  }
+  const refreshDisplayUntil = new Date(holdUntilMs).toISOString();
+  return {
+    ...payload,
+    rows: payload.rows.map((row) => ({
+      ...row,
+      refresh_display_until: refreshDisplayUntil,
+    })),
+  };
 }
 
 function safeRows(payload: ProbabilityPayload | null, nowMs = Date.now()): ProbabilityRow[] {
