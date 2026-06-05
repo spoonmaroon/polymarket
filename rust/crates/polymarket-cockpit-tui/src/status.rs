@@ -113,6 +113,45 @@ pub struct RuntimeProbabilities {
     pub rows: Vec<RuntimeProbabilityRow>,
 }
 
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+pub struct RuntimeMonteCarloStatus {
+    pub ok: bool,
+    #[serde(default)]
+    pub state: String,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub generated_at: Option<String>,
+    #[serde(default)]
+    pub rows: Vec<MonteCarloRow>,
+    #[serde(default)]
+    pub errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+pub struct MonteCarloRow {
+    #[serde(default)]
+    pub contract: String,
+    #[serde(default)]
+    pub p_finish: Option<f64>,
+    #[serde(default)]
+    pub p_no_touch: Option<f64>,
+    #[serde(default)]
+    pub z_path: Option<f64>,
+    #[serde(default)]
+    pub sigma_tau: Option<f64>,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub backend: Option<String>,
+    #[serde(default)]
+    pub path_count: Option<u64>,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub model_version: Option<String>,
+    #[serde(default)]
+    pub age_ms: Option<u64>,
+    #[serde(default)]
+    pub flags: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub artifact_id: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct RuntimeOutcomes {
     pub ok: bool,
@@ -262,8 +301,8 @@ impl RuntimeStatus {
 #[cfg(test)]
 mod tests {
     use super::{
-        RuntimeGates, RuntimeLive, RuntimeMonitor, RuntimeOutcomes, RuntimeProbabilities,
-        RuntimeStatus,
+        RuntimeGates, RuntimeLive, RuntimeMonitor, RuntimeMonteCarloStatus, RuntimeOutcomes,
+        RuntimeProbabilities, RuntimeStatus,
     };
 
     #[test]
@@ -436,6 +475,43 @@ mod tests {
         assert_eq!(probabilities.rows[0].contract, "BTC 5m UP");
         assert_eq!(probabilities.rows[0].p_finish, 0.57);
         assert_eq!(probabilities.rows[0].flags, vec!["OK"]);
+    }
+
+    #[test]
+    fn monte_carlo_status_payload_parses_cached_rows_and_optional_fields() {
+        let payload = r#"{
+            "ok": true,
+            "state": "OK",
+            "generated_at": "2026-06-05T12:00:00Z",
+            "rows": [{
+                "contract": "BTC 5m UP",
+                "p_finish": 0.5749,
+                "p_no_touch": 0.3149,
+                "z_path": 0.4219,
+                "sigma_tau": 0.01234,
+                "backend": "cpu-rayon",
+                "path_count": 65536,
+                "model_version": "rust-mc-v1",
+                "age_ms": 850,
+                "flags": ["cached"],
+                "artifact_id": "artifact-1"
+            }],
+            "errors": []
+        }"#;
+
+        let status: RuntimeMonteCarloStatus = serde_json::from_str(payload).unwrap();
+
+        assert!(status.ok);
+        assert_eq!(status.state, "OK");
+        assert_eq!(status.generated_at.as_deref(), Some("2026-06-05T12:00:00Z"));
+        assert_eq!(status.rows[0].contract, "BTC 5m UP");
+        assert_eq!(status.rows[0].p_finish, Some(0.5749));
+        assert_eq!(status.rows[0].backend.as_deref(), Some("cpu-rayon"));
+        assert_eq!(status.rows[0].path_count, Some(65536));
+        assert_eq!(status.rows[0].model_version.as_deref(), Some("rust-mc-v1"));
+        assert_eq!(status.rows[0].age_ms, Some(850));
+        assert_eq!(status.rows[0].flags, vec!["cached"]);
+        assert_eq!(status.rows[0].artifact_id.as_deref(), Some("artifact-1"));
     }
 
     #[test]

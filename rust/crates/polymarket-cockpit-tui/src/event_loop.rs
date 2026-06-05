@@ -16,8 +16,8 @@ use crate::{
     render,
     state::{AppState, MainTab},
     status::{
-        RuntimeDisplayLag, RuntimeGates, RuntimeLive, RuntimeMonitor, RuntimeOutcomes,
-        RuntimeProbabilities, RuntimeStatus, RuntimeVolatility,
+        RuntimeDisplayLag, RuntimeGates, RuntimeLive, RuntimeMonitor, RuntimeMonteCarloStatus,
+        RuntimeOutcomes, RuntimeProbabilities, RuntimeStatus, RuntimeVolatility,
     },
 };
 
@@ -159,13 +159,14 @@ fn apply_key(app: &mut AppState, key_code: KeyCode) -> bool {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct RuntimeUpdate {
     status: Option<RuntimeStatus>,
     gates: Option<RuntimeGates>,
     monitor: Option<RuntimeMonitor>,
     volatility: Option<RuntimeVolatility>,
     probabilities: Option<RuntimeProbabilities>,
+    monte_carlo: Option<RuntimeMonteCarloStatus>,
     outcomes: Option<RuntimeOutcomes>,
     display_lag: Option<RuntimeDisplayLag>,
     error: Option<String>,
@@ -223,6 +224,7 @@ impl RuntimeLiveTask {
                                 monitor: None,
                                 volatility: None,
                                 probabilities: None,
+                                monte_carlo: None,
                                 outcomes: None,
                                 display_lag: None,
                                 error: Some(format!("stream: {error}")),
@@ -301,6 +303,10 @@ fn apply_runtime_update(app: &mut AppState, update: RuntimeUpdate) -> bool {
         changed |= replace_if_changed(&mut app.runtime_probabilities, probabilities);
     }
 
+    if let Some(monte_carlo) = update.monte_carlo {
+        changed |= replace_if_changed(&mut app.runtime_monte_carlo, monte_carlo);
+    }
+
     if let Some(display_lag) = update.display_lag {
         changed |= replace_if_changed(&mut app.runtime_display_lag, display_lag);
     }
@@ -332,12 +338,14 @@ async fn poll_runtime(client: &EngineClient) -> RuntimeUpdate {
     let mut monitor = None;
     let mut volatility = None;
     let mut probabilities = None;
+    let mut monte_carlo = None;
     let mut outcomes = None;
     let mut display_lag = None;
 
-    let (live_result, probabilities_result, outcomes_result) = tokio::join!(
+    let (live_result, probabilities_result, monte_carlo_result, outcomes_result) = tokio::join!(
         client.live(8),
         client.probabilities(8),
+        client.monte_carlo_status(8),
         client.outcomes(OUTCOME_HISTORY_LIMIT)
     );
 
@@ -376,6 +384,11 @@ async fn poll_runtime(client: &EngineClient) -> RuntimeUpdate {
         Err(error) => errors.push(format!("probabilities: {error}")),
     }
 
+    match monte_carlo_result {
+        Ok(next_monte_carlo) => monte_carlo = Some(next_monte_carlo),
+        Err(error) => errors.push(format!("monte_carlo: {error}")),
+    }
+
     match outcomes_result {
         Ok(next_outcomes) => outcomes = Some(next_outcomes),
         Err(error) => errors.push(format!("outcomes: {error}")),
@@ -387,6 +400,7 @@ async fn poll_runtime(client: &EngineClient) -> RuntimeUpdate {
         monitor,
         volatility,
         probabilities,
+        monte_carlo,
         outcomes,
         display_lag,
         error: if errors.is_empty() {
@@ -446,6 +460,7 @@ fn runtime_update_from_live(live: RuntimeLive) -> RuntimeUpdate {
         monitor: Some(live.monitor),
         volatility: Some(live.volatility),
         probabilities: None,
+        monte_carlo: None,
         outcomes: None,
         display_lag: Some(display_lag),
         error: None,
@@ -453,7 +468,8 @@ fn runtime_update_from_live(live: RuntimeLive) -> RuntimeUpdate {
 }
 
 async fn poll_probability_runtime(client: &EngineClient) -> RuntimeUpdate {
-    let probabilities_result = client.probabilities(8).await;
+    let (probabilities_result, monte_carlo_result) =
+        tokio::join!(client.probabilities(8), client.monte_carlo_status(8));
     let mut errors = Vec::new();
     let mut update = RuntimeUpdate {
         status: None,
@@ -461,6 +477,7 @@ async fn poll_probability_runtime(client: &EngineClient) -> RuntimeUpdate {
         monitor: None,
         volatility: None,
         probabilities: None,
+        monte_carlo: None,
         outcomes: None,
         display_lag: None,
         error: None,
@@ -469,6 +486,11 @@ async fn poll_probability_runtime(client: &EngineClient) -> RuntimeUpdate {
     match probabilities_result {
         Ok(probabilities) => update.probabilities = Some(probabilities),
         Err(error) => errors.push(format!("probabilities: {error}")),
+    }
+
+    match monte_carlo_result {
+        Ok(monte_carlo) => update.monte_carlo = Some(monte_carlo),
+        Err(error) => errors.push(format!("monte_carlo: {error}")),
     }
 
     if !errors.is_empty() {
@@ -486,6 +508,7 @@ async fn poll_outcome_runtime(client: &EngineClient) -> RuntimeUpdate {
         monitor: None,
         volatility: None,
         probabilities: None,
+        monte_carlo: None,
         outcomes: None,
         display_lag: None,
         error: None,
@@ -543,9 +566,9 @@ mod tests {
     use crate::{
         state::{AppState, MainTab},
         status::{
-            RuntimeCounts, RuntimeDisplayLag, RuntimeGates, RuntimeMonitor, RuntimeOrderbookRow,
-            RuntimeOutcomeRow, RuntimeOutcomes, RuntimePriceRow, RuntimeProbabilities,
-            RuntimeProbabilityRow, RuntimeStatus,
+            MonteCarloRow, RuntimeCounts, RuntimeDisplayLag, RuntimeGates, RuntimeMonitor,
+            RuntimeMonteCarloStatus, RuntimeOrderbookRow, RuntimeOutcomeRow, RuntimeOutcomes,
+            RuntimePriceRow, RuntimeProbabilities, RuntimeProbabilityRow, RuntimeStatus,
         },
     };
 
@@ -595,6 +618,28 @@ mod tests {
                 age_ms: 850,
                 flags: vec!["OK".to_string()],
             }],
+        }
+    }
+
+    fn monte_carlo_status() -> RuntimeMonteCarloStatus {
+        RuntimeMonteCarloStatus {
+            ok: true,
+            state: "OK".to_string(),
+            generated_at: Some("2026-06-05T12:00:00Z".to_string()),
+            rows: vec![MonteCarloRow {
+                contract: "BTC 5m UP".to_string(),
+                p_finish: Some(0.58),
+                p_no_touch: Some(0.32),
+                z_path: Some(0.43),
+                sigma_tau: Some(0.0124),
+                backend: Some("cpu-rayon".to_string()),
+                path_count: Some(65536),
+                model_version: Some("rust-mc-v1".to_string()),
+                age_ms: Some(910),
+                flags: vec!["cached".to_string()],
+                artifact_id: Some("artifact-1".to_string()),
+            }],
+            errors: Vec::new(),
         }
     }
 
@@ -700,7 +745,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn poll_runtime_fetches_live_probabilities_and_outcomes_concurrently() {
+    async fn poll_runtime_fetches_live_probabilities_monte_carlo_and_outcomes_concurrently() {
         let engine_api_url = delayed_runtime_api_url(Duration::from_millis(200));
         let client = EngineClient::new(engine_api_url);
         let started = Instant::now();
@@ -712,6 +757,7 @@ mod tests {
         assert!(update.gates.is_some());
         assert!(update.monitor.is_some());
         assert!(update.probabilities.is_some());
+        assert!(update.monte_carlo.is_some());
         assert!(update.outcomes.is_some());
         assert_eq!(update.display_lag.unwrap().status_age_ms, Some(12));
         assert_eq!(update.error, None);
@@ -726,6 +772,7 @@ mod tests {
             monitor: Some(monitor("65000.00")),
             volatility: None,
             probabilities: None,
+            monte_carlo: None,
             outcomes: None,
             display_lag: Some(RuntimeDisplayLag {
                 status_age_ms: Some(10),
@@ -743,6 +790,7 @@ mod tests {
             monitor: Some(monitor("65185.18")),
             volatility: None,
             probabilities: Some(probabilities()),
+            monte_carlo: Some(monte_carlo_status()),
             outcomes: Some(outcomes()),
             display_lag: Some(RuntimeDisplayLag {
                 status_age_ms: Some(12),
@@ -772,6 +820,12 @@ mod tests {
             "BTC 5m UP"
         );
         assert_eq!(
+            app.runtime_monte_carlo.as_ref().unwrap().rows[0]
+                .backend
+                .as_deref(),
+            Some("cpu-rayon")
+        );
+        assert_eq!(
             app.runtime_outcomes.as_ref().unwrap().rows[0]
                 .official_winner
                 .as_deref(),
@@ -799,6 +853,7 @@ mod tests {
                 monitor: Some(monitor("65000.00")),
                 volatility: None,
                 probabilities: None,
+                monte_carlo: None,
                 outcomes: None,
                 display_lag: None,
                 error: None,
@@ -851,6 +906,7 @@ mod tests {
                 }),
                 volatility: None,
                 probabilities: None,
+                monte_carlo: None,
                 outcomes: None,
                 display_lag: None,
                 error: None,
@@ -913,6 +969,7 @@ mod tests {
                 }),
                 volatility: None,
                 probabilities: None,
+                monte_carlo: None,
                 outcomes: Some(RuntimeOutcomes {
                     ok: true,
                     state: "OK".to_string(),
@@ -966,6 +1023,7 @@ mod tests {
             monitor: Some(monitor("65000.00")),
             volatility: None,
             probabilities: Some(probabilities()),
+            monte_carlo: Some(monte_carlo_status()),
             outcomes: Some(outcomes()),
             display_lag: Some(RuntimeDisplayLag {
                 status_age_ms: Some(12),
@@ -982,6 +1040,7 @@ mod tests {
                 failures: Vec::new(),
             }),
             runtime_probabilities: Some(probabilities()),
+            runtime_monte_carlo: Some(monte_carlo_status()),
             runtime_display_lag: Some(RuntimeDisplayLag {
                 status_age_ms: Some(12),
                 ..RuntimeDisplayLag::default()
@@ -1074,7 +1133,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         thread::spawn(move || {
-            for _ in 0..3 {
+            for _ in 0..4 {
                 let Ok((mut stream, _peer)) = listener.accept() else {
                     return;
                 };
@@ -1158,6 +1217,26 @@ mod tests {
                     "age_ms": 850,
                     "flags": ["OK"]
                 }]
+            }"#
+        } else if path.starts_with("/api/runtime/monte-carlo/status") {
+            r#"{
+                "ok": true,
+                "state": "OK",
+                "generated_at": "2026-06-05T12:00:00Z",
+                "rows": [{
+                    "contract": "BTC 5m UP",
+                    "p_finish": 0.58,
+                    "p_no_touch": 0.32,
+                    "z_path": 0.43,
+                    "sigma_tau": 0.0124,
+                    "backend": "cpu-rayon",
+                    "path_count": 65536,
+                    "model_version": "rust-mc-v1",
+                    "age_ms": 910,
+                    "flags": ["cached"],
+                    "artifact_id": "artifact-1"
+                }],
+                "errors": []
             }"#
         } else if path.starts_with("/api/runtime/outcomes") {
             r#"{
