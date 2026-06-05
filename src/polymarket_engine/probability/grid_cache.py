@@ -624,7 +624,7 @@ def _optional_float(value: object) -> float | None:
         return None
     if isinstance(value, bool):
         raise ValueError("optional float must be finite")
-    number = float(value)
+    number = float(cast(Any, value))
     if not math.isfinite(number):
         raise ValueError("optional float must be finite")
     return number

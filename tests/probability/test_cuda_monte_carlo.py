@@ -2,12 +2,13 @@ import builtins
 import inspect
 import importlib
 import sys
+from collections.abc import Iterator
 from datetime import datetime, timezone
 from types import ModuleType
 
 import pytest
 
-from polymarket_engine.probability.schema import ProbabilityInput
+from polymarket_engine.probability.schema import ProbabilityInput, ProbabilityOutput
 
 
 def _probability_input() -> ProbabilityInput:
@@ -90,7 +91,7 @@ def test_cuda_multi_seed_aggregates_p_hat_and_confidence(
 ) -> None:
     module = importlib.import_module("polymarket_engine.probability.cuda_monte_carlo")
     probability_input = _probability_input()
-    outputs = iter(
+    outputs: Iterator[ProbabilityOutput] = iter(
         (
             module.ProbabilityOutput(
                 state_id=probability_input.state_id,
@@ -144,7 +145,7 @@ def test_cuda_multi_seed_aggregates_p_hat_and_confidence(
     )
     calls = []
 
-    def fake_single_seed(probability_input_arg: object, **kwargs: object) -> module.ProbabilityOutput:
+    def fake_single_seed(probability_input_arg: object, **kwargs: object) -> ProbabilityOutput:
         calls.append((probability_input_arg, kwargs))
         return next(outputs)
 
@@ -319,7 +320,7 @@ def test_cuda_multi_seed_aggregates_prior_sensitivity(
 ) -> None:
     module = importlib.import_module("polymarket_engine.probability.cuda_monte_carlo")
     probability_input = _probability_input()
-    outputs = iter(
+    outputs: Iterator[ProbabilityOutput] = iter(
         (
             module.ProbabilityOutput(
                 state_id=probability_input.state_id,
