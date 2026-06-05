@@ -11,7 +11,12 @@ class ProbabilityGateResult:
     decision_hint: str
     edge_after_costs: float
     required_edge: float
+    path_risk_buffer: float
     reasons: tuple[str, ...]
+
+    @property
+    def action(self) -> str:
+        return self.decision_hint
 
 
 @dataclass(frozen=True)
@@ -52,14 +57,26 @@ def evaluate_probability_gates(
     ensemble: EnsembleOutput,
     executable_quality: ExecutableQualityInput,
     base_edge: float = 0.03,
-    p_no_touch_floor: float = 0.65,
+    p_no_touch_floor: float | None = None,
+    p_no_touch_soft_floor: float = 0.65,
+    p_no_touch_hard_floor: float = 0.50,
+    path_risk_buffer_per_probability_point: float = 0.30,
     z_path_floor: float = 0.50,
     uncertainty_block_threshold: float = 0.12,
 ) -> ProbabilityGateResult:
     if not isinstance(executable_quality, ExecutableQualityInput):
         raise ValueError("executable_quality must be an ExecutableQualityInput")
+    if p_no_touch_floor is not None:
+        p_no_touch_soft_floor = p_no_touch_floor
     _require_nonnegative_finite(base_edge, "base_edge")
-    _require_probability(p_no_touch_floor, "p_no_touch_floor")
+    _require_probability(p_no_touch_soft_floor, "p_no_touch_soft_floor")
+    _require_probability(p_no_touch_hard_floor, "p_no_touch_hard_floor")
+    if p_no_touch_hard_floor > p_no_touch_soft_floor:
+        raise ValueError("p_no_touch_hard_floor must be below or equal to p_no_touch_soft_floor")
+    _require_nonnegative_finite(
+        path_risk_buffer_per_probability_point,
+        "path_risk_buffer_per_probability_point",
+    )
     _require_nonnegative_finite(z_path_floor, "z_path_floor")
     _require_nonnegative_finite(uncertainty_block_threshold, "uncertainty_block_threshold")
 
@@ -68,11 +85,18 @@ def evaluate_probability_gates(
         - executable_quality.executable_entry_price
         - executable_quality.execution_costs
     )
-    required_edge = base_edge + ensemble.uncertainty_buffer
+    path_risk_buffer = path_risk_buffer_per_probability_point * max(
+        0.0,
+        p_no_touch_soft_floor - ensemble.p_no_touch,
+    )
+    required_edge = base_edge + ensemble.uncertainty_buffer + path_risk_buffer
     reasons: list[str] = []
 
-    if ensemble.p_no_touch < p_no_touch_floor:
-        required_edge += 0.02
+    p_no_touch_below_hard_floor = ensemble.p_no_touch < p_no_touch_hard_floor
+    p_no_touch_below_soft_floor = ensemble.p_no_touch < p_no_touch_soft_floor
+    if p_no_touch_below_hard_floor:
+        reasons.append("P_NO_TOUCH_BELOW_HARD_FLOOR")
+    if p_no_touch_below_soft_floor:
         reasons.append("P_NO_TOUCH_BELOW_FLOOR")
     if ensemble.z_path < 0:
         required_edge += 0.02
@@ -81,11 +105,20 @@ def evaluate_probability_gates(
         reasons.append("Z_PATH_BELOW_FLOOR")
 
     blockers = _block_reasons(ensemble, executable_quality, uncertainty_block_threshold)
+    if p_no_touch_below_hard_floor:
+        return ProbabilityGateResult(
+            decision_hint="BLOCK",
+            edge_after_costs=edge_after_costs,
+            required_edge=required_edge,
+            path_risk_buffer=path_risk_buffer,
+            reasons=tuple(reasons + blockers),
+        )
     if blockers:
         return ProbabilityGateResult(
             decision_hint="BLOCK",
             edge_after_costs=edge_after_costs,
             required_edge=required_edge,
+            path_risk_buffer=path_risk_buffer,
             reasons=tuple(reasons + blockers),
         )
 
@@ -99,7 +132,17 @@ def evaluate_probability_gates(
             decision_hint="WAIT",
             edge_after_costs=edge_after_costs,
             required_edge=required_edge,
+            path_risk_buffer=path_risk_buffer,
             reasons=tuple(reasons + wait_reasons),
+        )
+
+    if p_no_touch_below_soft_floor and edge_after_costs >= required_edge:
+        return ProbabilityGateResult(
+            decision_hint="WAIT",
+            edge_after_costs=edge_after_costs,
+            required_edge=required_edge,
+            path_risk_buffer=path_risk_buffer,
+            reasons=tuple(reasons),
         )
 
     if edge_after_costs >= required_edge:
@@ -107,6 +150,7 @@ def evaluate_probability_gates(
             decision_hint="TRADE_CANDIDATE",
             edge_after_costs=edge_after_costs,
             required_edge=required_edge,
+            path_risk_buffer=path_risk_buffer,
             reasons=(),
         )
 
@@ -114,7 +158,12 @@ def evaluate_probability_gates(
         decision_hint="DEMAND_MORE_EDGE",
         edge_after_costs=edge_after_costs,
         required_edge=required_edge,
-        reasons=tuple(reasons + ["INSUFFICIENT_EDGE"]),
+        path_risk_buffer=path_risk_buffer,
+        reasons=tuple(
+            reasons
+            + (["PATH_RISK_BUFFER"] if p_no_touch_below_soft_floor and path_risk_buffer > 0 else [])
+            + ["INSUFFICIENT_EDGE"]
+        ),
     )
 
 

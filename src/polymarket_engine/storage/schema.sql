@@ -204,6 +204,62 @@ CREATE TABLE IF NOT EXISTS features.probability_outputs (
     created_at TIMESTAMPTZ NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS features.probability_event_log (
+    event_id VARCHAR PRIMARY KEY,
+    output_id VARCHAR,
+    state_id VARCHAR NOT NULL,
+    contract_id VARCHAR NOT NULL,
+    market_slug VARCHAR NOT NULL,
+    asset VARCHAR NOT NULL,
+    side VARCHAR NOT NULL,
+    start_ts TIMESTAMPTZ NOT NULL,
+    expiry_ts TIMESTAMPTZ NOT NULL,
+    asof_ts TIMESTAMPTZ NOT NULL,
+    probability_kind VARCHAR NOT NULL,
+    backend VARCHAR NOT NULL,
+    model_version VARCHAR NOT NULL,
+    generator_version VARCHAR,
+    cache_key VARCHAR,
+    cache_status VARCHAR,
+    p_finish DOUBLE NOT NULL,
+    p_no_touch DOUBLE NOT NULL,
+    z_path DOUBLE NOT NULL,
+    sigma_tau DOUBLE,
+    executable_price DOUBLE,
+    spread DOUBLE,
+    seconds_left DOUBLE NOT NULL,
+    wave_phase VARCHAR NOT NULL,
+    wave_score DOUBLE NOT NULL,
+    path_count UBIGINT,
+    seed BIGINT,
+    queue_ms DOUBLE,
+    runtime_ms DOUBLE,
+    state_to_status_ms DOUBLE,
+    total_lag_ms DOUBLE,
+    generated_at TIMESTAMPTZ NOT NULL,
+    valid_from TIMESTAMPTZ NOT NULL,
+    valid_until TIMESTAMPTZ NOT NULL,
+    diagnostics_json VARCHAR NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS features.simulation_artifacts (
+    artifact_id VARCHAR PRIMARY KEY,
+    output_id VARCHAR,
+    state_id VARCHAR NOT NULL,
+    asof_ts TIMESTAMPTZ NOT NULL,
+    model_version VARCHAR NOT NULL,
+    backend VARCHAR NOT NULL,
+    path_count UBIGINT NOT NULL,
+    terminal_win_count UBIGINT NOT NULL,
+    no_touch_win_count UBIGINT NOT NULL,
+    terminal_price_quantiles_json VARCHAR NOT NULL,
+    crossing_count_quantiles_json VARCHAR NOT NULL,
+    sampled_paths_json VARCHAR NOT NULL,
+    diagnostics_json VARCHAR NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS features.probability_grid_cache (
     cache_key VARCHAR PRIMARY KEY,
     asset VARCHAR NOT NULL,

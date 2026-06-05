@@ -86,6 +86,9 @@ def test_sidecar_cycle_normalizes_builds_states_and_writes_health(tmp_path: Path
     probability_payload = json.loads(probability_path.read_text(encoding="utf-8"))
     assert probability_payload["schema_version"] == "polymarket-probability-runtime-v1"
     assert len(probability_payload["rows"]) == 2
+    assert len(probability_payload["nowcast_rows"]) == 2
+    assert probability_payload["lanes"] == {"MC": 2, "NOWCAST": 2}
+    assert probability_payload["latency"]["max_total_lag_ms"] is not None
     assert {row["cache_status"] for row in probability_payload["rows"]} == {"REFRESH"}
     assert all(row["grid_cache"]["market_slug"] for row in probability_payload["rows"])
     with duckdb.connect(str(db_path), read_only=True) as conn:
@@ -93,7 +96,174 @@ def test_sidecar_cycle_normalizes_builds_states_and_writes_health(tmp_path: Path
         assert conn.execute("select count(*) from core.orderbook_snapshots").fetchone() == (2,)
         assert conn.execute("select count(*) from features.probability_outputs").fetchone() == (2,)
         assert conn.execute("select count(*) from features.probability_grid_cache").fetchone() == (2,)
+        assert conn.execute("select count(*) from features.probability_event_log").fetchone() == (4,)
+        assert conn.execute("select count(*) from features.simulation_artifacts").fetchone() == (2,)
         assert conn.execute("select count(*) from features.asof_state_inputs").fetchone() == (2,)
+
+
+def test_probability_status_writer_includes_latency_and_lanes(tmp_path: Path) -> None:
+    out_path = tmp_path / "probabilities.json"
+    rows = [
+        {
+            "contract": "BTC 5m UP",
+            "contract_id": "btc-updown-5m-1:UP",
+            "model_version": "cached-grid-v1",
+            "probability_kind": "MC",
+            "p_finish": 0.64,
+            "latency": {"total_lag_ms": 940.0},
+        },
+    ]
+    nowcast_rows = [
+        {
+            "contract": "BTC 5m UP",
+            "contract_id": "btc-updown-5m-1:UP",
+            "model_version": "fast-nowcast-v1",
+            "probability_kind": "NOWCAST",
+            "p_finish": 0.61,
+            "latency": {"total_lag_ms": 35.0},
+        }
+    ]
+
+    rust_normalizer_sidecar._write_probability_status(
+        out_path=out_path,
+        payload={
+            "ok": True,
+            "state": "OK",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "cached": False,
+            "model_version": "cached-grid-v1",
+            "rows": rows,
+            "nowcast_rows": nowcast_rows,
+            "skipped": 0,
+            "errors": [],
+        },
+    )
+
+    payload = json.loads(out_path.read_text())
+    assert payload["schema_version"] == "polymarket-probability-runtime-v1"
+    assert payload["latency"]["max_total_lag_ms"] == 940.0
+    assert payload["lanes"] == {"MC": 1, "NOWCAST": 1}
+
+
+def test_sidecar_drains_external_probability_events_once(tmp_path: Path) -> None:
+    db_path = tmp_path / "events.duckdb"
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+
+    event_path = tmp_path / "live" / "probability-events.jsonl"
+    event_path.parent.mkdir()
+    event_path.write_text(
+        json.dumps(
+            {
+                "event_id": "event-1",
+                "output_id": None,
+                "state_id": "state-1",
+                "contract_id": "btc-updown-5m-1:UP",
+                "market_slug": "btc-updown-5m-1",
+                "asset": "BTC",
+                "side": "UP",
+                "start_ts": "2026-06-05T17:00:00+00:00",
+                "expiry_ts": "2026-06-05T17:05:00+00:00",
+                "asof_ts": "2026-06-05T17:01:00+00:00",
+                "probability_kind": "MC",
+                "backend": "cuda",
+                "model_version": "cached-grid-v1",
+                "generator_version": "cuda-lognormal-chainlink-sigma-v1",
+                "cache_key": "cache-1",
+                "cache_status": "REFRESH",
+                "p_finish": 0.71,
+                "p_no_touch": 0.2,
+                "z_path": 0.4,
+                "sigma_tau": 0.001,
+                "executable_price": 0.62,
+                "spread": 0.01,
+                "seconds_left": 240.0,
+                "wave_phase": "forming",
+                "wave_score": 0.3,
+                "path_count": 20000,
+                "seed": 123,
+                "queue_ms": 2.0,
+                "runtime_ms": 16.0,
+                "state_to_status_ms": 40.0,
+                "total_lag_ms": 44.0,
+                "generated_at": "2026-06-05T17:01:00+00:00",
+                "valid_from": "2026-06-05T17:01:00+00:00",
+                "valid_until": "2026-06-05T17:01:30+00:00",
+                "diagnostics": {"source": "gpu-worker"},
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    )
+
+    drained = rust_normalizer_sidecar._drain_probability_event_jsonl(
+        store=store,
+        event_path=event_path,
+    )
+
+    assert drained == 1
+    assert not event_path.exists()
+    with duckdb.connect(str(db_path), read_only=True) as conn:
+        assert conn.execute("select count(*) from features.probability_event_log").fetchone() == (
+            1,
+        )
+
+
+def test_sidecar_drains_leftover_rotated_probability_events(tmp_path: Path) -> None:
+    db_path = tmp_path / "events.duckdb"
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+
+    event_path = tmp_path / "live" / "probability-events.jsonl"
+    drain_path = event_path.with_name("probability-events.jsonl.123.456.drain")
+    drain_path.parent.mkdir()
+    payload = {
+        "event_id": "event-leftover",
+        "output_id": None,
+        "state_id": "state-1",
+        "contract_id": "btc-updown-5m-1:UP",
+        "market_slug": "btc-updown-5m-1",
+        "asset": "BTC",
+        "side": "UP",
+        "start_ts": "2026-06-05T17:00:00+00:00",
+        "expiry_ts": "2026-06-05T17:05:00+00:00",
+        "asof_ts": "2026-06-05T17:01:00+00:00",
+        "probability_kind": "NOWCAST",
+        "backend": "analytic",
+        "model_version": "fast-nowcast-v1",
+        "generator_version": None,
+        "cache_key": None,
+        "cache_status": None,
+        "p_finish": 0.61,
+        "p_no_touch": 0.0,
+        "z_path": 0.4,
+        "sigma_tau": 0.001,
+        "executable_price": 0.62,
+        "spread": None,
+        "seconds_left": 240.0,
+        "wave_phase": "forming",
+        "wave_score": 0.3,
+        "path_count": None,
+        "seed": None,
+        "queue_ms": 0.0,
+        "runtime_ms": 0.0,
+        "state_to_status_ms": 40.0,
+        "total_lag_ms": 44.0,
+        "generated_at": "2026-06-05T17:01:00+00:00",
+        "valid_from": "2026-06-05T17:01:00+00:00",
+        "valid_until": "2026-06-05T17:01:02+00:00",
+        "diagnostics": {"source": "gpu-worker"},
+    }
+    drain_path.write_text(json.dumps(payload, separators=(",", ":")) + "\n")
+
+    drained = rust_normalizer_sidecar._drain_probability_event_jsonl(
+        store=store,
+        event_path=event_path,
+    )
+
+    assert drained == 1
+    assert not drain_path.exists()
 
 
 def test_sidecar_cycle_skips_probability_outputs_by_default(

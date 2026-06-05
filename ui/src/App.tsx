@@ -158,6 +158,7 @@ type ProbabilityRow = {
   decision_hint?: string | null;
   edge_after_costs?: number | null;
   required_edge?: number | null;
+  path_risk_buffer?: number | null;
   gate_reasons?: string[];
   wave_score?: number | null;
   wave_phase?: string | null;
@@ -962,6 +963,7 @@ function MonteCarloInputsPanel({
               ["mc_dispersion", row.mc_dispersion],
               ["uncertainty", row.uncertainty_buffer],
               ["decision_check", formatGate(row.decision_hint)],
+              ["path_risk_buffer", row.path_risk_buffer],
               ["wave", formatWave(row)],
               ["dynamic_edge", formatDynamicEdge(row)],
               ["decision_reasons", compactList(row.gate_reasons)],

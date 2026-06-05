@@ -1,21 +1,23 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import time
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, cast
 
 import duckdb
 
 from polymarket_engine.probability.cuda_monte_carlo import run_cuda_monte_carlo_multi_seed
+from polymarket_engine.probability.fast_nowcast import FastNowcastInput
+from polymarket_engine.probability.fast_nowcast import compute_fast_nowcast
 from polymarket_engine.probability.grid_cache import ProbabilityGridHit
 from polymarket_engine.probability.grid_cache import grid_entry_from_probability_input
 from polymarket_engine.probability.grid_cache import grid_runtime_row
-from polymarket_engine.probability.path_policy import runtime_paths_per_seed_for_seconds_left
-from polymarket_engine.probability.path_policy import runtime_seed_count_for_seconds_left
-from polymarket_engine.probability.path_policy import runtime_total_path_count_for_seconds_left
+from polymarket_engine.probability.latency import ProbabilityLatencyTrace
+from polymarket_engine.probability.path_policy import runtime_path_count_for_state
 from polymarket_engine.probability.runtime import DEFAULT_PROBABILITY_GRID_VALID_SECONDS
 from polymarket_engine.probability.runtime import DEFAULT_PROBABILITY_MAX_STATE_AGE_SECONDS
 from polymarket_engine.probability.runtime import ProbabilityRuntimeInput
@@ -27,6 +29,7 @@ from polymarket_engine.probability.runtime import _parse_datetime
 from polymarket_engine.probability.runtime import _seed_for_input
 from polymarket_engine.probability.runtime import _steps_for_input
 from polymarket_engine.probability.runtime import latest_probability_inputs
+from polymarket_engine.probability.runtime import probability_gate_diagnostics
 from polymarket_engine.probability.schema import ProbabilityInput
 from polymarket_engine.storage.atomic import durable_replace
 
@@ -45,6 +48,7 @@ def run_cuda_probability_worker_cycle(
     valid_seconds: int = int(DEFAULT_PROBABILITY_GRID_VALID_SECONDS),
     max_state_age_seconds: float | None = DEFAULT_PROBABILITY_MAX_STATE_AGE_SECONDS,
     max_input_snapshot_age_seconds: float | None = DEFAULT_INPUT_SNAPSHOT_MAX_AGE_SECONDS,
+    probability_event_path: Path | None = None,
 ) -> dict[str, Any]:
     if limit <= 0:
         raise ValueError("limit must be positive")
@@ -52,8 +56,13 @@ def run_cuda_probability_worker_cycle(
         raise ValueError("valid_seconds must be positive")
 
     previous_rows = _read_status_rows(probability_status_path)
+    probability_event_path = probability_event_path or probability_status_path.with_name(
+        "probability-events.jsonl"
+    )
     generated_at = datetime.now(timezone.utc)
     rows: list[dict[str, Any]] = []
+    nowcast_rows: list[dict[str, Any]] = []
+    event_rows: list[dict[str, Any]] = []
     errors: list[str] = []
     try:
         if probability_inputs_path is not None:
@@ -85,11 +94,27 @@ def run_cuda_probability_worker_cycle(
 
     for runtime_input in inputs:
         probability_input = runtime_input.probability_input
+        nowcast_row = _nowcast_row(runtime_input, generated_at=generated_at)
+        nowcast_rows.append(nowcast_row)
+        event_rows.append(
+            _event_payload_from_row(
+                runtime_input=runtime_input,
+                row=nowcast_row,
+                generated_at=generated_at,
+                output_id=None,
+            )
+        )
         seed = _seed_for_input(probability_input)
         steps = _steps_for_input(probability_input)
-        paths_per_seed = runtime_paths_per_seed_for_seconds_left(probability_input.seconds_left)
-        seed_count = runtime_seed_count_for_seconds_left(probability_input.seconds_left)
-        path_count = runtime_total_path_count_for_seconds_left(probability_input.seconds_left)
+        path_count = runtime_path_count_for_state(
+            seconds_left=probability_input.seconds_left,
+            z_path=probability_input.z_path,
+            executable_price=probability_input.executable_price,
+            wave_phase=str(nowcast_row["wave_phase"]),
+        )
+        seed_count = _gpu_seed_count_for_total_paths(path_count)
+        paths_per_seed = path_count // seed_count
+        mc_started_ts = datetime.now(timezone.utc)
         try:
             output = run_cuda_monte_carlo_multi_seed(
                 probability_input,
@@ -98,10 +123,20 @@ def run_cuda_probability_worker_cycle(
                 seed=seed,
                 seed_count=seed_count,
             )
+            mc_finished_ts = datetime.now(timezone.utc)
             diagnostics = dict(output.diagnostics)
             diagnostics["path_count"] = path_count
             diagnostics["paths_per_seed"] = paths_per_seed
             diagnostics["seed_count"] = seed_count
+            latency = ProbabilityLatencyTrace(
+                state_asof_ts=probability_input.asof_ts,
+                tick_observed_ts=None,
+                worker_received_ts=generated_at,
+                mc_started_ts=mc_started_ts,
+                mc_finished_ts=mc_finished_ts,
+                status_written_ts=mc_finished_ts,
+                ui_seen_ts=None,
+            )
             diagnostics["cache"] = {
                 "source": "cuda-probability-worker",
                 "market_slug": runtime_input.market_slug,
@@ -112,6 +147,15 @@ def run_cuda_probability_worker_cycle(
                 "paths_per_seed": paths_per_seed,
                 "seed_count": seed_count,
             }
+            diagnostics["latency"] = latency.to_json_dict()
+            diagnostics.setdefault(
+                "gate",
+                probability_gate_diagnostics(
+                    probability_input=probability_input,
+                    output=output,
+                    latency_ms=latency.runtime_ms(),
+                ),
+            )
             entry = grid_entry_from_probability_input(
                 probability_input,
                 market_slug=runtime_input.market_slug,
@@ -151,12 +195,39 @@ def run_cuda_probability_worker_cycle(
             diagnostics=entry.diagnostics,
             preview_is_current=True,
         )
+        row.update(
+            {
+                "state_id": probability_input.state_id,
+                "probability_kind": "MC",
+                "backend": "cuda",
+                "seconds_left": probability_input.seconds_left,
+                "executable_price": probability_input.executable_price,
+                "source_age_ms": probability_input.source_age_ms,
+                "book_age_ms": probability_input.book_age_ms,
+                "latency": diagnostics["latency"],
+                "wave_phase": nowcast_row["wave_phase"],
+                "wave_score": nowcast_row["wave_score"],
+                "wave_reasons": nowcast_row["wave_reasons"],
+                "wave_markers": nowcast_row["wave_markers"],
+                "dynamic_edge": nowcast_row["dynamic_edge"],
+                "dynamic_required_edge": nowcast_row["dynamic_required_edge"],
+            }
+        )
         row["output_id"] = output_id
         rows.append(row)
+        event_rows.append(
+            _event_payload_from_row(
+                runtime_input=runtime_input,
+                row=row,
+                generated_at=generated_at,
+                output_id=output_id,
+            )
+        )
 
     payload = _status_payload(
         generated_at=generated_at,
         rows=rows,
+        nowcast_rows=nowcast_rows,
         skipped=quality_skipped,
         errors=errors,
         rows_seen=len(inputs),
@@ -164,6 +235,8 @@ def run_cuda_probability_worker_cycle(
         last_good_rows=previous_rows if errors and not rows else None,
     )
     _write_status(probability_status_path, payload)
+    if event_rows:
+        _append_probability_event_rows(probability_event_path, event_rows)
     return payload
 
 
@@ -177,6 +250,7 @@ def run_cuda_probability_worker_loop(
     valid_seconds: int = int(DEFAULT_PROBABILITY_GRID_VALID_SECONDS),
     max_state_age_seconds: float | None = DEFAULT_PROBABILITY_MAX_STATE_AGE_SECONDS,
     max_input_snapshot_age_seconds: float | None = DEFAULT_INPUT_SNAPSHOT_MAX_AGE_SECONDS,
+    probability_event_path: Path | None = None,
 ) -> None:
     if interval_seconds <= 0:
         raise ValueError("interval_seconds must be positive")
@@ -191,6 +265,7 @@ def run_cuda_probability_worker_loop(
                 valid_seconds=valid_seconds,
                 max_state_age_seconds=max_state_age_seconds,
                 max_input_snapshot_age_seconds=max_input_snapshot_age_seconds,
+                probability_event_path=probability_event_path,
             )
         except duckdb.Error as exc:
             payload = _status_payload(
@@ -211,6 +286,7 @@ def _status_payload(
     *,
     generated_at: datetime,
     rows: list[dict[str, Any]],
+    nowcast_rows: list[dict[str, Any]] | None = None,
     skipped: int,
     errors: list[str],
     rows_seen: int,
@@ -226,14 +302,251 @@ def _status_payload(
         "cached": False,
         "model_version": rows[0]["model_version"] if rows else None,
         "rows": rows,
+        "nowcast_rows": nowcast_rows or [],
         "skipped": skipped,
         "errors": errors,
         "rows_seen": rows_seen,
         "rows_written": rows_written,
     }
+    payload["lanes"] = _status_lanes(payload)
+    payload["latency"] = _status_latency(payload)
     if last_good_rows:
         payload["last_good_rows"] = last_good_rows
     return payload
+
+
+def _nowcast_row(
+    runtime_input: ProbabilityRuntimeInput,
+    *,
+    generated_at: datetime,
+) -> dict[str, Any]:
+    probability_input = runtime_input.probability_input
+    nowcast = compute_fast_nowcast(
+        FastNowcastInput(
+            state_id=probability_input.state_id,
+            asof_ts=probability_input.asof_ts,
+            asset=_asset_literal(probability_input.asset),
+            side=_side_literal(probability_input.side),
+            z_path=probability_input.z_path,
+            seconds_left=probability_input.seconds_left,
+            executable_price=probability_input.executable_price,
+            sigma_tau=probability_input.sigma_tau,
+            source_age_ms=probability_input.source_age_ms,
+            book_age_ms=probability_input.book_age_ms,
+        )
+    )
+    age_ms = max(0, int((generated_at - probability_input.asof_ts).total_seconds() * 1000))
+    latency = ProbabilityLatencyTrace(
+        state_asof_ts=probability_input.asof_ts,
+        tick_observed_ts=None,
+        worker_received_ts=generated_at,
+        mc_started_ts=generated_at,
+        mc_finished_ts=generated_at,
+        status_written_ts=generated_at,
+        ui_seen_ts=None,
+    )
+    return {
+        "contract": runtime_input.contract,
+        "state_id": probability_input.state_id,
+        "contract_id": runtime_input.contract_id,
+        "market_slug": runtime_input.market_slug,
+        "asset": probability_input.asset,
+        "side": probability_input.side,
+        "start_ts": runtime_input.start_ts.isoformat(),
+        "expiry_ts": runtime_input.expiry_ts.isoformat(),
+        "asof_ts": probability_input.asof_ts.isoformat(),
+        "p_finish": nowcast.p_finish,
+        "p_hat": nowcast.p_finish,
+        "p_no_touch": nowcast.p_no_touch,
+        "z_path": nowcast.z_path,
+        "sigma_tau": probability_input.sigma_tau,
+        "age_ms": age_ms,
+        "seconds_left": probability_input.seconds_left,
+        "executable_price": probability_input.executable_price,
+        "source_age_ms": probability_input.source_age_ms,
+        "book_age_ms": probability_input.book_age_ms,
+        "flags": list(runtime_input.flags) if runtime_input.flags else ["OK"],
+        "backend": nowcast.backend,
+        "probability_kind": nowcast.probability_kind,
+        "model_version": nowcast.model_version,
+        "seed": None,
+        "generated_at": generated_at.isoformat(),
+        "valid_from": generated_at.isoformat(),
+        "valid_until": (generated_at + timedelta(seconds=2)).isoformat(),
+        "latency": latency.to_json_dict(),
+        "wave_phase": nowcast.wave_phase,
+        "wave_score": nowcast.wave_score,
+        "wave_reasons": nowcast.wave_reasons,
+        "wave_markers": nowcast.wave_markers,
+        "dynamic_edge": nowcast.dynamic_edge,
+        "dynamic_required_edge": nowcast.dynamic_required_edge,
+    }
+
+
+def _gpu_seed_count_for_total_paths(path_count: int) -> int:
+    if path_count >= 250_000:
+        return 5
+    if path_count >= 80_000:
+        return 4
+    return 3
+
+
+def _asset_literal(value: str) -> Literal["BTC", "ETH"]:
+    if value not in {"BTC", "ETH"}:
+        raise ValueError("asset must be BTC or ETH")
+    return cast(Literal["BTC", "ETH"], value)
+
+
+def _side_literal(value: str) -> Literal["UP", "DOWN"]:
+    if value not in {"UP", "DOWN"}:
+        raise ValueError("side must be UP or DOWN")
+    return cast(Literal["UP", "DOWN"], value)
+
+
+def _status_lanes(payload: Mapping[str, Any]) -> dict[str, int]:
+    lanes: dict[str, int] = {}
+    for row in _status_probability_rows(payload):
+        lane = str(row.get("probability_kind") or "MC")
+        lanes[lane] = lanes.get(lane, 0) + 1
+    return lanes
+
+
+def _status_latency(payload: Mapping[str, Any]) -> dict[str, float | None]:
+    total_lags = [
+        lag
+        for row in _status_probability_rows(payload)
+        for lag in [_row_latency(row, "total_lag_ms")]
+        if lag is not None
+    ]
+    runtimes = [
+        runtime
+        for row in _status_probability_rows(payload)
+        for runtime in [_row_latency(row, "runtime_ms")]
+        if runtime is not None
+    ]
+    return {
+        "max_total_lag_ms": max(total_lags) if total_lags else None,
+        "avg_total_lag_ms": round(sum(total_lags) / len(total_lags), 3)
+        if total_lags
+        else None,
+        "max_runtime_ms": max(runtimes) if runtimes else None,
+        "avg_runtime_ms": round(sum(runtimes) / len(runtimes), 3) if runtimes else None,
+    }
+
+
+def _status_probability_rows(payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    rows: list[Mapping[str, Any]] = []
+    for key in ("rows", "nowcast_rows"):
+        raw_rows = payload.get(key)
+        if isinstance(raw_rows, Sequence) and not isinstance(raw_rows, (str, bytes)):
+            rows.extend(row for row in raw_rows if isinstance(row, Mapping))
+    return rows
+
+
+def _row_latency(row: Mapping[str, Any], field_name: str) -> float | None:
+    latency = row.get("latency")
+    if not isinstance(latency, Mapping):
+        return None
+    value = latency.get(field_name)
+    if value is None:
+        return None
+    return float(cast(Any, value))
+
+
+def _event_payload_from_row(
+    *,
+    runtime_input: ProbabilityRuntimeInput,
+    row: Mapping[str, Any],
+    generated_at: datetime,
+    output_id: str | None,
+) -> dict[str, Any]:
+    probability_input = runtime_input.probability_input
+    latency = row.get("latency") if isinstance(row.get("latency"), Mapping) else {}
+    event_id = _event_id(
+        probability_input.state_id,
+        probability_input.asof_ts,
+        str(row.get("probability_kind") or "MC"),
+        generated_at,
+    )
+    return {
+        "event_id": event_id,
+        "output_id": output_id,
+        "state_id": probability_input.state_id,
+        "contract_id": runtime_input.contract_id,
+        "market_slug": runtime_input.market_slug,
+        "asset": probability_input.asset,
+        "side": probability_input.side,
+        "start_ts": runtime_input.start_ts.isoformat(),
+        "expiry_ts": runtime_input.expiry_ts.isoformat(),
+        "asof_ts": probability_input.asof_ts.isoformat(),
+        "probability_kind": str(row.get("probability_kind") or "MC"),
+        "backend": str(row.get("backend") or "cuda"),
+        "model_version": str(row.get("model_version") or "cached-grid-v1"),
+        "generator_version": _optional_string(row.get("generator_version")),
+        "cache_key": _optional_string(row.get("cache_key")),
+        "cache_status": _optional_string(row.get("cache_status")),
+        "p_finish": _float(row.get("p_finish"), "p_finish"),
+        "p_no_touch": _float(row.get("p_no_touch"), "p_no_touch"),
+        "z_path": _float(row.get("z_path"), "z_path"),
+        "sigma_tau": _float(row.get("sigma_tau"), "sigma_tau"),
+        "executable_price": probability_input.executable_price,
+        "spread": None,
+        "seconds_left": probability_input.seconds_left,
+        "wave_phase": str(row.get("wave_phase") or "none"),
+        "wave_score": _float(row.get("wave_score", 0.0), "wave_score"),
+        "path_count": _optional_event_int(row.get("path_count")),
+        "seed": _optional_event_int(row.get("seed")),
+        "queue_ms": _latency_value(latency, "queue_ms"),
+        "runtime_ms": _latency_value(latency, "runtime_ms"),
+        "state_to_status_ms": _latency_value(latency, "state_to_status_ms"),
+        "total_lag_ms": _latency_value(latency, "total_lag_ms"),
+        "generated_at": generated_at.isoformat(),
+        "valid_from": str(row.get("valid_from") or generated_at.isoformat()),
+        "valid_until": str(
+            row.get("valid_until")
+            or (generated_at + timedelta(seconds=DEFAULT_PROBABILITY_GRID_VALID_SECONDS)).isoformat()
+        ),
+        "diagnostics": {
+            "source": "cuda-probability-worker",
+            "latency": dict(cast(Mapping[str, Any], latency)),
+        },
+    }
+
+
+def _event_id(state_id: str, asof_ts: datetime, kind: str, generated_at: datetime) -> str:
+    digest = hashlib.sha256(
+        f"{state_id}|{asof_ts.isoformat()}|{kind}|{generated_at.isoformat()}".encode()
+    ).hexdigest()
+    return f"prob-event-{digest[:24]}"
+
+
+def _append_probability_event_rows(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(row, sort_keys=True, separators=(",", ":"), allow_nan=False))
+            handle.write("\n")
+
+
+def _optional_string(value: object) -> str | None:
+    if value is None:
+        return None
+    return str(value)
+
+
+def _optional_event_int(value: object) -> int | None:
+    if value is None:
+        return None
+    return _int(value, "event_int")
+
+
+def _latency_value(latency: object, field_name: str) -> float | None:
+    if not isinstance(latency, Mapping):
+        return None
+    value = latency.get(field_name)
+    if value is None:
+        return None
+    return float(cast(Any, value))
 
 
 def _write_status(path: Path, payload: dict[str, Any]) -> None:

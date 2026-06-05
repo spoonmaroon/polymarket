@@ -31,8 +31,10 @@ def test_schema_applies_to_empty_database(tmp_path: Path) -> None:
         "core.orderbook_snapshots",
         "features.asof_state_inputs",
         "features.decision_snapshots",
+        "features.probability_event_log",
         "features.probability_grid_cache",
         "features.probability_outputs",
+        "features.simulation_artifacts",
         "validation.contract_labels",
         "validation.decision_labels",
         "validation.market_outcome_history",
@@ -121,6 +123,102 @@ def test_probability_grid_cache_schema_has_expected_columns(tmp_path: Path) -> N
         "valid_from",
         "valid_until",
         "diagnostics_json",
+    ]
+
+
+def test_probability_event_log_schema_has_expected_columns(tmp_path: Path) -> None:
+    db_path = tmp_path / "test.duckdb"
+    schema_path = Path("src/polymarket_engine/storage/schema.sql")
+
+    with duckdb.connect(str(db_path)) as conn:
+        conn.sql(schema_path.read_text())
+        columns = [
+            row[0]
+            for row in conn.sql(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'features'
+                  AND table_name = 'probability_event_log'
+                ORDER BY ordinal_position
+                """
+            ).fetchall()
+        ]
+
+    assert columns == [
+        "event_id",
+        "output_id",
+        "state_id",
+        "contract_id",
+        "market_slug",
+        "asset",
+        "side",
+        "start_ts",
+        "expiry_ts",
+        "asof_ts",
+        "probability_kind",
+        "backend",
+        "model_version",
+        "generator_version",
+        "cache_key",
+        "cache_status",
+        "p_finish",
+        "p_no_touch",
+        "z_path",
+        "sigma_tau",
+        "executable_price",
+        "spread",
+        "seconds_left",
+        "wave_phase",
+        "wave_score",
+        "path_count",
+        "seed",
+        "queue_ms",
+        "runtime_ms",
+        "state_to_status_ms",
+        "total_lag_ms",
+        "generated_at",
+        "valid_from",
+        "valid_until",
+        "diagnostics_json",
+        "created_at",
+    ]
+
+
+def test_simulation_artifacts_schema_has_expected_columns(tmp_path: Path) -> None:
+    db_path = tmp_path / "test.duckdb"
+    schema_path = Path("src/polymarket_engine/storage/schema.sql")
+
+    with duckdb.connect(str(db_path)) as conn:
+        conn.sql(schema_path.read_text())
+        columns = [
+            row[0]
+            for row in conn.sql(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'features'
+                  AND table_name = 'simulation_artifacts'
+                ORDER BY ordinal_position
+                """
+            ).fetchall()
+        ]
+
+    assert columns == [
+        "artifact_id",
+        "output_id",
+        "state_id",
+        "asof_ts",
+        "model_version",
+        "backend",
+        "path_count",
+        "terminal_win_count",
+        "no_touch_win_count",
+        "terminal_price_quantiles_json",
+        "crossing_count_quantiles_json",
+        "sampled_paths_json",
+        "diagnostics_json",
+        "created_at",
     ]
 
 

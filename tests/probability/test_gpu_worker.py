@@ -1,5 +1,6 @@
 import json
 import time
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import cast
@@ -76,7 +77,12 @@ def test_cuda_probability_worker_cycle_writes_status_file(
     assert result["ok"] is True
     assert result["schema_version"] == "polymarket-probability-runtime-v1"
     assert result["rows_written"] == 1
+    assert result["lanes"] == {"MC": 1, "NOWCAST": 1}
+    assert result["latency"]["max_total_lag_ms"] is not None
     assert result["rows"][0]["p_finish"] == pytest.approx(0.61)
+    assert result["rows"][0]["probability_kind"] == "MC"
+    assert result["rows"][0]["backend"] == "cuda"
+    assert result["nowcast_rows"][0]["probability_kind"] == "NOWCAST"
     assert result["rows"][0]["p_hat"] == pytest.approx(0.61)
     assert result["rows"][0]["cache_status"] == "REFRESH"
     assert result["rows"][0]["generator_version"] == "cuda-lognormal-chainlink-sigma-multiseed-v1"
@@ -93,6 +99,10 @@ def test_cuda_probability_worker_cycle_writes_status_file(
     assert payload["schema_version"] == "polymarket-probability-runtime-v1"
     assert payload["rows"][0]["model_version"] == "cached-grid-v1"
     assert payload["rows"][0]["path_count"] == 80_000
+    assert payload["lanes"] == {"MC": 1, "NOWCAST": 1}
+    event_lines = status_path.with_name("probability-events.jsonl").read_text().splitlines()
+    assert len(event_lines) == 2
+    assert {json.loads(line)["probability_kind"] for line in event_lines} == {"MC", "NOWCAST"}
 
 
 def test_cuda_probability_worker_cycle_reads_input_snapshot_without_duckdb(
@@ -174,8 +184,70 @@ def test_cuda_probability_worker_cycle_reads_input_snapshot_without_duckdb(
     assert result["ok"] is True
     assert result["rows_seen"] == 1
     assert result["rows_written"] == 1
+    assert result["nowcast_rows"][0]["probability_kind"] == "NOWCAST"
     assert result["rows"][0]["generator_version"] == "cuda-lognormal-chainlink-sigma-multiseed-v1"
     assert result["rows"][0]["path_count"] == 80_000
+
+
+def test_cuda_probability_worker_escalates_paths_for_breaking_wave(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polymarket_engine.probability import gpu_worker
+
+    db_path = tmp_path / "state.duckdb"
+    status_path = tmp_path / "live" / "probabilities.json"
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    state = replace(
+        _decision_state(),
+        settlement_price=104.0,
+        best_bid=0.93,
+        best_ask=0.94,
+        executable_price=0.94,
+    )
+    store.upsert_contract_spec(state.contract)
+    store.upsert_asof_state_input(state)
+    calls: list[dict[str, int]] = []
+
+    def fake_cuda(
+        probability_input: ProbabilityInput,
+        *,
+        paths_per_seed: int,
+        steps: int,
+        seed: int,
+        seed_count: int,
+    ) -> ProbabilityOutput:
+        calls.append({"paths_per_seed": paths_per_seed, "seed_count": seed_count})
+        return ProbabilityOutput(
+            state_id=probability_input.state_id,
+            asof_ts=probability_input.asof_ts,
+            p_finish=0.97,
+            p_no_touch=0.86,
+            z_path=probability_input.z_path,
+            model_version="cuda-lognormal-chainlink-sigma-multiseed-v1",
+            seed=seed,
+            diagnostics={
+                "path_count": paths_per_seed * seed_count,
+                "paths_per_seed": paths_per_seed,
+                "seed_count": seed_count,
+                "steps": steps,
+                "simulation_preview": {
+                    "path_count": paths_per_seed * seed_count,
+                    "sampled_paths": [],
+                },
+            },
+        )
+
+    monkeypatch.setattr(gpu_worker, "run_cuda_monte_carlo_multi_seed", fake_cuda)
+
+    result = gpu_worker.run_cuda_probability_worker_cycle(
+        duckdb_path=db_path,
+        probability_status_path=status_path,
+    )
+
+    assert calls == [{"paths_per_seed": 50_000, "seed_count": 5}]
+    assert result["rows"][0]["path_count"] == 250_000
 
 
 def test_cuda_probability_worker_cycle_clears_active_rows_when_inputs_unavailable(
@@ -414,6 +486,9 @@ def test_cuda_probability_worker_writes_p_hat_confidence_and_seed_metadata(
     assert row["paths_per_seed"] == calls[0]["paths_per_seed"]
     assert row["path_count"] == calls[0]["paths_per_seed"] * calls[0]["seed_count"]
     assert row["prior_sensitivity"][0]["dimension"] == "prior_price_quantile"
+    assert row["decision_hint"] == "WAIT"
+    assert row["path_risk_buffer"] == pytest.approx(0.0225)
+    assert row["gate_reasons"] == ["P_NO_TOUCH_BELOW_FLOOR"]
 
 
 def test_cuda_probability_worker_reads_only_non_expired_probability_inputs(

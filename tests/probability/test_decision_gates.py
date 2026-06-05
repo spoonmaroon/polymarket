@@ -60,9 +60,11 @@ def test_evaluate_probability_gates_returns_trade_candidate_when_edge_clears_buf
         _quality(),
     )
 
+    assert result.action == "TRADE_CANDIDATE"
     assert result.decision_hint == "TRADE_CANDIDATE"
     assert result.edge_after_costs == pytest.approx(0.09)
     assert result.required_edge == pytest.approx(0.05)
+    assert result.path_risk_buffer == pytest.approx(0.0)
     assert result.reasons == ()
 
 
@@ -78,24 +80,66 @@ def test_evaluate_probability_gates_demands_more_edge_when_edge_is_too_small() -
     assert result.reasons == ("INSUFFICIENT_EDGE",)
 
 
-def test_evaluate_probability_gates_waits_on_terminal_or_near_threshold_risk() -> None:
+def test_evaluate_probability_gates_uses_p_no_touch_as_path_buffer_not_fair_value() -> None:
     result = evaluate_probability_gates(
         _ensemble(
-            p_no_touch=0.52,
-            z_path=0.20,
-            path_diagnosis=("TERMINAL_ONLY", "NEAR_THRESHOLD"),
+            p_finish=0.80,
+            p_no_touch=0.60,
+            z_path=0.75,
+            path_diagnosis=("CLEAN",),
         ),
-        _quality(executable_entry_price=0.60),
+        _quality(executable_entry_price=0.73),
+        p_no_touch_soft_floor=0.70,
+        path_risk_buffer_per_probability_point=0.50,
+    )
+
+    assert result.decision_hint == "DEMAND_MORE_EDGE"
+    assert result.edge_after_costs == pytest.approx(0.06)
+    assert result.path_risk_buffer == pytest.approx(0.05)
+    assert result.required_edge == pytest.approx(0.10)
+    assert result.reasons == (
+        "P_NO_TOUCH_BELOW_FLOOR",
+        "PATH_RISK_BUFFER",
+        "INSUFFICIENT_EDGE",
+    )
+
+
+def test_evaluate_probability_gates_blocks_when_p_no_touch_is_below_hard_floor() -> None:
+    result = evaluate_probability_gates(
+        _ensemble(
+            p_finish=0.92,
+            p_no_touch=0.49,
+            z_path=0.75,
+            path_diagnosis=("CLEAN",),
+        ),
+        _quality(executable_entry_price=0.50),
+        p_no_touch_hard_floor=0.50,
+    )
+
+    assert result.action == "BLOCK"
+    assert result.decision_hint == "BLOCK"
+    assert result.edge_after_costs == pytest.approx(0.41)
+    assert result.reasons == (
+        "P_NO_TOUCH_BELOW_HARD_FLOOR",
+        "P_NO_TOUCH_BELOW_FLOOR",
+    )
+
+
+def test_evaluate_probability_gates_does_not_trade_when_p_no_touch_is_below_floor() -> None:
+    result = evaluate_probability_gates(
+        _ensemble(
+            p_finish=0.95,
+            p_no_touch=0.60,
+            z_path=0.90,
+            path_diagnosis=("CLEAN",),
+        ),
+        _quality(executable_entry_price=0.50),
     )
 
     assert result.decision_hint == "WAIT"
-    assert result.required_edge == pytest.approx(0.09)
-    assert result.reasons == (
-        "P_NO_TOUCH_BELOW_FLOOR",
-        "Z_PATH_BELOW_FLOOR",
-        "TERMINAL_ONLY",
-        "NEAR_THRESHOLD",
-    )
+    assert result.edge_after_costs > result.required_edge
+    assert result.path_risk_buffer == pytest.approx(0.015)
+    assert result.reasons == ("P_NO_TOUCH_BELOW_FLOOR",)
 
 
 def test_evaluate_probability_gates_blocks_wrong_side_z_path_even_when_edge_clears() -> None:

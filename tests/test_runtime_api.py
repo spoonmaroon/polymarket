@@ -1070,6 +1070,54 @@ def test_runtime_probabilities_runs_cached_read_only_mc_and_persists_output(
     assert row["flags"] == ["OK"]
     with duckdb.connect(str(db_path)) as conn:
         assert conn.execute("select count(*) from features.probability_outputs").fetchone() == (1,)
+        assert conn.execute("select count(*) from features.probability_event_log").fetchone() == (2,)
+    assert first_payload["lanes"] == {"MC": 1, "NOWCAST": 1}
+    assert first_payload["latency"]["max_total_lag_ms"] is not None
+    assert len(first_payload["nowcast_rows"]) == 1
+    assert first_payload["nowcast_rows"][0]["probability_kind"] == "NOWCAST"
+
+
+def test_runtime_probabilities_computed_rows_include_p_no_touch_gate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "polymarket.duckdb"
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    state = _decision_state()
+    store.upsert_contract_spec(state.contract)
+    store.upsert_asof_state_input(state)
+    probability_input = ProbabilityInput.from_decision_state(state)
+
+    def fake_mc(*_: object, **__: object) -> ProbabilityOutput:
+        return ProbabilityOutput(
+            state_id=probability_input.state_id,
+            asof_ts=probability_input.asof_ts,
+            p_finish=0.80,
+            p_no_touch=0.60,
+            z_path=probability_input.z_path,
+            model_version="fixture-mc-v1",
+            seed=123,
+            diagnostics={"path_count": 10_000, "steps": 2},
+        )
+
+    monkeypatch.setattr(
+        "polymarket_engine.probability.runtime.run_seeded_monte_carlo",
+        fake_mc,
+    )
+    app = create_app(
+        status_path=tmp_path / "missing-status.json",
+        duckdb_path=db_path,
+        enable_runtime_probabilities=True,
+    )
+
+    row = TestClient(app).get("/api/runtime/probabilities?limit=4").json()["rows"][0]
+
+    assert row["edge_after_costs"] == pytest.approx(0.16)
+    assert row["path_risk_buffer"] == pytest.approx(0.015)
+    assert row["required_edge"] == pytest.approx(0.065)
+    assert row["decision_hint"] == "WAIT"
+    assert row["gate_reasons"] == ["P_NO_TOUCH_BELOW_FLOOR"]
 
 
 def test_runtime_probabilities_uses_safe_grid_cache_before_mc(
@@ -1154,8 +1202,11 @@ def test_runtime_probabilities_uses_safe_grid_cache_before_mc(
     assert payload["rows"][0]["sigma_bucket"] == "0.010-0.015"
     assert payload["rows"][0]["volatility_regime"] == "normal"
     assert payload["rows"][0]["path_count"] == 10_000
+    assert payload["lanes"] == {"CACHE": 1, "NOWCAST": 1}
+    assert payload["nowcast_rows"][0]["probability_kind"] == "NOWCAST"
     with duckdb.connect(str(db_path)) as conn:
         assert conn.execute("select count(*) from features.probability_outputs").fetchone() == (0,)
+        assert conn.execute("select count(*) from features.probability_event_log").fetchone() == (2,)
 
 
 def test_runtime_probabilities_adds_wave_signal_to_grid_rows(
@@ -1602,6 +1653,7 @@ def test_persisted_probability_rows_expose_ensemble_and_gate_diagnostics(
                 "decision_hint": "WAIT",
                 "edge_after_costs": 0.019,
                 "required_edge": 0.086,
+                "path_risk_buffer": 0.021,
                 "reasons": ["NEAR_THRESHOLD"],
             },
             "generator": {
@@ -1656,6 +1708,7 @@ def test_persisted_probability_rows_expose_ensemble_and_gate_diagnostics(
     assert row["decision_hint"] == "WAIT"
     assert row["edge_after_costs"] == pytest.approx(0.019)
     assert row["required_edge"] == pytest.approx(0.086)
+    assert row["path_risk_buffer"] == pytest.approx(0.021)
     assert row["gate_reasons"] == ["NEAR_THRESHOLD"]
     assert row["generator_metadata"] == {
         "snapshot_id": "weights-2026-06-05T20:00Z",

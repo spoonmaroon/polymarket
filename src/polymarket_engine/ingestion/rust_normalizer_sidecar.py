@@ -8,7 +8,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import duckdb
 
@@ -27,6 +27,7 @@ from polymarket_engine.ingestion.rust_event_normalizer import (
 )
 from polymarket_engine.probability.runtime import build_probability_payload_from_store
 from polymarket_engine.probability.runtime import latest_probability_inputs_from_connection
+from polymarket_engine.probability.event_log import ProbabilityEventLogRow
 from polymarket_engine.storage.atomic import durable_replace
 from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
 from polymarket_engine.validation.outcomes import PolymarketClobMarketPayloadSource
@@ -87,6 +88,7 @@ class RustNormalizerCycleResult:
     contracts_upserted: int
     states_written: int
     probability_outputs_written: int
+    probability_events_drained: int
     market_outcomes_written: int
     state_skipped: bool
     unavailable: tuple[UnavailableDecisionState, ...]
@@ -109,6 +111,7 @@ class RustNormalizerCycleResult:
             "contracts_upserted": self.contracts_upserted,
             "states_written": self.states_written,
             "probability_outputs_written": self.probability_outputs_written,
+            "probability_events_drained": self.probability_events_drained,
             "market_outcomes_written": self.market_outcomes_written,
             "state_skipped": self.state_skipped,
             "unavailable": [
@@ -222,6 +225,7 @@ def _run_rust_normalizer_cycle_with_store(
     contracts_upserted = 0
     states_written = 0
     probability_outputs_written = 0
+    probability_events_drained = 0
     unavailable: tuple[UnavailableDecisionState, ...] = ()
     if build_state:
         try:
@@ -242,6 +246,10 @@ def _run_rust_normalizer_cycle_with_store(
                     store=store,
                     out_path=probability_status_path,
                 )
+    probability_events_drained = _drain_probability_event_jsonl(
+        store=store,
+        event_path=probability_status_path.with_name("probability-events.jsonl"),
+    )
     market_outcomes_written = (
         _upsert_market_outcomes(
             store=store,
@@ -277,6 +285,7 @@ def _run_rust_normalizer_cycle_with_store(
         contracts_upserted=contracts_upserted,
         states_written=states_written,
         probability_outputs_written=probability_outputs_written,
+        probability_events_drained=probability_events_drained,
         market_outcomes_written=market_outcomes_written,
         state_skipped=status_mtime_ns is not None and not build_state,
         unavailable=unavailable,
@@ -598,6 +607,7 @@ def _run_changed_rust_normalizer_cycle_with_store(
     contracts_upserted = 0
     states_written = 0
     probability_outputs_written = 0
+    probability_events_drained = 0
     unavailable: tuple[UnavailableDecisionState, ...] = ()
     if build_state:
         try:
@@ -618,6 +628,10 @@ def _run_changed_rust_normalizer_cycle_with_store(
                     store=store,
                     out_path=probability_status_path,
                 )
+    probability_events_drained = _drain_probability_event_jsonl(
+        store=store,
+        event_path=probability_status_path.with_name("probability-events.jsonl"),
+    )
     market_outcomes_written = (
         _upsert_market_outcomes(
             store=store,
@@ -655,6 +669,7 @@ def _run_changed_rust_normalizer_cycle_with_store(
         contracts_upserted=contracts_upserted,
         states_written=states_written,
         probability_outputs_written=probability_outputs_written,
+        probability_events_drained=probability_events_drained,
         market_outcomes_written=market_outcomes_written,
         state_skipped=status_mtime_ns is not None and not build_state,
         unavailable=unavailable,
@@ -709,6 +724,7 @@ def _run_idle_rust_normalizer_cycle_with_store(
     contracts_upserted = 0
     states_written = 0
     probability_outputs_written = 0
+    probability_events_drained = 0
     unavailable: tuple[UnavailableDecisionState, ...] = ()
     if build_state:
         try:
@@ -729,6 +745,10 @@ def _run_idle_rust_normalizer_cycle_with_store(
                     store=store,
                     out_path=probability_status_path,
                 )
+    probability_events_drained = _drain_probability_event_jsonl(
+        store=store,
+        event_path=probability_status_path.with_name("probability-events.jsonl"),
+    )
     market_outcomes_written = (
         _upsert_market_outcomes(
             store=store,
@@ -769,6 +789,7 @@ def _run_idle_rust_normalizer_cycle_with_store(
         contracts_upserted=contracts_upserted,
         states_written=states_written,
         probability_outputs_written=probability_outputs_written,
+        probability_events_drained=probability_events_drained,
         market_outcomes_written=market_outcomes_written,
         state_skipped=status_mtime_ns is not None and not build_state,
         unavailable=unavailable,
@@ -837,6 +858,115 @@ def _compute_probability_outputs(*, store: DuckDbIngestStore, out_path: Path) ->
         )
     rows = payload.get("rows")
     return len(rows) if isinstance(rows, list) else 0
+
+
+def _drain_probability_event_jsonl(
+    *,
+    store: DuckDbIngestStore,
+    event_path: Path,
+) -> int:
+    drain_paths = _probability_event_drain_paths(event_path)
+    drained = 0
+    for drain_path in drain_paths:
+        lines = drain_path.read_text(encoding="utf-8").splitlines()
+        for line in lines:
+            if not line.strip():
+                continue
+            payload = json.loads(line)
+            if not isinstance(payload, dict):
+                raise ValueError("probability event JSONL row must be an object")
+            store.insert_probability_event(_event_row_from_payload(payload))
+            drained += 1
+        drain_path.unlink()
+    return drained
+
+
+def _probability_event_drain_paths(event_path: Path) -> list[Path]:
+    drain_paths = sorted(event_path.parent.glob(f"{event_path.name}.*.drain"))
+    rotated = _rotate_probability_event_jsonl(event_path)
+    if rotated is not None:
+        drain_paths.append(rotated)
+    return drain_paths
+
+
+def _rotate_probability_event_jsonl(event_path: Path) -> Path | None:
+    if not event_path.exists():
+        return None
+    drain_path = event_path.with_name(
+        f"{event_path.name}.{os.getpid()}.{time.time_ns()}.drain"
+    )
+    try:
+        event_path.replace(drain_path)
+    except FileNotFoundError:
+        return None
+    return drain_path
+
+
+def _event_row_from_payload(payload: dict[str, Any]) -> ProbabilityEventLogRow:
+    return ProbabilityEventLogRow(
+        event_id=str(payload["event_id"]),
+        output_id=_optional_payload_str(payload.get("output_id")),
+        state_id=str(payload["state_id"]),
+        contract_id=str(payload["contract_id"]),
+        market_slug=str(payload["market_slug"]),
+        asset=str(payload["asset"]),
+        side=str(payload["side"]),
+        start_ts=_event_datetime(payload["start_ts"]),
+        expiry_ts=_event_datetime(payload["expiry_ts"]),
+        asof_ts=_event_datetime(payload["asof_ts"]),
+        probability_kind=str(payload["probability_kind"]),
+        backend=str(payload["backend"]),
+        model_version=str(payload["model_version"]),
+        generator_version=_optional_payload_str(payload.get("generator_version")),
+        cache_key=_optional_payload_str(payload.get("cache_key")),
+        cache_status=_optional_payload_str(payload.get("cache_status")),
+        p_finish=float(payload["p_finish"]),
+        p_no_touch=float(payload["p_no_touch"]),
+        z_path=float(payload["z_path"]),
+        sigma_tau=_optional_payload_float(payload.get("sigma_tau")),
+        executable_price=_optional_payload_float(payload.get("executable_price")),
+        spread=_optional_payload_float(payload.get("spread")),
+        seconds_left=float(payload["seconds_left"]),
+        wave_phase=str(payload["wave_phase"]),
+        wave_score=float(payload["wave_score"]),
+        path_count=_optional_payload_int(payload.get("path_count")),
+        seed=_optional_payload_int(payload.get("seed")),
+        queue_ms=_optional_payload_float(payload.get("queue_ms")),
+        runtime_ms=_optional_payload_float(payload.get("runtime_ms")),
+        state_to_status_ms=_optional_payload_float(payload.get("state_to_status_ms")),
+        total_lag_ms=_optional_payload_float(payload.get("total_lag_ms")),
+        generated_at=_event_datetime(payload["generated_at"]),
+        valid_from=_event_datetime(payload["valid_from"]),
+        valid_until=_event_datetime(payload["valid_until"]),
+        diagnostics=dict(payload.get("diagnostics", {})),
+    )
+
+
+def _event_datetime(value: object) -> datetime:
+    if not isinstance(value, str):
+        raise ValueError("event datetime must be a string")
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _optional_payload_str(value: object) -> str | None:
+    if value is None:
+        return None
+    return str(value)
+
+
+def _optional_payload_float(value: object) -> float | None:
+    if value is None:
+        return None
+    return float(cast(Any, value))
+
+
+def _optional_payload_int(value: object) -> int | None:
+    if value is None:
+        return None
+    return int(float(cast(Any, value)))
 
 
 def _write_probability_input_snapshot(
@@ -1200,6 +1330,8 @@ def _write_probability_status(
     payload = dict(payload)
     payload["schema_version"] = "polymarket-probability-runtime-v1"
     payload["cached"] = False
+    payload["lanes"] = _probability_status_lanes(payload)
+    payload["latency"] = _probability_status_latency(payload)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = out_path.with_suffix(f"{out_path.suffix}.tmp")
     tmp_path.write_text(
@@ -1207,6 +1339,56 @@ def _write_probability_status(
         encoding="utf-8",
     )
     durable_replace(tmp_path, out_path)
+
+
+def _probability_status_lanes(payload: dict[str, Any]) -> dict[str, int]:
+    lanes: dict[str, int] = {}
+    for row in _probability_status_rows(payload):
+        lane = str(row.get("probability_kind") or "MC")
+        lanes[lane] = lanes.get(lane, 0) + 1
+    return lanes
+
+
+def _probability_status_latency(payload: dict[str, Any]) -> dict[str, float | None]:
+    total_lags = [
+        lag
+        for row in _probability_status_rows(payload)
+        for lag in [_probability_row_latency(row, "total_lag_ms")]
+        if lag is not None
+    ]
+    runtimes = [
+        runtime
+        for row in _probability_status_rows(payload)
+        for runtime in [_probability_row_latency(row, "runtime_ms")]
+        if runtime is not None
+    ]
+    return {
+        "max_total_lag_ms": max(total_lags) if total_lags else None,
+        "avg_total_lag_ms": round(sum(total_lags) / len(total_lags), 3)
+        if total_lags
+        else None,
+        "max_runtime_ms": max(runtimes) if runtimes else None,
+        "avg_runtime_ms": round(sum(runtimes) / len(runtimes), 3) if runtimes else None,
+    }
+
+
+def _probability_status_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for key in ("rows", "nowcast_rows"):
+        raw_rows = payload.get(key)
+        if isinstance(raw_rows, Sequence) and not isinstance(raw_rows, (str, bytes)):
+            rows.extend(row for row in raw_rows if isinstance(row, dict))
+    return rows
+
+
+def _probability_row_latency(row: dict[str, Any], field_name: str) -> float | None:
+    latency = row.get("latency")
+    if not isinstance(latency, dict):
+        return None
+    value = latency.get(field_name)
+    if value is None:
+        return None
+    return float(value)
 
 
 def _status_state_signature(status_path: Path) -> StatusStateSignature | None:
@@ -1432,6 +1614,7 @@ def _cycle_log_line(result: RustNormalizerCycleResult) -> str:
         f"rows_read={result.rows_read} "
         f"bytes_read={result.bytes_read} "
         f"probability_outputs_written={result.probability_outputs_written} "
+        f"probability_events_drained={result.probability_events_drained} "
         f"market_outcomes_written={result.market_outcomes_written} "
         f"state_skipped={str(result.state_skipped).lower()}"
     )

@@ -1,5 +1,6 @@
 from collections.abc import Iterator, Sequence
-from datetime import datetime, timezone
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 from typing import Any, TypeVar, cast, overload
@@ -10,6 +11,7 @@ import pytest
 from polymarket_engine.domain.contracts import ContractSpec
 from polymarket_engine.domain.market_state import DecisionState, OrderBookObservation, PriceObservation
 from polymarket_engine.probability.ensemble_weights import DynamicWeightSet
+from polymarket_engine.probability.event_log import ProbabilityEventLogRow
 from polymarket_engine.probability.generator_contracts import DynamicWeightScope, GeneratorId
 from polymarket_engine.probability.generator_contracts import HistoricalValidationWindow
 from polymarket_engine.probability.schema import ProbabilityInput, ProbabilityOutput
@@ -283,6 +285,113 @@ def test_store_inserts_probability_output_with_json_artifacts(tmp_path: Path) ->
     assert json.loads(input_json)["state_id"] == state.state_id
     assert json.loads(input_json)["z_path"] == probability_input.z_path
     assert json.loads(output_json)["diagnostics"]["paths"] == 1000
+
+
+def test_insert_probability_event_log_row_round_trips(tmp_path: Path) -> None:
+    db_path = tmp_path / "events.duckdb"
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+
+    asof = datetime(2026, 6, 5, 17, 0, tzinfo=timezone.utc)
+    row = ProbabilityEventLogRow(
+        event_id="event-1",
+        output_id=None,
+        state_id="state-1",
+        contract_id="btc-updown-5m-1:UP",
+        market_slug="btc-updown-5m-1",
+        asset="BTC",
+        side="UP",
+        start_ts=asof,
+        expiry_ts=asof + timedelta(minutes=5),
+        asof_ts=asof,
+        probability_kind="NOWCAST",
+        backend="analytic",
+        model_version="fast-nowcast-v1",
+        generator_version=None,
+        cache_key=None,
+        cache_status=None,
+        p_finish=0.62,
+        p_no_touch=0.0,
+        z_path=0.31,
+        sigma_tau=0.001,
+        executable_price=0.59,
+        spread=0.01,
+        seconds_left=210.0,
+        wave_phase="none",
+        wave_score=0.0,
+        path_count=None,
+        seed=None,
+        queue_ms=None,
+        runtime_ms=0.2,
+        state_to_status_ms=12.0,
+        total_lag_ms=12.0,
+        generated_at=asof,
+        valid_from=asof,
+        valid_until=asof + timedelta(seconds=2),
+        diagnostics={"source": "unit-test"},
+    )
+
+    store.insert_probability_event(row)
+
+    with duckdb.connect(str(db_path), read_only=True) as conn:
+        saved = conn.execute(
+            """
+            select probability_kind, backend, model_version, p_finish, diagnostics_json
+            from features.probability_event_log
+            where event_id = 'event-1'
+            """
+        ).fetchone()
+
+    assert saved == (
+        "NOWCAST",
+        "analytic",
+        "fast-nowcast-v1",
+        0.62,
+        '{"source":"unit-test"}',
+    )
+
+    store.insert_probability_event(replace(row, p_finish=0.99))
+
+    with duckdb.connect(str(db_path), read_only=True) as conn:
+        assert conn.execute("select count(*) from features.probability_event_log").fetchone() == (
+            1,
+        )
+        assert conn.execute("select p_finish from features.probability_event_log").fetchone() == (
+            0.62,
+        )
+
+
+def test_insert_simulation_artifact_round_trips(tmp_path: Path) -> None:
+    db_path = tmp_path / "artifact.duckdb"
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+
+    store.insert_simulation_artifact(
+        artifact_id="artifact-1",
+        output_id="prob-1",
+        state_id="state-1",
+        asof_ts=datetime(2026, 6, 5, 17, 0, tzinfo=timezone.utc),
+        model_version="offline-lognormal-chainlink-sigma-v1",
+        backend="cpu",
+        path_count=2_000,
+        terminal_win_count=1_200,
+        no_touch_win_count=900,
+        terminal_price_quantiles={"p05": 100.0, "p50": 101.0, "p95": 103.0},
+        crossing_count_quantiles={"p50": 1.0, "p95": 4.0},
+        sampled_paths=[{"index": 0, "points": [100.0, 101.0], "terminal_win": True}],
+        diagnostics={"source": "unit-test"},
+    )
+
+    with duckdb.connect(str(db_path), read_only=True) as conn:
+        saved = conn.execute(
+            """
+            select path_count, terminal_win_count, terminal_price_quantiles_json
+            from features.simulation_artifacts
+            where artifact_id = 'artifact-1'
+            """
+        ).fetchone()
+
+    assert saved == (2_000, 1_200, '{"p05":100.0,"p50":101.0,"p95":103.0}')
 
 
 def test_store_inserts_and_reads_latest_generator_weight_snapshot(tmp_path: Path) -> None:
