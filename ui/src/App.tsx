@@ -670,12 +670,7 @@ function MonteCarloCanvas({
 }) {
   const geometry = useMemo(() => (preview ? buildPathGeometry(preview) : null), [preview]);
   if (!preview || !geometry) {
-    return (
-      <div className="chart-empty">
-        <strong>Path preview not in this poll</strong>
-        <span>Cached probabilities are live; sampled paths render when preview data is attached.</span>
-      </div>
-    );
+    return <ProbabilityFallbackChart row={row} />;
   }
 
   return (
@@ -709,6 +704,71 @@ function MonteCarloCanvas({
       </svg>
       <div className="chart-caption">
         <span>{formatPreviewWinCounts(preview)}</span>
+        <span>z {formatSigned(row.z_path)}</span>
+      </div>
+    </div>
+  );
+}
+
+function ProbabilityFallbackChart({ row }: { row: ProbabilityRow }) {
+  const finishProbability = normalizedProbability(row.p_finish);
+  const noTouchProbability = normalizedProbability(row.p_no_touch);
+  const bars = [
+    {
+      label: "p_finish",
+      value: finishProbability,
+      className: "fallback-finish",
+    },
+    {
+      label: "p_no_touch",
+      value: noTouchProbability,
+      className: "fallback-no-touch",
+    },
+  ];
+  return (
+    <div className="path-chart fallback-chart">
+      <div className="chart-labels">
+        <span>Cached probability snapshot</span>
+        <span>{formatTimestamp(row.asof_ts)}</span>
+      </div>
+      <svg viewBox="0 0 760 310" role="img" aria-label="Cached probability fallback chart">
+        {[0, 0.25, 0.5, 0.75, 1].map((tick) => {
+          const x = 150 + tick * 540;
+          return (
+            <g key={tick}>
+              <line className="fallback-tick" x1={x} x2={x} y1="58" y2="232" />
+              <text className="axis-label" x={x - 10} y="258">
+                {tick.toFixed(2)}
+              </text>
+            </g>
+          );
+        })}
+        {bars.map((bar, index) => {
+          const y = 82 + index * 82;
+          const width = bar.value === null ? 0 : bar.value * 540;
+          return (
+            <g key={bar.label}>
+              <text className="fallback-label" x="28" y={y + 22}>
+                {bar.label}
+              </text>
+              <rect className="fallback-track" x="150" y={y} width="540" height="34" rx="6" />
+              <rect
+                className={`fallback-bar ${bar.className}`}
+                x="150"
+                y={y}
+                width={width}
+                height="34"
+                rx="6"
+              />
+              <text className="fallback-value" x="704" y={y + 22}>
+                {formatProbability(bar.value ?? undefined)}
+              </text>
+            </g>
+          );
+        })}
+      </svg>
+      <div className="chart-caption">
+        <span>Sampled paths not attached in this poll</span>
         <span>z {formatSigned(row.z_path)}</span>
       </div>
     </div>
@@ -1359,6 +1419,10 @@ function shortWeightLabel(value: string) {
 
 function clamp01(value: number) {
   return Math.max(0, Math.min(1, value));
+}
+
+function normalizedProbability(value?: number) {
+  return isFiniteNumber(value) ? clamp01(value) : null;
 }
 
 function formatTimestamp(value?: string) {

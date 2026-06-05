@@ -414,6 +414,35 @@ svg {
   fill: #f7f8f4;
 }
 
+.fallback-tick {
+  stroke: rgba(255, 255, 255, 0.08);
+  stroke-width: 1;
+}
+
+.fallback-track {
+  fill: #20252a;
+  stroke: #31393d;
+}
+
+.fallback-bar {
+  opacity: 0.92;
+}
+
+.fallback-finish {
+  fill: #37c0ac;
+}
+
+.fallback-no-touch {
+  fill: #d5a853;
+}
+
+.fallback-label,
+.fallback-value {
+  fill: #dce1dc;
+  font-size: 13px;
+  font-weight: 800;
+}
+
 .axis-label {
   fill: #838d92;
   font-size: 12px;
