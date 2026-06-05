@@ -60,8 +60,9 @@ mkdir -p "${REPO_ROOT}/docs/reports"
   )
   echo
   echo "## Decision Rules"
-  echo "- Use CPU for live cached probability runs and the tested visualization sizes until CUDA context/module reuse is implemented."
-  echo "- Re-benchmark CUDA after persistent context/module caching or much larger batched generator sweeps."
+  echo "- Use CPU for live cached probability runs when measured latency is lower at the target path count."
+  echo "- Use CUDA only for workloads where the warm-cache benchmark beats CPU after context/module reuse."
+  echo "- Re-benchmark CUDA again before large batched generator sweeps, especially if path counts or artifact emission change."
   echo "- Keep TUI/API reading cached outputs only."
 } | tee "${REPORT}"
 
