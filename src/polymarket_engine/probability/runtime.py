@@ -410,8 +410,7 @@ def _merge_grid_diagnostics(
     cache_metadata = dict(row.get("generator_metadata", {}))
     cache_metadata.update(detail.get("generator_metadata", {}))
     row.update(detail)
-    if row.get("p_hat") is None and row.get("p_finish") is not None:
-        row["p_hat"] = row["p_finish"]
+    _with_probability_aliases(row)
     row["generator_metadata"] = cache_metadata
 
 
@@ -567,7 +566,7 @@ def _persisted_runtime_row(row: tuple[Any, ...]) -> dict[str, Any]:
     if not isinstance(diagnostics, Mapping):
         raise ValueError("probability output diagnostics must be a JSON object")
     age_ms = max(0, int((datetime.now(timezone.utc) - asof_ts).total_seconds() * 1000))
-    return {
+    return _with_probability_aliases({
         "contract": _contract_label(
             asset=str(row[11]),
             side=str(row[12]),
@@ -591,7 +590,7 @@ def _persisted_runtime_row(row: tuple[Any, ...]) -> dict[str, Any]:
         "seed": _optional_int(row[7]),
         "output_id": str(row[0]),
         **_runtime_detail_from_diagnostics(diagnostics),
-    }
+    })
 
 
 def _runtime_detail_from_diagnostics(diagnostics: Mapping[str, Any]) -> dict[str, Any]:
@@ -703,6 +702,12 @@ def _apply_wave_signal(row: dict[str, Any], probability_input: ProbabilityInput)
             )
         )
     )
+
+
+def _with_probability_aliases(row: dict[str, Any]) -> dict[str, Any]:
+    if row.get("p_hat") is None and row.get("p_finish") is not None:
+        row["p_hat"] = row["p_finish"]
+    return row
 
 
 def _optional_mapping(value: object, field_name: str) -> Mapping[str, Any] | None:

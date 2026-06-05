@@ -230,6 +230,23 @@ def test_grid_runtime_row_extracts_confidence_and_sensitivity_diagnostics() -> N
     assert runtime_row["prior_sensitivity"] == sensitivity
 
 
+def test_grid_runtime_row_rejects_bool_probability_diagnostics() -> None:
+    probability_input = _probability_input()
+    entry = _entry(probability_input, diagnostics={"p_hat": False})
+
+    with pytest.raises(ValueError, match="optional float must be finite"):
+        grid_runtime_row(
+            probability_input=probability_input,
+            contract="BTC 5m UP",
+            contract_id="btc-5m-up",
+            market_slug="btc-updown-5m-1780668000",
+            start_ts=datetime(2026, 6, 5, 14, 0, tzinfo=timezone.utc),
+            expiry_ts=datetime(2026, 6, 5, 14, 5, tzinfo=timezone.utc),
+            hit=ProbabilityGridHit(entry=entry),
+            now=datetime(2026, 6, 5, 14, 3, 21, tzinfo=timezone.utc),
+        )
+
+
 def test_probability_grid_lookup_rejects_wall_clock_stale_or_future_leaking_entries(
     tmp_path: Path,
 ) -> None:

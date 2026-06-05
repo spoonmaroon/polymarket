@@ -622,6 +622,8 @@ def _float(value: object, field_name: str) -> float:
 def _optional_float(value: object) -> float | None:
     if value is None:
         return None
+    if isinstance(value, bool):
+        raise ValueError("optional float must be finite")
     number = float(value)
     if not math.isfinite(number):
         raise ValueError("optional float must be finite")
