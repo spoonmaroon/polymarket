@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { toProbabilityApiState } from "../../ui/src/App";
+import { toProbabilityApiState, toProbabilityEventApiState } from "../../ui/src/App";
 import { filterGraphableProbabilityRows } from "../../ui/src/probabilityRows";
 
 const previous = {
@@ -74,3 +74,39 @@ const rolloverNext = toProbabilityApiState(
 
 assert.equal(rolloverNext.payload?.rows?.length, 1);
 assert.equal(filterGraphableProbabilityRows(rolloverNext.payload).length, 1);
+
+const streamPrevious = {
+  ...previous,
+  updatedAt: Date.now(),
+  payload: {
+    ...previous.payload,
+    rows: [
+      {
+        ...previous.payload.rows[0],
+        expiry_ts: "2000-01-01T00:00:00Z",
+        valid_until: "2000-01-01T00:00:00Z",
+      },
+    ],
+  },
+};
+
+const streamNext = toProbabilityEventApiState(
+  [
+    {
+      event_id: "nowcast-only",
+      contract_id: "btc-up",
+      asset: "BTC",
+      side: "UP",
+      expiry_ts: "2099-06-05T21:00:00Z",
+      valid_until: "2099-06-05T20:55:30Z",
+      probability_kind: "NOWCAST",
+      p_hat: 0.55,
+      generated_at: "2099-06-05T20:55:02Z",
+    },
+  ],
+  streamPrevious,
+);
+
+assert.equal(streamNext.payload?.rows?.length, 1);
+assert.equal(filterGraphableProbabilityRows(streamNext.payload).length, 1);
+assert.equal(streamNext.notice, "Monte Carlo refresh pending; keeping last populated grid.");

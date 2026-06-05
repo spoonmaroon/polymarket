@@ -146,6 +146,7 @@ type ProbabilityRow = {
   p_hat_ci_low?: number;
   p_hat_ci_high?: number;
   p_no_touch?: number;
+  probability_kind?: string;
   z_path?: number;
   sigma_tau?: number;
   age_ms?: number;
@@ -330,13 +331,7 @@ export function App() {
         if (events.length === 0) {
           return;
         }
-        setProbabilities((previous) => ({
-          status: "ready",
-          payload: mergeProbabilityEventsIntoPayload(previous.payload, events),
-          error: null,
-          notice: null,
-          updatedAt: Date.now(),
-        }));
+        setProbabilities((previous) => toProbabilityEventApiState(events, previous));
       } catch (error) {
         setProbabilities((previous) => ({
           ...previous,
@@ -1354,13 +1349,36 @@ export function toProbabilityApiState(
   previous: ApiState<ProbabilityPayload>,
 ): ApiState<ProbabilityPayload> {
   const next = toApiState(result);
+  if (result.error || !next.payload) {
+    return next;
+  }
+  return retainPreviousProbabilityRows(next, previous);
+}
+
+export function toProbabilityEventApiState(
+  events: ProbabilityRow[],
+  previous: ApiState<ProbabilityPayload>,
+): ApiState<ProbabilityPayload> {
+  const next: ApiState<ProbabilityPayload> = {
+    status: "ready",
+    payload: mergeProbabilityEventsIntoPayload(previous.payload, events),
+    error: null,
+    notice: null,
+    updatedAt: Date.now(),
+  };
+  return retainPreviousProbabilityRows(next, previous);
+}
+
+function retainPreviousProbabilityRows(
+  next: ApiState<ProbabilityPayload>,
+  previous: ApiState<ProbabilityPayload>,
+): ApiState<ProbabilityPayload> {
   const previousRows = safeRows(previous.payload);
   const nextRows = safeRows(next.payload);
   const previousRawRows = Array.isArray(previous.payload?.rows) ? previous.payload.rows : [];
   const nowMs = Date.now();
   const holdUntilMs = (previous.updatedAt ?? nowMs) + MC_REFRESH_HOLD_MS;
   if (
-    !result.error &&
     next.payload &&
     previousRawRows.length > 0 &&
     nextRows.length === 0 &&
