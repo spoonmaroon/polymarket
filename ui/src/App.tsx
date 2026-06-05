@@ -345,6 +345,7 @@ export function App() {
             marketRows={marketRows}
             onSelectProbability={setSelectedId}
           />
+          <CompactVolatility volatility={live.payload?.volatility ?? null} />
           <ProbabilityTable
             rows={rows}
             selectedKey={selectedRow ? selectionKey(selectedRow) : null}
@@ -358,9 +359,6 @@ export function App() {
           />
           <RuntimeLogPanel live={live} probabilities={probabilities} selectedRow={selectedRow} />
         </section>
-        <aside className="side-stack">
-          <CompactVolatility volatility={live.payload?.volatility ?? null} />
-        </aside>
       </section>
     </main>
   );
@@ -1413,7 +1411,7 @@ function currentNextIdentityKey(row: ProbabilityRow) {
   return `window|${asset}|${side}|${startTs ?? ""}|${expiryTs}`;
 }
 
-function buildMarketMonitorRows(
+export function buildMarketMonitorRows(
   orderbooks: RuntimeOrderbookRow[] | undefined,
   probabilities: ProbabilityRow[],
   volatilityRows: RuntimeVolatilityRow[] | undefined,
@@ -1983,8 +1981,8 @@ function marketSideKey(
   if (!normalizedSide) {
     return null;
   }
-  const normalizedExpiry = expiryTs?.trim();
-  const normalizedStart = startTs?.trim();
+  const normalizedExpiry = identityTimestamp(expiryTs);
+  const normalizedStart = identityTimestamp(startTs);
   if (marketSlug?.trim()) {
     return `${marketSlug.trim().toLowerCase()}|${normalizedStart ?? ""}|${
       normalizedExpiry ?? ""
@@ -2004,8 +2002,8 @@ function marketGroupKey(
   startTs?: string,
 ) {
   const normalizedAsset = normalizeAsset(asset);
-  const normalizedExpiry = expiryTs?.trim();
-  const normalizedStart = startTs?.trim();
+  const normalizedExpiry = identityTimestamp(expiryTs);
+  const normalizedStart = identityTimestamp(startTs);
   if (marketSlug?.trim()) {
     return `${marketSlug.trim().toLowerCase()}|${normalizedStart ?? ""}|${
       normalizedExpiry ?? ""
@@ -2023,6 +2021,15 @@ function normalizeAsset(value?: string) {
 
 function normalizeSide(value?: string) {
   return value?.trim().toUpperCase() ?? "";
+}
+
+function identityTimestamp(value?: string) {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  const parsed = timestampMs(trimmed);
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : trimmed;
 }
 
 function assetFromSlug(value?: string) {

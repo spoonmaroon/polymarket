@@ -125,13 +125,12 @@ h3 {
 
 .runtime-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 230px;
+  grid-template-columns: minmax(0, 1fr);
   gap: 6px;
   align-items: start;
 }
 
-.main-stack,
-.side-stack {
+.main-stack {
   display: grid;
   gap: 6px;
   min-width: 0;
@@ -853,6 +852,7 @@ svg {
 
 .volatility-strip {
   display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 220px));
   gap: 5px;
   padding: 6px;
 }
