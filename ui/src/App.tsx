@@ -140,6 +140,9 @@ type ProbabilityRow = {
   expiry_ts?: string;
   p_finish?: number;
   p_hat?: number;
+  p_hat_std?: number;
+  p_hat_ci_low?: number;
+  p_hat_ci_high?: number;
   p_no_touch?: number;
   z_path?: number;
   sigma_tau?: number;
@@ -179,10 +182,22 @@ type ProbabilityRow = {
   path_count?: number;
   paths_per_seed?: number;
   seed_count?: number;
+  prior_sensitivity?: unknown[];
   generator_metadata?: JsonRecord;
   cache_metadata?: JsonRecord;
   grid_cache?: JsonRecord;
   simulation_preview?: unknown;
+};
+
+type PriorSensitivityRow = {
+  dimension?: string;
+  time_fraction?: number;
+  quantile_low?: number;
+  quantile_high?: number;
+  sample_count?: number;
+  price_quantile?: number;
+  log_return_quantile?: number;
+  p_hat?: number;
 };
 
 type ProbabilityPayload = {
@@ -907,6 +922,7 @@ function MonteCarloInputsPanel({
             ]}
           />
         </section>
+        <PriorSensitivityGrid row={row} />
         <section className="mc-input-section">
           <h3>Market Data</h3>
           <KeyValueList
@@ -967,6 +983,69 @@ function MonteCarloInputsPanel({
       </section>
     </section>
   );
+}
+
+function PriorSensitivityGrid({ row }: { row: ProbabilityRow }) {
+  const rows = parsePriorSensitivity(row.prior_sensitivity).slice(0, 12);
+  if (rows.length === 0) {
+    return (
+      <section className="mc-input-section sensitivity-section">
+        <h3>Prior Sensitivity</h3>
+        <p className="quiet">Waiting for prior-derived sensitivity rows.</p>
+      </section>
+    );
+  }
+  return (
+    <section className="mc-input-section sensitivity-section">
+      <h3>Prior Sensitivity</h3>
+      <div className="sensitivity-grid">
+        {rows.map((item, index) => (
+          <div className="sensitivity-row" key={`${item.time_fraction}-${item.quantile_low}-${index}`}>
+            <span>Prior quantile {formatQuantileBand(item)}</span>
+            <strong>{formatProbability(item.p_hat)}</strong>
+            <small>
+              {compactList([
+                formatTimeFraction(item.time_fraction),
+                item.sample_count !== undefined ? `n=${formatInteger(item.sample_count)}` : undefined,
+                item.price_quantile !== undefined ? formatPrice(item.price_quantile) : undefined,
+              ])}
+            </small>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function parsePriorSensitivity(value: unknown): PriorSensitivityRow[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter(isRecord).map((row) => ({
+    dimension: typeof row.dimension === "string" ? row.dimension : undefined,
+    time_fraction: numberOrUndefined(row.time_fraction),
+    quantile_low: numberOrUndefined(row.quantile_low),
+    quantile_high: numberOrUndefined(row.quantile_high),
+    sample_count: numberOrUndefined(row.sample_count),
+    price_quantile: numberOrUndefined(row.price_quantile),
+    log_return_quantile: numberOrUndefined(row.log_return_quantile),
+    p_hat: numberOrUndefined(row.p_hat),
+  }));
+}
+
+function numberOrUndefined(value: unknown) {
+  return isFiniteNumber(value) ? value : undefined;
+}
+
+function formatQuantileBand(row: PriorSensitivityRow) {
+  if (row.quantile_low === undefined || row.quantile_high === undefined) {
+    return "-";
+  }
+  return `${Math.round(row.quantile_low * 100)}-${Math.round(row.quantile_high * 100)}%`;
+}
+
+function formatTimeFraction(value?: number) {
+  return value === undefined ? undefined : `t=${Math.round(value * 100)}%`;
 }
 
 function RuntimeLogPanel({

@@ -20,3 +20,12 @@ def test_runtime_monitor_filters_expired_or_invalid_probability_rows() -> None:
     assert "function isGraphableProbabilityRow" in source
     assert "row.valid_until" in source
     assert "expiryMs > nowMs" in source
+
+
+def test_runtime_monitor_shows_prior_derived_sensitivity_grid() -> None:
+    source = (ROOT / "ui/src/App.tsx").read_text(encoding="utf-8")
+
+    assert "PriorSensitivityGrid" in source
+    assert "prior_sensitivity" in source
+    assert "Prior quantile" in source
+    assert "dollar move" not in source.lower()

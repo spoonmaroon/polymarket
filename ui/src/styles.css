@@ -723,6 +723,37 @@ svg {
   margin: 0 10px 10px;
 }
 
+.sensitivity-section {
+  min-width: 0;
+}
+
+.sensitivity-grid {
+  display: grid;
+  gap: 6px;
+}
+
+.sensitivity-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 2px 8px;
+  align-items: baseline;
+  border-bottom: 1px solid var(--border-muted, #252b30);
+  padding: 6px 0;
+}
+
+.sensitivity-row span,
+.sensitivity-row small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sensitivity-row small {
+  grid-column: 1 / -1;
+  color: var(--text-muted, #9ba4a9);
+}
+
 .gate-pill {
   display: inline-flex;
   align-items: center;
