@@ -11,7 +11,7 @@ use crate::schema::{
     HistogramBin, PercentilePoint, ProbabilityInput, SimulationArtifacts, SimulationBackendKind,
     SimulationConfig, SimulationRun,
 };
-use crate::scoring::score_path;
+use crate::scoring::price_satisfies_contract;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct CpuRayonBackend;
@@ -19,8 +19,27 @@ pub struct CpuRayonBackend;
 #[derive(Clone, Debug)]
 struct PathResult {
     prices: Vec<f64>,
+    terminal_price: f64,
     terminal: bool,
     no_touch: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct SimulationCounts {
+    terminal_count: usize,
+    no_touch_count: usize,
+}
+
+impl SimulationCounts {
+    fn add_path(&mut self, path: &PathResult) {
+        self.terminal_count += usize::from(path.terminal);
+        self.no_touch_count += usize::from(path.no_touch);
+    }
+
+    fn merge(&mut self, other: Self) {
+        self.terminal_count += other.terminal_count;
+        self.no_touch_count += other.no_touch_count;
+    }
 }
 
 impl SimulationBackend for CpuRayonBackend {
@@ -33,25 +52,39 @@ impl SimulationBackend for CpuRayonBackend {
         let normal = Normal::new(0.0, per_step_sigma)
             .map_err(|error| anyhow::anyhow!("invalid normal distribution: {error}"))?;
 
-        let path_results = (0..config.path_count)
-            .into_par_iter()
-            .map(|path_index| simulate_path(path_index, input, config, &normal))
-            .collect::<Result<Vec<_>, _>>()?;
-
-        let terminal_count = path_results.iter().filter(|result| result.terminal).count();
-        let no_touch_count = path_results.iter().filter(|result| result.no_touch).count();
-
-        let artifacts = if config.emit_artifacts {
+        let (counts, artifacts) = if config.emit_artifacts {
+            let path_results = (0..config.path_count)
+                .into_par_iter()
+                .map(|path_index| simulate_path(path_index, input, config, &normal, true))
+                .collect::<Result<Vec<_>, _>>()?;
+            let mut counts = SimulationCounts::default();
+            for path in &path_results {
+                counts.add_path(path);
+            }
             build_artifacts(&path_results, config.sample_path_limit)
+                .map(|artifacts| (counts, artifacts))?
         } else {
-            SimulationArtifacts::default()
+            let counts = (0..config.path_count)
+                .into_par_iter()
+                .map(|path_index| {
+                    simulate_path(path_index, input, config, &normal, false).map(|path| {
+                        let mut counts = SimulationCounts::default();
+                        counts.add_path(&path);
+                        counts
+                    })
+                })
+                .try_reduce(SimulationCounts::default, |mut left, right| {
+                    left.merge(right);
+                    Ok(left)
+                })?;
+            (counts, SimulationArtifacts::default())
         };
 
         Ok(SimulationRun {
             state_id: input.state_id.clone(),
             asof_ts: input.asof_ts,
-            p_finish: terminal_count as f64 / config.path_count as f64,
-            p_no_touch: no_touch_count as f64 / config.path_count as f64,
+            p_finish: counts.terminal_count as f64 / config.path_count as f64,
+            p_no_touch: counts.no_touch_count as f64 / config.path_count as f64,
             z_path: input.z_path,
             model_version: config.model_version.clone(),
             seed: config.seed,
@@ -99,26 +132,37 @@ fn simulate_path(
     input: &ProbabilityInput,
     config: &SimulationConfig,
     normal: &Normal<f64>,
+    retain_prices: bool,
 ) -> Result<PathResult> {
     let mut rng = ChaCha20Rng::seed_from_u64(path_seed(config.seed, path_index));
-    let mut prices = Vec::with_capacity(config.steps + 1);
+    let mut prices = if retain_prices {
+        let mut prices = Vec::with_capacity(config.steps + 1);
+        prices.push(input.settlement_price);
+        prices
+    } else {
+        Vec::new()
+    };
     let mut log_price = input.settlement_price.ln();
-    prices.push(input.settlement_price);
+    let mut terminal_price = input.settlement_price;
+    let mut no_touch = price_satisfies_contract(input, input.settlement_price);
 
     for _ in 0..config.steps {
         log_price += normal.sample(&mut rng);
-        let price = log_price.exp();
-        if !price.is_finite() || price <= 0.0 {
+        terminal_price = log_price.exp();
+        if !terminal_price.is_finite() || terminal_price <= 0.0 {
             bail!("generated path price must be positive and finite");
         }
-        prices.push(price);
+        no_touch &= price_satisfies_contract(input, terminal_price);
+        if retain_prices {
+            prices.push(terminal_price);
+        }
     }
 
-    let score = score_path(input, &prices);
     Ok(PathResult {
         prices,
-        terminal: score.terminal,
-        no_touch: score.no_touch,
+        terminal_price,
+        terminal: price_satisfies_contract(input, terminal_price),
+        no_touch,
     })
 }
 
@@ -127,60 +171,59 @@ fn path_seed(seed: u64, path_index: usize) -> u64 {
     seed ^ index.wrapping_mul(0x9E37_79B9_7F4A_7C15)
 }
 
-fn build_artifacts(path_results: &[PathResult], sample_path_limit: usize) -> SimulationArtifacts {
+fn build_artifacts(
+    path_results: &[PathResult],
+    sample_path_limit: usize,
+) -> Result<SimulationArtifacts> {
     let sample_paths = path_results
         .iter()
         .take(sample_path_limit)
         .map(|result| result.prices.clone())
         .collect::<Vec<_>>();
 
-    SimulationArtifacts {
-        percentile_paths: percentile_points(&sample_paths),
+    Ok(SimulationArtifacts {
+        percentile_paths: percentile_points(path_results)?,
         sample_paths,
         terminal_histogram: terminal_histogram(path_results, 10),
-    }
+    })
 }
 
-fn percentile_points(sample_paths: &[Vec<f64>]) -> Vec<PercentilePoint> {
-    let Some(first_path) = sample_paths.first() else {
-        return Vec::new();
+fn percentile_points(path_results: &[PathResult]) -> Result<Vec<PercentilePoint>> {
+    let Some(first_path) = path_results.first() else {
+        return Ok(Vec::new());
     };
 
-    (0..first_path.len())
+    (0..first_path.prices.len())
         .map(|step| {
-            let mut prices = sample_paths
+            let mut prices = path_results
                 .iter()
-                .filter_map(|path| path.get(step).copied())
-                .collect::<Vec<_>>();
+                .map(|path| {
+                    path.prices
+                        .get(step)
+                        .copied()
+                        .ok_or_else(|| anyhow::anyhow!("generated paths must have equal length"))
+                })
+                .collect::<Result<Vec<_>>>()?;
             prices.sort_by(|left, right| {
                 left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal)
             });
-            PercentilePoint {
+            Ok(PercentilePoint {
                 step,
                 p05: percentile_value(&prices, 0.05),
                 p25: percentile_value(&prices, 0.25),
                 p50: percentile_value(&prices, 0.50),
                 p75: percentile_value(&prices, 0.75),
                 p95: percentile_value(&prices, 0.95),
-            }
+            })
         })
         .collect()
 }
 
-fn percentile_value(sorted_values: &[f64], percentile: f64) -> f64 {
-    if sorted_values.is_empty() {
-        return 0.0;
-    }
-    sorted_values[percentile_index(sorted_values.len(), percentile)]
-}
-
-fn percentile_index(len: usize, percentile: f64) -> usize {
-    let last_index = len.saturating_sub(1);
-    ((last_index as f64) * percentile).round() as usize
-}
-
 fn terminal_histogram(path_results: &[PathResult], bin_count: usize) -> Vec<HistogramBin> {
-    let terminals = path_results.iter().map(terminal_price).collect::<Vec<_>>();
+    let terminals = path_results
+        .iter()
+        .map(|path| path.terminal_price)
+        .collect::<Vec<_>>();
     let min = terminals.iter().copied().fold(f64::INFINITY, f64::min);
     let max = terminals.iter().copied().fold(f64::NEG_INFINITY, f64::max);
 
@@ -214,8 +257,16 @@ fn terminal_histogram(path_results: &[PathResult], bin_count: usize) -> Vec<Hist
         .collect()
 }
 
-fn terminal_price(path_result: &PathResult) -> f64 {
-    path_result.prices.last().copied().unwrap_or_default()
+fn percentile_value(sorted_values: &[f64], percentile: f64) -> f64 {
+    if sorted_values.is_empty() {
+        return 0.0;
+    }
+    sorted_values[percentile_index(sorted_values.len(), percentile)]
+}
+
+fn percentile_index(len: usize, percentile: f64) -> usize {
+    let last_index = len.saturating_sub(1);
+    ((last_index as f64) * percentile).round() as usize
 }
 
 #[cfg(test)]
@@ -323,6 +374,53 @@ mod tests {
                 .iter()
                 .all(|bin| bin.min_price <= bin.max_price)
         );
+    }
+
+    #[test]
+    fn cpu_backend_omits_artifacts_when_disabled() {
+        let backend = CpuRayonBackend;
+        let mut config = config();
+        config.emit_artifacts = false;
+
+        let run = backend.run(&input(), &config).unwrap();
+
+        assert!((0.0..=1.0).contains(&run.p_finish));
+        assert!((0.0..=1.0).contains(&run.p_no_touch));
+        assert!(run.artifacts.percentile_paths.is_empty());
+        assert!(run.artifacts.sample_paths.is_empty());
+        assert!(run.artifacts.terminal_histogram.is_empty());
+    }
+
+    #[test]
+    fn cpu_backend_builds_full_population_artifacts_when_sample_limit_is_zero() {
+        let backend = CpuRayonBackend;
+        let mut config = config();
+        config.sample_path_limit = 0;
+
+        let run = backend.run(&input(), &config).unwrap();
+
+        assert!(run.artifacts.sample_paths.is_empty());
+        assert_eq!(run.artifacts.percentile_paths.len(), config.steps + 1);
+        assert_eq!(
+            run.artifacts
+                .terminal_histogram
+                .iter()
+                .map(|bin| bin.count)
+                .sum::<usize>(),
+            config.path_count
+        );
+    }
+
+    #[test]
+    fn cpu_backend_bounds_sample_paths_to_sample_path_limit() {
+        let backend = CpuRayonBackend;
+        let mut config = config();
+        config.path_count = 32;
+        config.sample_path_limit = 5;
+
+        let run = backend.run(&input(), &config).unwrap();
+
+        assert_eq!(run.artifacts.sample_paths.len(), config.sample_path_limit);
     }
 
     #[test]
