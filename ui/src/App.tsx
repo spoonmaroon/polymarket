@@ -672,8 +672,8 @@ function MonteCarloCanvas({
   if (!preview || !geometry) {
     return (
       <div className="chart-empty">
-        <strong>Monte Carlo diagnostics pending</strong>
-        <span>Rows need `simulation_preview` to render sampled paths.</span>
+        <strong>Path preview not in this poll</strong>
+        <span>Cached probabilities are live; sampled paths render when preview data is attached.</span>
       </div>
     );
   }
@@ -864,11 +864,57 @@ function toProbabilityApiState(
       updatedAt: Date.now(),
     };
   }
+  if (!result.error && next.payload && previousRows.length > 0 && nextRows.length > 0) {
+    return {
+      ...next,
+      payload: mergeProbabilityPreviews(previous.payload, next.payload),
+    };
+  }
   return next;
 }
 
 function safeRows(payload: ProbabilityPayload | null): ProbabilityRow[] {
   return Array.isArray(payload?.rows) ? payload.rows.filter(isRecord) : [];
+}
+
+function mergeProbabilityPreviews(
+  previous: ProbabilityPayload | null,
+  next: ProbabilityPayload,
+): ProbabilityPayload {
+  const previousRowsByKey = new Map<string, ProbabilityRow>();
+  for (const row of safeRows(previous)) {
+    if (row.simulation_preview) {
+      previousRowsByKey.set(probabilityIdentityKey(row), row);
+    }
+  }
+  if (previousRowsByKey.size === 0 || !Array.isArray(next.rows)) {
+    return next;
+  }
+  return {
+    ...next,
+    rows: next.rows.map((row) => {
+      if (row.simulation_preview) {
+        return row;
+      }
+      const previousRow = previousRowsByKey.get(probabilityIdentityKey(row));
+      if (!previousRow?.simulation_preview) {
+        return row;
+      }
+      return {
+        ...row,
+        simulation_preview: previousRow.simulation_preview,
+      };
+    }),
+  };
+}
+
+function probabilityIdentityKey(row: ProbabilityRow) {
+  return (
+    row.contract_id ??
+    row.output_id ??
+    marketSideKey(row.market_slug, row.asset, row.expiry_ts, row.side) ??
+    `${contractLabel(row)}|${row.expiry_ts ?? ""}`
+  );
 }
 
 function buildMarketMonitorRows(
