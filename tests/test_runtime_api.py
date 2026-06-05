@@ -1358,6 +1358,52 @@ def test_runtime_simulation_artifact_missing_returns_404(tmp_path: Path) -> None
     assert response.json()["detail"] == "simulation artifact missing"
 
 
+def test_runtime_simulation_artifact_missing_db_returns_404(tmp_path: Path) -> None:
+    app = create_app(
+        status_path=tmp_path / "missing-status.json",
+        duckdb_path=tmp_path / "missing.duckdb",
+    )
+
+    response = TestClient(app).get("/api/runtime/simulation-artifacts/missing-artifact")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "simulation artifact missing"
+
+
+def test_runtime_simulation_artifact_invalid_json_shape_returns_500(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "polymarket.duckdb"
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    asof_ts = datetime(2026, 6, 3, 20, 3, tzinfo=timezone.utc)
+    with duckdb.connect(str(db_path)) as conn:
+        conn.execute(
+            """
+            insert into features.simulation_artifacts
+            (artifact_id, output_id, state_id, asof_ts, model_version, backend,
+             artifact_json, created_at)
+            values (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                "artifact-corrupt",
+                "prob-fixture",
+                "state-btc-up",
+                asof_ts,
+                "fixture-mc-v1",
+                "cpu_rayon",
+                "[1,2,3]",
+                asof_ts,
+            ],
+        )
+    app = create_app(status_path=tmp_path / "missing-status.json", duckdb_path=db_path)
+
+    response = TestClient(app).get("/api/runtime/simulation-artifacts/artifact-corrupt")
+
+    assert response.status_code == 500
+    assert response.json()["detail"].startswith("simulation artifact invalid:")
+
+
 def _contract() -> ContractSpec:
     return ContractSpec(
         contract_id="btc-market:UP",

@@ -286,6 +286,39 @@ def test_store_inserts_and_reads_simulation_artifact(tmp_path: Path) -> None:
     assert json.loads(artifact_json)["summary"]["path_count"] == 2
 
 
+@pytest.mark.parametrize("artifact_json", ["null", "[1,2,3]", '"scalar"'])
+def test_store_rejects_non_object_simulation_artifact_json(
+    tmp_path: Path,
+    artifact_json: str,
+) -> None:
+    db_path = tmp_path / "state.duckdb"
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    asof_ts = datetime(2026, 5, 31, 20, 3, tzinfo=timezone.utc)
+    with duckdb.connect(str(db_path)) as conn:
+        conn.execute(
+            """
+            insert into features.simulation_artifacts
+            (artifact_id, output_id, state_id, asof_ts, model_version, backend,
+             artifact_json, created_at)
+            values (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                "artifact-corrupt",
+                "probability-output-1",
+                "state-1",
+                asof_ts,
+                "offline-replay-v1",
+                "cpu_rayon",
+                artifact_json,
+                asof_ts,
+            ],
+        )
+
+    with pytest.raises(ValueError, match="artifact_json must be a JSON object"):
+        store.simulation_artifact("artifact-corrupt")
+
+
 def test_store_upserts_and_reads_market_outcome_history(tmp_path: Path) -> None:
     db_path = tmp_path / "state.duckdb"
     store = DuckDbIngestStore(db_path)

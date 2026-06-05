@@ -888,27 +888,7 @@ class DuckDbIngestStore:
 
     def simulation_artifact(self, artifact_id: str) -> dict[str, Any] | None:
         with self._connection() as conn:
-            row = conn.execute(
-                """
-                select artifact_id, output_id, state_id, asof_ts, model_version, backend,
-                       artifact_json, created_at
-                from features.simulation_artifacts
-                where artifact_id = ?
-                """,
-                [artifact_id],
-            ).fetchone()
-        if row is None:
-            return None
-        return {
-            "artifact_id": str(row[0]),
-            "output_id": str(row[1]),
-            "state_id": str(row[2]),
-            "asof_ts": _isoformat_utc(row[3]),
-            "model_version": str(row[4]),
-            "backend": str(row[5]),
-            "artifact": json.loads(str(row[6])),
-            "created_at": _isoformat_utc(row[7]),
-        }
+            return read_simulation_artifact(conn, artifact_id)
 
     def normalized_table_health(self) -> tuple[dict[str, object], ...]:
         with self._connection() as conn:
@@ -1292,6 +1272,36 @@ class DuckDbIngestStore:
             )
             for row in rows
         }
+
+
+def read_simulation_artifact(
+    conn: duckdb.DuckDBPyConnection,
+    artifact_id: str,
+) -> dict[str, Any] | None:
+    row = conn.execute(
+        """
+        select artifact_id, output_id, state_id, asof_ts, model_version, backend,
+               artifact_json, created_at
+        from features.simulation_artifacts
+        where artifact_id = ?
+        """,
+        [artifact_id],
+    ).fetchone()
+    if row is None:
+        return None
+    artifact = json.loads(str(row[6]))
+    if not isinstance(artifact, dict):
+        raise ValueError("simulation artifact artifact_json must be a JSON object")
+    return {
+        "artifact_id": str(row[0]),
+        "output_id": str(row[1]),
+        "state_id": str(row[2]),
+        "asof_ts": _isoformat_utc(row[3]),
+        "model_version": str(row[4]),
+        "backend": str(row[5]),
+        "artifact": artifact,
+        "created_at": _isoformat_utc(row[7]),
+    }
 
 
 def _parse_duckdb_timestamptz(value: str) -> datetime:

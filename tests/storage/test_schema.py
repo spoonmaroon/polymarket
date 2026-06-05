@@ -32,6 +32,7 @@ def test_schema_applies_to_empty_database(tmp_path: Path) -> None:
         "features.asof_state_inputs",
         "features.decision_snapshots",
         "features.probability_outputs",
+        "features.simulation_artifacts",
         "validation.contract_labels",
         "validation.decision_labels",
         "validation.market_outcome_history",

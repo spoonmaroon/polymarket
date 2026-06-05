@@ -24,7 +24,7 @@ from polymarket_engine.probability.runtime import (
     latest_probability_output_rows,
 )
 from polymarket_engine.runtime_gates import evaluate_runtime_gates
-from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
+from polymarket_engine.storage.duckdb_store import read_simulation_artifact
 from polymarket_engine.validation.outcomes import build_outcome_history_payload
 
 
@@ -276,11 +276,15 @@ def build_runtime_router(
         if not duckdb_path.exists():
             raise HTTPException(status_code=404, detail="simulation artifact missing")
         try:
-            artifact = DuckDbIngestStore(duckdb_path).simulation_artifact(artifact_id)
+            with _connect_read_only_with_retry(
+                duckdb_path,
+                lock_retry_seconds=2.0,
+            ) as conn:
+                artifact = read_simulation_artifact(conn, artifact_id)
         except duckdb.Error as exc:
             raise HTTPException(
-                status_code=404,
-                detail="simulation artifact missing",
+                status_code=500,
+                detail=f"simulation artifact unavailable: {_format_error(exc)}",
             ) from exc
         except (json.JSONDecodeError, TypeError, ValueError) as exc:
             raise HTTPException(
