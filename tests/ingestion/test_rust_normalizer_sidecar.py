@@ -86,10 +86,13 @@ def test_sidecar_cycle_normalizes_builds_states_and_writes_health(tmp_path: Path
     probability_payload = json.loads(probability_path.read_text(encoding="utf-8"))
     assert probability_payload["schema_version"] == "polymarket-probability-runtime-v1"
     assert len(probability_payload["rows"]) == 2
+    assert {row["cache_status"] for row in probability_payload["rows"]} == {"REFRESH"}
+    assert all(row["grid_cache"]["market_slug"] for row in probability_payload["rows"])
     with duckdb.connect(str(db_path), read_only=True) as conn:
         assert conn.execute("select count(*) from core.price_ticks").fetchone() == (5,)
         assert conn.execute("select count(*) from core.orderbook_snapshots").fetchone() == (2,)
         assert conn.execute("select count(*) from features.probability_outputs").fetchone() == (2,)
+        assert conn.execute("select count(*) from features.probability_grid_cache").fetchone() == (2,)
         assert conn.execute("select count(*) from features.asof_state_inputs").fetchone() == (2,)
 
 

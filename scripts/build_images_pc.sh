@@ -39,10 +39,26 @@ COLLECTOR_TAR="$DIST_DIR/${COLLECTOR_IMAGE}-${SHORT_SHA}.tar"
 NORMALIZER_TAR="$DIST_DIR/${NORMALIZER_IMAGE}-${SHORT_SHA}.tar"
 TUI_BIN="$DIST_DIR/polymarket-cockpit-tui-${SHORT_SHA}"
 MANIFEST="$DIST_DIR/manifest-${SHORT_SHA}.txt"
+UI_DIST="$ROOT/ui/dist"
+NORMALIZER_DOCKERFILE="$DIST_DIR/normalizer-ui-${SHORT_SHA}.Dockerfile"
 
 export DOCKER_BUILDKIT=1
 
 mkdir -p "$DIST_DIR"
+
+npm --prefix "$ROOT/ui" run build
+if [ ! -f "$UI_DIST/index.html" ]; then
+  echo "missing built UI index: $UI_DIST/index.html" >&2
+  exit 1
+fi
+
+awk '
+  { print }
+  $0 == "COPY src ./src" {
+    print "COPY ui/dist ./ui/dist"
+  }
+' "$ROOT/deploy/normalizer/Dockerfile" > "$NORMALIZER_DOCKERFILE.tmp"
+mv "$NORMALIZER_DOCKERFILE.tmp" "$NORMALIZER_DOCKERFILE"
 
 docker buildx build \
   --platform "$TARGET_PLATFORM" \
@@ -55,7 +71,7 @@ docker buildx build \
 docker buildx build \
   --platform "$TARGET_PLATFORM" \
   --load \
-  -f "$ROOT/deploy/normalizer/Dockerfile" \
+  -f "$NORMALIZER_DOCKERFILE" \
   -t "$NORMALIZER_SHA_TAG" \
   -t "$NORMALIZER_LATEST_TAG" \
   "$ROOT"
@@ -86,6 +102,7 @@ full_sha=${FULL_SHA}
 short_sha=${SHORT_SHA}
 deploy_ref=${DEPLOY_REF}
 target_platform=${TARGET_PLATFORM}
+ui_dist=${UI_DIST}
 collector_image=${COLLECTOR_SHA_TAG}
 collector_latest=${COLLECTOR_LATEST_TAG}
 collector_tar=${COLLECTOR_TAR}

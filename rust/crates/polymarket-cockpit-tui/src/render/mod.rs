@@ -12,6 +12,7 @@ pub mod systems;
 pub mod volatility;
 
 use ratatui::Frame;
+use ratatui::layout::{Constraint, Direction, Layout};
 
 use crate::{
     layout,
@@ -34,14 +35,15 @@ pub fn render(frame: &mut Frame<'_>, app: &AppState) {
         }
         MainTab::Market => {
             market::render(frame, body.primary, app);
-            price_path::render(frame, body.secondary, app);
+            let [prices, volatility] = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Percentage(72), Constraint::Percentage(28)])
+                .areas(body.secondary);
+            price_path::render(frame, prices, app);
+            volatility::render(frame, volatility, app);
         }
         MainTab::Probability => {
             probability::render(frame, body.primary, app);
-            systems::render(frame, body.secondary, app);
-        }
-        MainTab::Volatility => {
-            volatility::render(frame, body.primary, app);
             systems::render(frame, body.secondary, app);
         }
         MainTab::Outcomes => {

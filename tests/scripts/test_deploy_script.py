@@ -230,11 +230,15 @@ def test_pc_image_build_script_exports_docker_tarballs_and_manifest() -> None:
     assert '--platform "$TARGET_PLATFORM"' in script
     assert "--load" in script
     assert "docker save" in script
+    assert 'npm --prefix "$ROOT/ui" run build' in script
+    assert "COPY ui/dist ./ui/dist" in script
+    assert "normalizer-ui-${SHORT_SHA}" in script
     assert "manifest-${SHORT_SHA}.txt" in script
     assert "full_sha=" in script
     assert "short_sha=" in script
     assert "deploy_ref=" in script
     assert "target_platform=" in script
+    assert "ui_dist=" in script
     assert "collector_image_id=" in script
     assert "normalizer_image_id=" in script
 
@@ -325,6 +329,19 @@ def test_pc_deploy_script_refreshes_tui_desktop_launcher() -> None:
     assert "polymarket-runtime-api" not in script
 
 
+def test_pc_deploy_script_refreshes_browser_ui_launcher() -> None:
+    script = (ROOT / "scripts" / "deploy_pc.sh").read_text(encoding="utf-8")
+
+    assert "open-polymarket-ui.sh" in script
+    assert "open-polymarket-ui.ps1" in script
+    assert "open-polymarket-ui.cmd" in script
+    assert "Polymarket Runtime Monitor.lnk" in script
+    assert "Checking browser runtime..." in script
+    assert "Waiting for browser UI..." in script
+    assert "Start-Process 'http://127.0.0.1:__PC_API_PORT__/'" in script
+    assert "THEPC browser UI launcher installed" in script
+
+
 def test_pc_tui_desktop_launcher_logs_failures_and_forces_new_terminal_window() -> None:
     script = (ROOT / "scripts" / "deploy_pc.sh").read_text(encoding="utf-8")
 
@@ -394,8 +411,13 @@ def test_normalizer_defaults_to_quarter_second_checkpointed_cadence() -> None:
     ).read_text(encoding="utf-8")
 
     assert "POLYMARKET_NORMALIZER_INTERVAL_SECONDS=0.25" in env_example
+    assert "POLYMARKET_NORMALIZER_ENABLE_PROBABILITIES=1" in env_example
+    assert "POLYMARKET_ENABLE_RUNTIME_PROBABILITIES=1" in env_example
     assert "POLYMARKET_NORMALIZER_INTERVAL_SECONDS:-0.25" in compose
+    assert "POLYMARKET_NORMALIZER_ENABLE_PROBABILITIES:-1" in compose
+    assert "POLYMARKET_ENABLE_RUNTIME_PROBABILITIES:-1" in compose
     assert 'INTERVAL_SECONDS="${POLYMARKET_NORMALIZER_INTERVAL_SECONDS:-0.25}"' in entrypoint
+    assert 'ENABLE_PROBABILITIES="${POLYMARKET_NORMALIZER_ENABLE_PROBABILITIES:-1}"' in entrypoint
     assert 'OUTCOME_STATUS_PATH="${POLYMARKET_OUTCOME_STATUS_PATH:-$LIVE_DIR/outcomes.json}"' in entrypoint
     assert 'VOLATILITY_STATUS_PATH="${POLYMARKET_VOLATILITY_STATUS_PATH:-$LIVE_DIR/volatility.json}"' in entrypoint
     assert "run-rust-normalizer-sidecar" in entrypoint
@@ -405,6 +427,7 @@ def test_normalizer_defaults_to_quarter_second_checkpointed_cadence() -> None:
     assert '--normalized-health-path "$NORMALIZED_HEALTH_PATH"' in entrypoint
     assert '--outcome-status-path "$OUTCOME_STATUS_PATH"' in entrypoint
     assert '--volatility-status-path "$VOLATILITY_STATUS_PATH"' in entrypoint
+    assert "--enable-probabilities" in entrypoint
 
 
 def test_deploy_script_requires_running_normalizer_before_success() -> None:

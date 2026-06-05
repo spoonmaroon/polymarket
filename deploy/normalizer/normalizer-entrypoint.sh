@@ -10,6 +10,7 @@ PROBABILITY_STATUS_PATH="${POLYMARKET_PROBABILITY_STATUS_PATH:-$LIVE_DIR/probabi
 OUTCOME_STATUS_PATH="${POLYMARKET_OUTCOME_STATUS_PATH:-$LIVE_DIR/outcomes.json}"
 VOLATILITY_STATUS_PATH="${POLYMARKET_VOLATILITY_STATUS_PATH:-$LIVE_DIR/volatility.json}"
 INTERVAL_SECONDS="${POLYMARKET_NORMALIZER_INTERVAL_SECONDS:-0.25}"
+ENABLE_PROBABILITIES="${POLYMARKET_NORMALIZER_ENABLE_PROBABILITIES:-1}"
 
 if [ ! -f "$RAW_DIR/.polymarket_archive_root" ]; then
   echo "missing archive sentinel: $RAW_DIR/.polymarket_archive_root" >&2
@@ -17,6 +18,12 @@ if [ ! -f "$RAW_DIR/.polymarket_archive_root" ]; then
 fi
 
 mkdir -p "$(dirname "$DB_PATH")" "$LIVE_DIR"
+
+if [ "$ENABLE_PROBABILITIES" = "1" ]; then
+  set -- --enable-probabilities
+else
+  set --
+fi
 
 exec polymarket-engine run-rust-normalizer-sidecar \
   --raw-root "$RAW_DIR" \
@@ -27,4 +34,5 @@ exec polymarket-engine run-rust-normalizer-sidecar \
   --outcome-status-path "$OUTCOME_STATUS_PATH" \
   --volatility-status-path "$VOLATILITY_STATUS_PATH" \
   --interval-seconds "$INTERVAL_SECONDS" \
+  "$@" \
   --include-next

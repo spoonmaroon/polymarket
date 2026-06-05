@@ -17,6 +17,7 @@ pub struct ProbabilityDisplayRow {
     pub gate: String,
     pub diagnosis: String,
     pub weights: String,
+    pub cache: String,
     pub age_flags: String,
 }
 
@@ -26,7 +27,7 @@ pub struct ProbabilityTableModel {
     pub rows: Vec<Vec<String>>,
 }
 
-pub fn probability_header_labels() -> [&'static str; 8] {
+pub fn probability_header_labels() -> [&'static str; 9] {
     [
         "Contract",
         "p_finish",
@@ -35,6 +36,7 @@ pub fn probability_header_labels() -> [&'static str; 8] {
         "gate",
         "diag",
         "weights",
+        "cache",
         "Age/Flags",
     ]
 }
@@ -55,6 +57,7 @@ pub fn probability_table(app: &AppState) -> ProbabilityTableModel {
                         row.gate,
                         row.diagnosis,
                         row.weights,
+                        row.cache,
                         row.age_flags,
                     ]
                 })
@@ -66,6 +69,7 @@ pub fn probability_table(app: &AppState) -> ProbabilityTableModel {
         headers: probability_header_labels().to_vec(),
         rows: vec![vec![
             "probability pending".to_string(),
+            "-".to_string(),
             "-".to_string(),
             "-".to_string(),
             "-".to_string(),
@@ -103,6 +107,7 @@ fn probability_row(row: &RuntimeProbabilityRow) -> ProbabilityDisplayRow {
         gate: gate_label(row),
         diagnosis: diagnosis(row),
         weights: weights(row),
+        cache: cache_label(row),
         age_flags: age_flags(row),
     }
 }
@@ -151,6 +156,26 @@ fn weights(row: &RuntimeProbabilityRow) -> String {
         .map(|(name, weight)| format!("{} {:.0}%", weight_label(name), weight * 100.0))
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+fn cache_label(row: &RuntimeProbabilityRow) -> String {
+    let status = row
+        .cache_status
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| row.cache_key.as_deref().map(|_| "GRID").unwrap_or("-"));
+    if status == "-" {
+        return "-".to_string();
+    }
+    let until = compact_ts(row.valid_until.as_deref())
+        .map(|value| format!(" until {value}"))
+        .unwrap_or_default();
+    let paths = row
+        .path_count
+        .map(|count| format!(" n={count}"))
+        .unwrap_or_default();
+    format!("{status}{paths}{until}")
 }
 
 fn row_has_market_identity(row: &RuntimeProbabilityRow) -> bool {
@@ -231,6 +256,10 @@ fn parse_probability_ts(value: Option<&str>) -> Option<DateTime<Utc>> {
         .map(|timestamp| timestamp.with_timezone(&Utc))
 }
 
+fn compact_ts(value: Option<&str>) -> Option<String> {
+    parse_probability_ts(value).map(|timestamp| timestamp.format("%H:%M:%S").to_string())
+}
+
 fn weight_label(name: &str) -> &str {
     match name {
         "empirical_conditional" => "emp",
@@ -263,7 +292,8 @@ fn probability_widths(_column_count: usize) -> Vec<Constraint> {
         Constraint::Length(12),
         Constraint::Length(16),
         Constraint::Length(18),
-        Constraint::Length(22),
+        Constraint::Length(18),
+        Constraint::Length(20),
         Constraint::Min(12),
     ]
 }
@@ -289,16 +319,30 @@ mod tests {
                 rows: vec![RuntimeProbabilityRow {
                     contract: "BTC 5m UP".to_string(),
                     contract_id: Some("btc-updown-5m-1780521900:UP".to_string()),
+                    market_slug: Some("btc-updown-5m-1780521900".to_string()),
                     asset: Some("BTC".to_string()),
                     side: Some("UP".to_string()),
+                    start_ts: Some("2026-06-03T21:05:00Z".to_string()),
                     asof_ts: Some("2026-06-03T21:06:00Z".to_string()),
                     expiry_ts: Some("2026-06-03T21:10:00Z".to_string()),
                     p_finish: 0.5749,
                     p_no_touch: 0.3149,
                     z_path: 0.4219,
                     sigma_tau: 0.01234,
+                    u_gen: Some(0.046),
                     age_ms: 850,
                     flags: vec!["OK".to_string()],
+                    cache_key: Some("BTC|UP|h300|t0-30".to_string()),
+                    cache_status: Some("HIT".to_string()),
+                    generated_at: Some("2026-06-03T21:06:00Z".to_string()),
+                    valid_from: Some("2026-06-03T21:06:00Z".to_string()),
+                    valid_until: Some("2026-06-03T21:06:30Z".to_string()),
+                    time_bucket: Some("0-30".to_string()),
+                    z_path_bucket: Some("0.25-0.50".to_string()),
+                    sigma_bucket: Some("0.010-0.015".to_string()),
+                    volatility_regime: Some("normal".to_string()),
+                    generator_version: Some("offline-lognormal-chainlink-sigma-v1".to_string()),
+                    path_count: Some(10_000),
                     mc_dispersion: Some(0.073),
                     uncertainty_buffer: Some(0.046),
                     path_diagnosis: vec!["FRAGILE".to_string(), "NEAR_THRESHOLD".to_string()],
@@ -334,6 +378,7 @@ mod tests {
                 "gate",
                 "diag",
                 "weights",
+                "cache",
                 "Age/Flags"
             ]
         );
@@ -344,6 +389,7 @@ mod tests {
         assert_eq!(rows[0].gate, "WAIT");
         assert_eq!(rows[0].diagnosis, "FRAGILE,NEAR_THRESHOLD");
         assert_eq!(rows[0].weights, "emp 30% log 55% stress 15%");
+        assert_eq!(rows[0].cache, "HIT n=10000 until 21:06:30");
         assert_eq!(rows[0].age_flags, "850ms OK");
     }
 
@@ -420,6 +466,7 @@ mod tests {
                 "-".to_string(),
                 "-".to_string(),
                 "-".to_string(),
+                "-".to_string(),
             ]
         );
     }
@@ -438,16 +485,33 @@ mod tests {
                 contract.to_ascii_lowercase().replace(' ', "-"),
                 side
             )),
+            market_slug: Some(format!(
+                "{}-updown-5m-1780521900",
+                asset.to_ascii_lowercase()
+            )),
             asset: Some(asset.to_string()),
             side: Some(side.to_string()),
+            start_ts: Some("2026-06-03T21:20:00Z".to_string()),
             asof_ts: Some("2026-06-03T21:22:00Z".to_string()),
             expiry_ts: Some(expiry_ts.to_string()),
             p_finish,
             p_no_touch: 0.31,
             z_path: 0.42,
             sigma_tau: 0.0123,
+            u_gen: None,
             age_ms: 850,
             flags: vec!["OK".to_string()],
+            cache_key: None,
+            cache_status: None,
+            generated_at: None,
+            valid_from: None,
+            valid_until: None,
+            time_bucket: None,
+            z_path_bucket: None,
+            sigma_bucket: None,
+            volatility_regime: None,
+            generator_version: None,
+            path_count: None,
             mc_dispersion: None,
             uncertainty_buffer: None,
             path_diagnosis: Vec::new(),

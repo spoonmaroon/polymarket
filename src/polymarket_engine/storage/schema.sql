@@ -204,6 +204,37 @@ CREATE TABLE IF NOT EXISTS features.probability_outputs (
     created_at TIMESTAMPTZ NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS features.probability_grid_cache (
+    cache_key VARCHAR PRIMARY KEY,
+    asset VARCHAR NOT NULL,
+    side VARCHAR NOT NULL,
+    market_slug VARCHAR NOT NULL,
+    start_ts TIMESTAMPTZ NOT NULL,
+    expiry_ts TIMESTAMPTZ NOT NULL,
+    asof_ts TIMESTAMPTZ NOT NULL,
+    horizon_seconds INTEGER NOT NULL,
+    seconds_left_bucket VARCHAR NOT NULL,
+    z_path_bucket VARCHAR NOT NULL,
+    sigma_bucket VARCHAR NOT NULL,
+    volatility_regime VARCHAR NOT NULL,
+    event_flag VARCHAR NOT NULL,
+    source_risk_flag VARCHAR NOT NULL,
+    generator_version VARCHAR NOT NULL,
+    model_version VARCHAR NOT NULL,
+    p_finish DOUBLE NOT NULL,
+    p_no_touch DOUBLE NOT NULL,
+    u_gen DOUBLE NOT NULL,
+    path_count UBIGINT NOT NULL,
+    seed BIGINT,
+    training_cutoff_ts TIMESTAMPTZ NOT NULL,
+    max_event_ts TIMESTAMPTZ NOT NULL,
+    max_observed_ts TIMESTAMPTZ NOT NULL,
+    generated_at TIMESTAMPTZ NOT NULL,
+    valid_from TIMESTAMPTZ NOT NULL,
+    valid_until TIMESTAMPTZ NOT NULL,
+    diagnostics_json VARCHAR NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS validation.contract_labels (
     contract_id VARCHAR PRIMARY KEY,
     resolved_side VARCHAR NOT NULL,

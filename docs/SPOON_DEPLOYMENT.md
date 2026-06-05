@@ -58,7 +58,10 @@ exact local commit, streams the bundle and image tarballs into THEPC's Ubuntu
 WSL environment, runs the existing prebuilt-image deploy gate, and finishes with
 the collector status check. The same deploy also installs the matching
 `polymarket-cockpit-tui` binary to `/home/ender/bin/polymarket-cockpit-tui`, so
-the Windows desktop shortcut opens the TUI for the deployed commit.
+the Windows desktop shortcut opens the TUI for the deployed commit. It also
+builds `ui/dist` into the API image and refreshes a Windows desktop shortcut
+named `Polymarket Runtime Monitor.lnk`; opening that shortcut starts the
+runtime if needed and launches `http://127.0.0.1:8000/` in the browser.
 
 ```bash
 cd /Users/goon/polymarket
@@ -234,11 +237,18 @@ market books, cached probability outputs, and read-only outcome history. It must
 not place orders, deploy containers, rebuild images, write collector state,
 restart services, or access auth secrets.
 
+The browser monitor is also read-only. The FastAPI app serves `ui/dist` at `/`
+when the built files exist, while `/api/*` routes keep precedence. The browser
+polls `/api/runtime/live` and `/api/runtime/probabilities`; it shows missing or
+disabled probability fields as health state, not as operator actions.
+
 Cached probability outputs are display-only. The deployed normalizer sidecar
-does not pass `--enable-probabilities`, so live runtime on THEPC remains
-pre-probability unless an operator explicitly starts a separate opt-in run. The
-FastAPI probability endpoint also stays disabled unless
-`POLYMARKET_ENABLE_RUNTIME_PROBABILITIES=1` is set.
+passes `--enable-probabilities` by default and maintains the read-only
+probability grid/status file for the API and THEPC monitors. The FastAPI
+probability endpoint is also enabled by default for display. Set
+`POLYMARKET_NORMALIZER_ENABLE_PROBABILITIES=0` or
+`POLYMARKET_ENABLE_RUNTIME_PROBABILITIES=0` only when intentionally running a
+pre-probability diagnostic lane.
 
 Live data changes should appear through the runtime API polling path. TUI code,
 layout, or parser changes require a fresh THEPC deploy and reopening the

@@ -159,9 +159,13 @@ pub struct RuntimeProbabilityRow {
     #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
     pub contract_id: Option<String>,
     #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub market_slug: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
     pub asset: Option<String>,
     #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
     pub side: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub start_ts: Option<String>,
     #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
     pub asof_ts: Option<String>,
     #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
@@ -170,9 +174,33 @@ pub struct RuntimeProbabilityRow {
     pub p_no_touch: f64,
     pub z_path: f64,
     pub sigma_tau: f64,
+    #[serde(default)]
+    pub u_gen: Option<f64>,
     pub age_ms: u64,
     #[serde(default)]
     pub flags: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub cache_key: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub cache_status: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub generated_at: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub valid_from: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub valid_until: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub time_bucket: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub z_path_bucket: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub sigma_bucket: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub volatility_regime: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub generator_version: Option<String>,
+    #[serde(default)]
+    pub path_count: Option<u64>,
     #[serde(default)]
     pub mc_dispersion: Option<f64>,
     #[serde(default)]
@@ -454,6 +482,8 @@ mod tests {
                 "contract_id": "btc-updown-5m-1780521900:UP",
                 "asset": "BTC",
                 "side": "UP",
+                "market_slug": "btc-updown-5m-1780521900",
+                "start_ts": "2026-06-03T21:20:00Z",
                 "asof_ts": "2026-06-03T21:20:00Z",
                 "expiry_ts": "2026-06-03T21:25:00Z",
                 "p_finish": 0.57,
@@ -474,6 +504,18 @@ mod tests {
                 "edge_after_costs": 0.019,
                 "required_edge": 0.086,
                 "gate_reasons": ["NEAR_THRESHOLD"],
+                "u_gen": 0.046,
+                "cache_key": "BTC|UP|h300|t0-30|z0.75-1.00|sigma0.010-0.015|volnormal|eventnone|risknormal|genoffline-lognormal-chainlink-sigma-v1",
+                "cache_status": "HIT",
+                "generated_at": "2026-06-03T21:20:01Z",
+                "valid_from": "2026-06-03T21:20:00Z",
+                "valid_until": "2026-06-03T21:20:30Z",
+                "time_bucket": "0-30",
+                "z_path_bucket": "0.75-1.00",
+                "sigma_bucket": "0.010-0.015",
+                "volatility_regime": "normal",
+                "generator_version": "offline-lognormal-chainlink-sigma-v1",
+                "path_count": 10000,
                 "generator_metadata": {"snapshot_id": "weights-1"}
             }]
         }"#;
@@ -496,8 +538,33 @@ mod tests {
             probabilities.rows[0].expiry_ts.as_deref(),
             Some("2026-06-03T21:25:00Z")
         );
+        assert_eq!(
+            probabilities.rows[0].market_slug.as_deref(),
+            Some("btc-updown-5m-1780521900")
+        );
+        assert_eq!(
+            probabilities.rows[0].start_ts.as_deref(),
+            Some("2026-06-03T21:20:00Z")
+        );
         assert_eq!(probabilities.rows[0].p_finish, 0.57);
         assert_eq!(probabilities.rows[0].flags, vec!["OK"]);
+        assert_eq!(probabilities.rows[0].u_gen, Some(0.046));
+        assert_eq!(probabilities.rows[0].cache_status.as_deref(), Some("HIT"));
+        assert_eq!(
+            probabilities.rows[0].cache_key.as_deref(),
+            Some(
+                "BTC|UP|h300|t0-30|z0.75-1.00|sigma0.010-0.015|volnormal|eventnone|risknormal|genoffline-lognormal-chainlink-sigma-v1"
+            )
+        );
+        assert_eq!(
+            probabilities.rows[0].generated_at.as_deref(),
+            Some("2026-06-03T21:20:01Z")
+        );
+        assert_eq!(
+            probabilities.rows[0].valid_until.as_deref(),
+            Some("2026-06-03T21:20:30Z")
+        );
+        assert_eq!(probabilities.rows[0].path_count, Some(10000));
         assert_eq!(probabilities.rows[0].mc_dispersion, Some(0.073));
         assert_eq!(probabilities.rows[0].uncertainty_buffer, Some(0.046));
         assert_eq!(

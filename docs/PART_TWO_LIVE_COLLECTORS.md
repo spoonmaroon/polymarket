@@ -113,13 +113,13 @@ because the Rust status file does not contain full venue rule text; do not
 synthesize rule text. `features.decision_snapshots remains empty until probability`
 because no probability model or decision policy exists yet.
 
-The normalizer sidecar does not compute probability outputs by default. Runtime
-probability generation is opt-in via `--enable-probabilities`; the current live
-collector/normalizer lane should stay pre-probability unless that flag is
-deliberately enabled for a separate validation run. The runtime API probability
-endpoint is also disabled by default and requires
-`POLYMARKET_ENABLE_RUNTIME_PROBABILITIES=1` before it will read or compute
-probability outputs for display.
+The normalizer sidecar computes read-only cached probability rows by default
+via `--enable-probabilities`. Runtime probability generation is still
+paper/display-only: cache misses refresh `features.probability_grid_cache` and
+`features.probability_outputs`, but no order path is created. Set
+`POLYMARKET_NORMALIZER_ENABLE_PROBABILITIES=0` or
+`POLYMARKET_ENABLE_RUNTIME_PROBABILITIES=0` only for an intentional
+pre-probability diagnostic lane.
 
 ## Runtime API And Cockpit Display
 

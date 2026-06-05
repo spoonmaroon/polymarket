@@ -6,12 +6,17 @@ import math
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, cast
 
 import duckdb
 
+from polymarket_engine.probability.grid_cache import grid_runtime_row
+from polymarket_engine.probability.grid_cache import grid_entry_from_probability_input
+from polymarket_engine.probability.grid_cache import lookup_probability_grid_entry
+from polymarket_engine.probability.grid_cache import ProbabilityGridHit
+from polymarket_engine.probability.grid_cache import upsert_probability_grid_entry
 from polymarket_engine.probability.monte_carlo import run_seeded_monte_carlo
 from polymarket_engine.probability.schema import ProbabilityInput, ProbabilityOutput
 from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
@@ -20,6 +25,7 @@ from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
 DEFAULT_PROBABILITY_CACHE_SECONDS = 1.0
 DEFAULT_PROBABILITY_PATH_COUNT = 1024
 DEFAULT_PROBABILITY_MAX_STATE_AGE_SECONDS = 600.0
+DEFAULT_PROBABILITY_GRID_VALID_SECONDS = 30.0
 
 
 @dataclass(frozen=True)
@@ -27,8 +33,10 @@ class ProbabilityRuntimeInput:
     probability_input: ProbabilityInput
     contract_id: str
     contract: str
+    market_slug: str
     start_ts: datetime
     expiry_ts: datetime
+    volatility_regime: str | None
     flags: tuple[str, ...]
 
 
@@ -63,21 +71,29 @@ def build_probability_payload(*, duckdb_path: Path, limit: int) -> dict[str, Any
             error=f"{duckdb_path} missing",
             generated_at=generated_at,
         )
+    store = DuckDbIngestStore(duckdb_path)
+    return build_probability_payload_from_store(
+        store=store,
+        limit=limit,
+        generated_at=generated_at,
+    )
 
+
+def build_probability_payload_from_store(
+    *,
+    store: DuckDbIngestStore,
+    limit: int,
+    generated_at: datetime | None = None,
+) -> dict[str, Any]:
+    generated_at = generated_at or datetime.now(timezone.utc)
     try:
-        persisted_rows = latest_probability_output_rows(duckdb_path=duckdb_path, limit=limit)
-        if persisted_rows:
-            return {
-                "ok": True,
-                "state": "OK",
-                "generated_at": generated_at.isoformat(),
-                "cached": False,
-                "model_version": persisted_rows[0]["model_version"],
-                "rows": persisted_rows,
-                "skipped": 0,
-                "errors": [],
-            }
-        inputs, skipped = latest_probability_inputs(duckdb_path=duckdb_path, limit=limit)
+        with store._connection() as conn:
+            inputs, skipped = latest_probability_inputs_from_connection(
+                conn=conn,
+                limit=limit,
+                max_state_age_seconds=DEFAULT_PROBABILITY_MAX_STATE_AGE_SECONDS,
+                active_only=True,
+            )
     except duckdb.Error as exc:
         return _empty_payload(
             state="INVALID",
@@ -91,10 +107,19 @@ def build_probability_payload(*, duckdb_path: Path, limit: int) -> dict[str, Any
             generated_at=generated_at,
         )
 
-    rows: list[dict[str, Any]] = []
-    errors: list[str] = []
-    store = DuckDbIngestStore(duckdb_path)
-    rows, errors = _compute_and_persist_rows(store=store, inputs=inputs)
+    rows, missed_inputs, errors = _grid_rows_and_misses(
+        store=store,
+        inputs=inputs,
+        runtime_ts=generated_at,
+    )
+    if missed_inputs:
+        computed_rows, compute_errors = _compute_and_persist_rows(
+            store=store,
+            inputs=missed_inputs,
+            runtime_ts=generated_at,
+        )
+        rows.extend(computed_rows)
+        errors.extend(compute_errors)
 
     return {
         "ok": not errors,
@@ -156,6 +181,8 @@ def latest_probability_inputs_from_connection(
             source_age_ms,
             book_age_ms,
             data_quality_flags_json,
+            state.volatility_regime,
+            contracts.slug,
             contracts.start_ts::varchar as start_ts,
             contracts.expiry_ts::varchar as expiry_ts
         from (
@@ -188,8 +215,8 @@ def latest_probability_inputs_from_connection(
             skipped += 1
             continue
         probability_input = _probability_input_from_row(row)
-        start_ts = _parse_datetime(row[14])
-        expiry_ts = _parse_datetime(row[15])
+        start_ts = _parse_datetime(row[16])
+        expiry_ts = _parse_datetime(row[17])
         inputs.append(
             ProbabilityRuntimeInput(
                 probability_input=probability_input,
@@ -200,8 +227,10 @@ def latest_probability_inputs_from_connection(
                     start_ts=start_ts,
                     expiry_ts=expiry_ts,
                 ),
+                market_slug=str(row[15]),
                 start_ts=start_ts,
                 expiry_ts=expiry_ts,
+                volatility_regime=_optional_string(row[14], "volatility_regime"),
                 flags=("OK",),
             )
         )
@@ -255,6 +284,7 @@ def latest_probability_output_rows_from_connection(
             asset,
             side,
             sigma_tau,
+            market_slug,
             cast(start_ts as varchar) as start_ts,
             cast(expiry_ts as varchar) as expiry_ts,
             data_quality_flags_json
@@ -266,6 +296,7 @@ def latest_probability_output_rows_from_connection(
                 state.side,
                 state.sigma_tau,
                 state.data_quality_flags_json,
+                contracts.slug as market_slug,
                 contracts.start_ts,
                 contracts.expiry_ts,
                 row_number() over (
@@ -304,17 +335,90 @@ def compute_and_persist_probability_outputs(
             max_state_age_seconds=max_state_age_seconds,
             active_only=active_only,
         )
-    _, errors = _compute_and_persist_rows(store=store, inputs=inputs)
+    _, errors = _compute_and_persist_rows(
+        store=store,
+        inputs=inputs,
+        runtime_ts=datetime.now(timezone.utc),
+    )
     return len(inputs) - len(errors), skipped, tuple(errors)
+
+
+def _grid_rows_and_misses(
+    *,
+    store: DuckDbIngestStore,
+    inputs: tuple[ProbabilityRuntimeInput, ...],
+    runtime_ts: datetime,
+) -> tuple[list[dict[str, Any]], tuple[ProbabilityRuntimeInput, ...], list[str]]:
+    rows: list[dict[str, Any]] = []
+    misses: list[ProbabilityRuntimeInput] = []
+    errors: list[str] = []
+    if not inputs:
+        return rows, tuple(misses), errors
+    try:
+        with store._connection() as conn:
+            for runtime_input in inputs:
+                probability_input = runtime_input.probability_input
+                hit = lookup_probability_grid_entry(
+                    conn,
+                    probability_input,
+                    market_slug=runtime_input.market_slug,
+                    start_ts=runtime_input.start_ts,
+                    expiry_ts=runtime_input.expiry_ts,
+                    volatility_regime=runtime_input.volatility_regime,
+                    asof_ts=probability_input.asof_ts,
+                    runtime_ts=runtime_ts,
+                )
+                if hit is None:
+                    misses.append(runtime_input)
+                    continue
+                row = grid_runtime_row(
+                    probability_input=probability_input,
+                    contract=runtime_input.contract,
+                    contract_id=runtime_input.contract_id,
+                    market_slug=runtime_input.market_slug,
+                    start_ts=runtime_input.start_ts,
+                    expiry_ts=runtime_input.expiry_ts,
+                    hit=hit,
+                    now=datetime.now(timezone.utc),
+                )
+                _merge_grid_diagnostics(
+                    row=row,
+                    diagnostics=hit.entry.diagnostics,
+                    preview_is_current=hit.entry.asof_ts == probability_input.asof_ts,
+                )
+                rows.append(row)
+    except duckdb.CatalogException:
+        return rows, inputs, errors
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        errors.append(f"probability grid unavailable: {type(exc).__name__}: {exc}")
+        return rows, inputs, errors
+    return rows, tuple(misses), errors
+
+
+def _merge_grid_diagnostics(
+    *,
+    row: dict[str, Any],
+    diagnostics: Mapping[str, Any],
+    preview_is_current: bool,
+) -> None:
+    detail = _runtime_detail_from_diagnostics(diagnostics)
+    if not preview_is_current:
+        detail.pop("simulation_preview", None)
+    cache_metadata = dict(row.get("generator_metadata", {}))
+    cache_metadata.update(detail.get("generator_metadata", {}))
+    row.update(detail)
+    row["generator_metadata"] = cache_metadata
 
 
 def _compute_and_persist_rows(
     *,
     store: DuckDbIngestStore,
     inputs: tuple[ProbabilityRuntimeInput, ...],
+    runtime_ts: datetime | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     rows: list[dict[str, Any]] = []
     errors: list[str] = []
+    generated_at = runtime_ts or datetime.now(timezone.utc)
     for runtime_input in inputs:
         probability_input = runtime_input.probability_input
         seed = _seed_for_input(probability_input)
@@ -332,10 +436,55 @@ def _compute_and_persist_rows(
                 probability_input=probability_input,
                 output=output,
             )
+            diagnostics = dict(output.diagnostics)
+            diagnostics["cache"] = {
+                "source": "runtime-grid-refresh",
+                "market_slug": runtime_input.market_slug,
+                "start_ts": runtime_input.start_ts.isoformat(),
+                "expiry_ts": runtime_input.expiry_ts.isoformat(),
+                "asof_ts": probability_input.asof_ts.isoformat(),
+            }
+            entry = grid_entry_from_probability_input(
+                probability_input,
+                market_slug=runtime_input.market_slug,
+                start_ts=runtime_input.start_ts,
+                expiry_ts=runtime_input.expiry_ts,
+                p_finish=output.p_finish,
+                p_no_touch=output.p_no_touch,
+                u_gen=0.0,
+                path_count=DEFAULT_PROBABILITY_PATH_COUNT,
+                seed=seed,
+                volatility_regime=runtime_input.volatility_regime,
+                generator_version=output.model_version,
+                training_cutoff_ts=probability_input.asof_ts,
+                max_event_ts=probability_input.asof_ts,
+                max_observed_ts=probability_input.asof_ts,
+                generated_at=generated_at,
+                valid_from=generated_at,
+                valid_until=generated_at
+                + timedelta(seconds=DEFAULT_PROBABILITY_GRID_VALID_SECONDS),
+                diagnostics=diagnostics,
+            )
+            upsert_probability_grid_entry(store, entry)
         except (duckdb.Error, ValueError) as exc:
             errors.append(f"{probability_input.state_id}: {type(exc).__name__}: {exc}")
             continue
-        rows.append(_runtime_row(runtime_input, output=output, output_id=output_id))
+        row = grid_runtime_row(
+            probability_input=probability_input,
+            contract=runtime_input.contract,
+            contract_id=runtime_input.contract_id,
+            market_slug=runtime_input.market_slug,
+            start_ts=runtime_input.start_ts,
+            expiry_ts=runtime_input.expiry_ts,
+            hit=ProbabilityGridHit(entry=entry, cache_status="REFRESH"),
+            now=generated_at,
+        )
+        _merge_grid_diagnostics(
+            row=row,
+            diagnostics=entry.diagnostics,
+            preview_is_current=True,
+        )
+        rows.append(row)
     return rows, errors
 
 
@@ -379,8 +528,10 @@ def _runtime_row(
     return {
         "contract": runtime_input.contract,
         "contract_id": runtime_input.contract_id,
+        "market_slug": runtime_input.market_slug,
         "asset": probability_input.asset,
         "side": probability_input.side,
+        "start_ts": runtime_input.start_ts.isoformat(),
         "asof_ts": probability_input.asof_ts.isoformat(),
         "expiry_ts": runtime_input.expiry_ts.isoformat(),
         "p_finish": output.p_finish,
@@ -398,9 +549,9 @@ def _runtime_row(
 
 def _persisted_runtime_row(row: tuple[Any, ...]) -> dict[str, Any]:
     asof_ts = _parse_datetime(row[2])
-    start_ts = _parse_datetime(row[14])
-    expiry_ts = _parse_datetime(row[15])
-    flags = tuple(str(flag) for flag in json.loads(row[16]))
+    start_ts = _parse_datetime(row[15])
+    expiry_ts = _parse_datetime(row[16])
+    flags = tuple(str(flag) for flag in json.loads(row[17]))
     output_payload = json.loads(row[9])
     diagnostics = output_payload.get("diagnostics")
     if not isinstance(diagnostics, Mapping):
@@ -414,8 +565,10 @@ def _persisted_runtime_row(row: tuple[Any, ...]) -> dict[str, Any]:
             expiry_ts=expiry_ts,
         ),
         "contract_id": str(row[10]),
+        "market_slug": str(row[14]),
         "asset": str(row[11]),
         "side": str(row[12]),
+        "start_ts": start_ts.isoformat(),
         "asof_ts": asof_ts.isoformat(),
         "expiry_ts": expiry_ts.isoformat(),
         "p_finish": float(row[4]),

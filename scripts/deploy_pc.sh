@@ -271,6 +271,82 @@ PS1
   rm -f "\$POWERSHELL_SCRIPT"
 fi
 
+{
+  printf '%s\n' '#!/usr/bin/env bash'
+  printf '%s\n' 'set -euo pipefail'
+  printf 'cd %q\n' "\$PC_REPO"
+  printf '%s\n' "echo 'Checking browser runtime...'"
+  printf 'if curl -fsS --max-time 2 http://127.0.0.1:%s/health >/dev/null 2>&1; then\n' "\$PC_API_PORT"
+  printf '%s\n' "  echo 'Runtime API already live.'"
+  printf '%s\n' 'else'
+  printf '%s\n' "  echo 'Runtime API not live; starting containers...'"
+  printf '%s\n' '  docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml up -d --no-recreate collector normalizer api >/dev/null 2>&1 || true'
+  printf '%s\n' 'fi'
+  printf '%s\n' "echo 'Waiting for browser UI...'"
+  printf '%s\n' 'for _ in \$(seq 1 45); do'
+  printf '  if curl -fsS --max-time 2 http://127.0.0.1:%s/ >/dev/null 2>&1; then\n' "\$PC_API_PORT"
+  printf '    echo "http://127.0.0.1:%s/"\n' "\$PC_API_PORT"
+  printf '%s\n' '    exit 0'
+  printf '%s\n' '  fi'
+  printf '%s\n' '  sleep 1'
+  printf '%s\n' 'done'
+  printf '%s\n' "echo 'Browser UI did not become ready. Check that the deployed API image includes ui/dist.' >&2"
+  printf '%s\n' 'exit 1'
+} > "\$PC_BIN_DIR/open-polymarket-ui.sh"
+chmod 755 "\$PC_BIN_DIR/open-polymarket-ui.sh"
+
+if [ -d "\$WINDOWS_USER_DIR" ]; then
+  cat > "\$WINDOWS_USER_DIR/open-polymarket-ui.ps1" <<'PS_UI_LAUNCHER'
+\$ErrorActionPreference = 'Stop'
+\$logPath = Join-Path \$env:USERPROFILE 'polymarket-ui-launch.log'
+
+try {
+  Start-Transcript -Path \$logPath -Append | Out-Null
+} catch {
+}
+
+try {
+  Add-Content -Path \$logPath -Value ("launch " + (Get-Date).ToString("o"))
+  & wsl.exe -d __PC_WSL_DISTRO__ -- __PC_BIN_DIR__/open-polymarket-ui.sh
+  \$exitCode = \$LASTEXITCODE
+  if (\$exitCode -ne 0) {
+    throw "Browser UI launcher exited with status \$exitCode"
+  }
+  Start-Process 'http://127.0.0.1:__PC_API_PORT__/'
+} catch {
+  Write-Host 'Failed to launch Polymarket runtime monitor.'
+  Write-Host \$_
+  Read-Host 'Press Enter to close'
+  exit 1
+} finally {
+  try {
+    Stop-Transcript | Out-Null
+  } catch {
+  }
+}
+PS_UI_LAUNCHER
+  sed -i "s|__PC_BIN_DIR__|\$PC_BIN_DIR|g; s|__PC_WSL_DISTRO__|\$PC_WSL_DISTRO|g; s|__PC_API_PORT__|\$PC_API_PORT|g" "\$WINDOWS_USER_DIR/open-polymarket-ui.ps1"
+  cat > "\$WINDOWS_USER_DIR/open-polymarket-ui.cmd" <<CMD_UI_LAUNCHER
+@echo off
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%USERPROFILE%\\open-polymarket-ui.ps1"
+CMD_UI_LAUNCHER
+  POWERSHELL_UI_SCRIPT="\$WINDOWS_USER_DIR/AppData/Local/Temp/polymarket-ui-shortcut.ps1"
+  cat > "\$POWERSHELL_UI_SCRIPT" <<'PS_UI_SHORTCUT'
+\$shortcutPath = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Polymarket Runtime Monitor.lnk'
+\$launcherPath = Join-Path ([Environment]::GetFolderPath('UserProfile')) 'open-polymarket-ui.ps1'
+\$shell = New-Object -ComObject WScript.Shell
+\$shortcut = \$shell.CreateShortcut(\$shortcutPath)
+\$shortcut.TargetPath = 'powershell.exe'
+\$shortcut.Arguments = '-NoProfile -ExecutionPolicy Bypass -File "' + \$launcherPath + '"'
+\$shortcut.WorkingDirectory = [Environment]::GetFolderPath('UserProfile')
+\$shortcut.IconLocation = 'C:\Program Files\Internet Explorer\iexplore.exe,0'
+\$shortcut.WindowStyle = 1
+\$shortcut.Save()
+PS_UI_SHORTCUT
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -File "\$(wslpath -w "\$POWERSHELL_UI_SCRIPT")" >/dev/null < /dev/null
+  rm -f "\$POWERSHELL_UI_SCRIPT"
+fi
+
 export POLYMARKET_DEPLOY_USE_PREBUILT=1
 export POLYMARKET_DEPLOY_REF="\$FULL_SHA"
 export POLYMARKET_EXPECTED_DEPLOY_SHA="\$FULL_SHA"
@@ -331,5 +407,6 @@ PY
 docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml ps
 printf 'THEPC TUI installed %s\\n' "\$PC_BIN_DIR/polymarket-cockpit-tui"
 printf 'THEPC TUI launcher installed %s\\n' "\$PC_BIN_DIR/open-polymarket-tui.sh"
+printf 'THEPC browser UI launcher installed %s\\n' "\$PC_BIN_DIR/open-polymarket-ui.sh"
 printf 'THEPC deployed %s\\n' "\$FULL_SHA"
 EOF

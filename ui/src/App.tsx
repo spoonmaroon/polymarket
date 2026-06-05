@@ -1,5 +1,70 @@
 import { useEffect, useMemo, useState } from "react";
 
+const LIVE_LIMIT = 12;
+const PROBABILITY_LIMIT = 24;
+const POLL_INTERVAL_MS = 2500;
+
+type JsonRecord = Record<string, unknown>;
+
+type ApiState<T> = {
+  status: "loading" | "ready" | "error";
+  payload: T | null;
+  error: string | null;
+  updatedAt: number | null;
+};
+
+type RuntimeStatus = {
+  ok?: boolean;
+  state?: string;
+  generated_at?: string;
+  schema_kind?: string;
+  mode?: string;
+  error?: string | null;
+  counts?: Record<string, number>;
+};
+
+type RuntimeGates = {
+  ok?: boolean;
+  state?: string;
+  generated_at?: string;
+  failures?: unknown[];
+  errors?: unknown[];
+  checks?: unknown[];
+  reasons?: unknown[];
+};
+
+type RuntimeMonitor = {
+  ok?: boolean;
+  state?: string;
+  generated_at?: string;
+  orderbooks?: unknown[];
+  contracts?: unknown[];
+  health_flags?: unknown[];
+  latency_marks?: unknown[];
+  source_errors?: JsonRecord;
+  websocket_status?: unknown[];
+  hot_decision_telemetry?: unknown;
+};
+
+type RuntimeVolatility = {
+  state?: string;
+  generated_at?: string;
+  source_key?: string;
+  lookback_limit?: number;
+  rows?: unknown[];
+  errors?: unknown[];
+};
+
+type RuntimeLivePayload = {
+  ok?: boolean;
+  server_sent_at?: string;
+  status?: RuntimeStatus;
+  gates?: RuntimeGates;
+  monitor?: RuntimeMonitor;
+  volatility?: RuntimeVolatility;
+  latency?: JsonRecord;
+};
+
 type SimulationPath = {
   index: number;
   terminal_win: boolean;
@@ -26,20 +91,22 @@ type SimulationPreview = {
 };
 
 type ProbabilityRow = {
-  contract: string;
+  contract?: string;
   contract_id?: string;
+  market_slug?: string;
+  output_id?: string;
   asset?: string;
   side?: string;
+  start_ts?: string;
   asof_ts?: string;
   expiry_ts?: string;
-  p_finish: number;
-  p_no_touch: number;
-  z_path: number;
-  sigma_tau: number;
-  age_ms: number;
+  p_finish?: number;
+  p_no_touch?: number;
+  z_path?: number;
+  sigma_tau?: number;
+  age_ms?: number;
   flags?: string[];
   model_version?: string;
-  output_id?: string;
   mc_dispersion?: number | null;
   uncertainty_buffer?: number | null;
   path_diagnosis?: string[];
@@ -48,165 +115,62 @@ type ProbabilityRow = {
   edge_after_costs?: number | null;
   required_edge?: number | null;
   gate_reasons?: string[];
-  generator_metadata?: Record<string, unknown>;
-  simulation_preview?: SimulationPreview | null;
+  cache_key?: string;
+  cache_status?: string;
+  cache_market_slug?: string;
+  cache_start_ts?: string;
+  cache_expiry_ts?: string;
+  cache_asof_ts?: string;
+  generated_at?: string;
+  valid_from?: string;
+  valid_until?: string;
+  time_bucket?: string;
+  z_path_bucket?: string;
+  sigma_bucket?: string;
+  volatility_regime?: string;
+  generator_version?: string;
+  path_count?: number;
+  generator_metadata?: JsonRecord;
+  cache_metadata?: JsonRecord;
+  grid_cache?: JsonRecord;
+  simulation_preview?: unknown;
 };
 
 type ProbabilityPayload = {
-  ok: boolean;
-  state: string;
+  schema_version?: string;
+  ok?: boolean;
+  state?: string;
+  error?: string | null;
   generated_at?: string;
   cached?: boolean;
   model_version?: string | null;
   rows?: ProbabilityRow[];
   skipped?: number;
-  errors?: string[];
+  errors?: unknown[];
+  cache_metadata?: JsonRecord;
+  grid_cache?: JsonRecord;
+  cache?: JsonRecord;
 };
 
-type RuntimeState =
-  | { source: "loading"; payload: ProbabilityPayload; error: null }
-  | { source: "api"; payload: ProbabilityPayload; error: null }
-  | { source: "fixture"; payload: ProbabilityPayload; error: string };
-
-const fallbackPayload: ProbabilityPayload = {
-  ok: true,
-  state: "PREVIEW",
-  cached: false,
-  generated_at: "2026-06-05T20:10:00+00:00",
-  model_version: "fixture-ensemble-v1",
-  skipped: 0,
-  errors: [],
-  rows: [
-    {
-      contract: "BTC 5m UP",
-      contract_id: "btc-5m-up",
-      asset: "BTC",
-      side: "UP",
-      asof_ts: "2026-06-05T20:10:00+00:00",
-      expiry_ts: "2026-06-05T20:15:00+00:00",
-      p_finish: 0.674,
-      p_no_touch: 0.718,
-      z_path: 0.82,
-      sigma_tau: 0.0118,
-      age_ms: 840,
-      flags: ["OK"],
-      mc_dispersion: 0.073,
-      uncertainty_buffer: 0.046,
-      path_diagnosis: ["FRAGILE", "NEAR_THRESHOLD"],
-      effective_weights: {
-        lognormal_baseline: 0.55,
-        empirical_conditional: 0.3,
-        stress_overlay: 0.15,
-      },
-      decision_hint: "WAIT",
-      edge_after_costs: 0.019,
-      required_edge: 0.086,
-      gate_reasons: ["NEAR_THRESHOLD"],
-      generator_metadata: { snapshot_id: "fixture-preview", source: "local_fixture" },
-      simulation_preview: fixturePreview({
-        threshold: 100,
-        start: 100,
-        drift: 0.08,
-        amplitude: 0.82,
-        pathCount: 1000,
-        terminalWins: 674,
-        noTouchWins: 718,
-        comparison: ">=",
-      }),
-    },
-    {
-      contract: "BTC 5m DOWN",
-      contract_id: "btc-5m-down",
-      asset: "BTC",
-      side: "DOWN",
-      asof_ts: "2026-06-05T20:10:00+00:00",
-      expiry_ts: "2026-06-05T20:15:00+00:00",
-      p_finish: 0.382,
-      p_no_touch: 0.811,
-      z_path: -0.42,
-      sigma_tau: 0.0118,
-      age_ms: 910,
-      flags: ["OK"],
-      mc_dispersion: 0.031,
-      uncertainty_buffer: 0.029,
-      path_diagnosis: ["WRONG_SIDE"],
-      effective_weights: {
-        lognormal_baseline: 0.62,
-        empirical_conditional: 0.23,
-        stress_overlay: 0.15,
-      },
-      decision_hint: "BLOCK",
-      edge_after_costs: -0.074,
-      required_edge: 0.059,
-      gate_reasons: ["WRONG_SIDE"],
-      generator_metadata: { snapshot_id: "fixture-preview", source: "local_fixture" },
-      simulation_preview: fixturePreview({
-        threshold: 100,
-        start: 100,
-        drift: -0.04,
-        amplitude: 0.55,
-        pathCount: 1000,
-        terminalWins: 382,
-        noTouchWins: 811,
-        comparison: "<",
-      }),
-    },
-    {
-      contract: "ETH 5m UP",
-      contract_id: "eth-5m-up",
-      asset: "ETH",
-      side: "UP",
-      asof_ts: "2026-06-05T20:10:00+00:00",
-      expiry_ts: "2026-06-05T20:15:00+00:00",
-      p_finish: 0.593,
-      p_no_touch: 0.762,
-      z_path: 0.64,
-      sigma_tau: 0.0142,
-      age_ms: 1120,
-      flags: ["OK"],
-      mc_dispersion: 0.028,
-      uncertainty_buffer: 0.031,
-      path_diagnosis: ["CLEAN"],
-      effective_weights: {
-        lognormal_baseline: 0.48,
-        empirical_conditional: 0.37,
-        stress_overlay: 0.15,
-      },
-      decision_hint: "DEMAND_MORE_EDGE",
-      edge_after_costs: 0.024,
-      required_edge: 0.061,
-      gate_reasons: ["INSUFFICIENT_EDGE"],
-      generator_metadata: { snapshot_id: "fixture-preview", source: "local_fixture" },
-      simulation_preview: fixturePreview({
-        threshold: 2500,
-        start: 2500,
-        drift: 0.05,
-        amplitude: 19,
-        pathCount: 1000,
-        terminalWins: 593,
-        noTouchWins: 762,
-        comparison: ">=",
-      }),
-    },
-  ],
+const emptyLive: ApiState<RuntimeLivePayload> = {
+  status: "loading",
+  payload: null,
+  error: null,
+  updatedAt: null,
 };
 
-const emptyPayload: ProbabilityPayload = {
-  ok: false,
-  state: "LOADING",
-  cached: false,
-  rows: [],
-  skipped: 0,
-  errors: [],
+const emptyProbabilities: ApiState<ProbabilityPayload> = {
+  status: "loading",
+  payload: null,
+  error: null,
+  updatedAt: null,
 };
 
 export function App() {
-  const [runtime, setRuntime] = useState<RuntimeState>({
-    source: "loading",
-    payload: emptyPayload,
-    error: null,
-  });
-  const rows = runtime.payload.rows ?? [];
+  const [live, setLive] = useState<ApiState<RuntimeLivePayload>>(emptyLive);
+  const [probabilities, setProbabilities] =
+    useState<ApiState<ProbabilityPayload>>(emptyProbabilities);
+  const rows = safeRows(probabilities.payload);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const selectedRow = useMemo(
     () => rows.find((row) => rowKey(row) === selectedId) ?? rows[0] ?? null,
@@ -214,30 +178,33 @@ export function App() {
   );
 
   useEffect(() => {
-    const controller = new AbortController();
-    fetch("/api/runtime/probabilities?limit=12", { signal: controller.signal })
-      .then(async (response) => {
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}`);
-        }
-        return (await response.json()) as ProbabilityPayload;
-      })
-      .then((payload) => setRuntime({ source: "api", payload, error: null }))
-      .catch((error: unknown) => {
-        if (controller.signal.aborted) {
-          return;
-        }
-        setRuntime({
-          source: "fixture",
-          payload: fallbackPayload,
-          error: error instanceof Error ? error.message : "runtime API unavailable",
-        });
-      });
-    return () => controller.abort();
+    let active = true;
+
+    async function poll() {
+      const [liveResult, probabilityResult] = await Promise.all([
+        fetchJson<RuntimeLivePayload>(`/api/runtime/live?limit=${LIVE_LIMIT}`),
+        fetchJson<ProbabilityPayload>(
+          `/api/runtime/probabilities?limit=${PROBABILITY_LIMIT}`,
+        ),
+      ]);
+      if (!active) {
+        return;
+      }
+      setLive(toApiState(liveResult));
+      setProbabilities(toApiState(probabilityResult));
+    }
+
+    void poll();
+    const intervalId = window.setInterval(() => void poll(), POLL_INTERVAL_MS);
+    return () => {
+      active = false;
+      window.clearInterval(intervalId);
+    };
   }, []);
 
   useEffect(() => {
     if (rows.length === 0) {
+      setSelectedId(null);
       return;
     }
     if (!selectedId || !rows.some((row) => rowKey(row) === selectedId)) {
@@ -249,65 +216,165 @@ export function App() {
     <main className="app-shell">
       <header className="topbar">
         <div>
-          <h1>Probability Runtime</h1>
-          <p>Monte Carlo preview, cache status, and read-only gate output.</p>
+          <h1>Runtime Monitor</h1>
+          <p>Read-only live status, probability outputs, gates, and cache health.</p>
         </div>
-        <div className="mode-lock">Read-only paper</div>
+        <div className="mode-lock">Paper / read-only</div>
       </header>
 
-      <StatusStrip runtime={runtime} rowCount={rows.length} />
+      <StatusStrip
+        live={live}
+        probabilities={probabilities}
+        rowCount={rows.length}
+        rows={rows}
+      />
 
-      <section className="runtime-grid" aria-label="Probability runtime dashboard">
-        <SimulationPanel row={selectedRow} runtime={runtime} />
+      <section className="runtime-grid" aria-label="Runtime dashboard">
+        <section className="main-stack">
+          <ProbabilityTable
+            rows={rows}
+            selectedKey={selectedRow ? rowKey(selectedRow) : null}
+            onSelect={setSelectedId}
+            state={probabilities}
+          />
+          <SelectedDetails row={selectedRow} probabilities={probabilities.payload} />
+        </section>
         <aside className="side-stack">
-        <ContractQueue
-          rows={rows}
-          selectedKey={selectedRow ? rowKey(selectedRow) : null}
-          onSelect={setSelectedId}
-        />
-          {selectedRow ? <GateAndWeights row={selectedRow} /> : null}
+          <SystemHealth live={live} probabilities={probabilities} />
+          <GateAndWeights row={selectedRow} />
         </aside>
       </section>
     </main>
   );
 }
 
-function StatusStrip({ runtime, rowCount }: { runtime: RuntimeState; rowCount: number }) {
-  const cacheState = runtime.payload.cached ? "1s HIT" : runtime.source === "api" ? "LIVE READ" : "PREVIEW";
+function StatusStrip({
+  live,
+  probabilities,
+  rowCount,
+  rows,
+}: {
+  live: ApiState<RuntimeLivePayload>;
+  probabilities: ApiState<ProbabilityPayload>;
+  rowCount: number;
+  rows: ProbabilityRow[];
+}) {
+  const livePayload = live.payload;
+  const probabilityPayload = probabilities.payload;
+  const liveState =
+    livePayload?.status?.state ??
+    livePayload?.monitor?.state ??
+    (live.status === "loading" ? "LOADING" : livePayload?.ok ? "OK" : "OFFLINE");
+  const generatedAt =
+    probabilityPayload?.generated_at ??
+    livePayload?.status?.generated_at ??
+    livePayload?.server_sent_at;
   return (
     <section className="status-strip" aria-label="Runtime status">
+      <Metric label="Live state" value={liveState} tone={liveTone(livePayload?.ok, live.status)} />
+      <Metric label="Generated" value={formatTimestamp(generatedAt)} />
       <Metric
-        label="State"
-        value={runtime.source === "fixture" ? "PREVIEW" : runtime.payload.state}
-        tone={runtime.payload.ok ? "good" : "warn"}
+        label="Probability"
+        value={probabilityPayload?.state ?? statusLabel(probabilities.status)}
+        tone={probabilityTone(probabilityPayload)}
       />
-      <Metric label="Generated" value={formatTimestamp(runtime.payload.generated_at)} />
-      <Metric label="Payload" value={cacheState} tone={runtime.payload.cached ? "good" : "neutral"} />
-      <Metric label="Grid cache" value="PENDING" tone="warn" />
-      <Metric label="Rows" value={String(rowCount)} />
-      <Metric label="Skipped" value={String(runtime.payload.skipped ?? 0)} />
-      {runtime.source === "fixture" ? <div className="status-note">API fallback: {runtime.error}</div> : null}
+      <Metric label="Rows" value={formatInteger(rowCount)} />
+      <Metric label="Cache" value={formatCacheState(probabilityPayload, rows)} />
+      <Metric label="API build" value={formatLatency(livePayload?.latency)} />
+      {live.error ? <div className="status-note">Live API: {live.error}</div> : null}
+      {probabilities.error ? (
+        <div className="status-note">Probability API: {probabilities.error}</div>
+      ) : null}
     </section>
   );
 }
 
-function SimulationPanel({ row, runtime }: { row: ProbabilityRow | null; runtime: RuntimeState }) {
+function ProbabilityTable({
+  rows,
+  selectedKey,
+  onSelect,
+  state,
+}: {
+  rows: ProbabilityRow[];
+  selectedKey: string | null;
+  onSelect: (key: string) => void;
+  state: ApiState<ProbabilityPayload>;
+}) {
+  return (
+    <section className="panel probability-panel">
+      <PanelHeader
+        title="Probability Outputs"
+        subtitle="Polling /api/runtime/probabilities. Rows are display-only."
+      />
+      {rows.length === 0 ? (
+        <EmptyState
+          title="No probability rows"
+          body={probabilityEmptyBody(state)}
+        />
+      ) : (
+        <div className="probability-table" role="table" aria-label="Probability outputs">
+          <div className="probability-row table-head" role="row">
+            <span>Contract</span>
+            <span>p_finish</span>
+            <span>p_no_touch</span>
+            <span>Gate</span>
+            <span>Cache</span>
+            <span>Age</span>
+          </div>
+          {rows.map((row) => {
+            const key = rowKey(row);
+            return (
+              <button
+                className={key === selectedKey ? "probability-row selected-row" : "probability-row"}
+                key={key}
+                onClick={() => onSelect(key)}
+                type="button"
+                role="row"
+              >
+                <span className="contract-cell">
+                  <strong>{contractLabel(row)}</strong>
+                  <small>{compactList([row.asset, row.side, row.contract_id])}</small>
+                </span>
+                <span>{formatProbability(row.p_finish)}</span>
+                <span>{formatProbability(row.p_no_touch)}</span>
+                <span>
+                  <GatePill value={row.decision_hint} />
+                </span>
+                <span>{formatRowCache(row)}</span>
+                <span>{formatAge(row.age_ms)}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function SelectedDetails({
+  row,
+  probabilities,
+}: {
+  row: ProbabilityRow | null;
+  probabilities: ProbabilityPayload | null;
+}) {
   if (!row) {
     return (
-      <section className="panel simulation-panel">
-        <PanelHeader title="Monte Carlo Preview" subtitle="No probability rows available." />
+      <section className="panel detail-panel">
+        <PanelHeader title="Selected Contract" subtitle="Waiting for a probability row." />
+        <EmptyState title="Nothing selected" body="The details panel appears when rows arrive." />
       </section>
     );
   }
 
-  const preview = row.simulation_preview ?? null;
+  const preview = parseSimulationPreview(row.simulation_preview);
   return (
-    <section className="panel simulation-panel">
+    <section className="panel detail-panel">
       <div className="simulation-head">
         <div>
           <p className="panel-kicker">Selected contract</p>
-          <h2>{row.contract}</h2>
-          <p>{row.contract_id ?? "runtime probability row"}</p>
+          <h2>{contractLabel(row)}</h2>
+          <p>{row.output_id ?? row.contract_id ?? "runtime probability row"}</p>
         </div>
         <GatePill value={row.decision_hint} />
       </div>
@@ -315,21 +382,106 @@ function SimulationPanel({ row, runtime }: { row: ProbabilityRow | null; runtime
       <div className="hero-metrics">
         <Metric label="p_finish" value={formatProbability(row.p_finish)} />
         <Metric label="p_no_touch" value={formatProbability(row.p_no_touch)} />
-        <Metric label="edge / req" value={formatEdge(row)} />
+        <Metric label="edge / required" value={formatEdge(row)} />
         <Metric label="sigma_tau" value={formatSmall(row.sigma_tau)} />
       </div>
 
-      <div className="simulation-body">
-        <MonteCarloCanvas preview={preview} row={row} source={runtime.source} />
-        <TerminalHistogram preview={preview} />
+      <div className="details-layout">
+        <MonteCarloCanvas preview={preview} row={row} />
+        <MetadataPanel title="Cache Metadata" entries={cacheMetadataEntries(probabilities, row)} />
       </div>
 
       <div className="simulation-footer">
-        <Metric label="paths" value={preview ? formatInteger(preview.path_count) : "-"} />
-        <Metric label="steps" value={preview ? String(preview.steps) : "-"} />
-        <Metric label="terminal wins" value={preview ? formatInteger(preview.terminal_win_count) : "-"} />
-        <Metric label="no-touch wins" value={preview ? formatInteger(preview.no_touch_win_count) : "-"} />
+        <Metric label="as-of" value={formatTimestamp(row.asof_ts)} />
+        <Metric label="expiry" value={formatTimestamp(row.expiry_ts)} />
+        <Metric label="model" value={row.model_version ?? probabilities?.model_version ?? "-"} />
+        <Metric label="skipped" value={formatInteger(probabilities?.skipped)} />
       </div>
+    </section>
+  );
+}
+
+function SystemHealth({
+  live,
+  probabilities,
+}: {
+  live: ApiState<RuntimeLivePayload>;
+  probabilities: ApiState<ProbabilityPayload>;
+}) {
+  const payload = live.payload;
+  const monitor = payload?.monitor;
+  const gates = payload?.gates;
+  const volatility = payload?.volatility;
+  return (
+    <section className="panel health-panel">
+      <PanelHeader title="Live Health" subtitle="Polling /api/runtime/live." />
+      <div className="detail-grid">
+        <Metric label="Status" value={payload?.status?.state ?? statusLabel(live.status)} />
+        <Metric label="Gates" value={gates?.ok === false ? "BLOCKED" : gates?.state ?? "OK"} />
+        <Metric label="Orderbooks" value={formatInteger(arrayLength(monitor?.orderbooks))} />
+        <Metric label="Volatility" value={volatility?.state ?? "-"} />
+      </div>
+
+      <section className="detail-section">
+        <h3>Gate / Diagnosis</h3>
+        <ChipRow
+          values={[
+            ...unknownList(gates?.failures),
+            ...unknownList(gates?.errors),
+            ...unknownList(gates?.reasons),
+            ...unknownList(monitor?.health_flags),
+            ...unknownList(probabilities.payload?.errors),
+          ]}
+          fallback={gates?.ok === false ? "BLOCKED" : "CLEAR"}
+        />
+      </section>
+
+      <section className="detail-section">
+        <h3>Runtime Metadata</h3>
+        <KeyValueList
+          entries={[
+            ["server_sent_at", payload?.server_sent_at],
+            ["status_generated_at", payload?.status?.generated_at],
+            ["monitor_generated_at", monitor?.generated_at],
+            ["schema", payload?.status?.schema_kind],
+            ["mode", payload?.status?.mode],
+            ["vol_source", volatility?.source_key],
+            ["vol_lookback", volatility?.lookback_limit],
+          ]}
+        />
+      </section>
+    </section>
+  );
+}
+
+function GateAndWeights({ row }: { row: ProbabilityRow | null }) {
+  if (!row) {
+    return null;
+  }
+  return (
+    <section className="panel compact-detail">
+      <PanelHeader title="Gate + Weights" subtitle={row.contract_id ?? "selected row"} />
+      <div className="detail-grid">
+        <Metric label="mc_dispersion" value={formatOptional(row.mc_dispersion)} />
+        <Metric label="uncertainty" value={formatOptional(row.uncertainty_buffer)} />
+        <Metric label="required_edge" value={formatOptional(row.required_edge)} />
+        <Metric label="edge_after" value={formatOptional(row.edge_after_costs)} />
+      </div>
+      <section className="detail-section">
+        <h3>Weights</h3>
+        <WeightBars weights={row.effective_weights ?? {}} />
+      </section>
+      <section className="detail-section">
+        <h3>Row Diagnosis</h3>
+        <ChipRow
+          values={[
+            ...unknownList(row.gate_reasons),
+            ...unknownList(row.path_diagnosis),
+            ...unknownList(row.flags),
+          ]}
+          fallback="CLEAR"
+        />
+      </section>
     </section>
   );
 }
@@ -337,18 +489,16 @@ function SimulationPanel({ row, runtime }: { row: ProbabilityRow | null; runtime
 function MonteCarloCanvas({
   preview,
   row,
-  source,
 }: {
   preview: SimulationPreview | null;
   row: ProbabilityRow;
-  source: RuntimeState["source"];
 }) {
   const geometry = useMemo(() => (preview ? buildPathGeometry(preview) : null), [preview]);
   if (!preview || !geometry) {
     return (
       <div className="chart-empty">
-        <strong>Simulation preview unavailable</strong>
-        <span>Persisted rows need `simulation_preview` diagnostics to draw real paths.</span>
+        <strong>Monte Carlo diagnostics pending</strong>
+        <span>Rows need `simulation_preview` to render sampled paths.</span>
       </div>
     );
   }
@@ -357,7 +507,7 @@ function MonteCarloCanvas({
     <div className="path-chart">
       <div className="chart-labels">
         <span>Threshold {formatPrice(preview.threshold)}</span>
-        <span>{source === "fixture" ? "fixture preview" : "runtime preview"}</span>
+        <span>{formatInteger(preview.path_count)} paths</span>
       </div>
       <svg viewBox="0 0 760 310" role="img" aria-label="Monte Carlo sampled path fan">
         <line
@@ -383,104 +533,19 @@ function MonteCarloCanvas({
         </text>
       </svg>
       <div className="chart-caption">
-        <span>{row.path_diagnosis?.join(",") || "path diagnostics pending"}</span>
+        <span>{formatPreviewWinCounts(preview)}</span>
         <span>z {formatSigned(row.z_path)}</span>
       </div>
     </div>
   );
 }
 
-function TerminalHistogram({ preview }: { preview: SimulationPreview | null }) {
-  if (!preview || preview.terminal_histogram.length === 0) {
-    return <div className="histogram-empty">Terminal distribution pending.</div>;
-  }
-  const maxCount = Math.max(...preview.terminal_histogram.map((bucket) => bucket.count));
+function MetadataPanel({ title, entries }: { title: string; entries: Array<[string, unknown]> }) {
   return (
-    <div className="histogram-panel">
-      <div className="histogram-title">
-        <span>Terminal distribution</span>
-        <strong>{preview.comparison_operator} {formatPrice(preview.threshold)}</strong>
-      </div>
-      <div className="histogram-bars">
-        {preview.terminal_histogram.map((bucket) => (
-          <div className="histogram-bar-wrap" key={`${bucket.lower}-${bucket.upper}`}>
-            <div
-              className={isWinningBucket(preview, bucket) ? "histogram-bar win-bin" : "histogram-bar"}
-              style={{ height: `${Math.max(8, (bucket.count / maxCount) * 100)}%` }}
-              title={`${formatPrice(bucket.lower)}-${formatPrice(bucket.upper)}: ${bucket.count}`}
-            />
-          </div>
-        ))}
-      </div>
+    <div className="metadata-panel">
+      <h3>{title}</h3>
+      <KeyValueList entries={entries} />
     </div>
-  );
-}
-
-function ContractQueue({
-  rows,
-  selectedKey,
-  onSelect,
-}: {
-  rows: ProbabilityRow[];
-  selectedKey: string | null;
-  onSelect: (key: string) => void;
-}) {
-  return (
-    <section className="panel queue-panel">
-      <PanelHeader title="Contracts" subtitle="Select a row to inspect paths." />
-      <div className="contract-list">
-        {rows.length === 0 ? (
-          <div className="empty-row">Probability rows pending.</div>
-        ) : (
-          rows.map((row) => {
-            const key = rowKey(row);
-            return (
-              <button
-                className={key === selectedKey ? "contract-row selected-row" : "contract-row"}
-                key={key}
-                onClick={() => onSelect(key)}
-                type="button"
-              >
-                <span>
-                  <strong>{row.contract}</strong>
-                  <small>{formatAge(row.age_ms)} {formatList(row.flags, "OK")}</small>
-                </span>
-                <span className="row-numbers">
-                  <b>{formatProbability(row.p_finish)}</b>
-                  <GatePill value={row.decision_hint} />
-                </span>
-              </button>
-            );
-          })
-        )}
-      </div>
-    </section>
-  );
-}
-
-function GateAndWeights({ row }: { row: ProbabilityRow }) {
-  return (
-    <section className="panel compact-detail">
-      <PanelHeader title="Gate + Generators" subtitle={row.contract_id ?? "selected row"} />
-      <div className="detail-grid">
-        <Metric label="mc_dispersion" value={formatOptional(row.mc_dispersion)} />
-        <Metric label="uncertainty" value={formatOptional(row.uncertainty_buffer)} />
-        <Metric label="required_edge" value={formatOptional(row.required_edge)} />
-        <Metric label="edge_after" value={formatOptional(row.edge_after_costs)} />
-      </div>
-      <section className="detail-section">
-        <h3>Weights</h3>
-        <WeightBars weights={row.effective_weights ?? {}} />
-      </section>
-      <section className="detail-section">
-        <h3>Gate reasons</h3>
-        <div className="chip-row">
-          {(row.gate_reasons?.length ? row.gate_reasons : ["CLEAR"]).map((reason) => (
-            <span className="chip" key={reason}>{reason}</span>
-          ))}
-        </div>
-      </section>
-    </section>
   );
 }
 
@@ -491,6 +556,15 @@ function PanelHeader({ title, subtitle }: { title: string; subtitle: string }) {
         <h2>{title}</h2>
         <p>{subtitle}</p>
       </div>
+    </div>
+  );
+}
+
+function EmptyState({ title, body }: { title: string; body: string }) {
+  return (
+    <div className="empty-state">
+      <strong>{title}</strong>
+      <span>{body}</span>
     </div>
   );
 }
@@ -513,7 +587,9 @@ function Metric({
 }
 
 function WeightBars({ weights }: { weights: Record<string, number> }) {
-  const entries = Object.entries(weights).sort(([left], [right]) => left.localeCompare(right));
+  const entries = Object.entries(weights)
+    .filter(([, value]) => Number.isFinite(value))
+    .sort(([left], [right]) => left.localeCompare(right));
   if (entries.length === 0) {
     return <p className="quiet">No generator weights attached.</p>;
   }
@@ -526,7 +602,7 @@ function WeightBars({ weights }: { weights: Record<string, number> }) {
             <strong>{Math.round(value * 100)}%</strong>
           </div>
           <div className="bar-track" aria-hidden="true">
-            <div className="bar-fill" style={{ width: `${Math.max(0, Math.min(1, value)) * 100}%` }} />
+            <div className="bar-fill" style={{ width: `${clamp01(value) * 100}%` }} />
           </div>
         </div>
       ))}
@@ -537,6 +613,184 @@ function WeightBars({ weights }: { weights: Record<string, number> }) {
 function GatePill({ value }: { value?: string | null }) {
   const label = formatGate(value);
   return <span className={`gate-pill gate-${gateTone(label)}`}>{label}</span>;
+}
+
+function ChipRow({ values, fallback }: { values: unknown[]; fallback: string }) {
+  const chips = values.map(compactValue).filter(Boolean);
+  return (
+    <div className="chip-row">
+      {(chips.length > 0 ? chips : [fallback]).map((value) => (
+        <span className="chip" key={value}>
+          {sanitizeOperatorLabel(value)}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function KeyValueList({ entries }: { entries: Array<[string, unknown]> }) {
+  const visible = entries
+    .filter(([, value]) => value !== undefined && value !== null && value !== "")
+    .map(([key, value]) => [key, compactValue(value)] as [string, string])
+    .filter(([, value]) => value !== "");
+  if (visible.length === 0) {
+    return <p className="quiet">No metadata attached.</p>;
+  }
+  return (
+    <dl className="kv-list">
+      {visible.map(([key, value]) => (
+        <div className="kv-row" key={key}>
+          <dt>{key}</dt>
+          <dd>{sanitizeOperatorLabel(value)}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+async function fetchJson<T>(url: string): Promise<{ payload: T | null; error: string | null }> {
+  try {
+    const response = await fetch(url, { cache: "no-store" });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    return { payload: (await response.json()) as T, error: null };
+  } catch (error) {
+    return {
+      payload: null,
+      error: error instanceof Error ? error.message : "runtime API unavailable",
+    };
+  }
+}
+
+function toApiState<T>(result: { payload: T | null; error: string | null }): ApiState<T> {
+  return {
+    status: result.error ? "error" : "ready",
+    payload: result.payload,
+    error: result.error,
+    updatedAt: Date.now(),
+  };
+}
+
+function safeRows(payload: ProbabilityPayload | null): ProbabilityRow[] {
+  return Array.isArray(payload?.rows) ? payload.rows.filter(isRecord) : [];
+}
+
+function rowKey(row: ProbabilityRow) {
+  return row.output_id ?? row.contract_id ?? `${contractLabel(row)}-${row.asof_ts ?? ""}`;
+}
+
+function contractLabel(row: ProbabilityRow) {
+  const assetSide = compactList([row.asset, row.side]);
+  return (row.contract ?? assetSide) || "Unknown contract";
+}
+
+function probabilityEmptyBody(state: ApiState<ProbabilityPayload>) {
+  if (state.status === "loading") {
+    return "Waiting for the probability endpoint.";
+  }
+  if (state.error) {
+    return `Endpoint unavailable: ${state.error}`;
+  }
+  if (state.payload?.state === "DISABLED") {
+    return "Runtime probability generation is disabled. The browser stays read-only.";
+  }
+  return state.payload?.error ?? "The endpoint returned an empty row set.";
+}
+
+function cacheMetadataEntries(
+  payload: ProbabilityPayload | null,
+  row: ProbabilityRow,
+): Array<[string, unknown]> {
+  return [
+    ["payload_cached", payload?.cached],
+    ["payload_state", payload?.state],
+    ["schema_version", payload?.schema_version],
+    ["payload_model", payload?.model_version],
+    ["payload_generated_at", payload?.generated_at],
+    ["payload_skipped", payload?.skipped],
+    ["payload_cache", payload?.cache],
+    ["payload_cache_metadata", payload?.cache_metadata],
+    ["payload_grid_cache", payload?.grid_cache],
+    ["row_cache_status", row.cache_status],
+    ["row_cache_key", row.cache_key],
+    ["row_cache_market", row.cache_market_slug],
+    ["row_cache_start", row.cache_start_ts],
+    ["row_cache_expiry", row.cache_expiry_ts],
+    ["row_cache_asof", row.cache_asof_ts],
+    ["row_generated_at", row.generated_at],
+    ["row_valid_from", row.valid_from],
+    ["row_valid_until", row.valid_until],
+    ["row_path_count", row.path_count],
+    ["row_time_bucket", row.time_bucket],
+    ["row_z_bucket", row.z_path_bucket],
+    ["row_sigma_bucket", row.sigma_bucket],
+    ["row_vol_regime", row.volatility_regime],
+    ["row_cache_metadata", row.cache_metadata],
+    ["row_grid_cache", row.grid_cache],
+    ["generator_metadata", row.generator_metadata],
+  ];
+}
+
+function parseSimulationPreview(value: unknown): SimulationPreview | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const sampledPaths = Array.isArray(value.sampled_paths)
+    ? value.sampled_paths.filter(isSimulationPath)
+    : [];
+  const histogram = Array.isArray(value.terminal_histogram)
+    ? value.terminal_histogram.filter(isHistogramBucket)
+    : [];
+  const pathCount = value.path_count;
+  const steps = value.steps;
+  const startPrice = value.start_price;
+  const threshold = value.threshold;
+  const terminalWinCount = value.terminal_win_count;
+  const noTouchWinCount = value.no_touch_win_count;
+  const comparisonOperator = value.comparison_operator;
+  if (
+    !isFiniteNumber(pathCount) ||
+    !isFiniteNumber(steps) ||
+    !isFiniteNumber(startPrice) ||
+    !isFiniteNumber(threshold) ||
+    !isFiniteNumber(terminalWinCount) ||
+    !isFiniteNumber(noTouchWinCount) ||
+    typeof comparisonOperator !== "string"
+  ) {
+    return null;
+  }
+  return {
+    path_count: pathCount,
+    steps,
+    start_price: startPrice,
+    threshold,
+    comparison_operator: comparisonOperator,
+    terminal_win_count: terminalWinCount,
+    no_touch_win_count: noTouchWinCount,
+    sampled_paths: sampledPaths,
+    terminal_histogram: histogram,
+  };
+}
+
+function isSimulationPath(value: unknown): value is SimulationPath {
+  return (
+    isRecord(value) &&
+    typeof value.index === "number" &&
+    typeof value.terminal_win === "boolean" &&
+    typeof value.no_touch_win === "boolean" &&
+    Array.isArray(value.points) &&
+    value.points.every(isFiniteNumber)
+  );
+}
+
+function isHistogramBucket(value: unknown): value is HistogramBucket {
+  return (
+    isRecord(value) &&
+    isFiniteNumber(value.lower) &&
+    isFiniteNumber(value.upper) &&
+    isFiniteNumber(value.count)
+  );
 }
 
 function buildPathGeometry(preview: SimulationPreview) {
@@ -555,147 +809,141 @@ function buildPathGeometry(preview: SimulationPreview) {
   const min = low - padding;
   const max = high + padding;
   const yFor = (price: number) => top + height - ((price - min) / (max - min)) * height;
-  const pathData = preview.sampled_paths.map((path) => {
-    const maxIndex = Math.max(1, path.points.length - 1);
-    const d = path.points
-      .map((price, index) => {
-        const x = left + (index / maxIndex) * width;
-        const y = yFor(price);
-        return `${index === 0 ? "M" : "L"}${x.toFixed(2)} ${y.toFixed(2)}`;
-      })
-      .join(" ");
-    return { d, index: path.index, terminalWin: path.terminal_win };
-  });
   return {
     thresholdY: yFor(preview.threshold),
     startY: yFor(preview.start_price),
-    paths: pathData,
+    paths: preview.sampled_paths.map((path) => {
+      const maxIndex = Math.max(1, path.points.length - 1);
+      const d = path.points
+        .map((price, index) => {
+          const x = left + (index / maxIndex) * width;
+          const y = yFor(price);
+          return `${index === 0 ? "M" : "L"}${x.toFixed(2)} ${y.toFixed(2)}`;
+        })
+        .join(" ");
+      return { d, index: path.index, terminalWin: path.terminal_win };
+    }),
   };
 }
 
-function fixturePreview({
-  threshold,
-  start,
-  drift,
-  amplitude,
-  pathCount,
-  terminalWins,
-  noTouchWins,
-  comparison,
-}: {
-  threshold: number;
-  start: number;
-  drift: number;
-  amplitude: number;
-  pathCount: number;
-  terminalWins: number;
-  noTouchWins: number;
-  comparison: string;
-}): SimulationPreview {
-  const steps = 20;
-  const sampled_paths = Array.from({ length: 24 }, (_, pathIndex) => {
-    const points = Array.from({ length: steps + 1 }, (_, step) => {
-      const t = step / steps;
-      const wave = Math.sin(t * Math.PI * 2 + pathIndex * 0.65) * amplitude;
-      const bend = Math.cos(t * Math.PI + pathIndex * 0.2) * amplitude * 0.32;
-      return start + drift * step + wave + bend;
-    });
-    const terminal = points[points.length - 1];
-    const terminal_win = comparison.startsWith(">") ? terminal >= threshold : terminal < threshold;
-    const no_touch_win = points.every((point) =>
-      comparison.startsWith(">") ? point >= threshold : point < threshold,
-    );
-    return { index: pathIndex, terminal_win, no_touch_win, points };
-  });
-  const terminal_histogram = Array.from({ length: 16 }, (_, index) => {
-    const lower = threshold - amplitude * 2.2 + index * amplitude * 0.32;
-    return { lower, upper: lower + amplitude * 0.32, count: 20 + ((index * 37) % 110) };
-  });
-  return {
-    path_count: pathCount,
-    steps,
-    start_price: start,
-    threshold,
-    comparison_operator: comparison,
-    terminal_win_count: terminalWins,
-    no_touch_win_count: noTouchWins,
-    sampled_paths,
-    terminal_histogram,
-  };
+function isRecord(value: unknown): value is JsonRecord {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function rowKey(row: ProbabilityRow) {
-  return row.output_id ?? row.contract_id ?? `${row.contract}-${row.asof_ts ?? ""}`;
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
 }
 
-function isWinningBucket(preview: SimulationPreview, bucket: HistogramBucket) {
-  if (preview.comparison_operator === ">") {
-    return bucket.upper > preview.threshold;
+function unknownList(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function arrayLength(value: unknown): number {
+  return Array.isArray(value) ? value.length : 0;
+}
+
+function compactList(values: Array<string | undefined>) {
+  return values.filter(Boolean).join(" / ");
+}
+
+function compactValue(value: unknown): string {
+  if (value === null || value === undefined) {
+    return "";
   }
-  if (preview.comparison_operator === ">=") {
-    return bucket.upper >= preview.threshold;
+  if (typeof value === "string") {
+    return value;
   }
-  if (preview.comparison_operator === "<") {
-    return bucket.lower < preview.threshold;
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
   }
-  if (preview.comparison_operator === "<=") {
-    return bucket.lower <= preview.threshold;
+  if (Array.isArray(value)) {
+    return value.map(compactValue).filter(Boolean).join(", ");
   }
-  return false;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
 }
 
-function formatProbability(value: number) {
-  return value.toFixed(3);
+function sanitizeOperatorLabel(value: string) {
+  return value.replaceAll("TRADE", "PAPER").replaceAll("ORDER", "PAPER");
 }
 
-function formatSmall(value: number) {
-  return value.toFixed(5);
+function formatProbability(value?: number) {
+  return isFiniteNumber(value) ? value.toFixed(3) : "-";
 }
 
-function formatSigned(value: number) {
-  return `${value >= 0 ? "+" : ""}${value.toFixed(3)}`;
+function formatSmall(value?: number) {
+  return isFiniteNumber(value) ? value.toFixed(5) : "-";
+}
+
+function formatSigned(value?: number) {
+  return isFiniteNumber(value) ? `${value >= 0 ? "+" : ""}${value.toFixed(3)}` : "-";
 }
 
 function formatOptional(value?: number | null) {
-  return typeof value === "number" ? value.toFixed(3) : "-";
+  return isFiniteNumber(value) ? value.toFixed(3) : "-";
 }
 
 function formatEdge(row: ProbabilityRow) {
-  if (typeof row.edge_after_costs !== "number" || typeof row.required_edge !== "number") {
+  if (!isFiniteNumber(row.edge_after_costs) || !isFiniteNumber(row.required_edge)) {
     return "-";
   }
-  return `${row.edge_after_costs.toFixed(3)}/${row.required_edge.toFixed(3)}`;
+  return `${row.edge_after_costs.toFixed(3)} / ${row.required_edge.toFixed(3)}`;
 }
 
-function formatAge(ageMs: number) {
+function formatAge(ageMs?: number) {
+  if (!isFiniteNumber(ageMs)) {
+    return "-";
+  }
   if (ageMs >= 1000) {
     return `${(ageMs / 1000).toFixed(1)}s`;
   }
   return `${ageMs}ms`;
 }
 
-function formatList(values: string[] | undefined, fallback: string) {
-  return values && values.length > 0 ? values.join(",") : fallback;
+function formatCacheState(payload: ProbabilityPayload | null, rows: ProbabilityRow[]) {
+  if (!payload) {
+    return "pending";
+  }
+  if (payload.state === "DISABLED") {
+    return "disabled";
+  }
+  const cacheRows = rows.filter((row) => row.cache_status || row.cache_key);
+  if (cacheRows.length > 0) {
+    const hits = cacheRows.filter((row) => row.cache_status === "HIT").length;
+    const pathCount = cacheRows.find((row) => isFiniteNumber(row.path_count))?.path_count;
+    const suffix = isFiniteNumber(pathCount) ? ` n=${formatInteger(pathCount)}` : "";
+    return `${hits}/${rows.length} grid${suffix}`;
+  }
+  return payload.cached ? "api hit" : "no grid";
 }
 
-function shortWeightLabel(value: string) {
-  if (value === "empirical_conditional") {
-    return "emp";
+function formatRowCache(row: ProbabilityRow) {
+  if (row.cache_status) {
+    const pathCount = isFiniteNumber(row.path_count) ? ` n=${formatInteger(row.path_count)}` : "";
+    return `${row.cache_status}${pathCount}`;
   }
-  if (value === "lognormal_baseline") {
-    return "log";
-  }
-  if (value === "stress_overlay") {
-    return "stress";
-  }
-  return value.replaceAll("_", " ");
+  return row.output_id ? "persisted" : "-";
+}
+
+function formatLatency(latency?: JsonRecord) {
+  const value = latency?.api_build_ms;
+  return isFiniteNumber(value) ? `${value}ms` : "-";
+}
+
+function formatPreviewWinCounts(preview: SimulationPreview) {
+  return `terminal ${formatInteger(preview.terminal_win_count)} / no-touch ${formatInteger(
+    preview.no_touch_win_count,
+  )}`;
 }
 
 function formatGate(value?: string | null) {
   if (!value) {
     return "PENDING";
   }
-  return value === "TRADE_CANDIDATE" ? "PAPER_CANDIDATE" : value;
+  return sanitizeOperatorLabel(value);
 }
 
 function gateTone(value: string) {
@@ -705,10 +953,54 @@ function gateTone(value: string) {
   if (value === "WAIT" || value === "DEMAND_MORE_EDGE") {
     return "wait";
   }
-  if (value === "PAPER_CANDIDATE") {
+  if (value.includes("CANDIDATE")) {
     return "candidate";
   }
   return "neutral";
+}
+
+function liveTone(ok: boolean | undefined, status: ApiState<RuntimeLivePayload>["status"]) {
+  if (status === "error" || ok === false) {
+    return "warn";
+  }
+  return ok === true ? "good" : "neutral";
+}
+
+function probabilityTone(payload: ProbabilityPayload | null) {
+  if (!payload) {
+    return "neutral";
+  }
+  if (payload.ok === false || payload.state === "DISABLED") {
+    return "warn";
+  }
+  return "good";
+}
+
+function statusLabel(status: ApiState<unknown>["status"]) {
+  if (status === "loading") {
+    return "LOADING";
+  }
+  if (status === "error") {
+    return "ERROR";
+  }
+  return "OK";
+}
+
+function shortWeightLabel(value: string) {
+  if (value === "empirical_conditional") {
+    return "empirical";
+  }
+  if (value === "lognormal_baseline") {
+    return "lognormal";
+  }
+  if (value === "stress_overlay") {
+    return "stress";
+  }
+  return value.replaceAll("_", " ");
+}
+
+function clamp01(value: number) {
+  return Math.max(0, Math.min(1, value));
 }
 
 function formatTimestamp(value?: string) {
@@ -726,7 +1018,10 @@ function formatTimestamp(value?: string) {
   }).format(date);
 }
 
-function formatInteger(value: number) {
+function formatInteger(value?: number) {
+  if (!isFiniteNumber(value)) {
+    return "0";
+  }
   return new Intl.NumberFormat("en-US").format(value);
 }
 

@@ -339,10 +339,11 @@ fn push_log(app: &mut AppState, line: String) -> bool {
 
 fn monte_carlo_log_line(probabilities: &RuntimeProbabilities) -> String {
     format!(
-        "mc rows={} {} gates={} at={}",
+        "mc rows={} {} gates={} cache={} at={}",
         probabilities.rows.len(),
         probability_side_summary(&probabilities.rows),
         probability_gate_summary(&probabilities.rows),
+        probability_cache_summary(&probabilities.rows),
         probabilities.generated_at
     )
 }
@@ -394,6 +395,43 @@ fn probability_gate_summary(rows: &[RuntimeProbabilityRow]) -> String {
         .map(|(gate, count)| format!("{gate}:{count}"))
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+fn probability_cache_summary(rows: &[RuntimeProbabilityRow]) -> String {
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    for row in rows {
+        let status = row
+            .cache_status
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("NO_CACHE")
+            .to_string();
+        *counts.entry(status).or_default() += 1;
+    }
+    if counts.is_empty() {
+        return "-".to_string();
+    }
+    let counts_label = counts
+        .into_iter()
+        .map(|(status, count)| format!("{status}:{count}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let Some(row) = rows.iter().find(|row| {
+        row.cache_status
+            .as_deref()
+            .is_some_and(|status| !status.trim().is_empty())
+    }) else {
+        return counts_label;
+    };
+    format!(
+        "{} asof={} gen={} valid={}->{}",
+        counts_label,
+        row.asof_ts.as_deref().unwrap_or("-"),
+        row.generated_at.as_deref().unwrap_or("-"),
+        row.valid_from.as_deref().unwrap_or("-"),
+        row.valid_until.as_deref().unwrap_or("-")
+    )
 }
 
 fn probability_asset(row: &RuntimeProbabilityRow) -> String {
@@ -708,16 +746,30 @@ mod tests {
             rows: vec![RuntimeProbabilityRow {
                 contract: "BTC 5m UP".to_string(),
                 contract_id: Some("btc-updown-5m-1780521900:UP".to_string()),
+                market_slug: Some("btc-updown-5m-1780521900".to_string()),
                 asset: Some("BTC".to_string()),
                 side: Some("UP".to_string()),
+                start_ts: Some("2026-06-03T21:05:00Z".to_string()),
                 asof_ts: Some("2026-06-03T21:06:00Z".to_string()),
                 expiry_ts: Some("2026-06-03T21:10:00Z".to_string()),
                 p_finish: 0.57,
                 p_no_touch: 0.31,
                 z_path: 0.42,
                 sigma_tau: 0.0123,
+                u_gen: Some(0.046),
                 age_ms: 850,
                 flags: vec!["OK".to_string()],
+                cache_key: Some("BTC|UP|h300|t0-30".to_string()),
+                cache_status: Some("HIT".to_string()),
+                generated_at: Some("2026-06-03T21:06:00Z".to_string()),
+                valid_from: Some("2026-06-03T21:06:00Z".to_string()),
+                valid_until: Some("2026-06-03T21:06:30Z".to_string()),
+                time_bucket: Some("0-30".to_string()),
+                z_path_bucket: Some("0.25-0.50".to_string()),
+                sigma_bucket: Some("0.010-0.015".to_string()),
+                volatility_regime: Some("normal".to_string()),
+                generator_version: Some("offline-lognormal-chainlink-sigma-v1".to_string()),
+                path_count: Some(10_000),
                 mc_dispersion: None,
                 uncertainty_buffer: None,
                 path_diagnosis: Vec::new(),
@@ -964,7 +1016,9 @@ mod tests {
         assert!(changed);
         assert_eq!(
             app.logs,
-            vec!["mc rows=1 BTC=UP gates=NO_HINT:1 at=2026-06-03T21:06:00Z"]
+            vec![
+                "mc rows=1 BTC=UP gates=NO_HINT:1 cache=HIT:1 asof=2026-06-03T21:06:00Z gen=2026-06-03T21:06:00Z valid=2026-06-03T21:06:00Z->2026-06-03T21:06:30Z at=2026-06-03T21:06:00Z"
+            ]
         );
     }
 

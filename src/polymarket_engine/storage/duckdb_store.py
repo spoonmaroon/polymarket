@@ -1334,6 +1334,12 @@ def _drop_incompatible_tables(conn: duckdb.DuckDBPyConnection) -> None:
             "source_observed_lag_ms",
             "book_observed_lag_ms",
         },
+        ("features", "probability_grid_cache"): {
+            "market_slug",
+            "start_ts",
+            "expiry_ts",
+            "asof_ts",
+        },
         ("validation", "market_outcome_history"): {
             "winning_token_id",
         },

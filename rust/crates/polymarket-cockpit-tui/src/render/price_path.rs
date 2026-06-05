@@ -147,11 +147,18 @@ fn current_target_label(app: &AppState, asset: &str) -> String {
 
 fn selected_target_value(app: &AppState, asset: &str) -> Option<f64> {
     let group = app.selected_market_group()?;
-    group
-        .asset
-        .eq_ignore_ascii_case(asset)
-        .then(|| threshold_price(&group))
-        .flatten()
+    if group.asset.eq_ignore_ascii_case(asset) {
+        return threshold_price(&group);
+    }
+    let selected_expiry = group.expiry_ts?;
+    let monitor = app.runtime_monitor.as_ref()?;
+    market_view::market_groups(&monitor.orderbooks)
+        .into_iter()
+        .find(|candidate| {
+            candidate.asset.eq_ignore_ascii_case(asset)
+                && candidate.expiry_ts == Some(selected_expiry)
+        })
+        .and_then(|candidate| threshold_price(&candidate))
 }
 
 fn threshold_price(group: &market_view::MarketGroup<'_>) -> Option<f64> {
@@ -371,6 +378,46 @@ mod tests {
 
         assert_eq!(btc.target, "K 64,100.00");
         assert_eq!(btc.target_line, vec![(0.0, 64100.0), (1.0, 64100.0)]);
+    }
+
+    #[test]
+    fn price_path_shows_other_asset_target_for_selected_expiration() {
+        let mut app = AppState::default();
+        app.apply_runtime_monitor(RuntimeMonitor {
+            generated_at: "2026-06-04T07:43:10Z".to_string(),
+            price_rows: vec![price_row("BTC/USD", "64050"), price_row("ETH/USD", "1805")],
+            orderbooks: vec![
+                orderbook_with_window(
+                    "BTC",
+                    "btc-updown-5m-current",
+                    "2026-06-04T07:40:00Z",
+                    "2026-06-04T07:45:00Z",
+                    "64000",
+                ),
+                orderbook_with_window(
+                    "ETH",
+                    "eth-updown-5m-current",
+                    "2026-06-04T07:40:00Z",
+                    "2026-06-04T07:45:00Z",
+                    "1801",
+                ),
+            ],
+        });
+        app.sync_market_selection();
+
+        let charts = price_path_charts(&app);
+        let btc = charts
+            .iter()
+            .find(|chart| chart.asset == "BTC")
+            .expect("BTC chart should exist");
+        let eth = charts
+            .iter()
+            .find(|chart| chart.asset == "ETH")
+            .expect("ETH chart should exist");
+
+        assert_eq!(btc.target, "K 64,000.00");
+        assert_eq!(eth.target, "K 1,801.00");
+        assert_eq!(eth.target_line, vec![(0.0, 1801.0), (1.0, 1801.0)]);
     }
 
     #[test]

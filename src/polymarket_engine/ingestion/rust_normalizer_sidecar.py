@@ -23,8 +23,7 @@ from polymarket_engine.ingestion.rust_event_normalizer import (
     normalize_rust_event_file,
     normalize_rust_event_tree,
 )
-from polymarket_engine.probability.runtime import compute_and_persist_probability_outputs
-from polymarket_engine.probability.runtime import latest_probability_output_rows_from_connection
+from polymarket_engine.probability.runtime import build_probability_payload_from_store
 from polymarket_engine.storage.atomic import durable_replace
 from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
 from polymarket_engine.validation.outcomes import PolymarketClobMarketPayloadSource
@@ -806,31 +805,19 @@ def _observations_written(summary: dict[str, int]) -> bool:
 
 
 def _compute_probability_outputs(*, store: DuckDbIngestStore, out_path: Path) -> int:
-    written, skipped, errors = compute_and_persist_probability_outputs(
+    payload = build_probability_payload_from_store(
         store=store,
         limit=PROBABILITY_OUTPUT_LIMIT,
-        max_state_age_seconds=PROBABILITY_MAX_STATE_AGE_SECONDS,
-        active_only=True,
     )
-    with store._connection() as conn:
-        rows = latest_probability_output_rows_from_connection(
-            conn=conn,
-            limit=PROBABILITY_OUTPUT_LIMIT,
-            max_state_age_seconds=PROBABILITY_MAX_STATE_AGE_SECONDS,
-            active_only=True,
-        )
-    _write_probability_status(
-        out_path=out_path,
-        rows=rows,
-        skipped=skipped,
-        errors=errors,
-    )
+    _write_probability_status(out_path=out_path, payload=payload)
+    errors = tuple(str(error) for error in payload.get("errors", ()))
     if errors:
         print(
             "probability_output_errors " + json.dumps(list(errors), separators=(",", ":")),
             flush=True,
         )
-    return written
+    rows = payload.get("rows")
+    return len(rows) if isinstance(rows, list) else 0
 
 
 def _state_build_unavailable(exc: ValueError) -> UnavailableDecisionState:
@@ -993,6 +980,8 @@ def _volatility_status_flags(raw_flags: object, *, sigma_tau: object) -> list[st
 def _optional_float(value: object) -> float | None:
     if value is None:
         return None
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return None
     return float(value)
 
 
@@ -1134,21 +1123,11 @@ def _outcome_output_limit_from_env() -> int:
 def _write_probability_status(
     *,
     out_path: Path,
-    rows: list[dict[str, Any]],
-    skipped: int,
-    errors: tuple[str, ...],
+    payload: dict[str, Any],
 ) -> None:
-    payload = {
-        "schema_version": "polymarket-probability-runtime-v1",
-        "ok": not errors,
-        "state": "OK" if not errors else "PARTIAL",
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "cached": False,
-        "model_version": rows[0]["model_version"] if rows else None,
-        "rows": rows,
-        "skipped": skipped,
-        "errors": list(errors),
-    }
+    payload = dict(payload)
+    payload["schema_version"] = "polymarket-probability-runtime-v1"
+    payload["cached"] = False
     out_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = out_path.with_suffix(f"{out_path.suffix}.tmp")
     tmp_path.write_text(
