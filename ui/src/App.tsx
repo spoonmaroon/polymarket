@@ -149,6 +149,12 @@ type ProbabilityRow = {
   edge_after_costs?: number | null;
   required_edge?: number | null;
   gate_reasons?: string[];
+  wave_score?: number | null;
+  wave_phase?: string | null;
+  wave_reasons?: string[];
+  wave_markers?: string[];
+  dynamic_edge?: number | null;
+  dynamic_required_edge?: number | null;
   cache_key?: string;
   cache_status?: string;
   cache_market_slug?: string;
@@ -514,6 +520,7 @@ function ProbabilityTable({
             <span>Contract</span>
             <span>Monte Carlo</span>
             <span>Decision check</span>
+            <span>Wave</span>
             <span>Cache</span>
             <span>Age</span>
           </div>
@@ -534,6 +541,9 @@ function ProbabilityTable({
                 <span>{formatProbability(row.p_finish)}</span>
                 <span>
                   <GatePill value={row.decision_hint} />
+                </span>
+                <span>
+                  <WaveBadge row={row} />
                 </span>
                 <span>{formatRowCache(row)}</span>
                 <span>{formatAge(row.age_ms)}</span>
@@ -585,6 +595,8 @@ function SelectedDetails({
         <Metric label="Monte Carlo" value={formatProbability(row.p_finish)} />
         <Metric label={timingLabel} value={formatTimestamp(row.expiry_ts)} />
         <Metric label="edge / required" value={formatEdge(row)} />
+        <Metric label="wave" value={formatWave(row)} />
+        <Metric label="dynamic edge" value={formatDynamicEdge(row)} />
         <Metric label="sigma_tau" value={formatSmall(row.sigma_tau)} />
         <Metric label="runtime sample n" value={formatInteger(row.path_count)} />
       </div>
@@ -917,7 +929,10 @@ function MonteCarloInputsPanel({
               ["mc_dispersion", row.mc_dispersion],
               ["uncertainty", row.uncertainty_buffer],
               ["decision_check", formatGate(row.decision_hint)],
+              ["wave", formatWave(row)],
+              ["dynamic_edge", formatDynamicEdge(row)],
               ["decision_reasons", compactList(row.gate_reasons)],
+              ["wave_reasons", compactList(row.wave_reasons)],
             ]}
           />
         </section>
@@ -1115,6 +1130,19 @@ function Metric({
 function GatePill({ value }: { value?: string | null }) {
   const label = formatGate(value);
   return <span className={`gate-pill gate-${gateTone(label)}`}>{label}</span>;
+}
+
+function WaveBadge({ row }: { row: ProbabilityRow }) {
+  const phase = cleanString(row.wave_phase) ?? "none";
+  const score = isFiniteNumber(row.wave_score) ? row.wave_score.toFixed(2) : "--";
+  const markers = unknownList(row.wave_markers).map(compactValue).filter(Boolean).join("/");
+  return (
+    <span className={`wave-badge wave-${phaseTone(phase)}`}>
+      <span>{phase}</span>
+      <strong>{score}</strong>
+      {markers ? <small>{markers}</small> : null}
+    </span>
+  );
 }
 
 function KeyValueList({ entries }: { entries: Array<[string, unknown]> }) {
@@ -1650,11 +1678,14 @@ function buildRuntimeLogEntries(
         selectedRow.asset,
         selectedRow.side,
         `MC ${formatProbability(selectedRow.p_finish)}`,
+        `wave ${formatWave(selectedRow)}`,
         `n=${formatInteger(selectedRow.path_count)}`,
       ]),
       { at: selectedRow.asof_ts },
     );
     for (const message of [
+      ...unknownList(selectedRow.wave_reasons),
+      ...unknownList(selectedRow.wave_markers),
       ...unknownList(selectedRow.gate_reasons),
       ...unknownList(selectedRow.path_diagnosis),
       ...unknownList(selectedRow.flags),
@@ -1827,6 +1858,14 @@ function objectEntries(value: unknown): Array<[string, unknown]> {
   return isRecord(value) ? Object.entries(value) : [];
 }
 
+function cleanString(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 function arrayLength(value: unknown): number {
   return Array.isArray(value) ? value.length : 0;
 }
@@ -1967,6 +2006,20 @@ function formatEdge(row: ProbabilityRow) {
   return `${row.edge_after_costs.toFixed(3)} / ${row.required_edge.toFixed(3)}`;
 }
 
+function formatWave(row: ProbabilityRow) {
+  const phase = cleanString(row.wave_phase) ?? "-";
+  const score = isFiniteNumber(row.wave_score) ? row.wave_score.toFixed(2) : "--";
+  const markers = unknownList(row.wave_markers).map(compactValue).filter(Boolean).join("/");
+  return markers ? `${phase} ${score} ${markers}` : `${phase} ${score}`;
+}
+
+function formatDynamicEdge(row: ProbabilityRow) {
+  if (!isFiniteNumber(row.dynamic_edge) || !isFiniteNumber(row.dynamic_required_edge)) {
+    return "-";
+  }
+  return `${row.dynamic_edge.toFixed(3)} / ${row.dynamic_required_edge.toFixed(3)}`;
+}
+
 function formatAge(ageMs?: number) {
   if (!isFiniteNumber(ageMs)) {
     return "-";
@@ -2031,6 +2084,23 @@ function gateTone(value: string) {
     return "candidate";
   }
   return "neutral";
+}
+
+function phaseTone(value: string) {
+  const normalized = value.toLowerCase();
+  if (normalized === "breaking") {
+    return "breaking";
+  }
+  if (normalized === "late") {
+    return "late";
+  }
+  if (normalized === "missed") {
+    return "missed";
+  }
+  if (normalized === "forming") {
+    return "forming";
+  }
+  return "none";
 }
 
 function liveTone(ok: boolean | undefined, status: ApiState<RuntimeLivePayload>["status"]) {
