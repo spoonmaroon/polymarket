@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
+from types import MappingProxyType
 from typing import Any
 
 
@@ -20,13 +22,16 @@ class GeneratorResult:
     p_finish: float
     p_no_touch: float
     z_path: float
-    diagnostics: dict[str, Any]
+    diagnostics: Mapping[str, Any]
 
     def __post_init__(self) -> None:
         _require_probability(self.p_finish, "p_finish")
         _require_probability(self.p_no_touch, "p_no_touch")
         _require_finite(self.z_path, "z_path")
-        _require_dict(self.diagnostics, "diagnostics")
+        object.__setattr__(self, "diagnostics", _freeze_mapping(self.diagnostics, "diagnostics"))
+
+    def diagnostics_json_dict(self) -> dict[str, Any]:
+        return _thaw_json_mapping(self.diagnostics)
 
 
 @dataclass(frozen=True)
@@ -49,13 +54,13 @@ class GeneratorRun:
     generator_name: str
     generator_version: str
     scope: DynamicWeightScope
-    conditioning: dict[str, Any]
+    conditioning: Mapping[str, Any]
     result: GeneratorResult
     path_count: int
     steps: int
     seed: int
     asof_ts: datetime
-    diagnostics: dict[str, Any]
+    diagnostics: Mapping[str, Any]
     sparse: bool = False
     fallback_level: str = "none"
     weight_seed: float | None = None
@@ -66,14 +71,14 @@ class GeneratorRun:
         _require_nonempty_string(self.generator_version, "generator_version")
         if not isinstance(self.scope, DynamicWeightScope):
             raise ValueError("scope must be a DynamicWeightScope")
-        _require_dict(self.conditioning, "conditioning")
+        object.__setattr__(self, "conditioning", _freeze_mapping(self.conditioning, "conditioning"))
         if not isinstance(self.result, GeneratorResult):
             raise ValueError("result must be a GeneratorResult")
         _require_positive_int(self.path_count, "path_count")
         _require_positive_int(self.steps, "steps")
         _require_int(self.seed, "seed")
         _require_timezone_aware(self.asof_ts, "asof_ts")
-        _require_dict(self.diagnostics, "diagnostics")
+        object.__setattr__(self, "diagnostics", _freeze_mapping(self.diagnostics, "diagnostics"))
         if not isinstance(self.sparse, bool):
             raise ValueError("sparse must be bool")
         _require_nonempty_string(self.fallback_level, "fallback_level")
@@ -91,6 +96,12 @@ class GeneratorRun:
     @property
     def z_path(self) -> float:
         return self.result.z_path
+
+    def conditioning_json_dict(self) -> dict[str, Any]:
+        return _thaw_json_mapping(self.conditioning)
+
+    def diagnostics_json_dict(self) -> dict[str, Any]:
+        return _thaw_json_mapping(self.diagnostics)
 
 
 @dataclass(frozen=True)
@@ -150,9 +161,35 @@ def _require_nonempty_string(value: str, field_name: str) -> None:
         raise ValueError(f"{field_name} must be a non-empty string")
 
 
-def _require_dict(value: object, field_name: str) -> None:
-    if not isinstance(value, dict):
+def _freeze_mapping(value: object, field_name: str) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
         raise ValueError(f"{field_name} must be a dict")
+    frozen: dict[str, Any] = {}
+    for key, item in value.items():
+        if not isinstance(key, str):
+            raise ValueError(f"{field_name} keys must be strings")
+        frozen[key] = _freeze_json_value(item)
+    return MappingProxyType(frozen)
+
+
+def _freeze_json_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return _freeze_mapping(value, "mapping")
+    if isinstance(value, list | tuple):
+        return tuple(_freeze_json_value(item) for item in value)
+    return value
+
+
+def _thaw_json_mapping(value: Mapping[str, Any]) -> dict[str, Any]:
+    return {key: _thaw_json_value(item) for key, item in value.items()}
+
+
+def _thaw_json_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return _thaw_json_mapping(value)
+    if isinstance(value, tuple):
+        return [_thaw_json_value(item) for item in value]
+    return value
 
 
 def _require_positive_int(value: int, field_name: str) -> None:

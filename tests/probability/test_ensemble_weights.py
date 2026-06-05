@@ -24,6 +24,10 @@ def _validation_window() -> HistoricalValidationWindow:
     )
 
 
+def _runtime_asof() -> datetime:
+    return datetime(2026, 6, 5, 18, 0, tzinfo=timezone.utc)
+
+
 def test_default_seed_weights_match_contract() -> None:
     assert DEFAULT_SEED_WEIGHTS == {
         GeneratorId.LOGNORMAL_BASELINE: 0.45,
@@ -90,10 +94,12 @@ def test_dynamic_weights_from_losses_returns_historical_weight_set() -> None:
         weight_floor=0.02,
         stress_weight_cap=0.10,
         validation_window=validation_window,
+        runtime_asof_ts=_runtime_asof(),
     )
 
     assert isinstance(weight_set, DynamicWeightSet)
     assert weight_set.validation_window == validation_window
+    assert weight_set.runtime_asof_ts == _runtime_asof()
     weights = weight_set.weights
     assert sum(weights.values()) == pytest.approx(1.0)
     assert weights[GeneratorId.EMPIRICAL_CONDITIONAL] > weights[GeneratorId.LOGNORMAL_BASELINE]
@@ -118,8 +124,28 @@ def test_dynamic_weights_from_losses_applies_floor_before_normalizing() -> None:
         weight_floor=0.05,
         stress_weight_cap=0.20,
         validation_window=_validation_window(),
+        runtime_asof_ts=_runtime_asof(),
     ).weights
 
     assert sum(weights.values()) == pytest.approx(1.0)
     assert weights[GeneratorId.BLOCK_BOOTSTRAP] > 0.0
     assert weights[GeneratorId.STRESS_OVERLAY] <= 0.20
+
+
+def test_dynamic_weights_from_losses_rejects_future_label_artifact_for_runtime_asof() -> None:
+    validation_window = HistoricalValidationWindow(
+        asof_ts=datetime(2026, 6, 5, 16, 0, tzinfo=timezone.utc),
+        evaluated_through_ts=datetime(2026, 6, 5, 17, 0, tzinfo=timezone.utc),
+        label_window_seconds=3600,
+    )
+
+    with pytest.raises(ValueError, match="evaluated_through_ts"):
+        dynamic_weights_from_losses(
+            {GeneratorId.LOGNORMAL_BASELINE: 0.20},
+            DEFAULT_SEED_WEIGHTS,
+            eta=2.0,
+            weight_floor=0.05,
+            stress_weight_cap=0.20,
+            validation_window=validation_window,
+            runtime_asof_ts=datetime(2026, 6, 5, 16, 59, 59, tzinfo=timezone.utc),
+        )

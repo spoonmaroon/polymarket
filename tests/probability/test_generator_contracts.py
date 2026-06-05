@@ -65,6 +65,30 @@ def test_generator_result_validates_probability_and_path_outputs() -> None:
     assert result.z_path == 0.42
 
 
+def test_generator_result_defensively_freezes_diagnostics() -> None:
+    diagnostics = {
+        "source": {"name": "fixture"},
+        "lags": [1, 2],
+    }
+
+    result = GeneratorResult(
+        p_finish=0.62,
+        p_no_touch=0.81,
+        z_path=0.42,
+        diagnostics=diagnostics,
+    )
+    diagnostics["source"]["name"] = "mutated"
+    diagnostics["lags"].append(3)
+    diagnostics["new"] = "leak"
+
+    assert result.diagnostics_json_dict() == {
+        "source": {"name": "fixture"},
+        "lags": [1, 2],
+    }
+    with pytest.raises(TypeError):
+        result.diagnostics["new"] = "blocked"
+
+
 @pytest.mark.parametrize(
     ("field_name", "invalid_value"),
     (
@@ -117,6 +141,36 @@ def test_generator_run_carries_metadata_scope_conditioning_and_result() -> None:
     assert run.weight_seed == 0.40
     assert run.sparse is False
     assert run.fallback_level == "none"
+
+
+def test_generator_run_defensively_freezes_conditioning_and_diagnostics() -> None:
+    conditioning = {"bucket": {"z_path": "near"}, "lags": [1, 2]}
+    diagnostics = {"inputs": {"rows": 20}, "warnings": []}
+
+    run = GeneratorRun(
+        generator_id=GeneratorId.EMPIRICAL_CONDITIONAL,
+        generator_name="Empirical conditional",
+        generator_version="empirical-v1",
+        scope=_scope(),
+        conditioning=conditioning,
+        result=_result(),
+        path_count=10_000,
+        steps=60,
+        seed=17,
+        asof_ts=_asof(),
+        diagnostics=diagnostics,
+    )
+    conditioning["bucket"]["z_path"] = "mutated"
+    conditioning["lags"].append(3)
+    diagnostics["inputs"]["rows"] = 99
+    diagnostics["warnings"].append("leak")
+
+    assert run.conditioning_json_dict() == {"bucket": {"z_path": "near"}, "lags": [1, 2]}
+    assert run.diagnostics_json_dict() == {"inputs": {"rows": 20}, "warnings": []}
+    with pytest.raises(TypeError):
+        run.conditioning["new"] = "blocked"
+    with pytest.raises(TypeError):
+        run.diagnostics["new"] = "blocked"
 
 
 @pytest.mark.parametrize(
@@ -181,7 +235,7 @@ def test_dynamic_weight_scope_is_hashable() -> None:
     assert {scope: "weights"}[scope] == "weights"
 
 
-def test_historical_validation_window_separates_labels_from_runtime_inputs() -> None:
+def test_historical_validation_window_can_describe_post_asof_label_period() -> None:
     window = _validation_window()
 
     assert window.asof_ts == datetime(2026, 6, 5, 16, 0, tzinfo=timezone.utc)

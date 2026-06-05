@@ -119,6 +119,17 @@ def test_evaluate_probability_gates_blocks_on_hard_failures_or_hard_diagnoses(
     assert expected_reason in result.reasons
 
 
+def test_evaluate_probability_gates_blocks_high_uncertainty_even_when_edge_clears() -> None:
+    result = evaluate_probability_gates(
+        _ensemble(p_finish=0.95, uncertainty_buffer=0.121),
+        _quality(executable_entry_price=0.40),
+    )
+
+    assert result.decision_hint == "BLOCK"
+    assert "UNCERTAINTY_BUFFER" in result.reasons
+    assert result.edge_after_costs > result.required_edge
+
+
 @pytest.mark.parametrize(
     ("quality", "expected_reason"),
     (

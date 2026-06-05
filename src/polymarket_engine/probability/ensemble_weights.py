@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime
 
 from polymarket_engine.probability.generator_contracts import (
     GeneratorId,
@@ -23,11 +24,15 @@ DEFAULT_SEED_WEIGHTS: dict[GeneratorId, float] = {
 class DynamicWeightSet:
     weights: dict[GeneratorId, float]
     validation_window: HistoricalValidationWindow
+    runtime_asof_ts: datetime
     source: str = "historical_validation_losses"
 
     def __post_init__(self) -> None:
         if not isinstance(self.validation_window, HistoricalValidationWindow):
             raise ValueError("validation_window must be a HistoricalValidationWindow")
+        _require_timezone_aware(self.runtime_asof_ts, "runtime_asof_ts")
+        if self.validation_window.evaluated_through_ts > self.runtime_asof_ts:
+            raise ValueError("evaluated_through_ts must not be after runtime_asof_ts")
         if not isinstance(self.source, str) or not self.source:
             raise ValueError("source must be a non-empty string")
         normalized = _normalize(self.weights)
@@ -61,12 +66,16 @@ def dynamic_weights_from_losses(
     stress_weight_cap: float,
     *,
     validation_window: HistoricalValidationWindow,
+    runtime_asof_ts: datetime,
 ) -> DynamicWeightSet:
     _require_nonnegative_finite(eta, "eta")
     _require_probability(weight_floor, "weight_floor")
     _require_probability(stress_weight_cap, "stress_weight_cap")
     if not isinstance(validation_window, HistoricalValidationWindow):
         raise ValueError("validation_window must be a HistoricalValidationWindow")
+    _require_timezone_aware(runtime_asof_ts, "runtime_asof_ts")
+    if validation_window.evaluated_through_ts > runtime_asof_ts:
+        raise ValueError("evaluated_through_ts must not be after runtime_asof_ts")
     if not seed_weights:
         raise ValueError("seed_weights must not be empty")
 
@@ -90,7 +99,11 @@ def dynamic_weights_from_losses(
 
     normalized = _normalize(floored)
     weights = _cap_final_stress_weight(normalized, stress_weight_cap)
-    return DynamicWeightSet(weights=weights, validation_window=validation_window)
+    return DynamicWeightSet(
+        weights=weights,
+        validation_window=validation_window,
+        runtime_asof_ts=runtime_asof_ts,
+    )
 
 
 def _cap_final_stress_weight(
@@ -135,6 +148,13 @@ def _require_nonnegative_finite(value: float, field_name: str) -> None:
 def _require_binary_label(label: int) -> None:
     if isinstance(label, bool) or label not in (0, 1):
         raise ValueError("label must be 0 or 1")
+
+
+def _require_timezone_aware(value: datetime, field_name: str) -> None:
+    if not isinstance(value, datetime):
+        raise ValueError(f"{field_name} must be a datetime")
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(f"{field_name} must be timezone-aware")
 
 
 def _is_finite_number(value: object) -> bool:

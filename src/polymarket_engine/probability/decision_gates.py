@@ -55,12 +55,14 @@ def evaluate_probability_gates(
     base_edge: float = 0.03,
     p_no_touch_floor: float = 0.65,
     z_path_floor: float = 0.50,
+    uncertainty_block_threshold: float = 0.12,
 ) -> ProbabilityGateResult:
     if not isinstance(executable_quality, ExecutableQualityInput):
         raise ValueError("executable_quality must be an ExecutableQualityInput")
     _require_nonnegative_finite(base_edge, "base_edge")
     _require_probability(p_no_touch_floor, "p_no_touch_floor")
     _require_nonnegative_finite(z_path_floor, "z_path_floor")
+    _require_nonnegative_finite(uncertainty_block_threshold, "uncertainty_block_threshold")
 
     edge_after_costs = (
         ensemble.p_finish
@@ -77,7 +79,7 @@ def evaluate_probability_gates(
         required_edge += 0.02
         reasons.append("Z_PATH_BELOW_FLOOR")
 
-    blockers = _block_reasons(ensemble, executable_quality)
+    blockers = _block_reasons(ensemble, executable_quality, uncertainty_block_threshold)
     if blockers:
         return ProbabilityGateResult(
             decision_hint="BLOCK",
@@ -118,11 +120,14 @@ def evaluate_probability_gates(
 def _block_reasons(
     ensemble: EnsembleOutput,
     executable_quality: ExecutableQualityInput,
+    uncertainty_block_threshold: float,
 ) -> list[str]:
     blockers = list(executable_quality.hard_failures)
     blockers.extend(_quality_block_reasons(executable_quality))
     if ensemble.mc_dispersion > 0.10:
         blockers.append("MC_DISPERSION")
+    if ensemble.uncertainty_buffer > uncertainty_block_threshold:
+        blockers.append("UNCERTAINTY_BUFFER")
     for label in ("SPARSE", "STALE_OR_UNSAFE"):
         if label in ensemble.path_diagnosis and label not in blockers:
             blockers.append(label)
