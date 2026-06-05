@@ -68,6 +68,9 @@ cd /Users/goon/polymarket
 ./scripts/deploy_pc.sh
 ```
 
+`./scripts/deploy_pc.sh` is the only supported CUDA runtime deployment path.
+The generic spoon deploy path does not start gpu-probability-worker.
+
 Defaults:
 
 - `PC_HOST=ender@100.72.104.49`

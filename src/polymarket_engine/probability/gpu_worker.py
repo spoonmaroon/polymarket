@@ -244,7 +244,13 @@ def _read_status_rows(path: Path) -> list[dict[str, Any]]:
     rows = payload.get("rows")
     if not isinstance(rows, list):
         return []
-    return [row for row in rows if isinstance(row, dict)]
+    valid_rows = [row for row in rows if isinstance(row, dict)]
+    if valid_rows:
+        return valid_rows
+    last_good_rows = payload.get("last_good_rows")
+    if not isinstance(last_good_rows, list):
+        return []
+    return [row for row in last_good_rows if isinstance(row, dict)]
 
 
 def _latest_probability_inputs_from_snapshot(

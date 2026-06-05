@@ -122,6 +122,14 @@ def test_spoon_docs_include_read_only_cockpit_tui() -> None:
     assert "POLYMARKET_ENABLE_CONTAINER_STATUS=1" in text
 
 
+def test_spoon_docs_mark_thepc_deploy_as_cuda_runtime_path() -> None:
+    text = (ROOT / "docs" / "SPOON_DEPLOYMENT.md").read_text(encoding="utf-8")
+
+    assert "./scripts/deploy_pc.sh" in text
+    assert "only supported CUDA runtime deployment path" in text
+    assert "generic spoon deploy path does not start gpu-probability-worker" in text
+
+
 def test_spoon_docs_pin_safe_hot_replay_gate_command() -> None:
     deployment = (ROOT / "docs" / "SPOON_DEPLOYMENT.md").read_text(encoding="utf-8")
     part_two = (ROOT / "docs" / "PART_TWO_LIVE_COLLECTORS.md").read_text(

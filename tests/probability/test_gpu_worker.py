@@ -227,6 +227,39 @@ def test_cuda_probability_worker_loop_clears_active_rows_on_duckdb_lock(
     assert "probability worker duckdb unavailable" in result["error"]
 
 
+def test_cuda_probability_worker_reuses_last_good_rows_after_repeated_total_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polymarket_engine.probability import gpu_worker
+
+    db_path = tmp_path / "state.duckdb"
+    status_path = tmp_path / "live" / "probabilities.json"
+    last_good_row = {"contract_id": "btc-updown-5m:UP", "model_version": "cached-grid-v1"}
+    status_path.parent.mkdir(parents=True)
+    status_path.write_text(
+        json.dumps({"rows": [], "last_good_rows": [last_good_row]}),
+        encoding="utf-8",
+    )
+
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+
+    def locked_inputs(**_: object) -> object:
+        raise duckdb.IOException("conflicting lock")
+
+    monkeypatch.setattr(gpu_worker, "latest_probability_inputs", locked_inputs)
+
+    result = gpu_worker.run_cuda_probability_worker_cycle(
+        duckdb_path=db_path,
+        probability_status_path=status_path,
+    )
+
+    assert result["ok"] is False
+    assert result["rows"] == []
+    assert result["last_good_rows"] == [last_good_row]
+
+
 def test_cuda_probability_worker_cycle_clears_active_rows_when_all_cuda_runs_fail(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
