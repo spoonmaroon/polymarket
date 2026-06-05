@@ -9,6 +9,7 @@ pub mod price;
 pub mod price_path;
 pub mod probability;
 pub mod systems;
+pub mod volatility;
 
 use ratatui::Frame;
 
@@ -40,7 +41,7 @@ pub fn render(frame: &mut Frame<'_>, app: &AppState) {
             systems::render(frame, body.secondary, app);
         }
         MainTab::Volatility => {
-            systems::render(frame, body.primary, app);
+            volatility::render(frame, body.primary, app);
             systems::render(frame, body.secondary, app);
         }
         MainTab::Outcomes => {
