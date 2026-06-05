@@ -196,6 +196,45 @@ def test_cuda_multi_seed_aggregates_p_hat_and_confidence(
     ]
 
 
+def test_prior_sensitivity_rows_are_distribution_based() -> None:
+    module = importlib.import_module("polymarket_engine.probability.cuda_monte_carlo")
+    paths = (
+        (100.0, 101.0, 102.0, 103.0),
+        (100.0, 99.0, 98.0, 97.0),
+        (100.0, 100.5, 101.0, 101.5),
+        (100.0, 98.5, 99.0, 100.0),
+    )
+    probability_input = module.ProbabilityInput(
+        state_id="state-btc-up",
+        asof_ts=datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc),
+        asset="BTC",
+        side="UP",
+        comparison_operator=">",
+        seconds_left=120.0,
+        settlement_price=100.0,
+        threshold=100.0,
+        sigma_tau=0.02,
+        executable_price=0.50,
+        source_age_ms=100,
+        book_age_ms=100,
+        z_path=0.0,
+    )
+
+    rows = module._prior_sensitivity_from_cpu_paths(
+        probability_input,
+        paths=paths,
+        terminal_wins=(True, False, True, False),
+    )
+
+    assert rows
+    assert {row["dimension"] for row in rows} == {"prior_price_quantile"}
+    assert all("price_delta" not in row for row in rows)
+    assert all("dollar_move" not in row for row in rows)
+    assert all(0.0 <= row["p_hat"] <= 1.0 for row in rows)
+    assert all(row["sample_count"] > 0 for row in rows)
+    assert all("quantile_low" in row and "quantile_high" in row for row in rows)
+
+
 def test_cuda_multi_seed_rejects_nonpositive_paths_per_seed() -> None:
     module = importlib.import_module("polymarket_engine.probability.cuda_monte_carlo")
 

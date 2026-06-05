@@ -53,6 +53,7 @@ def run_cuda_monte_carlo(
             probability_input,
             full_paths=full_paths,
             terminal_prices=terminal_prices,
+            terminal_wins_mask=terminal_wins_mask,
             terminal_wins=terminal_wins,
             no_touch_wins=no_touch_wins,
         )
@@ -76,6 +77,7 @@ def run_cuda_monte_carlo(
             "steps": steps,
             "model": "cuda_lognormal_chainlink_sigma",
             "simulation_preview": preview,
+            "prior_sensitivity": preview.get("prior_sensitivity", []),
         },
     )
 
@@ -188,6 +190,7 @@ def _simulation_preview_from_cuda(
     *,
     full_paths: Any,
     terminal_prices: Any,
+    terminal_wins_mask: Any,
     terminal_wins: int,
     no_touch_wins: int,
 ) -> dict[str, Any]:
@@ -201,6 +204,12 @@ def _simulation_preview_from_cuda(
         tuple(float(price) for price in sampled_full_paths[index].tolist())
         for index in range(len(sampled_path_indices))
     )
+    terminal_wins_cpu = tuple(bool(value) for value in cp.asnumpy(terminal_wins_mask).tolist())
+    sensitivity_paths = tuple(
+        tuple(float(price) for price in row.tolist())
+        for row in cp.asnumpy(full_paths[: min(2048, path_count), :]).tolist()
+    )
+    sensitivity_terminal_wins = terminal_wins_cpu[: len(sensitivity_paths)]
     return {
         "path_count": path_count,
         "steps": point_count - 1,
@@ -219,4 +228,50 @@ def _simulation_preview_from_cuda(
             for index, path_index in enumerate(sampled_path_indices)
         ],
         "terminal_histogram": _terminal_histogram(terminal_prices_cpu),
+        "prior_sensitivity": _prior_sensitivity_from_cpu_paths(
+            probability_input,
+            paths=sensitivity_paths,
+            terminal_wins=sensitivity_terminal_wins,
+        ),
     }
+
+
+def _prior_sensitivity_from_cpu_paths(
+    probability_input: ProbabilityInput,
+    *,
+    paths: tuple[tuple[float, ...], ...],
+    terminal_wins: tuple[bool, ...],
+) -> list[dict[str, Any]]:
+    if not paths:
+        return []
+    rows: list[dict[str, Any]] = []
+    time_fractions = (0.25, 0.50, 0.75)
+    quantile_bands = ((0.0, 0.25), (0.25, 0.50), (0.50, 0.75), (0.75, 1.0))
+    point_count = len(paths[0])
+    for time_fraction in time_fractions:
+        point_index = min(point_count - 1, max(0, round((point_count - 1) * time_fraction)))
+        values = tuple(path[point_index] for path in paths)
+        ranked = sorted(enumerate(values), key=lambda item: item[1])
+        for quantile_low, quantile_high in quantile_bands:
+            start = int(math.floor(len(ranked) * quantile_low))
+            end = int(math.ceil(len(ranked) * quantile_high))
+            band = ranked[start : max(start + 1, end)]
+            indices = tuple(index for index, _ in band)
+            wins = sum(1 for index in indices if terminal_wins[index])
+            price_values = tuple(value for _, value in band)
+            rows.append(
+                {
+                    "dimension": "prior_price_quantile",
+                    "time_fraction": time_fraction,
+                    "point_index": point_index,
+                    "quantile_low": quantile_low,
+                    "quantile_high": quantile_high,
+                    "sample_count": len(indices),
+                    "price_quantile": statistics.fmean(price_values),
+                    "log_return_quantile": math.log(
+                        statistics.fmean(price_values) / probability_input.settlement_price
+                    ),
+                    "p_hat": wins / len(indices),
+                }
+            )
+    return rows
