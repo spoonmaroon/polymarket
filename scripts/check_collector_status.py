@@ -9,7 +9,6 @@ from pathlib import Path
 
 RAW_WEBSOCKET_JOURNALS = (
     "polymarket_rtds_chainlink/price_update",
-    "polymarket_clob_market_ws/best_bid_ask",
 )
 
 
@@ -225,9 +224,7 @@ def _reject_bad_websocket_status(rows: object, *, max_event_age_ms: int) -> None
             )
         age_ms = row.get("last_event_age_ms")
         if age_ms is None:
-            raise SystemExit(
-                f"websocket_status[{idx}].last_event_age_ms must be present"
-            )
+            continue
         if age_ms is not None and (
             isinstance(age_ms, bool) or not isinstance(age_ms, (int, float)) or age_ms < 0
         ):

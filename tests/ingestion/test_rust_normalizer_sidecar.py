@@ -16,12 +16,37 @@ from polymarket_engine.ingestion import rust_normalizer_sidecar
 from polymarket_engine.ingestion.rust_event_normalizer import RustEventNormalizeResult
 from polymarket_engine.ingestion.rust_normalizer_sidecar import (
     _cadence_sleep_seconds,
+    _volatility_status_flags,
     run_rust_normalizer_cycle,
     run_rust_normalizer_loop,
 )
 from polymarket_engine.domain.market_state import PriceObservation
 from polymarket_engine.storage import duckdb_store
 from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
+
+
+def test_volatility_status_flags_filter_orderbook_decision_flags() -> None:
+    raw_flags = json.dumps(
+        [
+            "stale_source",
+            "missing_orderbook",
+            "incomplete_orderbook",
+            "stale_orderbook",
+            "source_disagreement",
+        ]
+    )
+
+    flags = _volatility_status_flags(raw_flags, sigma_tau=0.0012)
+
+    assert flags == ["stale_source"]
+
+
+def test_volatility_status_flags_keep_missing_volatility_without_orderbook_noise() -> None:
+    raw_flags = json.dumps(["incomplete_orderbook"])
+
+    flags = _volatility_status_flags(raw_flags, sigma_tau=None)
+
+    assert flags == ["missing_volatility"]
 
 
 def test_sidecar_cycle_normalizes_builds_states_and_writes_health(tmp_path: Path) -> None:
@@ -61,10 +86,13 @@ def test_sidecar_cycle_normalizes_builds_states_and_writes_health(tmp_path: Path
     probability_payload = json.loads(probability_path.read_text(encoding="utf-8"))
     assert probability_payload["schema_version"] == "polymarket-probability-runtime-v1"
     assert len(probability_payload["rows"]) == 2
+    assert {row["cache_status"] for row in probability_payload["rows"]} == {"REFRESH"}
+    assert all(row["grid_cache"]["market_slug"] for row in probability_payload["rows"])
     with duckdb.connect(str(db_path), read_only=True) as conn:
         assert conn.execute("select count(*) from core.price_ticks").fetchone() == (5,)
         assert conn.execute("select count(*) from core.orderbook_snapshots").fetchone() == (2,)
         assert conn.execute("select count(*) from features.probability_outputs").fetchone() == (2,)
+        assert conn.execute("select count(*) from features.probability_grid_cache").fetchone() == (2,)
         assert conn.execute("select count(*) from features.asof_state_inputs").fetchone() == (2,)
 
 
@@ -450,6 +478,15 @@ def test_sidecar_loop_writes_target_cache_for_active_contracts(
             "threshold_observed_ts": "2026-06-02T06:00:00+00:00",
         }
     ]
+    volatility_payload = json.loads(
+        health_path.with_name("volatility.json").read_text(encoding="utf-8")
+    )
+    assert volatility_payload["schema_version"] == "polymarket-volatility-runtime-v1"
+    assert volatility_payload["source_key"] == "polymarket_rtds_chainlink"
+    assert volatility_payload["lookback_limit"] == 180
+    assert volatility_payload["rows"][0]["asset"] == "BTC"
+    assert "sigma_tau" in volatility_payload["rows"][0]
+    assert "flags" in volatility_payload["rows"][0]
 
 
 def test_cadence_sleep_subtracts_cycle_elapsed_time() -> None:

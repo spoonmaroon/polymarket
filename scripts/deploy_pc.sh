@@ -13,7 +13,7 @@ PC_BUNDLE="${PC_BUNDLE:-/home/ender/polymarket.bundle}"
 PC_DATA_DIR="${PC_DATA_DIR:-/home/ender/polymarket-data}"
 PC_DIST_DIR="${PC_DIST_DIR:-/home/ender/polymarket-image-artifacts}"
 PC_BIN_DIR="${PC_BIN_DIR:-/home/ender/bin}"
-PC_NORMALIZER_INTERVAL_SECONDS="${PC_NORMALIZER_INTERVAL_SECONDS:-0.1}"
+PC_NORMALIZER_INTERVAL_SECONDS="${PC_NORMALIZER_INTERVAL_SECONDS:-1.0}"
 PC_REST_BACKUP_INTERVAL_MS="${PC_REST_BACKUP_INTERVAL_MS:-1000}"
 PC_API_PORT="${PC_API_PORT:-8000}"
 PC_DEPLOY_BUILD_IMAGES="${PC_DEPLOY_BUILD_IMAGES:-1}"
@@ -49,8 +49,10 @@ SHORT_SHA="${FULL_SHA:0:12}"
 
 COLLECTOR_IMAGE="polymarket-rust-collector:${SHORT_SHA}"
 NORMALIZER_IMAGE="polymarket-normalizer:${SHORT_SHA}"
+CUDA_PROBABILITY_IMAGE="polymarket-cuda-probability:${SHORT_SHA}"
 COLLECTOR_TAR="$DIST_DIR/polymarket-rust-collector-${SHORT_SHA}.tar"
 NORMALIZER_TAR="$DIST_DIR/polymarket-normalizer-${SHORT_SHA}.tar"
+CUDA_PROBABILITY_TAR="$DIST_DIR/polymarket-cuda-probability-${SHORT_SHA}.tar"
 TUI_BIN="$DIST_DIR/polymarket-cockpit-tui-${SHORT_SHA}"
 LOCAL_BUNDLE="$DIST_DIR/polymarket-${SHORT_SHA}.bundle"
 
@@ -65,6 +67,11 @@ fi
 
 if [ ! -f "$NORMALIZER_TAR" ]; then
   echo "missing normalizer image tarball: $NORMALIZER_TAR" >&2
+  exit 1
+fi
+
+if [ ! -f "$CUDA_PROBABILITY_TAR" ]; then
+  echo "missing CUDA probability image tarball: $CUDA_PROBABILITY_TAR" >&2
   exit 1
 fi
 
@@ -99,6 +106,7 @@ echo "copying git bundle and image tarballs to THEPC WSL"
 wsl_put_file "$LOCAL_BUNDLE" "$PC_BUNDLE"
 wsl_put_file "$COLLECTOR_TAR" "$PC_DIST_DIR/$(basename "$COLLECTOR_TAR")"
 wsl_put_file "$NORMALIZER_TAR" "$PC_DIST_DIR/$(basename "$NORMALIZER_TAR")"
+wsl_put_file "$CUDA_PROBABILITY_TAR" "$PC_DIST_DIR/$(basename "$CUDA_PROBABILITY_TAR")"
 wsl_put_file "$TUI_BIN" "$PC_DIST_DIR/$(basename "$TUI_BIN")"
 
 ssh "$PC_HOST" "wsl.exe -d $PC_WSL_DISTRO -- bash -s" <<EOF
@@ -118,8 +126,10 @@ PC_REST_BACKUP_INTERVAL_MS=$(shell_quote "$PC_REST_BACKUP_INTERVAL_MS")
 PC_API_PORT=$(shell_quote "$PC_API_PORT")
 COLLECTOR_IMAGE=$(shell_quote "$COLLECTOR_IMAGE")
 NORMALIZER_IMAGE=$(shell_quote "$NORMALIZER_IMAGE")
+CUDA_PROBABILITY_IMAGE=$(shell_quote "$CUDA_PROBABILITY_IMAGE")
 COLLECTOR_TAR=$(shell_quote "$PC_DIST_DIR/$(basename "$COLLECTOR_TAR")")
 NORMALIZER_TAR=$(shell_quote "$PC_DIST_DIR/$(basename "$NORMALIZER_TAR")")
+CUDA_PROBABILITY_TAR=$(shell_quote "$PC_DIST_DIR/$(basename "$CUDA_PROBABILITY_TAR")")
 TUI_BIN=$(shell_quote "$PC_DIST_DIR/$(basename "$TUI_BIN")")
 
 set_env() {
@@ -171,13 +181,17 @@ set_env POLYMARKET_UID "\$(id -u)" deploy/collector/.env
 set_env POLYMARKET_GID "\$(id -g)" deploy/collector/.env
 set_env POLYMARKET_DATA_DIR "\$PC_DATA_DIR" deploy/collector/.env
 set_env POLYMARKET_NORMALIZER_INTERVAL_SECONDS "\$PC_NORMALIZER_INTERVAL_SECONDS" deploy/collector/.env
+set_env POLYMARKET_NORMALIZER_ENABLE_PROBABILITIES "0" deploy/collector/.env
+set_env POLYMARKET_ENABLE_RUNTIME_PROBABILITIES "0" deploy/collector/.env
 set_env POLYMARKET_REST_BACKUP_INTERVAL_MS "\$PC_REST_BACKUP_INTERVAL_MS" deploy/collector/.env
 set_env POLYMARKET_API_PORT "\$PC_API_PORT" deploy/collector/.env
 set_env POLYMARKET_COLLECTOR_IMAGE "\$COLLECTOR_IMAGE" deploy/collector/.env
 set_env POLYMARKET_NORMALIZER_IMAGE "\$NORMALIZER_IMAGE" deploy/collector/.env
+set_env POLYMARKET_CUDA_PROBABILITY_IMAGE "\$CUDA_PROBABILITY_IMAGE" deploy/collector/.env
 
 docker load -i "\$COLLECTOR_TAR"
 docker load -i "\$NORMALIZER_TAR"
+docker load -i "\$CUDA_PROBABILITY_TAR"
 install -m 755 "\$TUI_BIN" "\$PC_BIN_DIR/polymarket-cockpit-tui"
 
 {
@@ -189,7 +203,7 @@ install -m 755 "\$TUI_BIN" "\$PC_BIN_DIR/polymarket-cockpit-tui"
   printf '%s\n' "  echo 'Runtime already live.'"
   printf '%s\n' 'else'
   printf '%s\n' "  echo 'Runtime not live; starting containers...'"
-  printf '%s\n' '  docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml up -d --no-recreate collector normalizer api >/dev/null 2>&1 || true'
+  printf '%s\n' '  docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml up -d --no-recreate collector normalizer api gpu-probability-worker >/dev/null 2>&1 || true'
   printf '%s\n' 'fi'
   printf '%s\n' "echo 'Waiting for runtime API and live market rows...'"
   printf '%s\n' 'for _ in \$(seq 1 45); do'
@@ -271,16 +285,97 @@ PS1
   rm -f "\$POWERSHELL_SCRIPT"
 fi
 
+{
+  printf '%s\n' '#!/usr/bin/env bash'
+  printf '%s\n' 'set -euo pipefail'
+  printf 'cd %q\n' "\$PC_REPO"
+  printf '%s\n' "echo 'Checking browser runtime...'"
+  printf 'if curl -fsS --max-time 2 http://127.0.0.1:%s/health >/dev/null 2>&1; then\n' "\$PC_API_PORT"
+  printf '%s\n' "  echo 'Runtime API already live.'"
+  printf '%s\n' 'else'
+  printf '%s\n' "  echo 'Runtime API not live; starting containers...'"
+  printf '%s\n' '  docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml up -d --no-recreate collector normalizer api gpu-probability-worker >/dev/null 2>&1 || true'
+  printf '%s\n' 'fi'
+  printf '%s\n' "echo 'Waiting for browser UI...'"
+  printf '%s\n' 'for _ in \$(seq 1 45); do'
+  printf '  if curl -fsS --max-time 2 http://127.0.0.1:%s/ >/dev/null 2>&1; then\n' "\$PC_API_PORT"
+  printf '    echo "http://127.0.0.1:%s/"\n' "\$PC_API_PORT"
+  printf '%s\n' '    exit 0'
+  printf '%s\n' '  fi'
+  printf '%s\n' '  sleep 1'
+  printf '%s\n' 'done'
+  printf '%s\n' "echo 'Browser UI did not become ready. Check that the deployed API image includes ui/dist.' >&2"
+  printf '%s\n' 'exit 1'
+} > "\$PC_BIN_DIR/open-polymarket-ui.sh"
+chmod 755 "\$PC_BIN_DIR/open-polymarket-ui.sh"
+
+if [ -d "\$WINDOWS_USER_DIR" ]; then
+  cat > "\$WINDOWS_USER_DIR/open-polymarket-ui.ps1" <<'PS_UI_LAUNCHER'
+\$ErrorActionPreference = 'Stop'
+\$logPath = Join-Path \$env:USERPROFILE 'polymarket-ui-launch.log'
+
+try {
+  Start-Transcript -Path \$logPath -Append | Out-Null
+} catch {
+}
+
+try {
+  Add-Content -Path \$logPath -Value ("launch " + (Get-Date).ToString("o"))
+  & wsl.exe -d __PC_WSL_DISTRO__ -- __PC_BIN_DIR__/open-polymarket-ui.sh
+  \$exitCode = \$LASTEXITCODE
+  if (\$exitCode -ne 0) {
+    throw "Browser UI launcher exited with status \$exitCode"
+  }
+  Start-Process 'http://127.0.0.1:__PC_API_PORT__/'
+} catch {
+  Write-Host 'Failed to launch Polymarket runtime monitor.'
+  Write-Host \$_
+  Read-Host 'Press Enter to close'
+  exit 1
+} finally {
+  try {
+    Stop-Transcript | Out-Null
+  } catch {
+  }
+}
+PS_UI_LAUNCHER
+  sed -i "s|__PC_BIN_DIR__|\$PC_BIN_DIR|g; s|__PC_WSL_DISTRO__|\$PC_WSL_DISTRO|g; s|__PC_API_PORT__|\$PC_API_PORT|g" "\$WINDOWS_USER_DIR/open-polymarket-ui.ps1"
+  cat > "\$WINDOWS_USER_DIR/open-polymarket-ui.cmd" <<CMD_UI_LAUNCHER
+@echo off
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%USERPROFILE%\\open-polymarket-ui.ps1"
+CMD_UI_LAUNCHER
+  POWERSHELL_UI_SCRIPT="\$WINDOWS_USER_DIR/AppData/Local/Temp/polymarket-ui-shortcut.ps1"
+  cat > "\$POWERSHELL_UI_SCRIPT" <<'PS_UI_SHORTCUT'
+\$shortcutPath = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Polymarket Runtime Monitor.lnk'
+\$launcherPath = Join-Path ([Environment]::GetFolderPath('UserProfile')) 'open-polymarket-ui.ps1'
+\$shell = New-Object -ComObject WScript.Shell
+\$shortcut = \$shell.CreateShortcut(\$shortcutPath)
+\$shortcut.TargetPath = 'powershell.exe'
+\$shortcut.Arguments = '-NoProfile -ExecutionPolicy Bypass -File "' + \$launcherPath + '"'
+\$shortcut.WorkingDirectory = [Environment]::GetFolderPath('UserProfile')
+\$shortcut.IconLocation = 'C:\Program Files\Internet Explorer\iexplore.exe,0'
+\$shortcut.WindowStyle = 1
+\$shortcut.Save()
+PS_UI_SHORTCUT
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -File "\$(wslpath -w "\$POWERSHELL_UI_SCRIPT")" >/dev/null < /dev/null
+  rm -f "\$POWERSHELL_UI_SCRIPT"
+fi
+
 export POLYMARKET_DEPLOY_USE_PREBUILT=1
 export POLYMARKET_DEPLOY_REF="\$FULL_SHA"
 export POLYMARKET_EXPECTED_DEPLOY_SHA="\$FULL_SHA"
 export POLYMARKET_COLLECTOR_IMAGE="\$COLLECTOR_IMAGE"
 export POLYMARKET_NORMALIZER_IMAGE="\$NORMALIZER_IMAGE"
+export POLYMARKET_CUDA_PROBABILITY_IMAGE="\$CUDA_PROBABILITY_IMAGE"
 export POLYMARKET_DATA_DIR="\$PC_DATA_DIR"
 export POLYMARKET_NORMALIZER_INTERVAL_SECONDS="\$PC_NORMALIZER_INTERVAL_SECONDS"
+export POLYMARKET_NORMALIZER_ENABLE_PROBABILITIES="0"
+export POLYMARKET_ENABLE_RUNTIME_PROBABILITIES="0"
 export POLYMARKET_REST_BACKUP_INTERVAL_MS="\$PC_REST_BACKUP_INTERVAL_MS"
 export DEPLOY_FORCE=1
 ./scripts/deploy.sh
+
+docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml up -d gpu-probability-worker
 
 python3 scripts/check_collector_status.py \\
   --status-path "\$PC_DATA_DIR/live/status.json" \\
@@ -294,12 +389,21 @@ python3 scripts/check_collector_status.py \\
   --max-normalized-health-age-ms 30000 \\
   --expected-prewarm-windows 2
 
+if ! docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml ps --services --status running gpu-probability-worker | grep -qx gpu-probability-worker; then
+  echo "gpu-probability-worker is not running" >&2
+  docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml logs --tail=80 gpu-probability-worker >&2 || true
+  exit 1
+fi
+
 POLYMARKET_API_PORT="\$PC_API_PORT" python3 - <<'PY'
 import json
 import os
+import time
 import urllib.request
+from datetime import datetime, timezone
 
 base = f"http://127.0.0.1:{os.environ['POLYMARKET_API_PORT']}"
+deploy_started_at = time.time()
 
 
 def get_json(path: str) -> dict[str, object]:
@@ -319,6 +423,64 @@ outcomes = get_json("/api/runtime/outcomes?limit=8")
 if outcomes.get("ok") is not True or not isinstance(outcomes.get("rows"), list):
     raise SystemExit(f"runtime outcomes smoke failed: {outcomes}")
 
+
+def parse_ts(value):
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def cuda_probability_payload_ready(payload):
+    if payload.get("ok") is not True:
+        return False
+    if payload.get("schema_version") != "polymarket-probability-runtime-v1":
+        return False
+    generated_at = parse_ts(payload.get("generated_at"))
+    if generated_at is None:
+        return False
+    if generated_at.tzinfo is None:
+        generated_at = generated_at.replace(tzinfo=timezone.utc)
+    if generated_at.timestamp() < deploy_started_at:
+        return False
+    rows = payload.get("rows")
+    if not isinstance(rows, list) or not rows:
+        return False
+    now = datetime.now(timezone.utc)
+    required_contracts = {("BTC", "UP"), ("BTC", "DOWN"), ("ETH", "UP"), ("ETH", "DOWN")}
+    seen = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        asset = str(row.get("asset") or "").upper()
+        side = str(row.get("side") or "").upper()
+        expiry_ts = parse_ts(row.get("expiry_ts"))
+        if expiry_ts is None:
+            continue
+        if expiry_ts.tzinfo is None:
+            expiry_ts = expiry_ts.replace(tzinfo=timezone.utc)
+        if expiry_ts <= now:
+            continue
+        if row.get("generator_version") != "cuda-lognormal-chainlink-sigma-multiseed-v1":
+            continue
+        if int(row.get("path_count") or 0) < 10_000:
+            continue
+        if (asset, side) in required_contracts:
+            seen.add((asset, side))
+    return seen == required_contracts
+
+
+probabilities = get_json("/api/runtime/probabilities?limit=8")
+for _ in range(60):
+    if cuda_probability_payload_ready(probabilities):
+        break
+    time.sleep(1)
+    probabilities = get_json("/api/runtime/probabilities?limit=8")
+else:
+    raise SystemExit(f"runtime CUDA probability smoke failed: {probabilities}")
+
 with urllib.request.urlopen(
     base + "/api/runtime/live/stream?limit=8&interval_ms=250&max_events=1",
     timeout=15,
@@ -331,5 +493,6 @@ PY
 docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml ps
 printf 'THEPC TUI installed %s\\n' "\$PC_BIN_DIR/polymarket-cockpit-tui"
 printf 'THEPC TUI launcher installed %s\\n' "\$PC_BIN_DIR/open-polymarket-tui.sh"
+printf 'THEPC browser UI launcher installed %s\\n' "\$PC_BIN_DIR/open-polymarket-ui.sh"
 printf 'THEPC deployed %s\\n' "\$FULL_SHA"
 EOF

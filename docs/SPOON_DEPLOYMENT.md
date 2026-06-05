@@ -39,11 +39,11 @@ python3 scripts/check_collector_status.py --status-path /home/spoon/polymarket-d
 Set `POLYMARKET_PREWARM_WINDOWS=2` or rely on the compose default so spoon warms
 BTC/ETH current and next 5m windows.
 On THEPC, the current normalizer cadence is
-`POLYMARKET_NORMALIZER_INTERVAL_SECONDS=0.1`. The older spoon sidecar used
+`POLYMARKET_NORMALIZER_INTERVAL_SECONDS=1.0`. The older spoon sidecar used
 `POLYMARKET_NORMALIZER_INTERVAL_SECONDS=0.25` as a home-server CPU compromise.
-After VPS migration, re-test the normalizer on the new host and keep or return
-to `POLYMARKET_NORMALIZER_INTERVAL_SECONDS=0.1` only if CPU headroom, DuckDB
-freshness, and status latency stay healthy.
+After VPS migration, re-test the normalizer on the new host and lower the
+interval only if CPU headroom, DuckDB freshness, CUDA worker lock behavior, and
+status latency stay healthy.
 
 ## Production Image Deploy
 
@@ -58,12 +58,18 @@ exact local commit, streams the bundle and image tarballs into THEPC's Ubuntu
 WSL environment, runs the existing prebuilt-image deploy gate, and finishes with
 the collector status check. The same deploy also installs the matching
 `polymarket-cockpit-tui` binary to `/home/ender/bin/polymarket-cockpit-tui`, so
-the Windows desktop shortcut opens the TUI for the deployed commit.
+the Windows desktop shortcut opens the TUI for the deployed commit. It also
+builds `ui/dist` into the API image and refreshes a Windows desktop shortcut
+named `Polymarket Runtime Monitor.lnk`; opening that shortcut starts the
+runtime if needed and launches `http://127.0.0.1:8000/` in the browser.
 
 ```bash
 cd /Users/goon/polymarket
 ./scripts/deploy_pc.sh
 ```
+
+`./scripts/deploy_pc.sh` is the only supported CUDA runtime deployment path.
+The generic spoon deploy path does not start gpu-probability-worker.
 
 Defaults:
 
@@ -73,11 +79,12 @@ Defaults:
 - `PC_BUNDLE=/home/ender/polymarket.bundle`
 - `PC_DATA_DIR=/home/ender/polymarket-data`
 - `PC_BIN_DIR=/home/ender/bin`
-- `PC_NORMALIZER_INTERVAL_SECONDS=0.1`
+- `PC_NORMALIZER_INTERVAL_SECONDS=1.0`
 
 Set `PC_DEPLOY_BUILD_IMAGES=0` only when matching
 `dist/docker/polymarket-rust-collector-<sha>.tar` and
-`dist/docker/polymarket-normalizer-<sha>.tar` plus
+`dist/docker/polymarket-normalizer-<sha>.tar`,
+`dist/docker/polymarket-cuda-probability-<sha>.tar`, plus
 `dist/docker/polymarket-cockpit-tui-<sha>` already exist for the checked-out
 commit.
 
@@ -234,11 +241,18 @@ market books, cached probability outputs, and read-only outcome history. It must
 not place orders, deploy containers, rebuild images, write collector state,
 restart services, or access auth secrets.
 
-Cached probability outputs are display-only. The deployed normalizer sidecar
-does not pass `--enable-probabilities`, so live runtime on THEPC remains
-pre-probability unless an operator explicitly starts a separate opt-in run. The
-FastAPI probability endpoint also stays disabled unless
-`POLYMARKET_ENABLE_RUNTIME_PROBABILITIES=1` is set.
+The browser monitor is also read-only. The FastAPI app serves `ui/dist` at `/`
+when the built files exist, while `/api/*` routes keep precedence. The browser
+polls `/api/runtime/live` and `/api/runtime/probabilities`; it shows missing or
+disabled probability fields as health state, not as operator actions.
+
+Cached probability outputs are display-only. The deployed normalizer and API
+default CPU runtime probability generation off; the PC-only
+`gpu-probability-worker` container refreshes `features.probability_grid_cache`
+and `/var/lib/polymarket/live/probabilities.json` with NVIDIA CUDA/CuPy. Keep
+`POLYMARKET_NORMALIZER_ENABLE_PROBABILITIES=0` and
+`POLYMARKET_ENABLE_RUNTIME_PROBABILITIES=0` unless intentionally moving Monte
+Carlo load back onto the CPU path.
 
 Live data changes should appear through the runtime API polling path. TUI code,
 layout, or parser changes require a fresh THEPC deploy and reopening the

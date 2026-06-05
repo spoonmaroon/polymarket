@@ -8,7 +8,7 @@ use crate::outcome_view::{
 };
 use crate::status::{
     RuntimeDisplayLag, RuntimeGates, RuntimeMonitor, RuntimeOrderbookRow, RuntimeOutcomeRow,
-    RuntimeOutcomes, RuntimePriceRow, RuntimeProbabilities, RuntimeStatus,
+    RuntimeOutcomes, RuntimePriceRow, RuntimeProbabilities, RuntimeStatus, RuntimeVolatility,
 };
 
 const EXPIRED_MARKET_HANDOFF_SECONDS: i64 = 60;
@@ -65,6 +65,7 @@ pub struct AppState {
     pub runtime_status: Option<RuntimeStatus>,
     pub runtime_gates: Option<RuntimeGates>,
     pub runtime_monitor: Option<RuntimeMonitor>,
+    pub runtime_volatility: Option<RuntimeVolatility>,
     pub runtime_probabilities: Option<RuntimeProbabilities>,
     pub runtime_outcomes: Option<RuntimeOutcomes>,
     pub resolved_outcome_seen_at: HashMap<String, String>,
@@ -86,6 +87,7 @@ impl Default for AppState {
             runtime_status: None,
             runtime_gates: None,
             runtime_monitor: None,
+            runtime_volatility: None,
             runtime_probabilities: None,
             runtime_outcomes: None,
             resolved_outcome_seen_at: HashMap::new(),
@@ -121,8 +123,13 @@ impl AppState {
     }
 
     pub fn sync_market_selection(&mut self) {
-        if self.selected_market_index().is_some() {
-            return;
+        if let Some(index) = self.selected_market_index() {
+            let groups = self.visible_market_groups();
+            if let Some(group) = groups.get(index)
+                && self.selected_market_group_is_current(group)
+            {
+                return;
+            }
         }
 
         let Some(index) = self.default_market_index() else {
@@ -204,9 +211,10 @@ impl AppState {
         {
             for outcome in next.rows.iter().filter(|row| has_official_winner(row)) {
                 for key in outcome_market_keys(outcome) {
-                    if !self.resolved_outcome_seen_at.contains_key(&key) {
-                        self.resolved_outcome_seen_at
-                            .insert(key, generated_at.to_string());
+                    if let std::collections::hash_map::Entry::Vacant(entry) =
+                        self.resolved_outcome_seen_at.entry(key)
+                    {
+                        entry.insert(generated_at.to_string());
                         changed = true;
                     }
                 }
@@ -532,6 +540,31 @@ impl AppState {
             return None;
         }
 
+        if let Some(index) = groups
+            .iter()
+            .position(|group| is_btc_group(group) && self.selected_market_group_is_current(group))
+        {
+            return Some(index);
+        }
+
+        if let Some(index) = groups
+            .iter()
+            .enumerate()
+            .filter(|(_, group)| self.selected_market_group_is_current(group))
+            .filter_map(|(index, group)| {
+                group_observed_ts(group).map(|timestamp| (index, timestamp))
+            })
+            .max_by(|(_, left), (_, right)| left.cmp(right))
+            .map(|(index, _)| index)
+            .or_else(|| {
+                groups
+                    .iter()
+                    .position(|group| self.selected_market_group_is_current(group))
+            })
+        {
+            return Some(index);
+        }
+
         Some(
             groups
                 .iter()
@@ -546,6 +579,16 @@ impl AppState {
             .get(index)
             .cloned()
             .map(|group| group.key);
+    }
+
+    fn selected_market_group_is_current(
+        &self,
+        group: &crate::market_view::MarketGroup<'_>,
+    ) -> bool {
+        self.runtime_monitor
+            .as_ref()
+            .and_then(|monitor| parse_runtime_timestamp(&monitor.generated_at))
+            .is_none_or(|generated_at| !group_expired_at(group, generated_at))
     }
 
     fn append_price_history(&mut self, monitor: &RuntimeMonitor) -> bool {
@@ -841,17 +884,18 @@ fn freshest_group_index(groups: &[crate::market_view::MarketGroup<'_>]) -> usize
     groups
         .iter()
         .enumerate()
-        .filter_map(|(index, group)| {
-            group
-                .up
-                .or(group.down)
-                .and_then(|orderbook| orderbook.observed_ts.as_deref())
-                .filter(|timestamp| !timestamp.is_empty())
-                .map(|timestamp| (index, timestamp))
-        })
+        .filter_map(|(index, group)| group_observed_ts(group).map(|timestamp| (index, timestamp)))
         .max_by(|(_, left), (_, right)| left.cmp(right))
         .map(|(index, _)| index)
         .unwrap_or(0)
+}
+
+fn group_observed_ts<'a>(group: &crate::market_view::MarketGroup<'a>) -> Option<&'a str> {
+    group
+        .up
+        .or(group.down)
+        .and_then(|orderbook| orderbook.observed_ts.as_deref())
+        .filter(|timestamp| !timestamp.is_empty())
 }
 
 fn is_btc_group(group: &crate::market_view::MarketGroup<'_>) -> bool {
@@ -863,7 +907,7 @@ fn is_btc_group(group: &crate::market_view::MarketGroup<'_>) -> bool {
 mod tests {
     use super::{AppState, MainTab};
     use crate::{
-        outcome_view::outcome_section_key,
+        outcome_view::{default_outcome_section_key, outcome_section_key},
         status::{
             RuntimeMonitor, RuntimeOrderbookRow, RuntimeOutcomeRow, RuntimeOutcomes,
             RuntimePriceRow,
@@ -1026,6 +1070,50 @@ mod tests {
     }
 
     #[test]
+    fn market_selection_auto_jumps_from_expired_handoff_to_current_window() {
+        let mut app = AppState {
+            runtime_monitor: Some(RuntimeMonitor {
+                generated_at: "2026-06-03T21:25:05Z".to_string(),
+                price_rows: Vec::new(),
+                orderbooks: vec![
+                    orderbook_with_expiry(
+                        "BTC",
+                        "UP",
+                        "btc-updown-5m-1780521900",
+                        "2026-06-03T21:25:00Z",
+                    ),
+                    orderbook_with_expiry(
+                        "BTC",
+                        "DOWN",
+                        "btc-updown-5m-1780521900",
+                        "2026-06-03T21:25:00Z",
+                    ),
+                    orderbook_with_expiry(
+                        "BTC",
+                        "UP",
+                        "btc-updown-5m-1780522200",
+                        "2026-06-03T21:30:00Z",
+                    ),
+                    orderbook_with_expiry(
+                        "BTC",
+                        "DOWN",
+                        "btc-updown-5m-1780522200",
+                        "2026-06-03T21:30:00Z",
+                    ),
+                ],
+            }),
+            ..Default::default()
+        };
+
+        app.sync_market_selection();
+
+        assert_eq!(
+            app.selected_market_group().unwrap().market_slug,
+            "btc-updown-5m-1780522200"
+        );
+    }
+
+    #[test]
     fn outcome_selection_moves_with_up_down_and_wraps() {
         let mut app = AppState {
             runtime_outcomes: Some(outcomes(vec!["BTC 5m 16:25", "ETH 5m 16:25"])),
@@ -1071,6 +1159,8 @@ mod tests {
             runtime_outcomes: Some(outcomes(vec!["BTC 5m 16:25", "ETH 5m 16:25"])),
             ..Default::default()
         };
+        let default_section_key =
+            default_outcome_section_key(app.runtime_outcomes.as_ref(), "2026-06-03").unwrap();
 
         app.sync_outcome_expansion_defaults();
 
@@ -1078,20 +1168,20 @@ mod tests {
         assert!(
             app.outcome_expansion
                 .expanded_sections
-                .contains(&outcome_section_key("2026-06-03", "afternoon"))
+                .contains(&default_section_key)
         );
 
         app.outcome_expansion.expanded_days.remove("2026-06-03");
         app.outcome_expansion
             .expanded_sections
-            .remove(&outcome_section_key("2026-06-03", "afternoon"));
+            .remove(&default_section_key);
         app.sync_outcome_expansion_defaults();
 
         assert!(!app.outcome_expansion.expanded_days.contains("2026-06-03"));
         assert!(
             !app.outcome_expansion
                 .expanded_sections
-                .contains(&outcome_section_key("2026-06-03", "afternoon"))
+                .contains(&default_section_key)
         );
     }
 

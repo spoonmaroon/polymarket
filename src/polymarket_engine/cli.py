@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
+import math
 import signal
 from collections.abc import Callable
 from contextlib import suppress
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Protocol
 
@@ -103,6 +106,38 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Also build states for the next warmed contract window.",
     )
 
+    probability_grid = subparsers.add_parser("build-probability-grid")
+    probability_grid.add_argument("--duckdb-path", type=Path, required=True)
+    probability_grid.add_argument("--assets", type=_asset_tuple, default=("BTC", "ETH"))
+    probability_grid.add_argument("--limit", type=int, default=8)
+    probability_grid.add_argument("--path-count", type=int, default=10_000)
+    probability_grid.add_argument("--seed", type=int, default=None)
+    probability_grid.add_argument("--valid-seconds", type=int, default=30)
+    probability_grid.add_argument(
+        "--generator-version",
+        default="offline-lognormal-chainlink-sigma-v1",
+    )
+    probability_grid.add_argument("--model-version", default="cached-grid-v1")
+
+    cuda_probability_worker = subparsers.add_parser("run-cuda-probability-worker")
+    cuda_probability_worker.add_argument("--duckdb-path", type=Path, required=True)
+    cuda_probability_worker.add_argument(
+        "--probability-status-path",
+        type=Path,
+        default=Path("data/live/probabilities.json"),
+    )
+    cuda_probability_worker.add_argument("--probability-inputs-path", type=Path, default=None)
+    cuda_probability_worker.add_argument("--interval-seconds", type=float, default=1.0)
+    cuda_probability_worker.add_argument("--limit", type=int, default=24)
+    cuda_probability_worker.add_argument("--valid-seconds", type=int, default=30)
+    cuda_probability_worker.add_argument("--max-state-age-seconds", type=float, default=600.0)
+    cuda_probability_worker.add_argument("--max-input-snapshot-age-seconds", type=float, default=10.0)
+    cuda_probability_worker.add_argument(
+        "--once",
+        action="store_true",
+        help="Run one CUDA probability worker cycle and exit.",
+    )
+
     sidecar = subparsers.add_parser("run-rust-normalizer-sidecar")
     sidecar.add_argument("--raw-root", type=Path, required=True)
     sidecar.add_argument("--duckdb-path", type=Path, required=True)
@@ -117,6 +152,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--outcome-status-path",
         type=Path,
         default=Path("data/live/outcomes.json"),
+    )
+    sidecar.add_argument(
+        "--volatility-status-path",
+        type=Path,
+        default=Path("data/live/volatility.json"),
     )
     sidecar.add_argument("--interval-seconds", type=float, default=0.25)
     sidecar.add_argument(
@@ -172,6 +212,10 @@ async def run_collect_command(argv: list[str] | None = None) -> int:
         return _run_write_normalized_health(args)
     if args.command == "build-current-decision-states":
         return _run_build_current_decision_states(args)
+    if args.command == "build-probability-grid":
+        return _run_build_probability_grid(args)
+    if args.command == "run-cuda-probability-worker":
+        return _run_cuda_probability_worker(args)
     if args.command == "run-rust-normalizer-sidecar":
         return _run_rust_normalizer_sidecar(args)
     if args.command == "verify-hot-decision-replay":
@@ -267,6 +311,146 @@ def _run_build_current_decision_states(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_build_probability_grid(args: argparse.Namespace) -> int:
+    from polymarket_engine.probability.grid_cache import grid_entry_from_probability_input
+    from polymarket_engine.probability.grid_cache import upsert_probability_grid_entry
+    from polymarket_engine.probability.monte_carlo import run_seeded_monte_carlo
+    from polymarket_engine.probability.runtime import DEFAULT_PROBABILITY_MAX_STATE_AGE_SECONDS
+    from polymarket_engine.probability.runtime import latest_probability_inputs
+    from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
+
+    if args.limit <= 0:
+        raise ValueError("limit must be positive")
+    if args.path_count <= 0:
+        raise ValueError("path_count must be positive")
+    if args.valid_seconds <= 0:
+        raise ValueError("valid_seconds must be positive")
+
+    store = DuckDbIngestStore(args.duckdb_path)
+    store.apply_schema()
+    inputs, quality_skipped = latest_probability_inputs(
+        duckdb_path=args.duckdb_path,
+        limit=args.limit,
+        max_state_age_seconds=DEFAULT_PROBABILITY_MAX_STATE_AGE_SECONDS,
+        active_only=True,
+    )
+    asset_filter = set(args.assets)
+    generated_at = datetime.now(timezone.utc)
+    rows_written = 0
+    skipped_assets = 0
+    errors: list[str] = []
+    cache_rows: list[dict[str, object]] = []
+
+    for index, runtime_input in enumerate(inputs):
+        probability_input = runtime_input.probability_input
+        if probability_input.asset not in asset_filter:
+            skipped_assets += 1
+            continue
+        seed = (
+            int(args.seed) + index
+            if args.seed is not None
+            else _probability_grid_seed(probability_input.state_id, probability_input.asof_ts)
+        )
+        try:
+            output = run_seeded_monte_carlo(
+                probability_input,
+                path_count=args.path_count,
+                steps=_probability_grid_steps(probability_input.seconds_left),
+                seed=seed,
+            )
+            diagnostics = dict(output.diagnostics)
+            diagnostics["cache"] = {
+                "source": "build-probability-grid",
+                "market_slug": runtime_input.market_slug,
+                "start_ts": runtime_input.start_ts.isoformat(),
+                "expiry_ts": runtime_input.expiry_ts.isoformat(),
+                "asof_ts": probability_input.asof_ts.isoformat(),
+            }
+            entry = grid_entry_from_probability_input(
+                probability_input,
+                market_slug=runtime_input.market_slug,
+                start_ts=runtime_input.start_ts,
+                expiry_ts=runtime_input.expiry_ts,
+                p_finish=output.p_finish,
+                p_no_touch=output.p_no_touch,
+                u_gen=0.0,
+                path_count=args.path_count,
+                seed=seed,
+                volatility_regime=runtime_input.volatility_regime,
+                generator_version=args.generator_version,
+                model_version=args.model_version,
+                training_cutoff_ts=probability_input.asof_ts,
+                max_event_ts=probability_input.asof_ts,
+                max_observed_ts=probability_input.asof_ts,
+                generated_at=generated_at,
+                valid_from=generated_at,
+                valid_until=generated_at + timedelta(seconds=args.valid_seconds),
+                diagnostics=diagnostics,
+            )
+            upsert_probability_grid_entry(store, entry)
+        except ValueError as exc:
+            errors.append(f"{probability_input.state_id}: {type(exc).__name__}: {exc}")
+            continue
+        rows_written += 1
+        cache_rows.append(
+            {
+                "cache_key": entry.cache_key,
+                "market_slug": runtime_input.market_slug,
+                "start_ts": runtime_input.start_ts.isoformat(),
+                "expiry_ts": runtime_input.expiry_ts.isoformat(),
+                "asset": entry.asset,
+                "side": entry.side,
+                "asof_ts": probability_input.asof_ts.isoformat(),
+                "generated_at": entry.generated_at.isoformat(),
+                "valid_from": entry.valid_from.isoformat(),
+                "valid_until": entry.valid_until.isoformat(),
+                "path_count": entry.path_count,
+            }
+        )
+
+    payload = {
+        "ok": not errors,
+        "generated_at": generated_at.isoformat(),
+        "rows_seen": len(inputs),
+        "rows_written": rows_written,
+        "skipped_quality": quality_skipped,
+        "skipped_assets": skipped_assets,
+        "errors": errors,
+        "cache_rows": cache_rows,
+    }
+    print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+    return 0 if not errors else 1
+
+
+def _run_cuda_probability_worker(args: argparse.Namespace) -> int:
+    from polymarket_engine.probability.gpu_worker import run_cuda_probability_worker_cycle
+    from polymarket_engine.probability.gpu_worker import run_cuda_probability_worker_loop
+
+    if args.once:
+        payload = run_cuda_probability_worker_cycle(
+            duckdb_path=args.duckdb_path,
+            probability_status_path=args.probability_status_path,
+            probability_inputs_path=args.probability_inputs_path,
+            limit=args.limit,
+            valid_seconds=args.valid_seconds,
+            max_state_age_seconds=args.max_state_age_seconds,
+            max_input_snapshot_age_seconds=args.max_input_snapshot_age_seconds,
+        )
+        print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+        return 0 if payload.get("ok") else 1
+    run_cuda_probability_worker_loop(
+        duckdb_path=args.duckdb_path,
+        probability_status_path=args.probability_status_path,
+        probability_inputs_path=args.probability_inputs_path,
+        interval_seconds=args.interval_seconds,
+        limit=args.limit,
+        valid_seconds=args.valid_seconds,
+        max_state_age_seconds=args.max_state_age_seconds,
+        max_input_snapshot_age_seconds=args.max_input_snapshot_age_seconds,
+    )
+    return 0
+
+
 def _run_rust_normalizer_sidecar(args: argparse.Namespace) -> int:
     from polymarket_engine.ingestion.rust_normalizer_sidecar import (
         run_rust_normalizer_cycle,
@@ -281,6 +465,7 @@ def _run_rust_normalizer_sidecar(args: argparse.Namespace) -> int:
             normalized_health_path=args.normalized_health_path,
             probability_status_path=args.probability_status_path,
             outcome_status_path=args.outcome_status_path,
+            volatility_status_path=args.volatility_status_path,
             include_next=args.include_next,
             compute_probabilities=args.enable_probabilities,
             reprocess_all=args.reprocess_all,
@@ -295,6 +480,7 @@ def _run_rust_normalizer_sidecar(args: argparse.Namespace) -> int:
         normalized_health_path=args.normalized_health_path,
         probability_status_path=args.probability_status_path,
         outcome_status_path=args.outcome_status_path,
+        volatility_status_path=args.volatility_status_path,
         interval_seconds=args.interval_seconds,
         include_next=args.include_next,
         compute_probabilities=args.enable_probabilities,
@@ -380,6 +566,17 @@ def _isoformat_optional(value: object) -> str | None:
     if hasattr(value, "isoformat"):
         return str(value.isoformat())
     return str(value)
+
+
+def _probability_grid_seed(state_id: str, asof_ts: datetime) -> int:
+    digest = hashlib.sha256(f"{state_id}|{asof_ts.isoformat()}".encode()).hexdigest()
+    return int(digest[:8], 16)
+
+
+def _probability_grid_steps(seconds_left: float) -> int:
+    if seconds_left < 0 or not math.isfinite(seconds_left):
+        raise ValueError("seconds_left must be nonnegative and finite")
+    return max(1, min(300, int(math.ceil(seconds_left))))
 
 
 def _install_shutdown_signal_handlers(

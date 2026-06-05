@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 
 from polymarket_engine.runtime_api import (
     build_runtime_router,
@@ -21,15 +22,20 @@ def create_app(
     probability_status_path: Optional[Path] = None,
     outcome_status_path: Optional[Path] = None,
     target_cache_path: Optional[Path] = None,
+    volatility_status_path: Optional[Path] = None,
     data_dir: Path = Path("data"),
     enable_container_status: bool | None = None,
     enable_runtime_probabilities: bool | None = None,
+    ui_dist_path: Optional[Path] = None,
 ) -> FastAPI:
     probability_status_path = probability_status_path or status_path.with_name(
         "probabilities.json"
     )
     outcome_status_path = outcome_status_path or status_path.with_name("outcomes.json")
     target_cache_path = target_cache_path or status_path.with_name("targets.json")
+    volatility_status_path = volatility_status_path or status_path.with_name(
+        "volatility.json"
+    )
     app = FastAPI(title="Polymarket Engine", version="0.1.0")
 
     @app.get("/health")
@@ -44,6 +50,7 @@ def create_app(
             probability_status_path=probability_status_path,
             outcome_status_path=outcome_status_path,
             target_cache_path=target_cache_path,
+            volatility_status_path=volatility_status_path,
             data_dir=data_dir,
             enable_container_status=container_status_enabled_from_env()
             if enable_container_status is None
@@ -53,6 +60,13 @@ def create_app(
             else enable_runtime_probabilities,
         )
     )
+    resolved_ui_dist_path = _resolve_ui_dist_path(ui_dist_path)
+    if resolved_ui_dist_path is not None:
+        app.mount(
+            "/",
+            StaticFiles(directory=resolved_ui_dist_path, html=True),
+            name="ui",
+        )
     return app
 
 
@@ -77,13 +91,41 @@ def create_app_from_env() -> FastAPI:
             "POLYMARKET_TARGET_STATUS_PATH",
             status_path.with_name("targets.json"),
         ),
+        volatility_status_path=_env_path(
+            "POLYMARKET_VOLATILITY_STATUS_PATH",
+            status_path.with_name("volatility.json"),
+        ),
         data_dir=_env_path("POLYMARKET_DATA_DIR", Path("data")),
+        ui_dist_path=_env_path_or_none("POLYMARKET_UI_DIST_PATH"),
     )
 
 
 def _env_path(name: str, default: Path) -> Path:
     value = os.getenv(name)
     return default if value is None or value == "" else Path(value)
+
+
+def _env_path_or_none(name: str) -> Optional[Path]:
+    value = os.getenv(name)
+    return None if value is None or value == "" else Path(value)
+
+
+def _resolve_ui_dist_path(path: Optional[Path]) -> Optional[Path]:
+    candidates = [path] if path is not None else _default_ui_dist_candidates()
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        if candidate.is_dir() and (candidate / "index.html").is_file():
+            return candidate
+    return None
+
+
+def _default_ui_dist_candidates() -> list[Path]:
+    source_root = Path(__file__).resolve().parents[2]
+    return [
+        Path.cwd() / "ui" / "dist",
+        source_root / "ui" / "dist",
+    ]
 
 
 app = create_app_from_env()

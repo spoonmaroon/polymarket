@@ -9,6 +9,9 @@ import pytest
 
 from polymarket_engine.domain.contracts import ContractSpec
 from polymarket_engine.domain.market_state import DecisionState, OrderBookObservation, PriceObservation
+from polymarket_engine.probability.ensemble_weights import DynamicWeightSet
+from polymarket_engine.probability.generator_contracts import DynamicWeightScope, GeneratorId
+from polymarket_engine.probability.generator_contracts import HistoricalValidationWindow
 from polymarket_engine.probability.schema import ProbabilityInput, ProbabilityOutput
 from polymarket_engine.storage import duckdb_store
 from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
@@ -100,6 +103,36 @@ def _state() -> DecisionState:
         sigma_tau=0.002,
         volatility_regime="normal",
         data_quality_flags=(),
+    )
+
+
+def _weight_scope() -> DynamicWeightScope:
+    return DynamicWeightScope(
+        asset="BTC",
+        horizon_seconds=300,
+        seconds_left_bucket="60-120",
+        z_path_bucket="far",
+        vol_regime="normal",
+        vol_trend="flat",
+        wick_regime="quiet",
+        source_quality_state="ready",
+    )
+
+
+def _weight_set(runtime_asof_ts: datetime) -> DynamicWeightSet:
+    return DynamicWeightSet(
+        weights={
+            GeneratorId.LOGNORMAL_BASELINE: 0.60,
+            GeneratorId.EMPIRICAL_CONDITIONAL: 0.25,
+            GeneratorId.STRESS_OVERLAY: 0.15,
+        },
+        validation_window=HistoricalValidationWindow(
+            asof_ts=datetime(2026, 5, 31, 18, 0, tzinfo=timezone.utc),
+            evaluated_through_ts=datetime(2026, 5, 31, 19, 0, tzinfo=timezone.utc),
+            label_window_seconds=3600,
+        ),
+        runtime_asof_ts=runtime_asof_ts,
+        source="fixture_losses",
     )
 
 
@@ -250,6 +283,62 @@ def test_store_inserts_probability_output_with_json_artifacts(tmp_path: Path) ->
     assert json.loads(input_json)["state_id"] == state.state_id
     assert json.loads(input_json)["z_path"] == probability_input.z_path
     assert json.loads(output_json)["diagnostics"]["paths"] == 1000
+
+
+def test_store_inserts_and_reads_latest_generator_weight_snapshot(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.duckdb"
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    scope = _weight_scope()
+
+    store.insert_generator_weight_snapshot(
+        snapshot_id="weights-old",
+        weight_set=_weight_set(datetime(2026, 5, 31, 20, 0, tzinfo=timezone.utc)),
+        scope=scope,
+        scores={GeneratorId.LOGNORMAL_BASELINE: 0.31},
+        label_counts={GeneratorId.LOGNORMAL_BASELINE: 40},
+    )
+    store.insert_generator_weight_snapshot(
+        snapshot_id="weights-new",
+        weight_set=_weight_set(datetime(2026, 5, 31, 20, 5, tzinfo=timezone.utc)),
+        scope=scope,
+        scores={
+            GeneratorId.LOGNORMAL_BASELINE: 0.29,
+            GeneratorId.EMPIRICAL_CONDITIONAL: 0.34,
+        },
+        label_counts={
+            GeneratorId.LOGNORMAL_BASELINE: 45,
+            GeneratorId.EMPIRICAL_CONDITIONAL: 30,
+            GeneratorId.STRESS_OVERLAY: 12,
+        },
+    )
+
+    latest = store.latest_generator_weight_snapshot()
+
+    assert latest is not None
+    assert latest["snapshot_id"] == "weights-new"
+    assert latest["runtime_asof_ts"] == "2026-05-31T20:05:00+00:00"
+    assert latest["evaluated_through_ts"] == "2026-05-31T19:00:00+00:00"
+    assert latest["label_window_seconds"] == 3600
+    assert latest["source"] == "fixture_losses"
+    assert latest["scope"]["asset"] == "BTC"
+    assert latest["weights"]["lognormal_baseline"] == pytest.approx(0.60)
+    assert latest["scores"]["empirical_conditional"] == pytest.approx(0.34)
+    assert latest["label_counts"]["stress_overlay"] == 12
+
+    with duckdb.connect(str(db_path), read_only=True) as conn:
+        row = conn.execute(
+            """
+            select weights_json, scores_json, label_counts_json
+            from research.generator_weight_snapshots
+            where snapshot_id = 'weights-new'
+            """
+        ).fetchone()
+
+    assert row is not None
+    assert json.loads(row[0])["stress_overlay"] == pytest.approx(0.15)
+    assert json.loads(row[1])["lognormal_baseline"] == pytest.approx(0.29)
+    assert json.loads(row[2])["lognormal_baseline"] == 45
 
 
 def test_store_upserts_and_reads_market_outcome_history(tmp_path: Path) -> None:

@@ -25,6 +25,8 @@ from polymarket_engine.validation.outcomes import build_outcome_history_payload
 
 
 NORMALIZED_HEALTH_SCHEMA_VERSION = "polymarket-normalized-health-v1"
+VOLATILITY_STATUS_SCHEMA_VERSION = "polymarket-volatility-runtime-v1"
+VOLATILITY_STATUS_FLAGS = frozenset({"stale_source", "missing_volatility", "invalid_flags_json"})
 
 
 def build_runtime_router(
@@ -35,6 +37,7 @@ def build_runtime_router(
     probability_status_path: Path = Path("data/live/probabilities.json"),
     outcome_status_path: Path = Path("data/live/outcomes.json"),
     target_cache_path: Path = Path("data/live/targets.json"),
+    volatility_status_path: Path = Path("data/live/volatility.json"),
     data_dir: Path = Path("data"),
     enable_container_status: bool = False,
     enable_runtime_probabilities: bool = False,
@@ -143,6 +146,7 @@ def build_runtime_router(
             duckdb_path=duckdb_path,
             normalized_health_path=normalized_health_path,
             target_cache_path=target_cache_path,
+            volatility_status_path=volatility_status_path,
             limit=limit,
         )
 
@@ -162,6 +166,7 @@ def build_runtime_router(
                     duckdb_path=duckdb_path,
                     normalized_health_path=normalized_health_path,
                     target_cache_path=target_cache_path,
+                    volatility_status_path=volatility_status_path,
                     limit=limit,
                 )
                 yield f"event: live\ndata: {json.dumps(payload, separators=(',', ':'))}\n\n"
@@ -179,40 +184,14 @@ def build_runtime_router(
     @router.get("/probabilities")
     def runtime_probabilities(limit: int = 8) -> dict[str, Any]:
         if not enable_runtime_probabilities:
+            if probability_status_path.exists():
+                return _probability_status_payload(
+                    probability_status_path=probability_status_path,
+                    limit=limit,
+                )
             return _probabilities_disabled_payload()
-        if probability_status_path.exists():
-            payload, read_error = _read_json_or_error(probability_status_path)
-            if payload is None:
-                return {
-                    "ok": False,
-                    "state": read_error["state"],
-                    "error": read_error["error"],
-                    "generated_at": datetime.now(timezone.utc).isoformat(),
-                    "cached": False,
-                    "model_version": None,
-                    "rows": [],
-                    "skipped": 0,
-                    "errors": [read_error["error"]],
-                }
-            rows = payload.get("rows")
-            if not isinstance(rows, list):
-                return {
-                    "ok": False,
-                    "state": "INVALID",
-                    "error": "probability status shape invalid: rows must be a list",
-                    "generated_at": datetime.now(timezone.utc).isoformat(),
-                    "cached": False,
-                    "model_version": None,
-                    "rows": [],
-                    "skipped": 0,
-                    "errors": ["probability status shape invalid: rows must be a list"],
-                }
-            limited = dict(payload)
-            limited["rows"] = rows[:limit]
-            limited["cached"] = False
-            return limited
         try:
-            return probability_cache.payload(duckdb_path=duckdb_path, limit=limit)
+            payload = probability_cache.payload(duckdb_path=duckdb_path, limit=limit)
         except ValueError as exc:
             return {
                 "ok": False,
@@ -225,6 +204,12 @@ def build_runtime_router(
                 "skipped": 0,
                 "errors": [str(exc)],
             }
+        if payload.get("state") in {"MISSING", "INVALID"} and probability_status_path.exists():
+            return _probability_status_payload(
+                probability_status_path=probability_status_path,
+                limit=limit,
+            )
+        return payload
 
     @router.get("/outcomes")
     def runtime_outcomes(limit: int = 20) -> dict[str, Any]:
@@ -286,12 +271,50 @@ def _probabilities_disabled_payload() -> dict[str, Any]:
     }
 
 
+def _probability_status_payload(
+    *,
+    probability_status_path: Path,
+    limit: int,
+) -> dict[str, Any]:
+    status_payload, read_error = _read_json_or_error(probability_status_path)
+    if status_payload is None:
+        return {
+            "ok": False,
+            "state": read_error["state"],
+            "error": read_error["error"],
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "cached": False,
+            "model_version": None,
+            "rows": [],
+            "skipped": 0,
+            "errors": [read_error["error"]],
+        }
+    rows = status_payload.get("rows")
+    if not isinstance(rows, list):
+        return {
+            "ok": False,
+            "state": "INVALID",
+            "error": "probability status shape invalid: rows must be a list",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "cached": False,
+            "model_version": None,
+            "rows": [],
+            "skipped": 0,
+            "errors": ["probability status shape invalid: rows must be a list"],
+        }
+    limited = dict(status_payload)
+    limited["rows"] = rows[:limit]
+    limited["cached"] = False
+    return limited
+
+
 def _runtime_live_payload(
     *,
     status_path: Path,
     duckdb_path: Path,
     normalized_health_path: Path,
     target_cache_path: Path,
+    volatility_status_path: Path,
     limit: int,
 ) -> dict[str, Any]:
     started = time.perf_counter()
@@ -351,6 +374,11 @@ def _runtime_live_payload(
         server_sent_at=server_sent_at,
         api_build_ms=int((time.perf_counter() - started) * 1000),
     )
+    volatility = _live_volatility_payload(
+        duckdb_path=duckdb_path,
+        volatility_status_path=volatility_status_path,
+        limit=limit,
+    )
     return {
         "ok": bool(status.get("ok"))
         and bool(gates.get("ok"))
@@ -359,8 +387,190 @@ def _runtime_live_payload(
         "status": status,
         "gates": gates,
         "monitor": monitor,
+        "volatility": volatility,
         "latency": latency,
     }
+
+
+def _live_volatility_payload(
+    *,
+    duckdb_path: Path,
+    volatility_status_path: Path,
+    limit: int,
+) -> dict[str, Any]:
+    if volatility_status_path.exists():
+        return _live_volatility_payload_from_status_file(
+            volatility_status_path=volatility_status_path,
+            limit=limit,
+        )
+    if not duckdb_path.exists():
+        return {
+            "state": "MISSING",
+            "rows": [],
+            "errors": [f"{duckdb_path} missing"],
+        }
+    try:
+        with _connect_read_only_with_retry(duckdb_path, lock_retry_seconds=2.0) as conn:
+            rows = conn.execute(
+                """
+                select
+                    asset,
+                    cast(asof_ts as varchar) as asof_ts,
+                    short_realized_vol,
+                    medium_realized_vol,
+                    long_realized_vol,
+                    sigma_tau,
+                    volatility_regime,
+                    data_quality_flags_json
+                from (
+                    select
+                        state_inputs.*,
+                        row_number() over (
+                            partition by asset
+                            order by asof_ts desc, created_at desc
+                        ) as row_number
+                    from features.asof_state_inputs as state_inputs
+                ) as latest
+                where row_number = 1
+                order by case asset when 'BTC' then 0 when 'ETH' then 1 else 2 end
+                limit ?
+                """,
+                [limit],
+            ).fetchall()
+    except duckdb.Error as exc:
+        return {
+            "state": "INVALID",
+            "rows": [],
+            "errors": [f"DuckDB volatility unavailable: {_format_error(exc)}"],
+        }
+
+    return {
+        "state": "OK",
+        "rows": [_volatility_row_from_db_row(row) for row in rows],
+        "errors": [],
+    }
+
+
+def _live_volatility_payload_from_status_file(
+    *,
+    volatility_status_path: Path,
+    limit: int,
+) -> dict[str, Any]:
+    payload, read_error = _read_json_or_error(volatility_status_path)
+    if payload is None:
+        return {
+            "state": read_error["state"],
+            "rows": [],
+            "errors": [read_error["error"]],
+        }
+    if payload.get("schema_version") != VOLATILITY_STATUS_SCHEMA_VERSION:
+        return {
+            "state": "INVALID",
+            "rows": [],
+            "errors": [
+                f"volatility status schema invalid: {payload.get('schema_version')!r}"
+            ],
+        }
+    rows = payload.get("rows")
+    if not isinstance(rows, list):
+        return {
+            "state": "INVALID",
+            "rows": [],
+            "errors": ["volatility status shape invalid: rows must be a list"],
+        }
+    raw_errors = payload.get("errors", [])
+    errors = [str(error) for error in raw_errors] if isinstance(raw_errors, list) else []
+    return {
+        "state": str(payload.get("state") or "OK"),
+        "generated_at": payload.get("generated_at"),
+        "source_key": payload.get("source_key"),
+        "lookback_limit": payload.get("lookback_limit"),
+        "rows": [
+            _volatility_row_from_mapping(row)
+            for row in rows[:limit]
+            if isinstance(row, dict)
+        ],
+        "errors": errors,
+    }
+
+
+def _volatility_row_from_db_row(row: Sequence[Any]) -> dict[str, Any]:
+    return _volatility_row_from_mapping(
+        {
+            "asset": row[0],
+            "asof_ts": row[1],
+            "short_realized_vol": row[2],
+            "medium_realized_vol": row[3],
+            "long_realized_vol": row[4],
+            "sigma_tau": row[5],
+            "volatility_regime": row[6],
+            "data_quality_flags_json": row[7],
+        }
+    )
+
+
+def _volatility_row_from_mapping(row: dict[str, Any]) -> dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    asof_ts = _parse_timestamp_or_none(row.get("asof_ts"))
+    sigma_tau = _optional_float(row.get("sigma_tau"))
+    return {
+        "asset": str(row.get("asset")),
+        "asof_ts": None if asof_ts is None else asof_ts.isoformat(),
+        "short_realized_vol": _optional_float(row.get("short_realized_vol")),
+        "medium_realized_vol": _optional_float(row.get("medium_realized_vol")),
+        "long_realized_vol": _optional_float(row.get("long_realized_vol")),
+        "sigma_tau": sigma_tau,
+        "volatility_regime": row.get("volatility_regime"),
+        "age_ms": None
+        if asof_ts is None
+        else max(0, int((now - asof_ts).total_seconds() * 1000)),
+        "flags": _volatility_flags(
+            row.get("flags", row.get("data_quality_flags_json")),
+            sigma_tau=sigma_tau,
+        ),
+    }
+
+
+def _connect_read_only_with_retry(
+    duckdb_path: Path,
+    *,
+    lock_retry_seconds: float,
+) -> duckdb.DuckDBPyConnection:
+    deadline = time.monotonic() + lock_retry_seconds
+    while True:
+        try:
+            return duckdb.connect(str(duckdb_path), read_only=True)
+        except duckdb.IOException as exc:
+            if "Could not set lock" not in str(exc) or time.monotonic() >= deadline:
+                raise
+            time.sleep(0.1)
+
+
+def _volatility_flags(raw_flags: object, *, sigma_tau: object) -> list[str]:
+    flags: list[str] = []
+    if isinstance(raw_flags, list):
+        flags = [str(flag) for flag in raw_flags]
+    elif isinstance(raw_flags, str):
+        try:
+            loaded = json.loads(raw_flags)
+        except json.JSONDecodeError:
+            loaded = ["invalid_flags_json"]
+        if isinstance(loaded, list):
+            flags = [str(flag) for flag in loaded]
+        else:
+            flags = ["invalid_flags_json"]
+    flags = [flag for flag in flags if flag in VOLATILITY_STATUS_FLAGS]
+    if sigma_tau is None and "missing_volatility" not in flags:
+        flags.append("missing_volatility")
+    return flags if flags else ["OK"]
+
+
+def _optional_float(value: object) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return None
+    return float(value)
 
 
 def _read_json_or_error(path: Path) -> tuple[dict[str, Any] | None, dict[str, str]]:
