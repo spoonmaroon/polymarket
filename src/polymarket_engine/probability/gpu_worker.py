@@ -109,6 +109,8 @@ def run_cuda_probability_worker_cycle(
                 "expiry_ts": runtime_input.expiry_ts.isoformat(),
                 "asof_ts": probability_input.asof_ts.isoformat(),
                 "path_count": path_count,
+                "paths_per_seed": paths_per_seed,
+                "seed_count": seed_count,
             }
             entry = grid_entry_from_probability_input(
                 probability_input,

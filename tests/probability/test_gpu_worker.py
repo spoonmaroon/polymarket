@@ -85,6 +85,9 @@ def test_cuda_probability_worker_cycle_writes_status_file(
     )
     assert calls[0]["paths_per_seed"] == 20_000
     assert calls[0]["seed_count"] == 4
+    assert result["rows"][0]["generator_metadata"]["path_count"] == 80_000
+    assert result["rows"][0]["generator_metadata"]["paths_per_seed"] == 20_000
+    assert result["rows"][0]["generator_metadata"]["seed_count"] == 4
 
     payload = json.loads(status_path.read_text(encoding="utf-8"))
     assert payload["schema_version"] == "polymarket-probability-runtime-v1"
