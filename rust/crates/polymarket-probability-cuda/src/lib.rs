@@ -7,10 +7,14 @@ use polymarket_probability_core::schema::{
     SimulationConfig, SimulationRun,
 };
 use serde_json::json;
+use std::any::Any;
+use std::panic::{self, AssertUnwindSafe};
+use std::sync::Mutex;
 use std::time::Instant;
 
 const SMOKE_KERNEL: &str = include_str!("../kernels/smoke.cu");
 const MONTE_CARLO_KERNEL: &str = include_str!("../kernels/monte_carlo.cu");
+static CUDA_PANIC_HOOK_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct CudaBackend;
@@ -22,7 +26,7 @@ impl SimulationBackend for CudaBackend {
 
         let started_at = Instant::now();
         let per_step_sigma = input.sigma_tau / (config.steps as f64).sqrt();
-        let counts = run_cuda_monte_carlo(input, config, per_step_sigma)?;
+        let counts = catch_cuda_panic(|| run_cuda_monte_carlo(input, config, per_step_sigma))?;
 
         Ok(SimulationRun {
             state_id: input.state_id.clone(),
@@ -67,6 +71,10 @@ struct CudaSimulationInput {
 unsafe impl cudarc::driver::DeviceRepr for CudaSimulationInput {}
 
 pub fn cuda_smoke_add_one(input: &[f64]) -> Result<Vec<f64>> {
+    catch_cuda_panic(|| cuda_smoke_add_one_inner(input))
+}
+
+fn cuda_smoke_add_one_inner(input: &[f64]) -> Result<Vec<f64>> {
     if input.is_empty() {
         return Ok(Vec::new());
     }
@@ -86,6 +94,8 @@ pub fn cuda_smoke_add_one(input: &[f64]) -> Result<Vec<f64>> {
     builder.arg(&mut output_dev);
     builder.arg(&len);
     unsafe { builder.launch(LaunchConfig::for_num_elems(u32::try_from(input.len())?)) }?;
+
+    stream.synchronize()?;
 
     Ok(stream.clone_dtoh(&output_dev)?)
 }
@@ -112,7 +122,7 @@ fn run_cuda_monte_carlo(
         steps: u32::try_from(config.steps)?,
         operator: operator_code(input.comparison_operator),
     };
-    let mut counts_dev = stream.alloc_zeros::<u64>(2)?;
+    let mut counts_dev = stream.alloc_zeros::<u64>(3)?;
 
     let mut builder = stream.launch_builder(&function);
     builder.arg(&cuda_input);
@@ -123,6 +133,8 @@ fn run_cuda_monte_carlo(
         )?))?;
     }
 
+    stream.synchronize()?;
+
     let counts = stream.clone_dtoh(&counts_dev)?;
     let terminal_count = *counts
         .first()
@@ -130,6 +142,12 @@ fn run_cuda_monte_carlo(
     let no_touch_count = *counts
         .get(1)
         .ok_or_else(|| anyhow::anyhow!("CUDA kernel did not return no-touch count"))?;
+    let invalid_price_count = *counts
+        .get(2)
+        .ok_or_else(|| anyhow::anyhow!("CUDA kernel did not return invalid price count"))?;
+    if invalid_price_count > 0 {
+        bail!("CUDA generated invalid path prices on {invalid_price_count} paths");
+    }
 
     Ok(CudaCounts {
         terminal_count,
@@ -225,5 +243,33 @@ fn operator_code(operator: ComparisonOperator) -> u32 {
         ComparisonOperator::GreaterThanOrEqual => 1,
         ComparisonOperator::LessThan => 2,
         ComparisonOperator::LessThanOrEqual => 3,
+    }
+}
+
+fn catch_cuda_panic<T>(operation: impl FnOnce() -> Result<T>) -> Result<T> {
+    let _hook_guard = CUDA_PANIC_HOOK_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let previous_hook = panic::take_hook();
+    panic::set_hook(Box::new(|_| {}));
+    let result = panic::catch_unwind(AssertUnwindSafe(operation));
+    panic::set_hook(previous_hook);
+
+    match result {
+        Ok(result) => result,
+        Err(payload) => bail!(
+            "CUDA/NVRTC entrypoint panicked: {}",
+            panic_payload_message(&payload)
+        ),
+    }
+}
+
+fn panic_payload_message(payload: &Box<dyn Any + Send>) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        (*message).to_string()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "unknown panic payload".to_string()
     }
 }

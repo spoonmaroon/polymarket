@@ -18,7 +18,7 @@ license = "MIT"
 anyhow = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.5", features = ["derive"] }
-cudarc = { version = "0.19.7", default-features = false, features = ["std", "driver", "nvrtc", "curand", "fallback-dynamic-loading", "cuda-12080"] }
+cudarc = { version = "0.19.7", default-features = false, features = ["std", "driver", "nvrtc", "fallback-dynamic-loading", "cuda-13020"] }
 crossterm = "0.29"
 futures = "0.3"
 ratatui = "0.30"

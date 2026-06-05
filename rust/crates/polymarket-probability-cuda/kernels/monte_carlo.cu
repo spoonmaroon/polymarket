@@ -54,6 +54,10 @@ extern "C" __global__ void simulate_monte_carlo(SimulationInput input, unsigned 
     for (unsigned int step = 0; step < input.steps; ++step) {
         log_price += standard_normal(&state) * input.per_step_sigma;
         terminal_price = exp(log_price);
+        if (!isfinite(terminal_price) || terminal_price <= 0.0) {
+            atomicAdd(&counts[2], 1ULL);
+            return;
+        }
         no_touch = no_touch && satisfies(terminal_price, input.threshold, input.operator_code);
     }
 
