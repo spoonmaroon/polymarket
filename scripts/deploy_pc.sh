@@ -463,7 +463,7 @@ def cuda_probability_payload_ready(payload):
             expiry_ts = expiry_ts.replace(tzinfo=timezone.utc)
         if expiry_ts <= now:
             continue
-        if row.get("generator_version") != "cuda-lognormal-chainlink-sigma-v1":
+        if row.get("generator_version") != "cuda-lognormal-chainlink-sigma-multiseed-v1":
             continue
         if int(row.get("path_count") or 0) < 10_000:
             continue
