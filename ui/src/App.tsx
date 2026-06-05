@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   filterGraphableProbabilityRows,
+  mergeProbabilityEventsIntoPayload,
   probabilityDisplayValue,
   probabilityMetadata,
   probabilityRowKey,
@@ -212,11 +213,22 @@ type ProbabilityPayload = {
   cached?: boolean;
   model_version?: string | null;
   rows?: ProbabilityRow[];
+  nowcast_rows?: ProbabilityRow[];
   skipped?: number;
   errors?: unknown[];
   cache_metadata?: JsonRecord;
   grid_cache?: JsonRecord;
   cache?: JsonRecord;
+};
+
+type ProbabilityEventPayload = {
+  schema_version?: string;
+  ok?: boolean;
+  state?: string;
+  error?: string | null;
+  generated_at?: string;
+  events?: ProbabilityRow[];
+  errors?: unknown[];
 };
 
 type MarketMonitorRow = {
@@ -300,6 +312,55 @@ export function App() {
     return () => {
       active = false;
       window.clearInterval(intervalId);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window.EventSource !== "function") {
+      return undefined;
+    }
+
+    const stream = new window.EventSource(
+      `/api/runtime/probability-events/stream?limit=${PROBABILITY_LIMIT}&interval_ms=100`,
+    );
+    const handleProbability = (event: MessageEvent<string>) => {
+      try {
+        const payload = JSON.parse(event.data) as ProbabilityEventPayload;
+        const events = Array.isArray(payload.events) ? payload.events : [];
+        if (events.length === 0) {
+          return;
+        }
+        setProbabilities((previous) => ({
+          status: "ready",
+          payload: mergeProbabilityEventsIntoPayload(previous.payload, events),
+          error: null,
+          notice: null,
+          updatedAt: Date.now(),
+        }));
+      } catch (error) {
+        setProbabilities((previous) => ({
+          ...previous,
+          notice:
+            error instanceof Error
+              ? `Probability event stream parse error: ${error.message}`
+              : "Probability event stream parse error.",
+          updatedAt: Date.now(),
+        }));
+      }
+    };
+    const handleError = () => {
+      setProbabilities((previous) => ({
+        ...previous,
+        notice: "Probability event stream disconnected; polling fallback is active.",
+        updatedAt: Date.now(),
+      }));
+    };
+    stream.addEventListener("probability", handleProbability as EventListener);
+    stream.addEventListener("error", handleError);
+    return () => {
+      stream.removeEventListener("probability", handleProbability as EventListener);
+      stream.removeEventListener("error", handleError);
+      stream.close();
     };
   }, []);
 

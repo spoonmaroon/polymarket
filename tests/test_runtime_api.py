@@ -616,6 +616,70 @@ def test_runtime_live_stream_emits_sse_payload(tmp_path: Path) -> None:
     assert '"monitor"' in body
 
 
+def test_runtime_probability_events_stream_emits_jsonl_probability_events(
+    tmp_path: Path,
+) -> None:
+    probability_status_path = tmp_path / "live" / "probabilities.json"
+    probability_status_path.parent.mkdir()
+    event_path = probability_status_path.with_name("probability-events.jsonl")
+    event_path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "event_id": "evt-1",
+                        "contract_id": "btc-up",
+                        "asset": "BTC",
+                        "side": "UP",
+                        "start_ts": "2026-06-05T13:20:00Z",
+                        "expiry_ts": "2026-06-05T13:25:00Z",
+                        "asof_ts": "2026-06-05T13:20:01Z",
+                        "probability_kind": "MC",
+                        "p_finish": 0.51,
+                        "p_no_touch": 0.74,
+                        "generated_at": "2026-06-05T13:20:01Z",
+                    }
+                ),
+                "{bad-json",
+                json.dumps(
+                    {
+                        "event_id": "evt-2",
+                        "contract_id": "btc-up",
+                        "asset": "BTC",
+                        "side": "UP",
+                        "start_ts": "2026-06-05T13:20:00Z",
+                        "expiry_ts": "2026-06-05T13:25:00Z",
+                        "asof_ts": "2026-06-05T13:20:02Z",
+                        "probability_kind": "NOWCAST",
+                        "p_finish": 0.62,
+                        "p_no_touch": 0.81,
+                        "generated_at": "2026-06-05T13:20:02Z",
+                    }
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+    app = create_app(
+        status_path=tmp_path / "missing-status.json",
+        probability_status_path=probability_status_path,
+    )
+
+    with TestClient(app).stream(
+        "GET",
+        "/api/runtime/probability-events/stream?limit=4&interval_ms=1&max_events=1&after_event_id=evt-1",
+    ) as response:
+        body = "".join(response.iter_text())
+
+    assert response.status_code == 200
+    assert "event: probability" in body
+    assert '"schema_version":"polymarket-probability-events-v1"' in body
+    assert '"event_id":"evt-2"' in body
+    assert '"event_id":"evt-1"' not in body
+    assert '"probability_kind":"NOWCAST"' in body
+    assert "JSONL parse failed" in body
+
+
 def test_runtime_outcomes_returns_market_level_history(tmp_path: Path) -> None:
     store = _seeded_store_with_outcome(tmp_path, official_winner="UP")
     app = create_app(status_path=tmp_path / "missing-status.json", duckdb_path=store.db_path)

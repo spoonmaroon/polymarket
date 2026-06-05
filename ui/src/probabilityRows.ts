@@ -15,6 +15,7 @@ export type ProbabilityPayloadForGraph<Row extends ProbabilityRowForGraph> = {
 export type ProbabilityValueRow = ProbabilityRowForGraph & {
   contract?: string;
   contract_id?: string;
+  event_id?: string;
   output_id?: string;
   market_slug?: string;
   cache_market_slug?: string;
@@ -26,11 +27,21 @@ export type ProbabilityValueRow = ProbabilityRowForGraph & {
   asof_ts?: string;
   p_finish?: number;
   p_hat?: number;
+  p_no_touch?: number;
+  probability_kind?: string;
   path_count?: number;
   paths_per_seed?: number;
   seed_count?: number;
+  generated_at?: string;
   simulation_preview?: unknown;
 };
+
+export type ProbabilityPayloadForEvents<Row extends ProbabilityValueRow> =
+  ProbabilityPayloadForGraph<Row> & {
+    generated_at?: string;
+    cached?: boolean;
+    nowcast_rows?: Row[];
+  };
 
 export function filterGraphableProbabilityRows<Row extends ProbabilityRowForGraph>(
   payload: ProbabilityPayloadForGraph<Row> | null,
@@ -100,6 +111,68 @@ export function probabilityMetadata(row: ProbabilityValueRow) {
       ? preview.sampled_paths.length
       : undefined,
   };
+}
+
+export function mergeProbabilityEventsIntoPayload<Row extends ProbabilityValueRow>(
+  payload: ProbabilityPayloadForEvents<Row> | null,
+  events: Row[],
+): ProbabilityPayloadForEvents<Row> {
+  const mcEvents = events.filter((event) => probabilityKind(event) !== "NOWCAST");
+  const nowcastEvents = events.filter((event) => probabilityKind(event) === "NOWCAST");
+  return {
+    ...(payload ?? { ok: true, state: "OK" }),
+    cached: false,
+    generated_at: newestGeneratedAt(events) ?? payload?.generated_at,
+    rows: mergeProbabilityLaneRows(payload?.rows, mcEvents),
+    nowcast_rows: mergeProbabilityLaneRows(payload?.nowcast_rows, nowcastEvents),
+  };
+}
+
+function mergeProbabilityLaneRows<Row extends ProbabilityValueRow>(
+  rows: Row[] | undefined,
+  events: Row[],
+) {
+  if (events.length === 0) {
+    return rows ?? [];
+  }
+  const byKey = new Map<string, Row>();
+  for (const row of rows ?? []) {
+    byKey.set(stableProbabilityMergeKey(row), row);
+  }
+  for (const event of events) {
+    const key = stableProbabilityMergeKey(event);
+    const previous = byKey.get(key);
+    byKey.set(key, { ...previous, ...event });
+  }
+  return [...byKey.values()];
+}
+
+function stableProbabilityMergeKey(row: ProbabilityValueRow) {
+  return (
+    probabilitySelectionKey(row) ||
+    probabilityRowKey(row) ||
+    (typeof row.event_id === "string" ? row.event_id : JSON.stringify(row))
+  );
+}
+
+function probabilityKind(row: ProbabilityValueRow) {
+  return typeof row.probability_kind === "string"
+    ? row.probability_kind.toUpperCase()
+    : "MC";
+}
+
+function newestGeneratedAt(rows: ProbabilityValueRow[]) {
+  let newestMs = Number.NEGATIVE_INFINITY;
+  let newest: string | undefined;
+  for (const row of rows) {
+    const generatedAt = row.generated_at;
+    const ms = timestampMs(generatedAt);
+    if (generatedAt && Number.isFinite(ms) && ms > newestMs) {
+      newestMs = ms;
+      newest = generatedAt;
+    }
+  }
+  return newest;
 }
 
 function parsePreview(value: unknown): { sampled_paths?: unknown[] } | null {
