@@ -1416,7 +1416,10 @@ function materializeLastGoodProbabilityRows(
   }
   return {
     ...payload,
-    rows: lastGoodRows,
+    rows: lastGoodRows.map((row) => ({
+      ...row,
+      mc_display_status: "held",
+    })),
   };
 }
 

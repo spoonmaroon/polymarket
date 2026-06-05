@@ -74,6 +74,7 @@ const initialNowcast = toProbabilityApiState(
 );
 
 assert.equal(initialNowcast.payload?.rows?.length, 1);
+assert.equal(initialNowcast.payload?.rows?.[0]?.mc_display_status, "held");
 assert.equal(filterGraphableProbabilityRows(initialNowcast.payload).length, 1);
 
 const rolloverPrevious = {

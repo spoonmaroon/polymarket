@@ -29,10 +29,17 @@ export type ProbabilityValueRow = ProbabilityRowForGraph & {
   p_hat?: number;
   p_no_touch?: number;
   probability_kind?: string;
+  generator_version?: string;
   path_count?: number;
   paths_per_seed?: number;
   seed_count?: number;
+  cache_status?: string;
+  mc_display_status?: string;
   generated_at?: string;
+  latency?: {
+    runtime_ms?: number;
+    total_lag_ms?: number;
+  };
   simulation_preview?: unknown;
 };
 
@@ -104,13 +111,32 @@ export function probabilitySelectionKey(row: ProbabilityValueRow) {
 export function probabilityMetadata(row: ProbabilityValueRow) {
   const preview = parsePreview(row.simulation_preview);
   return {
+    lane: probabilityKind(row),
+    displayStatus: probabilityDisplayStatus(row),
     totalPaths: isFiniteNumber(row.path_count) ? row.path_count : undefined,
     pathsPerSeed: isFiniteNumber(row.paths_per_seed) ? row.paths_per_seed : undefined,
     seedCount: isFiniteNumber(row.seed_count) ? row.seed_count : undefined,
     previewPathCount: Array.isArray(preview?.sampled_paths)
       ? preview.sampled_paths.length
       : undefined,
+    runtimeMs: isFiniteNumber(row.latency?.runtime_ms) ? row.latency.runtime_ms : undefined,
+    totalLagMs: isFiniteNumber(row.latency?.total_lag_ms)
+      ? row.latency.total_lag_ms
+      : undefined,
+    generatorVersion: row.generator_version,
+    cacheStatus: row.cache_status,
   };
+}
+
+export function probabilityDisplayStatus(row: ProbabilityValueRow, nowMs = Date.now()) {
+  if (row.mc_display_status === "held") {
+    return "held";
+  }
+  const refreshDisplayUntilMs = timestampMs(row.refresh_display_until);
+  if (Number.isFinite(refreshDisplayUntilMs) && refreshDisplayUntilMs > nowMs) {
+    return "held";
+  }
+  return "live";
 }
 
 export function mergeProbabilityEventsIntoPayload<Row extends ProbabilityValueRow>(
@@ -155,7 +181,7 @@ function stableProbabilityMergeKey(row: ProbabilityValueRow) {
   );
 }
 
-function probabilityKind(row: ProbabilityValueRow) {
+export function probabilityKind(row: ProbabilityValueRow) {
   return typeof row.probability_kind === "string"
     ? row.probability_kind.toUpperCase()
     : "MC";
