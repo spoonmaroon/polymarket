@@ -907,7 +907,7 @@ fn is_btc_group(group: &crate::market_view::MarketGroup<'_>) -> bool {
 mod tests {
     use super::{AppState, MainTab};
     use crate::{
-        outcome_view::outcome_section_key,
+        outcome_view::{default_outcome_section_key, outcome_section_key},
         status::{
             RuntimeMonitor, RuntimeOrderbookRow, RuntimeOutcomeRow, RuntimeOutcomes,
             RuntimePriceRow,
@@ -1159,6 +1159,8 @@ mod tests {
             runtime_outcomes: Some(outcomes(vec!["BTC 5m 16:25", "ETH 5m 16:25"])),
             ..Default::default()
         };
+        let default_section_key =
+            default_outcome_section_key(app.runtime_outcomes.as_ref(), "2026-06-03").unwrap();
 
         app.sync_outcome_expansion_defaults();
 
@@ -1166,20 +1168,20 @@ mod tests {
         assert!(
             app.outcome_expansion
                 .expanded_sections
-                .contains(&outcome_section_key("2026-06-03", "afternoon"))
+                .contains(&default_section_key)
         );
 
         app.outcome_expansion.expanded_days.remove("2026-06-03");
         app.outcome_expansion
             .expanded_sections
-            .remove(&outcome_section_key("2026-06-03", "afternoon"));
+            .remove(&default_section_key);
         app.sync_outcome_expansion_defaults();
 
         assert!(!app.outcome_expansion.expanded_days.contains("2026-06-03"));
         assert!(
             !app.outcome_expansion
                 .expanded_sections
-                .contains(&outcome_section_key("2026-06-03", "afternoon"))
+                .contains(&default_section_key)
         );
     }
 
