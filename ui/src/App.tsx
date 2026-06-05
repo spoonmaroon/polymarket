@@ -921,8 +921,8 @@ function MonteCarloInputsPanel({
               ["sigma_tau", formatSmall(row.sigma_tau)],
             ]}
           />
+          <PriorSensitivityGrid row={row} />
         </section>
-        <PriorSensitivityGrid row={row} />
         <section className="mc-input-section">
           <h3>Market Data</h3>
           <KeyValueList
@@ -986,17 +986,17 @@ function MonteCarloInputsPanel({
 }
 
 function PriorSensitivityGrid({ row }: { row: ProbabilityRow }) {
-  const rows = parsePriorSensitivity(row.prior_sensitivity).slice(0, 12);
+  const rows = parsePriorSensitivity(row.prior_sensitivity).slice(0, 6);
   if (rows.length === 0) {
     return (
-      <section className="mc-input-section sensitivity-section">
+      <div className="sensitivity-section">
         <h3>Prior Sensitivity</h3>
         <p className="quiet">Waiting for prior-derived sensitivity rows.</p>
-      </section>
+      </div>
     );
   }
   return (
-    <section className="mc-input-section sensitivity-section">
+    <div className="sensitivity-section">
       <h3>Prior Sensitivity</h3>
       <div className="sensitivity-grid">
         {rows.map((item, index) => (
@@ -1007,13 +1007,13 @@ function PriorSensitivityGrid({ row }: { row: ProbabilityRow }) {
               {compactList([
                 formatTimeFraction(item.time_fraction),
                 item.sample_count !== undefined ? `n=${formatInteger(item.sample_count)}` : undefined,
-                item.price_quantile !== undefined ? formatPrice(item.price_quantile) : undefined,
+                item.price_quantile !== undefined ? `price=${formatPrice(item.price_quantile)}` : undefined,
               ])}
             </small>
           </div>
         ))}
       </div>
-    </section>
+    </div>
   );
 }
 

@@ -24,8 +24,15 @@ def test_runtime_monitor_filters_expired_or_invalid_probability_rows() -> None:
 
 def test_runtime_monitor_shows_prior_derived_sensitivity_grid() -> None:
     source = (ROOT / "ui/src/App.tsx").read_text(encoding="utf-8")
+    lowered = source.lower()
+    contract_state_start = source.index("<h3>Contract State</h3>")
+    contract_state_end = source.index("</section>", contract_state_start)
+    sensitivity_grid = source.index("<PriorSensitivityGrid row={row} />", contract_state_start)
 
     assert "PriorSensitivityGrid" in source
     assert "prior_sensitivity" in source
     assert "Prior quantile" in source
-    assert "dollar move" not in source.lower()
+    assert "dollar move" not in lowered
+    assert "fixed move" not in lowered
+    assert "price_delta" not in lowered
+    assert sensitivity_grid < contract_state_end
