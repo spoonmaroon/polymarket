@@ -38,7 +38,7 @@ fn config() -> SimulationConfig {
 
 #[test]
 fn cuda_backend_reports_missing_cuda_or_runs_without_panicking() {
-    let backend = CudaBackend;
+    let backend = CudaBackend::default();
     let result = backend.run(&input(), &config());
 
     if let Ok(run) = result {
@@ -51,7 +51,7 @@ fn cuda_backend_reports_missing_cuda_or_runs_without_panicking() {
 #[test]
 #[ignore = "requires THEPC CUDA driver/runtime and NVRTC"]
 fn cuda_backend_is_deterministic_for_same_seed_and_config() -> Result<()> {
-    let backend = CudaBackend;
+    let backend = CudaBackend::default();
     let first = backend.run(&input(), &config())?;
     let second = backend.run(&input(), &config())?;
 
@@ -73,7 +73,7 @@ fn cuda_backend_is_deterministic_for_same_seed_and_config() -> Result<()> {
 #[test]
 #[ignore = "requires THEPC CUDA driver/runtime and NVRTC"]
 fn cuda_backend_outputs_probability_range_backend_and_diagnostics() -> Result<()> {
-    let backend = CudaBackend;
+    let backend = CudaBackend::default();
     let run = backend.run(&input(), &config())?;
 
     assert!((0.0..=1.0).contains(&run.p_finish));
@@ -89,8 +89,21 @@ fn cuda_backend_outputs_probability_range_backend_and_diagnostics() -> Result<()
 
 #[test]
 #[ignore = "requires THEPC CUDA driver/runtime and NVRTC"]
+fn cuda_backend_reports_cache_miss_then_hit_when_reused() -> Result<()> {
+    let backend = CudaBackend::default();
+    let first = backend.run(&input(), &config())?;
+    let second = backend.run(&input(), &config())?;
+
+    assert_eq!(first.diagnostics["cuda_cache_hit"], false);
+    assert_eq!(second.diagnostics["cuda_cache_hit"], true);
+    assert_eq!(first.diagnostics["gpu"], second.diagnostics["gpu"]);
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires THEPC CUDA driver/runtime and NVRTC"]
 fn cuda_backend_distinguishes_strict_and_inclusive_threshold_comparisons() -> Result<()> {
-    let backend = CudaBackend;
+    let backend = CudaBackend::default();
     let mut equal_input = input();
     equal_input.threshold = equal_input.settlement_price;
     equal_input.sigma_tau = f64::MIN_POSITIVE;
@@ -113,7 +126,7 @@ fn cuda_backend_distinguishes_strict_and_inclusive_threshold_comparisons() -> Re
 #[test]
 #[ignore = "requires THEPC CUDA driver/runtime and NVRTC"]
 fn cuda_backend_supports_down_contracts() -> Result<()> {
-    let backend = CudaBackend;
+    let backend = CudaBackend::default();
     let mut down_input = input();
     down_input.side = Side::DOWN;
     down_input.comparison_operator = ComparisonOperator::LessThanOrEqual;
@@ -135,7 +148,7 @@ fn cuda_backend_supports_down_contracts() -> Result<()> {
 #[test]
 #[ignore = "requires THEPC CUDA driver/runtime and NVRTC"]
 fn cuda_backend_runs_different_seed_configs_in_probability_range() -> Result<()> {
-    let backend = CudaBackend;
+    let backend = CudaBackend::default();
     let mut other_config = config();
     other_config.seed += 1;
 
@@ -153,7 +166,7 @@ fn cuda_backend_runs_different_seed_configs_in_probability_range() -> Result<()>
 #[test]
 #[ignore = "requires THEPC CUDA driver/runtime and NVRTC"]
 fn cuda_backend_rejects_invalid_generated_prices() {
-    let backend = CudaBackend;
+    let backend = CudaBackend::default();
     let mut explosive_input = input();
     explosive_input.sigma_tau = f64::MAX;
 
@@ -175,7 +188,7 @@ fn cuda_backend_rejects_invalid_generated_prices() {
 
 #[test]
 fn cuda_backend_rejects_mismatched_backend_config_without_cuda_runtime() {
-    let backend = CudaBackend;
+    let backend = CudaBackend::default();
     let mut bad_config = config();
     bad_config.backend = SimulationBackendKind::CpuRayon;
 
@@ -184,7 +197,7 @@ fn cuda_backend_rejects_mismatched_backend_config_without_cuda_runtime() {
 
 #[test]
 fn cuda_backend_rejects_invalid_input_without_cuda_runtime() {
-    let backend = CudaBackend;
+    let backend = CudaBackend::default();
     let mut bad_input = input();
     bad_input.sigma_tau = f64::INFINITY;
 
