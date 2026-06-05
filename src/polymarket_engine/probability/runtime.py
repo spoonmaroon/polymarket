@@ -20,6 +20,8 @@ from polymarket_engine.probability.grid_cache import upsert_probability_grid_ent
 from polymarket_engine.probability.monte_carlo import run_seeded_monte_carlo
 from polymarket_engine.probability.path_policy import runtime_path_count_for_seconds_left
 from polymarket_engine.probability.schema import ProbabilityInput, ProbabilityOutput
+from polymarket_engine.probability.wave_signal import WaveSignalInput
+from polymarket_engine.probability.wave_signal import classify_wave_signal
 from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
 
 
@@ -386,6 +388,7 @@ def _grid_rows_and_misses(
                     diagnostics=hit.entry.diagnostics,
                     preview_is_current=hit.entry.asof_ts == probability_input.asof_ts,
                 )
+                _apply_wave_signal(row, probability_input)
                 rows.append(row)
     except duckdb.CatalogException:
         return rows, inputs, errors
@@ -486,6 +489,7 @@ def _compute_and_persist_rows(
             diagnostics=entry.diagnostics,
             preview_is_current=True,
         )
+        _apply_wave_signal(row, probability_input)
         rows.append(row)
     return rows, errors
 
@@ -527,7 +531,7 @@ def _runtime_row(
         0,
         int((datetime.now(timezone.utc) - probability_input.asof_ts).total_seconds() * 1000),
     )
-    return {
+    row = {
         "contract": runtime_input.contract,
         "contract_id": runtime_input.contract_id,
         "market_slug": runtime_input.market_slug,
@@ -547,6 +551,8 @@ def _runtime_row(
         "output_id": output_id,
         **_runtime_detail_from_diagnostics(output.diagnostics),
     }
+    _apply_wave_signal(row, probability_input)
+    return row
 
 
 def _persisted_runtime_row(row: tuple[Any, ...]) -> dict[str, Any]:
@@ -644,6 +650,29 @@ def _runtime_detail_from_diagnostics(diagnostics: Mapping[str, Any]) -> dict[str
             "simulation_preview",
         ),
     }
+
+
+def _apply_wave_signal(row: dict[str, Any], probability_input: ProbabilityInput) -> None:
+    row.update(
+        classify_wave_signal(
+            WaveSignalInput(
+                p_finish=_float(row["p_finish"], "p_finish"),
+                p_no_touch=_float(row["p_no_touch"], "p_no_touch"),
+                executable_price=probability_input.executable_price,
+                edge_after_costs=_optional_runtime_float(
+                    row.get("edge_after_costs"),
+                    "edge_after_costs",
+                ),
+                required_edge=_optional_runtime_float(
+                    row.get("required_edge"),
+                    "required_edge",
+                ),
+                seconds_left=probability_input.seconds_left,
+                source_age_ms=probability_input.source_age_ms,
+                book_age_ms=probability_input.book_age_ms,
+            )
+        )
+    )
 
 
 def _optional_mapping(value: object, field_name: str) -> Mapping[str, Any] | None:
