@@ -1,8 +1,9 @@
+import math
 from datetime import datetime, timezone
 
 import pytest
 
-from polymarket_engine.probability.ensemble_outputs import reduce_generator_runs
+from polymarket_engine.probability.ensemble_outputs import EnsembleOutput, reduce_generator_runs
 from polymarket_engine.probability.generator_contracts import (
     DynamicWeightScope,
     GeneratorId,
@@ -48,13 +49,15 @@ def _run(
     p_finish: float,
     p_no_touch: float,
     z_path: float,
+    asof_ts: datetime | None = None,
+    scope: DynamicWeightScope | None = None,
     sparse: bool = False,
 ) -> GeneratorRun:
     return GeneratorRun(
         generator_id=generator_id,
         generator_name=generator_id.value,
         generator_version="fixture-v1",
-        scope=_scope(),
+        scope=scope or _scope(),
         conditioning={"asset": "BTC"},
         result=GeneratorResult(
             p_finish=p_finish,
@@ -65,7 +68,7 @@ def _run(
         path_count=10_000,
         steps=60,
         seed=11,
-        asof_ts=_asof(),
+        asof_ts=asof_ts or _asof(),
         diagnostics={},
         sparse=sparse,
     )
@@ -76,6 +79,21 @@ def _weight(generator_id: GeneratorId, weight: float) -> GeneratorWeight:
         generator_id=generator_id,
         weight=weight,
         scope=_scope(),
+        label_count=100,
+        source="fixture",
+        validation_window=_validation_window(),
+    )
+
+
+def _weight_with_scope(
+    generator_id: GeneratorId,
+    weight: float,
+    scope: DynamicWeightScope,
+) -> GeneratorWeight:
+    return GeneratorWeight(
+        generator_id=generator_id,
+        weight=weight,
+        scope=scope,
         label_count=100,
         source="fixture",
         validation_window=_validation_window(),
@@ -117,6 +135,157 @@ def test_reduce_generator_runs_clamps_stress_overlay_and_computes_buffer() -> No
         GeneratorId.FILTERED_HISTORICAL: pytest.approx(0.25),
         GeneratorId.STRESS_OVERLAY: pytest.approx(0.10),
     }
+    with pytest.raises(TypeError):
+        output.effective_weights[GeneratorId.STRESS_OVERLAY] = 0.99
+
+
+@pytest.mark.parametrize(
+    "effective_weights",
+    (
+        {GeneratorId.LOGNORMAL_BASELINE: -0.10, GeneratorId.STRESS_OVERLAY: 1.10},
+        {GeneratorId.LOGNORMAL_BASELINE: math.nan},
+        {GeneratorId.LOGNORMAL_BASELINE: math.inf},
+    ),
+)
+def test_ensemble_output_rejects_invalid_direct_effective_weights(
+    effective_weights: dict[GeneratorId, float],
+) -> None:
+    with pytest.raises(ValueError, match="effective_weights"):
+        EnsembleOutput(
+            p_finish=0.50,
+            p_no_touch=0.80,
+            z_path=1.0,
+            mc_dispersion=0.01,
+            uncertainty_buffer=0.02,
+            path_diagnosis=("CLEAN",),
+            effective_weights=effective_weights,
+        )
+
+
+def test_reduce_generator_runs_rejects_future_generator_run_when_runtime_asof_provided() -> None:
+    with pytest.raises(ValueError, match="asof_ts"):
+        reduce_generator_runs(
+            (
+                _run(
+                    GeneratorId.LOGNORMAL_BASELINE,
+                    p_finish=0.60,
+                    p_no_touch=0.80,
+                    z_path=1.20,
+                    asof_ts=datetime(2026, 6, 5, 18, 0, 1, tzinfo=timezone.utc),
+                ),
+            ),
+            {GeneratorId.LOGNORMAL_BASELINE: 1.0},
+            runtime_asof_ts=_runtime_asof(),
+            sparse_scope=False,
+            calibration_penalty=0.0,
+            stale_weight_penalty=0.0,
+        )
+
+
+def test_reduce_generator_runs_rejects_mixed_run_asof_or_scopes() -> None:
+    with pytest.raises(ValueError, match="asof_ts"):
+        reduce_generator_runs(
+            (
+                _run(GeneratorId.LOGNORMAL_BASELINE, p_finish=0.60, p_no_touch=0.80, z_path=1.20),
+                _run(
+                    GeneratorId.EMPIRICAL_CONDITIONAL,
+                    p_finish=0.61,
+                    p_no_touch=0.81,
+                    z_path=1.30,
+                    asof_ts=datetime(2026, 6, 5, 16, 0, 1, tzinfo=timezone.utc),
+                ),
+            ),
+            {
+                GeneratorId.LOGNORMAL_BASELINE: 0.50,
+                GeneratorId.EMPIRICAL_CONDITIONAL: 0.50,
+            },
+            sparse_scope=False,
+            calibration_penalty=0.0,
+            stale_weight_penalty=0.0,
+        )
+
+    with pytest.raises(ValueError, match="scope"):
+        reduce_generator_runs(
+            (
+                _run(GeneratorId.LOGNORMAL_BASELINE, p_finish=0.60, p_no_touch=0.80, z_path=1.20),
+                _run(
+                    GeneratorId.EMPIRICAL_CONDITIONAL,
+                    p_finish=0.61,
+                    p_no_touch=0.81,
+                    z_path=1.30,
+                    scope=DynamicWeightScope(
+                        asset="BTC",
+                        horizon_seconds=300,
+                        seconds_left_bucket="120-180",
+                        z_path_bucket="far",
+                        vol_regime="normal",
+                        vol_trend="flat",
+                        wick_regime="quiet",
+                        source_quality_state="ready",
+                    ),
+                ),
+            ),
+            {
+                GeneratorId.LOGNORMAL_BASELINE: 0.50,
+                GeneratorId.EMPIRICAL_CONDITIONAL: 0.50,
+            },
+            sparse_scope=False,
+            calibration_penalty=0.0,
+            stale_weight_penalty=0.0,
+        )
+
+
+def test_reduce_generator_runs_rejects_duplicate_run_or_weight_generator_ids() -> None:
+    with pytest.raises(ValueError, match="duplicate"):
+        reduce_generator_runs(
+            (
+                _run(GeneratorId.LOGNORMAL_BASELINE, p_finish=0.60, p_no_touch=0.80, z_path=1.20),
+                _run(GeneratorId.LOGNORMAL_BASELINE, p_finish=0.61, p_no_touch=0.81, z_path=1.30),
+            ),
+            {GeneratorId.LOGNORMAL_BASELINE: 1.0},
+            sparse_scope=False,
+            calibration_penalty=0.0,
+            stale_weight_penalty=0.0,
+        )
+
+    with pytest.raises(ValueError, match="duplicate"):
+        reduce_generator_runs(
+            (
+                _run(GeneratorId.LOGNORMAL_BASELINE, p_finish=0.60, p_no_touch=0.80, z_path=1.20),
+            ),
+            (
+                _weight(GeneratorId.LOGNORMAL_BASELINE, 0.50),
+                _weight(GeneratorId.LOGNORMAL_BASELINE, 0.50),
+            ),
+            runtime_asof_ts=_runtime_asof(),
+            sparse_scope=False,
+            calibration_penalty=0.0,
+            stale_weight_penalty=0.0,
+        )
+
+
+def test_reduce_generator_runs_rejects_generator_weight_scope_mismatch() -> None:
+    run = _run(GeneratorId.LOGNORMAL_BASELINE, p_finish=0.60, p_no_touch=0.80, z_path=1.20)
+    mismatched_scope = DynamicWeightScope(
+        asset="BTC",
+        horizon_seconds=300,
+        seconds_left_bucket="120-180",
+        z_path_bucket="far",
+        vol_regime="normal",
+        vol_trend="flat",
+        wick_regime="quiet",
+        source_quality_state="ready",
+    )
+
+    with pytest.raises(ValueError, match="scope"):
+        reduce_generator_runs(
+            (run,),
+            (_weight_with_scope(GeneratorId.LOGNORMAL_BASELINE, 1.0, mismatched_scope),),
+            runtime_asof_ts=_runtime_asof(),
+            sparse_scope=False,
+            calibration_penalty=0.0,
+            stale_weight_penalty=0.0,
+        )
 
 
 def test_reduce_generator_runs_reports_all_path_diagnosis_labels() -> None:

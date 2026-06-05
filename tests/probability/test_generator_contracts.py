@@ -90,6 +90,29 @@ def test_generator_result_defensively_freezes_diagnostics() -> None:
 
 
 @pytest.mark.parametrize(
+    "invalid_diagnostics",
+    (
+        {"created_at": datetime(2026, 6, 5, 16, 0, tzinfo=timezone.utc)},
+        {"bad": {1, 2}},
+        {"raw": b"bytes"},
+        {"nan": math.nan},
+        {"inf": math.inf},
+        {1: "not a string key"},
+    ),
+)
+def test_generator_result_rejects_non_json_diagnostics(
+    invalid_diagnostics: object,
+) -> None:
+    with pytest.raises(ValueError, match="diagnostics"):
+        GeneratorResult(
+            p_finish=0.62,
+            p_no_touch=0.81,
+            z_path=0.42,
+            diagnostics=invalid_diagnostics,
+        )
+
+
+@pytest.mark.parametrize(
     ("field_name", "invalid_value"),
     (
         ("p_finish", -0.01),
@@ -171,6 +194,41 @@ def test_generator_run_defensively_freezes_conditioning_and_diagnostics() -> Non
         run.conditioning["new"] = "blocked"
     with pytest.raises(TypeError):
         run.diagnostics["new"] = "blocked"
+
+
+@pytest.mark.parametrize(
+    ("field_name", "invalid_value"),
+    (
+        ("conditioning", {"created_at": datetime(2026, 6, 5, 16, 0, tzinfo=timezone.utc)}),
+        ("conditioning", {"bad": {1, 2}}),
+        ("conditioning", {"raw": b"bytes"}),
+        ("conditioning", {"nan": math.nan}),
+        ("diagnostics", {"created_at": datetime(2026, 6, 5, 16, 0, tzinfo=timezone.utc)}),
+        ("diagnostics", {"bad": {1, 2}}),
+        ("diagnostics", {"raw": b"bytes"}),
+        ("diagnostics", {"inf": math.inf}),
+    ),
+)
+def test_generator_run_rejects_non_json_conditioning_or_diagnostics(
+    field_name: str,
+    invalid_value: object,
+) -> None:
+    values = {
+        "generator_id": GeneratorId.BLOCK_BOOTSTRAP,
+        "generator_name": "Block bootstrap",
+        "generator_version": "block-v1",
+        "scope": _scope(),
+        "conditioning": {},
+        "result": _result(),
+        "path_count": 5000,
+        "steps": 60,
+        "seed": 23,
+        "asof_ts": _asof(),
+        "diagnostics": {},
+    }
+
+    with pytest.raises(ValueError, match=field_name):
+        GeneratorRun(**{**values, field_name: invalid_value})
 
 
 @pytest.mark.parametrize(

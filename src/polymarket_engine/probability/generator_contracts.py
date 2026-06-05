@@ -168,16 +168,22 @@ def _freeze_mapping(value: object, field_name: str) -> Mapping[str, Any]:
     for key, item in value.items():
         if not isinstance(key, str):
             raise ValueError(f"{field_name} keys must be strings")
-        frozen[key] = _freeze_json_value(item)
+        frozen[key] = _freeze_json_value(item, field_name)
     return MappingProxyType(frozen)
 
 
-def _freeze_json_value(value: Any) -> Any:
+def _freeze_json_value(value: Any, field_name: str) -> Any:
+    if value is None or isinstance(value, (bool, str, int)):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError(f"{field_name} must be strict JSON")
+        return value
     if isinstance(value, Mapping):
-        return _freeze_mapping(value, "mapping")
+        return _freeze_mapping(value, field_name)
     if isinstance(value, list | tuple):
-        return tuple(_freeze_json_value(item) for item in value)
-    return value
+        return tuple(_freeze_json_value(item, field_name) for item in value)
+    raise ValueError(f"{field_name} must be strict JSON")
 
 
 def _thaw_json_mapping(value: Mapping[str, Any]) -> dict[str, Any]:

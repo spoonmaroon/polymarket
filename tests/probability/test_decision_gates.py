@@ -35,7 +35,7 @@ def _quality(
     source_age_ms: int = 300,
     book_age_ms: int = 250,
     latency_ms: int = 150,
-    hard_failures: tuple[str, ...] = (),
+    hard_failures: object = (),
     source_fresh: bool = True,
     book_fresh: bool = True,
 ) -> ExecutableQualityInput:
@@ -117,6 +117,14 @@ def test_evaluate_probability_gates_blocks_on_hard_failures_or_hard_diagnoses(
 
     assert result.decision_hint == "BLOCK"
     assert expected_reason in result.reasons
+
+
+def test_executable_quality_input_normalizes_list_hard_failures_and_rejects_string() -> None:
+    quality = _quality(hard_failures=["STALE_OR_UNSAFE", "MANUAL_BLOCK"])
+
+    assert quality.hard_failures == ("STALE_OR_UNSAFE", "MANUAL_BLOCK")
+    with pytest.raises(ValueError, match="hard_failures"):
+        _quality(hard_failures="STALE_OR_UNSAFE")
 
 
 def test_evaluate_probability_gates_blocks_high_uncertainty_even_when_edge_clears() -> None:

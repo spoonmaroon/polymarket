@@ -108,6 +108,43 @@ def test_dynamic_weights_from_losses_returns_historical_weight_set() -> None:
     assert weights[GeneratorId.STRESS_OVERLAY] <= 0.10
 
 
+def test_dynamic_weight_set_defensively_freezes_weights() -> None:
+    weights = {
+        GeneratorId.LOGNORMAL_BASELINE: 0.80,
+        GeneratorId.STRESS_OVERLAY: 0.20,
+    }
+
+    weight_set = DynamicWeightSet(
+        weights=weights,
+        validation_window=_validation_window(),
+        runtime_asof_ts=_runtime_asof(),
+    )
+    weights[GeneratorId.LOGNORMAL_BASELINE] = 0.01
+
+    assert weight_set.weights[GeneratorId.LOGNORMAL_BASELINE] == pytest.approx(0.80)
+    with pytest.raises(TypeError):
+        weight_set.weights[GeneratorId.STRESS_OVERLAY] = 0.99
+
+
+@pytest.mark.parametrize(
+    "weights",
+    (
+        {GeneratorId.LOGNORMAL_BASELINE: -0.10, GeneratorId.STRESS_OVERLAY: 1.10},
+        {GeneratorId.LOGNORMAL_BASELINE: math.nan, GeneratorId.STRESS_OVERLAY: 1.0},
+        {GeneratorId.LOGNORMAL_BASELINE: math.inf, GeneratorId.STRESS_OVERLAY: 1.0},
+    ),
+)
+def test_dynamic_weight_set_rejects_invalid_direct_weights(
+    weights: dict[GeneratorId, float],
+) -> None:
+    with pytest.raises(ValueError, match="weight"):
+        DynamicWeightSet(
+            weights=weights,
+            validation_window=_validation_window(),
+            runtime_asof_ts=_runtime_asof(),
+        )
+
+
 def test_dynamic_weights_from_losses_applies_floor_before_normalizing() -> None:
     losses = {
         GeneratorId.LOGNORMAL_BASELINE: 0.20,

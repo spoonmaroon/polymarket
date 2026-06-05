@@ -32,6 +32,7 @@ class ExecutableQualityInput:
     max_latency_ms: int = 500
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "hard_failures", _normalize_hard_failures(self.hard_failures))
         _require_probability(self.executable_entry_price, "executable_entry_price")
         _require_nonnegative_finite(self.execution_costs, "execution_costs")
         _require_nonnegative_int(self.quote_age_ms, "quote_age_ms")
@@ -42,8 +43,6 @@ class ExecutableQualityInput:
         _require_positive_int(self.max_source_age_ms, "max_source_age_ms")
         _require_positive_int(self.max_book_age_ms, "max_book_age_ms")
         _require_positive_int(self.max_latency_ms, "max_latency_ms")
-        if not all(isinstance(value, str) for value in self.hard_failures):
-            raise ValueError("hard_failures must be strings")
         for field_name in ("quote_fresh", "source_fresh", "book_fresh"):
             if not isinstance(getattr(self, field_name), bool):
                 raise ValueError(f"{field_name} must be bool")
@@ -151,6 +150,16 @@ def _quality_block_reasons(executable_quality: ExecutableQualityInput) -> list[s
     if not executable_quality.book_fresh:
         reasons.append("BOOK_NOT_FRESH")
     return reasons
+
+
+def _normalize_hard_failures(value: object) -> tuple[str, ...]:
+    if isinstance(value, str):
+        raise ValueError("hard_failures must be a tuple or list of strings")
+    if not isinstance(value, (tuple, list)):
+        raise ValueError("hard_failures must be a tuple or list of strings")
+    if not all(isinstance(item, str) for item in value):
+        raise ValueError("hard_failures must be strings")
+    return tuple(value)
 
 
 def _require_probability(value: float, field_name: str) -> None:

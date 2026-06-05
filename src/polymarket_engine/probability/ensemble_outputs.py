@@ -5,6 +5,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from statistics import median
+from types import MappingProxyType
 
 from polymarket_engine.probability.generator_contracts import GeneratorId, GeneratorRun, GeneratorWeight
 
@@ -19,7 +20,7 @@ class EnsembleOutput:
     mc_dispersion: float
     uncertainty_buffer: float
     path_diagnosis: tuple[str, ...]
-    effective_weights: dict[GeneratorId, float]
+    effective_weights: Mapping[GeneratorId, float]
 
     def __post_init__(self) -> None:
         _require_probability(self.p_finish, "p_finish")
@@ -31,8 +32,13 @@ class EnsembleOutput:
             isinstance(label, str) for label in self.path_diagnosis
         ):
             raise ValueError("path_diagnosis must be a tuple of strings")
-        if not isinstance(self.effective_weights, dict):
+        if not isinstance(self.effective_weights, Mapping):
             raise ValueError("effective_weights must be a dict")
+        object.__setattr__(
+            self,
+            "effective_weights",
+            MappingProxyType(_validated_effective_weights(self.effective_weights)),
+        )
 
 
 def reduce_generator_runs(
@@ -52,8 +58,13 @@ def reduce_generator_runs(
     _require_nonnegative_finite(stale_weight_penalty, "stale_weight_penalty")
     _require_probability(stress_weight_cap, "stress_weight_cap")
 
-    run_by_id = {_coerce_generator_id(run.generator_id): run for run in runs}
-    weight_by_id = _coerce_weights(weights, runtime_asof_ts=runtime_asof_ts)
+    validated_runs = _validated_runs(runs, runtime_asof_ts)
+    run_by_id = {run.generator_id: run for run in validated_runs}
+    weight_by_id = _coerce_weights(
+        weights,
+        runtime_asof_ts=runtime_asof_ts,
+        run_by_id=run_by_id,
+    )
     effective_weights = _cap_stress_weight(
         _normalize_weights(
             {
@@ -170,6 +181,7 @@ def _coerce_weights(
     weights: Sequence[GeneratorWeight] | Mapping[GeneratorId, float],
     *,
     runtime_asof_ts: datetime | None,
+    run_by_id: Mapping[GeneratorId, GeneratorRun],
 ) -> dict[GeneratorId, float]:
     if isinstance(weights, Mapping):
         return {
@@ -179,7 +191,7 @@ def _coerce_weights(
     _require_runtime_asof_for_generator_weights(runtime_asof_ts)
     return {
         _coerce_generator_id(generator_weight.generator_id): generator_weight.weight
-        for generator_weight in _validated_generator_weights(weights, runtime_asof_ts)
+        for generator_weight in _validated_generator_weights(weights, runtime_asof_ts, run_by_id)
     }
 
 
@@ -192,6 +204,19 @@ def _normalize_weights(weights: Mapping[GeneratorId, float]) -> dict[GeneratorId
     if total <= 0 or not math.isfinite(total):
         raise ValueError("weights must sum to a positive finite value")
     return {generator_id: weight / total for generator_id, weight in weights.items()}
+
+
+def _validated_effective_weights(weights: Mapping[GeneratorId, float]) -> dict[GeneratorId, float]:
+    validated: dict[GeneratorId, float] = {}
+    for generator_id, weight in weights.items():
+        try:
+            normalized_generator_id = _coerce_generator_id(generator_id)
+        except ValueError as exc:
+            raise ValueError("effective_weights must use supported GeneratorId keys") from exc
+        if not _is_finite_number(weight) or weight < 0:
+            raise ValueError("effective_weights must be nonnegative and finite")
+        validated[normalized_generator_id] = weight
+    return validated
 
 
 def _cap_stress_weight(
@@ -229,18 +254,57 @@ def _coerce_generator_id(value: GeneratorId) -> GeneratorId:
         raise ValueError("generator_id must be a supported GeneratorId") from exc
 
 
+def _validated_runs(
+    runs: Sequence[GeneratorRun],
+    runtime_asof_ts: datetime | None,
+) -> tuple[GeneratorRun, ...]:
+    if runtime_asof_ts is not None:
+        _require_timezone_aware(runtime_asof_ts, "runtime_asof_ts")
+    validated = tuple(runs)
+    seen: set[GeneratorId] = set()
+    first_asof_ts: datetime | None = None
+    first_scope = None
+    for run in validated:
+        if not isinstance(run, GeneratorRun):
+            raise ValueError("runs must be GeneratorRun objects")
+        generator_id = _coerce_generator_id(run.generator_id)
+        if generator_id in seen:
+            raise ValueError("duplicate generator_id in runs")
+        seen.add(generator_id)
+        if runtime_asof_ts is not None and run.asof_ts > runtime_asof_ts:
+            raise ValueError("run asof_ts must not be after runtime_asof_ts")
+        if first_asof_ts is None:
+            first_asof_ts = run.asof_ts
+        elif run.asof_ts != first_asof_ts:
+            raise ValueError("runs must share one asof_ts")
+        if first_scope is None:
+            first_scope = run.scope
+        elif run.scope != first_scope:
+            raise ValueError("runs must share one scope")
+    return validated
+
+
 def _validated_generator_weights(
     weights: Sequence[GeneratorWeight],
     runtime_asof_ts: datetime | None,
+    run_by_id: Mapping[GeneratorId, GeneratorRun],
 ) -> tuple[GeneratorWeight, ...]:
     _require_runtime_asof_for_generator_weights(runtime_asof_ts)
     assert runtime_asof_ts is not None
     validated = tuple(weights)
+    seen: set[GeneratorId] = set()
     for generator_weight in validated:
         if not isinstance(generator_weight, GeneratorWeight):
             raise ValueError("weights must be GeneratorWeight objects")
+        generator_id = _coerce_generator_id(generator_weight.generator_id)
+        if generator_id in seen:
+            raise ValueError("duplicate generator_id in weights")
+        seen.add(generator_id)
         if generator_weight.validation_window.evaluated_through_ts > runtime_asof_ts:
             raise ValueError("evaluated_through_ts must not be after runtime_asof_ts")
+        run = run_by_id.get(generator_id)
+        if run is not None and generator_weight.scope != run.scope:
+            raise ValueError("GeneratorWeight scope must match run scope")
     return validated
 
 

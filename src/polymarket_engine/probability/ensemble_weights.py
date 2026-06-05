@@ -4,6 +4,7 @@ import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
+from types import MappingProxyType
 
 from polymarket_engine.probability.generator_contracts import (
     GeneratorId,
@@ -22,7 +23,7 @@ DEFAULT_SEED_WEIGHTS: dict[GeneratorId, float] = {
 
 @dataclass(frozen=True)
 class DynamicWeightSet:
-    weights: dict[GeneratorId, float]
+    weights: Mapping[GeneratorId, float]
     validation_window: HistoricalValidationWindow
     runtime_asof_ts: datetime
     source: str = "historical_validation_losses"
@@ -36,7 +37,7 @@ class DynamicWeightSet:
         if not isinstance(self.source, str) or not self.source:
             raise ValueError("source must be a non-empty string")
         normalized = _normalize(self.weights)
-        object.__setattr__(self, "weights", normalized)
+        object.__setattr__(self, "weights", MappingProxyType(normalized))
 
 
 def log_loss(probability: float, label: int, eps: float = 1e-6) -> float:
@@ -129,6 +130,8 @@ def _cap_final_stress_weight(
 
 
 def _normalize(weights: Mapping[GeneratorId, float]) -> dict[GeneratorId, float]:
+    for weight in weights.values():
+        _require_nonnegative_finite(weight, "weight")
     total = sum(weights.values())
     if not math.isfinite(total) or total <= 0:
         raise ValueError("weights must sum to a positive finite value")
