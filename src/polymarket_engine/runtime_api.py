@@ -380,10 +380,11 @@ def _read_probability_event_rows(
     *,
     limit: int,
 ) -> tuple[list[dict[str, Any]], list[str]]:
-    if not path.exists():
+    read_path = path if path.exists() else _newest_probability_event_drain(path)
+    if read_path is None:
         return [], [f"{path} missing"]
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        lines = read_path.read_text(encoding="utf-8").splitlines()
     except OSError as exc:
         return [], [f"file read failed: {_format_error(exc)}"]
 
@@ -402,6 +403,18 @@ def _read_probability_event_rows(
             continue
         rows.append(payload)
     return rows[-limit:], errors
+
+
+def _newest_probability_event_drain(path: Path) -> Path | None:
+    newest: tuple[int, Path] | None = None
+    for candidate in path.parent.glob(f"{path.name}.*.drain"):
+        try:
+            mtime_ns = candidate.stat().st_mtime_ns
+        except OSError:
+            continue
+        if newest is None or mtime_ns > newest[0]:
+            newest = (mtime_ns, candidate)
+    return None if newest is None else newest[1]
 
 
 def _probability_events_after(
