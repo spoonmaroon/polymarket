@@ -339,10 +339,12 @@ fn push_log(app: &mut AppState, line: String) -> bool {
 
 fn monte_carlo_log_line(probabilities: &RuntimeProbabilities) -> String {
     format!(
-        "mc rows={} {} gates={} cache={} at={}",
+        "mc rows={} {} gates={} wave={} markers={} cache={} at={}",
         probabilities.rows.len(),
         probability_side_summary(&probabilities.rows),
         probability_gate_summary(&probabilities.rows),
+        probability_wave_summary(&probabilities.rows),
+        probability_wave_marker_summary(&probabilities.rows),
         probability_cache_summary(&probabilities.rows),
         probabilities.generated_at
     )
@@ -393,6 +395,42 @@ fn probability_gate_summary(rows: &[RuntimeProbabilityRow]) -> String {
     counts
         .into_iter()
         .map(|(gate, count)| format!("{gate}:{count}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn probability_wave_summary(rows: &[RuntimeProbabilityRow]) -> String {
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    for row in rows {
+        let phase = row
+            .wave_phase
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("none")
+            .to_string();
+        *counts.entry(phase).or_default() += 1;
+    }
+    counts
+        .into_iter()
+        .map(|(phase, count)| format!("{phase}:{count}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn probability_wave_marker_summary(rows: &[RuntimeProbabilityRow]) -> String {
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    for row in rows {
+        for marker in &row.wave_markers {
+            *counts.entry(marker.clone()).or_default() += 1;
+        }
+    }
+    if counts.is_empty() {
+        return "-".to_string();
+    }
+    counts
+        .into_iter()
+        .map(|(marker, count)| format!("{marker}:{count}"))
         .collect::<Vec<_>>()
         .join(" ")
 }
@@ -778,9 +816,27 @@ mod tests {
                 edge_after_costs: None,
                 required_edge: None,
                 gate_reasons: Vec::new(),
+                wave_score: None,
+                wave_phase: None,
+                wave_reasons: Vec::new(),
+                wave_markers: Vec::new(),
+                dynamic_edge: None,
+                dynamic_required_edge: None,
                 generator_metadata: Default::default(),
             }],
         }
+    }
+
+    fn probabilities_with_wave(
+        phase: &str,
+        score: f64,
+        markers: Vec<&str>,
+    ) -> RuntimeProbabilities {
+        let mut probabilities = probabilities();
+        probabilities.rows[0].wave_phase = Some(phase.to_string());
+        probabilities.rows[0].wave_score = Some(score);
+        probabilities.rows[0].wave_markers = markers.into_iter().map(str::to_string).collect();
+        probabilities
     }
 
     fn outcomes() -> RuntimeOutcomes {
@@ -1017,9 +1073,19 @@ mod tests {
         assert_eq!(
             app.logs,
             vec![
-                "mc rows=1 BTC=UP gates=NO_HINT:1 cache=HIT:1 asof=2026-06-03T21:06:00Z gen=2026-06-03T21:06:00Z valid=2026-06-03T21:06:00Z->2026-06-03T21:06:30Z at=2026-06-03T21:06:00Z"
+                "mc rows=1 BTC=UP gates=NO_HINT:1 wave=none:1 markers=- cache=HIT:1 asof=2026-06-03T21:06:00Z gen=2026-06-03T21:06:00Z valid=2026-06-03T21:06:00Z->2026-06-03T21:06:30Z at=2026-06-03T21:06:00Z"
             ]
         );
+    }
+
+    #[test]
+    fn monte_carlo_log_line_includes_wave_summary() {
+        let probabilities = probabilities_with_wave("breaking", 0.87, vec!["P90"]);
+
+        let line = super::monte_carlo_log_line(&probabilities);
+
+        assert!(line.contains("wave=breaking:1"));
+        assert!(line.contains("markers=P90:1"));
     }
 
     #[test]
