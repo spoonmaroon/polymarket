@@ -110,6 +110,12 @@ def run_cuda_monte_carlo_multi_seed(
     ci_half_width = 1.96 * standard_error
     total_path_count = paths_per_seed * seed_count
     first_diagnostics = dict(outputs[0].diagnostics)
+    prior_sensitivity = _aggregate_prior_sensitivity_rows(
+        tuple(
+            tuple(output.diagnostics.get("prior_sensitivity", []))
+            for output in outputs
+        )
+    )
     diagnostics = {
         "path_count": total_path_count,
         "paths_per_seed": paths_per_seed,
@@ -131,7 +137,7 @@ def run_cuda_monte_carlo_multi_seed(
             for output in outputs
         ],
         "simulation_preview": first_diagnostics.get("simulation_preview"),
-        "prior_sensitivity": first_diagnostics.get("prior_sensitivity", []),
+        "prior_sensitivity": prior_sensitivity,
     }
     return ProbabilityOutput(
         state_id=probability_input.state_id,
@@ -204,10 +210,13 @@ def _simulation_preview_from_cuda(
         tuple(float(price) for price in sampled_full_paths[index].tolist())
         for index in range(len(sampled_path_indices))
     )
-    terminal_wins_cpu = tuple(bool(value) for value in cp.asnumpy(terminal_wins_mask).tolist())
+    sensitivity_count = min(2048, path_count)
+    terminal_wins_cpu = tuple(
+        bool(value) for value in cp.asnumpy(terminal_wins_mask[:sensitivity_count]).tolist()
+    )
     sensitivity_paths = tuple(
         tuple(float(price) for price in row.tolist())
-        for row in cp.asnumpy(full_paths[: min(2048, path_count), :]).tolist()
+        for row in cp.asnumpy(full_paths[:sensitivity_count, :]).tolist()
     )
     sensitivity_terminal_wins = terminal_wins_cpu[: len(sensitivity_paths)]
     return {
@@ -275,3 +284,65 @@ def _prior_sensitivity_from_cpu_paths(
                 }
             )
     return rows
+
+
+def _aggregate_prior_sensitivity_rows(
+    seed_rows: tuple[tuple[dict[str, Any], ...], ...],
+) -> list[dict[str, Any]]:
+    groups: dict[tuple[Any, ...], dict[str, Any]] = {}
+    for rows in seed_rows:
+        seen_groups: set[tuple[Any, ...]] = set()
+        for row in rows:
+            sample_count = int(row["sample_count"])
+            if sample_count <= 0:
+                continue
+            key = (
+                row["dimension"],
+                row["time_fraction"],
+                row["point_index"],
+                row["quantile_low"],
+                row["quantile_high"],
+            )
+            if key not in groups:
+                groups[key] = {
+                    "dimension": row["dimension"],
+                    "time_fraction": row["time_fraction"],
+                    "point_index": row["point_index"],
+                    "quantile_low": row["quantile_low"],
+                    "quantile_high": row["quantile_high"],
+                    "sample_count": 0,
+                    "p_hat_weighted_sum": 0.0,
+                    "price_quantile_weighted_sum": 0.0,
+                    "log_return_quantile_weighted_sum": 0.0,
+                    "source_seed_count": 0,
+                }
+            group = groups[key]
+            group["sample_count"] += sample_count
+            group["p_hat_weighted_sum"] += float(row["p_hat"]) * sample_count
+            group["price_quantile_weighted_sum"] += float(row["price_quantile"]) * sample_count
+            group["log_return_quantile_weighted_sum"] += (
+                float(row["log_return_quantile"]) * sample_count
+            )
+            if key not in seen_groups:
+                group["source_seed_count"] += 1
+                seen_groups.add(key)
+
+    aggregated_rows: list[dict[str, Any]] = []
+    for key in sorted(groups):
+        group = groups[key]
+        sample_count = int(group["sample_count"])
+        aggregated_rows.append(
+            {
+                "dimension": group["dimension"],
+                "time_fraction": group["time_fraction"],
+                "point_index": group["point_index"],
+                "quantile_low": group["quantile_low"],
+                "quantile_high": group["quantile_high"],
+                "sample_count": sample_count,
+                "price_quantile": group["price_quantile_weighted_sum"] / sample_count,
+                "log_return_quantile": group["log_return_quantile_weighted_sum"] / sample_count,
+                "p_hat": group["p_hat_weighted_sum"] / sample_count,
+                "source_seed_count": group["source_seed_count"],
+            }
+        )
+    return aggregated_rows

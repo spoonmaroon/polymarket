@@ -227,12 +227,173 @@ def test_prior_sensitivity_rows_are_distribution_based() -> None:
     )
 
     assert rows
+    assert len(rows) == 12
     assert {row["dimension"] for row in rows} == {"prior_price_quantile"}
+    assert {row["time_fraction"] for row in rows} == {0.25, 0.50, 0.75}
+    assert {
+        (row["quantile_low"], row["quantile_high"]) for row in rows
+    } == {
+        (0.0, 0.25),
+        (0.25, 0.50),
+        (0.50, 0.75),
+        (0.75, 1.0),
+    }
     assert all("price_delta" not in row for row in rows)
     assert all("dollar_move" not in row for row in rows)
     assert all(0.0 <= row["p_hat"] <= 1.0 for row in rows)
     assert all(row["sample_count"] > 0 for row in rows)
     assert all("quantile_low" in row and "quantile_high" in row for row in rows)
+    assert all("point_index" in row for row in rows)
+    assert all("price_quantile" in row for row in rows)
+    assert all("log_return_quantile" in row for row in rows)
+
+
+def test_prior_sensitivity_aggregation_weights_by_sample_count() -> None:
+    module = importlib.import_module("polymarket_engine.probability.cuda_monte_carlo")
+
+    rows = module._aggregate_prior_sensitivity_rows(
+        (
+            (
+                {
+                    "dimension": "prior_price_quantile",
+                    "time_fraction": 0.25,
+                    "point_index": 1,
+                    "quantile_low": 0.0,
+                    "quantile_high": 0.25,
+                    "sample_count": 2,
+                    "price_quantile": 100.0,
+                    "log_return_quantile": 0.01,
+                    "p_hat": 0.25,
+                },
+                {
+                    "dimension": "prior_price_quantile",
+                    "time_fraction": 0.25,
+                    "point_index": 1,
+                    "quantile_low": 0.25,
+                    "quantile_high": 0.50,
+                    "sample_count": 4,
+                    "price_quantile": 102.0,
+                    "log_return_quantile": 0.02,
+                    "p_hat": 0.50,
+                },
+            ),
+            (
+                {
+                    "dimension": "prior_price_quantile",
+                    "time_fraction": 0.25,
+                    "point_index": 1,
+                    "quantile_low": 0.0,
+                    "quantile_high": 0.25,
+                    "sample_count": 6,
+                    "price_quantile": 104.0,
+                    "log_return_quantile": 0.03,
+                    "p_hat": 0.75,
+                },
+            ),
+        )
+    )
+
+    first_band = rows[0]
+    second_band = rows[1]
+    assert first_band["sample_count"] == 8
+    assert first_band["source_seed_count"] == 2
+    assert first_band["p_hat"] == pytest.approx(0.625)
+    assert first_band["price_quantile"] == pytest.approx(103.0)
+    assert first_band["log_return_quantile"] == pytest.approx(0.025)
+    assert second_band["sample_count"] == 4
+    assert second_band["source_seed_count"] == 1
+    assert second_band["p_hat"] == pytest.approx(0.50)
+
+
+def test_cuda_multi_seed_aggregates_prior_sensitivity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = importlib.import_module("polymarket_engine.probability.cuda_monte_carlo")
+    probability_input = _probability_input()
+    outputs = iter(
+        (
+            module.ProbabilityOutput(
+                state_id=probability_input.state_id,
+                asof_ts=probability_input.asof_ts,
+                p_finish=0.40,
+                p_no_touch=0.70,
+                z_path=probability_input.z_path,
+                model_version="cuda-lognormal-chainlink-sigma-v1",
+                seed=11,
+                diagnostics={
+                    "path_count": 10_000,
+                    "steps": 120,
+                    "model": "cuda_lognormal_chainlink_sigma",
+                    "simulation_preview": {"path_count": 10_000, "sampled_paths": []},
+                    "prior_sensitivity": [
+                        {
+                            "dimension": "prior_price_quantile",
+                            "time_fraction": 0.25,
+                            "point_index": 30,
+                            "quantile_low": 0.0,
+                            "quantile_high": 0.25,
+                            "sample_count": 2,
+                            "price_quantile": 100.0,
+                            "log_return_quantile": 0.01,
+                            "p_hat": 0.25,
+                        }
+                    ],
+                },
+            ),
+            module.ProbabilityOutput(
+                state_id=probability_input.state_id,
+                asof_ts=probability_input.asof_ts,
+                p_finish=0.60,
+                p_no_touch=0.90,
+                z_path=probability_input.z_path,
+                model_version="cuda-lognormal-chainlink-sigma-v1",
+                seed=22,
+                diagnostics={
+                    "path_count": 10_000,
+                    "steps": 120,
+                    "model": "cuda_lognormal_chainlink_sigma",
+                    "simulation_preview": {"path_count": 10_000, "sampled_paths": []},
+                    "prior_sensitivity": [
+                        {
+                            "dimension": "prior_price_quantile",
+                            "time_fraction": 0.25,
+                            "point_index": 30,
+                            "quantile_low": 0.0,
+                            "quantile_high": 0.25,
+                            "sample_count": 6,
+                            "price_quantile": 104.0,
+                            "log_return_quantile": 0.03,
+                            "p_hat": 0.75,
+                        }
+                    ],
+                },
+            ),
+        )
+    )
+
+    monkeypatch.setattr(
+        module,
+        "run_cuda_monte_carlo",
+        lambda probability_input_arg, **kwargs: next(outputs),
+    )
+
+    result = module.run_cuda_monte_carlo_multi_seed(
+        probability_input,
+        paths_per_seed=10_000,
+        steps=120,
+        seed=11,
+        seed_count=2,
+    )
+
+    rows = result.diagnostics["prior_sensitivity"]
+    assert len(rows) == 1
+    assert rows[0]["sample_count"] == 8
+    assert rows[0]["source_seed_count"] == 2
+    assert rows[0]["p_hat"] == pytest.approx(0.625)
+    assert rows[0]["price_quantile"] == pytest.approx(103.0)
+    assert rows[0]["log_return_quantile"] == pytest.approx(0.025)
+    assert "price_delta" not in rows[0]
+    assert "dollar_move" not in rows[0]
 
 
 def test_cuda_multi_seed_rejects_nonpositive_paths_per_seed() -> None:
