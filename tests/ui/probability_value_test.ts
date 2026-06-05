@@ -3,6 +3,7 @@ import {
   probabilityDisplayValue,
   probabilityMetadata,
   probabilityRowKey,
+  probabilitySelectionKey,
 } from "../../ui/src/probabilityRows";
 
 const upRow = {
@@ -34,6 +35,7 @@ const downRow = {
 
 assert.equal(probabilityDisplayValue(upRow), 0.56);
 assert.equal(probabilityDisplayValue({ ...upRow, p_hat: undefined }), 0.55);
+assert.equal(probabilityDisplayValue({ p_hat: 0, p_finish: 0.55 }), 0);
 assert.notEqual(probabilityRowKey(upRow), probabilityRowKey(downRow));
 assert.deepEqual(probabilityMetadata(upRow), {
   totalPaths: 120000,
@@ -41,3 +43,52 @@ assert.deepEqual(probabilityMetadata(upRow), {
   seedCount: 4,
   previewPathCount: 24,
 });
+
+assert.notEqual(
+  probabilityRowKey({ ...upRow, output_id: undefined }),
+  probabilityRowKey({ ...downRow, output_id: undefined }),
+);
+
+assert.notEqual(
+  probabilityRowKey({
+    ...upRow,
+    output_id: undefined,
+    contract_id: undefined,
+    market_slug: "btc-10am",
+    start_ts: "2026-06-05T13:00:00Z",
+  }),
+  probabilityRowKey({
+    ...upRow,
+    output_id: undefined,
+    contract_id: undefined,
+    market_slug: "btc-11am",
+    start_ts: "2026-06-05T13:00:00Z",
+  }),
+);
+
+assert.notEqual(
+  probabilityRowKey({
+    ...upRow,
+    output_id: undefined,
+    contract_id: undefined,
+    market_slug: "btc-10am",
+    start_ts: "2026-06-05T13:00:00Z",
+  }),
+  probabilityRowKey({
+    ...upRow,
+    output_id: undefined,
+    contract_id: undefined,
+    market_slug: "btc-10am",
+    start_ts: "2026-06-05T14:00:00Z",
+  }),
+);
+
+assert.equal(
+  probabilitySelectionKey(upRow),
+  probabilitySelectionKey({
+    ...upRow,
+    output_id: "out-up-refresh",
+    asof_ts: "2026-06-05T13:21:00Z",
+  }),
+);
+assert.notEqual(probabilitySelectionKey(upRow), probabilitySelectionKey(downRow));

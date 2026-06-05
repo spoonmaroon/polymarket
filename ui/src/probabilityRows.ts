@@ -12,10 +12,16 @@ export type ProbabilityPayloadForGraph<Row extends ProbabilityRowForGraph> = {
 };
 
 export type ProbabilityValueRow = ProbabilityRowForGraph & {
+  contract?: string;
   contract_id?: string;
   output_id?: string;
+  market_slug?: string;
+  cache_market_slug?: string;
   asset?: string;
   side?: string;
+  start_ts?: string;
+  cache_start_ts?: string;
+  cache_expiry_ts?: string;
   asof_ts?: string;
   p_finish?: number;
   p_hat?: number;
@@ -55,16 +61,29 @@ export function probabilityDisplayValue(row?: ProbabilityValueRow | null) {
 }
 
 export function probabilityRowKey(row: ProbabilityValueRow) {
-  return [
-    row.output_id,
-    row.contract_id,
-    row.asset,
-    row.side,
-    row.expiry_ts,
-    row.asof_ts,
-  ]
-    .filter((value) => value !== undefined && value !== null && value !== "")
-    .join("|");
+  return keyParts([
+    ["output", row.output_id],
+    ["contract", row.contract_id],
+    ["market", row.market_slug ?? row.cache_market_slug],
+    ["contract_label", row.contract],
+    ["asset", row.asset],
+    ["side", row.side],
+    ["start", row.start_ts ?? row.cache_start_ts],
+    ["expiry", row.expiry_ts ?? row.cache_expiry_ts],
+    ["asof", row.asof_ts],
+  ]);
+}
+
+export function probabilitySelectionKey(row: ProbabilityValueRow) {
+  return keyParts([
+    ["contract", row.contract_id],
+    ["market", row.market_slug ?? row.cache_market_slug],
+    ["contract_label", row.contract],
+    ["asset", row.asset],
+    ["side", row.side],
+    ["start", row.start_ts ?? row.cache_start_ts],
+    ["expiry", row.expiry_ts ?? row.cache_expiry_ts],
+  ]);
 }
 
 export function probabilityMetadata(row: ProbabilityValueRow) {
@@ -81,6 +100,13 @@ export function probabilityMetadata(row: ProbabilityValueRow) {
 
 function parsePreview(value: unknown): { sampled_paths?: unknown[] } | null {
   return isRecord(value) ? value : null;
+}
+
+function keyParts(parts: Array<[string, unknown]>) {
+  return parts
+    .filter(([, value]) => value !== undefined && value !== null && value !== "")
+    .map(([label, value]) => `${label}=${String(value)}`)
+    .join("|");
 }
 
 function timestampMs(value?: string | number | null) {

@@ -4,6 +4,7 @@ import {
   probabilityDisplayValue,
   probabilityMetadata,
   probabilityRowKey,
+  probabilitySelectionKey,
 } from "./probabilityRows";
 
 const LIVE_LIMIT = 12;
@@ -292,7 +293,7 @@ export function App() {
       return;
     }
     const preferredRow = selectProbabilityRow(rows, selectedId, Date.now());
-    const preferredKey = preferredRow ? rowKey(preferredRow) : null;
+    const preferredKey = preferredRow ? selectionKey(preferredRow) : null;
     if (preferredKey !== selectedId) {
       setSelectedId(preferredKey);
     }
@@ -319,7 +320,7 @@ export function App() {
         <section className="main-stack">
           <MarketMonitor
             rows={marketRows}
-            selectedProbabilityKey={selectedRow ? rowKey(selectedRow) : null}
+            selectedProbabilityKey={selectedRow ? selectionKey(selectedRow) : null}
             onSelectProbability={setSelectedId}
           />
           <SelectedDetails
@@ -330,7 +331,7 @@ export function App() {
           />
           <ProbabilityTable
             rows={rows}
-            selectedKey={selectedRow ? rowKey(selectedRow) : null}
+            selectedKey={selectedRow ? selectionKey(selectedRow) : null}
             onSelect={setSelectedId}
             state={probabilities}
           />
@@ -486,7 +487,7 @@ function ProbabilityButton({
   if (!row) {
     return <span>-</span>;
   }
-  const key = rowKey(row);
+  const key = selectionKey(row);
   return (
     <button
       className={
@@ -534,11 +535,16 @@ function ProbabilityTable({
           </div>
           {rows.map((row) => {
             const key = rowKey(row);
+            const selectedRowKey = selectionKey(row);
             return (
               <button
-                className={key === selectedKey ? "probability-row selected-row" : "probability-row"}
+                className={
+                  selectedRowKey === selectedKey
+                    ? "probability-row selected-row"
+                    : "probability-row"
+                }
                 key={key}
-                onClick={() => onSelect(key)}
+                onClick={() => onSelect(selectedRowKey)}
                 type="button"
                 role="row"
               >
@@ -611,7 +617,7 @@ function SelectedDetails({
 
       <ContractPairSelector
         rows={pairRows}
-        selectedKey={rowKey(row)}
+        selectedKey={selectionKey(row)}
         onSelectProbability={onSelectProbability}
       />
 
@@ -619,7 +625,7 @@ function SelectedDetails({
         fallbackRow={row}
         marketRow={selectedMarketRow}
         onSelectProbability={onSelectProbability}
-        selectedKey={rowKey(row)}
+        selectedKey={selectionKey(row)}
       />
 
       <div className="simulation-footer">
@@ -704,7 +710,7 @@ function PairProbabilityButton({
       </span>
     );
   }
-  const key = rowKey(row);
+  const key = selectionKey(row);
   return (
     <button
       className={key === selectedKey ? "pair-button pair-selected" : "pair-button"}
@@ -791,7 +797,7 @@ function MonteCarloComparisonCard({
       </section>
     );
   }
-  const key = rowKey(row);
+  const key = selectionKey(row);
   const preview = parseSimulationPreview(row.simulation_preview);
   const className = compactList([
     "comparison-card",
@@ -1230,7 +1236,7 @@ function selectProbabilityRow(
     return null;
   }
   const selectedRow = selectedId
-    ? rows.find((row) => rowKey(row) === selectedId) ?? null
+    ? rows.find((row) => selectionKey(row) === selectedId) ?? null
     : null;
   const preferredPool = selectedRow?.asset
     ? rows.filter((row) => normalizeAsset(row.asset) === normalizeAsset(selectedRow.asset))
@@ -1720,6 +1726,10 @@ function orderbookForSide(row: ProbabilityRow, marketRow?: MarketMonitorRow) {
 
 function rowKey(row: ProbabilityRow) {
   return probabilityRowKey(row);
+}
+
+function selectionKey(row: ProbabilityRow) {
+  return probabilitySelectionKey(row);
 }
 
 function contractLabel(row: ProbabilityRow) {
