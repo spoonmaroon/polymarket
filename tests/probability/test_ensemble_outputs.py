@@ -136,7 +136,7 @@ def test_reduce_generator_runs_clamps_stress_overlay_and_computes_buffer() -> No
         GeneratorId.STRESS_OVERLAY: pytest.approx(0.10),
     }
     with pytest.raises(TypeError):
-        output.effective_weights[GeneratorId.STRESS_OVERLAY] = 0.99
+        output.effective_weights[GeneratorId.STRESS_OVERLAY] = 0.99  # type: ignore[index]
 
 
 @pytest.mark.parametrize(

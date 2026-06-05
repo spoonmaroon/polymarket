@@ -812,7 +812,7 @@ fn active_orderbook_token_ids(
     let mut token_ids = warmed_contracts
         .iter()
         .filter(|contract| contract.window.end_ts > now)
-        .flat_map(|contract| contract_token_ids(contract))
+        .flat_map(contract_token_ids)
         .map(str::to_owned)
         .collect::<Vec<_>>();
     token_ids.sort();

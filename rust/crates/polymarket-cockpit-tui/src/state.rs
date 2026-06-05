@@ -211,9 +211,10 @@ impl AppState {
         {
             for outcome in next.rows.iter().filter(|row| has_official_winner(row)) {
                 for key in outcome_market_keys(outcome) {
-                    if !self.resolved_outcome_seen_at.contains_key(&key) {
-                        self.resolved_outcome_seen_at
-                            .insert(key, generated_at.to_string());
+                    if let std::collections::hash_map::Entry::Vacant(entry) =
+                        self.resolved_outcome_seen_at.entry(key)
+                    {
+                        entry.insert(generated_at.to_string());
                         changed = true;
                     }
                 }

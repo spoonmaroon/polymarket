@@ -123,7 +123,7 @@ def test_dynamic_weight_set_defensively_freezes_weights() -> None:
 
     assert weight_set.weights[GeneratorId.LOGNORMAL_BASELINE] == pytest.approx(0.80)
     with pytest.raises(TypeError):
-        weight_set.weights[GeneratorId.STRESS_OVERLAY] = 0.99
+        weight_set.weights[GeneratorId.STRESS_OVERLAY] = 0.99  # type: ignore[index]
 
 
 @pytest.mark.parametrize(
