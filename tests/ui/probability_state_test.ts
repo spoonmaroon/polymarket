@@ -110,3 +110,23 @@ const streamNext = toProbabilityEventApiState(
 assert.equal(streamNext.payload?.rows?.length, 1);
 assert.equal(filterGraphableProbabilityRows(streamNext.payload).length, 1);
 assert.equal(streamNext.notice, "Monte Carlo refresh pending; keeping last populated grid.");
+
+const streamMcNext = toProbabilityEventApiState(
+  [
+    {
+      event_id: "mc-update",
+      contract_id: "btc-up",
+      asset: "BTC",
+      side: "UP",
+      expiry_ts: "2099-06-05T21:00:00Z",
+      valid_until: "2099-06-05T20:55:30Z",
+      probability_kind: "MC",
+      p_hat: 0.72,
+      generated_at: "2099-06-05T20:55:03Z",
+    },
+  ],
+  previous,
+);
+
+assert.equal(streamMcNext.payload?.rows?.length, 1);
+assert.equal(streamMcNext.payload?.rows?.[0]?.p_hat, 0.72);

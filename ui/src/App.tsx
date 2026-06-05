@@ -1391,7 +1391,7 @@ function retainPreviousProbabilityRows(
       updatedAt: previous.updatedAt,
     };
   }
-  if (!result.error && next.payload && previousRows.length > 0 && nextRows.length > 0) {
+  if (next.payload && previousRows.length > 0 && nextRows.length > 0) {
     return {
       ...next,
       payload: mergeProbabilityPreviews(previous.payload, next.payload),
