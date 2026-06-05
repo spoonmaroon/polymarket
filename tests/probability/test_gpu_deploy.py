@@ -51,6 +51,14 @@ def test_pc_deploy_copies_artifacts_atomically() -> None:
     assert "cat > $dest_tmp_q && mv -f $dest_tmp_q $dest_q" in script
 
 
+def test_pc_deploy_retries_collector_status_after_restart() -> None:
+    script = (ROOT / "scripts/deploy_pc.sh").read_text(encoding="utf-8")
+
+    assert "collector_status_ok=0" in script
+    assert "for attempt in \\$(seq 1 45); do" in script
+    assert 'echo "collector status did not become ready after deploy"' in script
+
+
 def test_pc_deploy_docs_list_cuda_probability_artifact_for_skip_builds() -> None:
     docs = (ROOT / "docs/SPOON_DEPLOYMENT.md").read_text(encoding="utf-8")
 
