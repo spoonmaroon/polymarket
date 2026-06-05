@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::io::{self, Stdout};
 use std::time::Duration;
 
@@ -17,7 +18,7 @@ use crate::{
     state::{AppState, MainTab},
     status::{
         RuntimeDisplayLag, RuntimeGates, RuntimeLive, RuntimeMonitor, RuntimeOutcomes,
-        RuntimeProbabilities, RuntimeStatus, RuntimeVolatility,
+        RuntimeProbabilities, RuntimeProbabilityRow, RuntimeStatus, RuntimeVolatility,
     },
 };
 
@@ -25,6 +26,7 @@ type Tui = Terminal<CrosstermBackend<Stdout>>;
 const PROBABILITY_POLL_INTERVAL: Duration = Duration::from_secs(3);
 const OUTCOME_POLL_INTERVAL: Duration = Duration::from_secs(15);
 const OUTCOME_HISTORY_LIMIT: usize = 5000;
+const MAX_LOG_LINES: usize = 200;
 
 pub async fn run(mut app: AppState, engine_api_url: String, poll_interval_ms: u64) -> Result<()> {
     let mut terminal = TerminalGuard::enter()?;
@@ -298,19 +300,136 @@ fn apply_runtime_update(app: &mut AppState, update: RuntimeUpdate) -> bool {
     }
 
     if let Some(probabilities) = update.probabilities {
-        changed |= replace_if_changed(&mut app.runtime_probabilities, probabilities);
+        let log_line = monte_carlo_log_line(&probabilities);
+        if replace_if_changed(&mut app.runtime_probabilities, probabilities) {
+            changed = true;
+            changed |= push_log(app, log_line);
+        }
     }
 
     if let Some(display_lag) = update.display_lag {
         changed |= replace_if_changed(&mut app.runtime_display_lag, display_lag);
     }
 
-    if app.runtime_error != update.error {
-        app.runtime_error = update.error;
+    let next_error = update.error;
+    if app.runtime_error != next_error {
+        if let Some(error) = next_error.as_ref() {
+            push_log(app, format!("runtime_error {error}"));
+        } else if app.runtime_error.is_some() {
+            push_log(app, "runtime recovered".to_string());
+        }
+        app.runtime_error = next_error;
         changed = true;
     }
 
     changed
+}
+
+fn push_log(app: &mut AppState, line: String) -> bool {
+    if app.logs.last() == Some(&line) {
+        return false;
+    }
+    app.logs.push(line);
+    let overflow = app.logs.len().saturating_sub(MAX_LOG_LINES);
+    if overflow > 0 {
+        app.logs.drain(0..overflow);
+    }
+    true
+}
+
+fn monte_carlo_log_line(probabilities: &RuntimeProbabilities) -> String {
+    format!(
+        "mc rows={} {} gates={} at={}",
+        probabilities.rows.len(),
+        probability_side_summary(&probabilities.rows),
+        probability_gate_summary(&probabilities.rows),
+        probabilities.generated_at
+    )
+}
+
+fn probability_side_summary(rows: &[RuntimeProbabilityRow]) -> String {
+    let mut sides_by_asset: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for row in rows {
+        let asset = probability_asset(row);
+        let side = probability_side(row).unwrap_or_else(|| "UNKNOWN".to_string());
+        let sides = sides_by_asset.entry(asset).or_default();
+        if !sides.contains(&side) {
+            sides.push(side);
+        }
+    }
+    if sides_by_asset.is_empty() {
+        return "markets=-".to_string();
+    }
+    sides_by_asset
+        .into_iter()
+        .map(|(asset, mut sides)| {
+            sides.sort_by(|left, right| {
+                side_rank(left)
+                    .cmp(&side_rank(right))
+                    .then_with(|| left.cmp(right))
+            });
+            format!("{asset}={}", sides.join("/"))
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn probability_gate_summary(rows: &[RuntimeProbabilityRow]) -> String {
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    for row in rows {
+        let gate = row
+            .decision_hint
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("NO_HINT")
+            .to_string();
+        *counts.entry(gate).or_default() += 1;
+    }
+    if counts.is_empty() {
+        return "-".to_string();
+    }
+    counts
+        .into_iter()
+        .map(|(gate, count)| format!("{gate}:{count}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn probability_asset(row: &RuntimeProbabilityRow) -> String {
+    row.asset
+        .as_deref()
+        .map(str::trim)
+        .filter(|asset| !asset.is_empty())
+        .or_else(|| row.contract.split_whitespace().next())
+        .map(str::to_ascii_uppercase)
+        .unwrap_or_else(|| "OTHER".to_string())
+}
+
+fn probability_side(row: &RuntimeProbabilityRow) -> Option<String> {
+    row.side
+        .as_deref()
+        .map(str::trim)
+        .filter(|side| !side.is_empty())
+        .map(str::to_ascii_uppercase)
+        .or_else(|| {
+            let contract = row.contract.to_ascii_uppercase();
+            if contract.ends_with(" UP") {
+                Some("UP".to_string())
+            } else if contract.ends_with(" DOWN") {
+                Some("DOWN".to_string())
+            } else {
+                None
+            }
+        })
+}
+
+fn side_rank(side: &str) -> u8 {
+    match side {
+        "UP" => 0,
+        "DOWN" => 1,
+        _ => 2,
+    }
 }
 
 fn replace_if_changed<T>(slot: &mut Option<T>, next: T) -> bool
@@ -588,6 +707,11 @@ mod tests {
             cached: true,
             rows: vec![RuntimeProbabilityRow {
                 contract: "BTC 5m UP".to_string(),
+                contract_id: Some("btc-updown-5m-1780521900:UP".to_string()),
+                asset: Some("BTC".to_string()),
+                side: Some("UP".to_string()),
+                asof_ts: Some("2026-06-03T21:06:00Z".to_string()),
+                expiry_ts: Some("2026-06-03T21:10:00Z".to_string()),
                 p_finish: 0.57,
                 p_no_touch: 0.31,
                 z_path: 0.42,
@@ -817,6 +941,71 @@ mod tests {
         assert!(changed);
         assert_eq!(app.price_history_for("BTC/USD").len(), 1);
         assert_eq!(app.price_history_for("BTC/USD")[0].price, 65000.00);
+    }
+
+    #[test]
+    fn apply_runtime_update_logs_monte_carlo_health_summary() {
+        let mut app = AppState::default();
+
+        let changed = apply_runtime_update(
+            &mut app,
+            RuntimeUpdate {
+                status: None,
+                gates: None,
+                monitor: None,
+                volatility: None,
+                probabilities: Some(probabilities()),
+                outcomes: None,
+                display_lag: None,
+                error: None,
+            },
+        );
+
+        assert!(changed);
+        assert_eq!(
+            app.logs,
+            vec!["mc rows=1 BTC=UP gates=NO_HINT:1 at=2026-06-03T21:06:00Z"]
+        );
+    }
+
+    #[test]
+    fn apply_runtime_update_logs_runtime_error_and_recovery() {
+        let mut app = AppState::default();
+
+        assert!(apply_runtime_update(
+            &mut app,
+            RuntimeUpdate {
+                status: None,
+                gates: None,
+                monitor: None,
+                volatility: None,
+                probabilities: None,
+                outcomes: None,
+                display_lag: None,
+                error: Some("probabilities: timeout".to_string()),
+            },
+        ));
+        assert!(apply_runtime_update(
+            &mut app,
+            RuntimeUpdate {
+                status: None,
+                gates: None,
+                monitor: None,
+                volatility: None,
+                probabilities: None,
+                outcomes: None,
+                display_lag: None,
+                error: None,
+            },
+        ));
+
+        assert_eq!(
+            app.logs,
+            vec![
+                "runtime_error probabilities: timeout".to_string(),
+                "runtime recovered".to_string()
+            ]
+        );
     }
 
     #[test]

@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use ratatui::{
     Frame,
     layout::{Constraint, Rect},
@@ -77,16 +78,20 @@ pub fn probability_table(app: &AppState) -> ProbabilityTableModel {
 }
 
 pub fn probability_rows(app: &AppState) -> Vec<ProbabilityDisplayRow> {
-    app.runtime_probabilities
-        .as_ref()
-        .map(|probabilities| {
-            probabilities
-                .rows
-                .iter()
-                .map(probability_row)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default()
+    let Some(probabilities) = app.runtime_probabilities.as_ref() else {
+        return Vec::new();
+    };
+
+    let rows = match app.selected_market_group() {
+        Some(group) if probabilities.rows.iter().any(row_has_market_identity) => probabilities
+            .rows
+            .iter()
+            .filter(|row| probability_matches_group(row, &group))
+            .collect::<Vec<_>>(),
+        _ => probabilities.rows.iter().collect::<Vec<_>>(),
+    };
+
+    rows.into_iter().map(probability_row).collect()
 }
 
 fn probability_row(row: &RuntimeProbabilityRow) -> ProbabilityDisplayRow {
@@ -148,6 +153,84 @@ fn weights(row: &RuntimeProbabilityRow) -> String {
         .join(" ")
 }
 
+fn row_has_market_identity(row: &RuntimeProbabilityRow) -> bool {
+    row.asset
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+        || row
+            .expiry_ts
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+        || row
+            .contract_id
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+}
+
+fn probability_matches_group(
+    row: &RuntimeProbabilityRow,
+    group: &crate::market_view::MarketGroup<'_>,
+) -> bool {
+    let asset_matches = row
+        .asset
+        .as_deref()
+        .map(str::trim)
+        .filter(|asset| !asset.is_empty())
+        .map(|asset| asset.eq_ignore_ascii_case(&group.asset))
+        .unwrap_or_else(|| row.contract.to_ascii_uppercase().starts_with(&group.asset));
+    if !asset_matches {
+        return false;
+    }
+
+    if let (Some(row_expiry), Some(group_expiry)) = (
+        parse_probability_ts(row.expiry_ts.as_deref()),
+        group.expiry_ts,
+    ) {
+        return row_expiry == group_expiry;
+    }
+
+    probability_contract_matches_group(row, group)
+        || row
+            .expiry_ts
+            .as_deref()
+            .is_none_or(|value| value.trim().is_empty())
+}
+
+fn probability_contract_matches_group(
+    row: &RuntimeProbabilityRow,
+    group: &crate::market_view::MarketGroup<'_>,
+) -> bool {
+    let Some(contract_id) = normalized(row.contract_id.as_deref()) else {
+        return false;
+    };
+    let market_slug = group.market_slug.trim().to_ascii_lowercase();
+    if !market_slug.is_empty() && contract_id.contains(&market_slug) {
+        return true;
+    }
+
+    [group.up, group.down]
+        .into_iter()
+        .flatten()
+        .any(|orderbook| {
+            normalized(Some(&orderbook.contract_id)).as_deref() == Some(contract_id.as_str())
+                || normalized(orderbook.token_id.as_deref()).as_deref()
+                    == Some(contract_id.as_str())
+        })
+}
+
+fn normalized(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_lowercase)
+}
+
+fn parse_probability_ts(value: Option<&str>) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(value?)
+        .ok()
+        .map(|timestamp| timestamp.with_timezone(&Utc))
+}
+
 fn weight_label(name: &str) -> &str {
     match name {
         "empirical_conditional" => "emp",
@@ -167,7 +250,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         .collect::<Vec<_>>();
     let table = Table::new(rows, widths)
         .header(Row::new(model.headers).style(Style::default().fg(Color::Cyan)))
-        .block(Block::bordered().title("Probability"));
+        .block(Block::bordered().title("Monte Carlo Health"));
 
     frame.render_widget(table, area);
 }
@@ -190,7 +273,8 @@ mod tests {
     use crate::{
         state::AppState,
         status::{
-            RuntimeProbabilities, RuntimeProbabilityRow, RuntimeVolatility, RuntimeVolatilityRow,
+            RuntimeMonitor, RuntimeOrderbookRow, RuntimeProbabilities, RuntimeProbabilityRow,
+            RuntimeVolatility, RuntimeVolatilityRow,
         },
     };
 
@@ -204,6 +288,11 @@ mod tests {
                 cached: true,
                 rows: vec![RuntimeProbabilityRow {
                     contract: "BTC 5m UP".to_string(),
+                    contract_id: Some("btc-updown-5m-1780521900:UP".to_string()),
+                    asset: Some("BTC".to_string()),
+                    side: Some("UP".to_string()),
+                    asof_ts: Some("2026-06-03T21:06:00Z".to_string()),
+                    expiry_ts: Some("2026-06-03T21:10:00Z".to_string()),
                     p_finish: 0.5749,
                     p_no_touch: 0.3149,
                     z_path: 0.4219,
@@ -259,6 +348,43 @@ mod tests {
     }
 
     #[test]
+    fn probability_rows_follow_selected_market_group() {
+        let expiry_ts = "2026-06-03T21:25:00Z";
+        let mut app = AppState {
+            runtime_monitor: Some(RuntimeMonitor {
+                generated_at: "2026-06-03T21:22:00Z".to_string(),
+                price_rows: Vec::new(),
+                orderbooks: vec![
+                    orderbook("BTC", "UP", "btc-updown-5m-1780521900", expiry_ts),
+                    orderbook("BTC", "DOWN", "btc-updown-5m-1780521900", expiry_ts),
+                    orderbook("ETH", "UP", "eth-updown-5m-1780521900", expiry_ts),
+                    orderbook("ETH", "DOWN", "eth-updown-5m-1780521900", expiry_ts),
+                ],
+            }),
+            runtime_probabilities: Some(RuntimeProbabilities {
+                generated_at: "2026-06-03T21:22:00Z".to_string(),
+                cached: false,
+                rows: vec![
+                    probability("BTC 5m UP", "BTC", "UP", expiry_ts, 0.57),
+                    probability("BTC 5m DOWN", "BTC", "DOWN", expiry_ts, 0.43),
+                    probability("ETH 5m UP", "ETH", "UP", expiry_ts, 0.61),
+                    probability("ETH 5m DOWN", "ETH", "DOWN", expiry_ts, 0.39),
+                ],
+            }),
+            ..Default::default()
+        };
+
+        app.sync_market_selection();
+        app.select_next_market();
+        let rows = probability_rows(&app);
+
+        assert_eq!(
+            rows.into_iter().map(|row| row.contract).collect::<Vec<_>>(),
+            vec!["ETH 5m UP".to_string(), "ETH 5m DOWN".to_string()]
+        );
+    }
+
+    #[test]
     fn probability_table_stays_pending_when_probabilities_are_empty_even_with_volatility() {
         let app = AppState {
             runtime_volatility: Some(RuntimeVolatility {
@@ -296,5 +422,74 @@ mod tests {
                 "-".to_string(),
             ]
         );
+    }
+
+    fn probability(
+        contract: &str,
+        asset: &str,
+        side: &str,
+        expiry_ts: &str,
+        p_finish: f64,
+    ) -> RuntimeProbabilityRow {
+        RuntimeProbabilityRow {
+            contract: contract.to_string(),
+            contract_id: Some(format!(
+                "{}:{}",
+                contract.to_ascii_lowercase().replace(' ', "-"),
+                side
+            )),
+            asset: Some(asset.to_string()),
+            side: Some(side.to_string()),
+            asof_ts: Some("2026-06-03T21:22:00Z".to_string()),
+            expiry_ts: Some(expiry_ts.to_string()),
+            p_finish,
+            p_no_touch: 0.31,
+            z_path: 0.42,
+            sigma_tau: 0.0123,
+            age_ms: 850,
+            flags: vec!["OK".to_string()],
+            mc_dispersion: None,
+            uncertainty_buffer: None,
+            path_diagnosis: Vec::new(),
+            effective_weights: Default::default(),
+            decision_hint: None,
+            edge_after_costs: None,
+            required_edge: None,
+            gate_reasons: Vec::new(),
+            generator_metadata: Default::default(),
+        }
+    }
+
+    fn orderbook(
+        asset: &str,
+        side: &str,
+        market_slug: &str,
+        expiry_ts: &str,
+    ) -> RuntimeOrderbookRow {
+        RuntimeOrderbookRow {
+            venue: Some("polymarket".to_string()),
+            source_key: Some("polymarket_rust_sdk".to_string()),
+            market_slug: Some(market_slug.to_string()),
+            contract_id: format!("{market_slug}-{side}"),
+            token_id: Some(format!("{market_slug}-{side}-token")),
+            asset: Some(asset.to_string()),
+            side: Some(side.to_string()),
+            event_ts: None,
+            observed_ts: Some("2026-06-03T21:22:00Z".to_string()),
+            start_ts: Some("2026-06-03T21:20:00Z".to_string()),
+            expiry_ts: Some(expiry_ts.to_string()),
+            threshold_price: None,
+            threshold_event_ts: None,
+            threshold_observed_ts: None,
+            settlement_price: None,
+            settlement_event_ts: None,
+            best_bid: None,
+            best_ask: None,
+            spread: None,
+            bid_size_top: None,
+            ask_size_top: None,
+            bids: Vec::new(),
+            asks: Vec::new(),
+        }
     }
 }

@@ -126,8 +126,13 @@ impl AppState {
     }
 
     pub fn sync_market_selection(&mut self) {
-        if self.selected_market_index().is_some() {
-            return;
+        if let Some(index) = self.selected_market_index() {
+            let groups = self.visible_market_groups();
+            if let Some(group) = groups.get(index)
+                && self.selected_market_group_is_current(group)
+            {
+                return;
+            }
         }
 
         let Some(index) = self.default_market_index() else {
@@ -537,6 +542,31 @@ impl AppState {
             return None;
         }
 
+        if let Some(index) = groups
+            .iter()
+            .position(|group| is_btc_group(group) && self.selected_market_group_is_current(group))
+        {
+            return Some(index);
+        }
+
+        if let Some(index) = groups
+            .iter()
+            .enumerate()
+            .filter(|(_, group)| self.selected_market_group_is_current(group))
+            .filter_map(|(index, group)| {
+                group_observed_ts(group).map(|timestamp| (index, timestamp))
+            })
+            .max_by(|(_, left), (_, right)| left.cmp(right))
+            .map(|(index, _)| index)
+            .or_else(|| {
+                groups
+                    .iter()
+                    .position(|group| self.selected_market_group_is_current(group))
+            })
+        {
+            return Some(index);
+        }
+
         Some(
             groups
                 .iter()
@@ -551,6 +581,16 @@ impl AppState {
             .get(index)
             .cloned()
             .map(|group| group.key);
+    }
+
+    fn selected_market_group_is_current(
+        &self,
+        group: &crate::market_view::MarketGroup<'_>,
+    ) -> bool {
+        self.runtime_monitor
+            .as_ref()
+            .and_then(|monitor| parse_runtime_timestamp(&monitor.generated_at))
+            .is_none_or(|generated_at| !group_expired_at(group, generated_at))
     }
 
     fn append_price_history(&mut self, monitor: &RuntimeMonitor) -> bool {
@@ -846,17 +886,18 @@ fn freshest_group_index(groups: &[crate::market_view::MarketGroup<'_>]) -> usize
     groups
         .iter()
         .enumerate()
-        .filter_map(|(index, group)| {
-            group
-                .up
-                .or(group.down)
-                .and_then(|orderbook| orderbook.observed_ts.as_deref())
-                .filter(|timestamp| !timestamp.is_empty())
-                .map(|timestamp| (index, timestamp))
-        })
+        .filter_map(|(index, group)| group_observed_ts(group).map(|timestamp| (index, timestamp)))
         .max_by(|(_, left), (_, right)| left.cmp(right))
         .map(|(index, _)| index)
         .unwrap_or(0)
+}
+
+fn group_observed_ts<'a>(group: &crate::market_view::MarketGroup<'a>) -> Option<&'a str> {
+    group
+        .up
+        .or(group.down)
+        .and_then(|orderbook| orderbook.observed_ts.as_deref())
+        .filter(|timestamp| !timestamp.is_empty())
 }
 
 fn is_btc_group(group: &crate::market_view::MarketGroup<'_>) -> bool {
@@ -1029,6 +1070,50 @@ mod tests {
         assert_eq!(app.selected_market_index(), Some(0));
         app.select_next_market();
         assert_eq!(app.selected_market_index(), Some(1));
+    }
+
+    #[test]
+    fn market_selection_auto_jumps_from_expired_handoff_to_current_window() {
+        let mut app = AppState {
+            runtime_monitor: Some(RuntimeMonitor {
+                generated_at: "2026-06-03T21:25:05Z".to_string(),
+                price_rows: Vec::new(),
+                orderbooks: vec![
+                    orderbook_with_expiry(
+                        "BTC",
+                        "UP",
+                        "btc-updown-5m-1780521900",
+                        "2026-06-03T21:25:00Z",
+                    ),
+                    orderbook_with_expiry(
+                        "BTC",
+                        "DOWN",
+                        "btc-updown-5m-1780521900",
+                        "2026-06-03T21:25:00Z",
+                    ),
+                    orderbook_with_expiry(
+                        "BTC",
+                        "UP",
+                        "btc-updown-5m-1780522200",
+                        "2026-06-03T21:30:00Z",
+                    ),
+                    orderbook_with_expiry(
+                        "BTC",
+                        "DOWN",
+                        "btc-updown-5m-1780522200",
+                        "2026-06-03T21:30:00Z",
+                    ),
+                ],
+            }),
+            ..Default::default()
+        };
+
+        app.sync_market_selection();
+
+        assert_eq!(
+            app.selected_market_group().unwrap().market_slug,
+            "btc-updown-5m-1780522200"
+        );
     }
 
     #[test]

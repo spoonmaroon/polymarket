@@ -156,6 +156,16 @@ pub struct RuntimeOutcomeRow {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct RuntimeProbabilityRow {
     pub contract: String,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub contract_id: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub asset: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub side: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub asof_ts: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub expiry_ts: Option<String>,
     pub p_finish: f64,
     pub p_no_touch: f64,
     pub z_path: f64,
@@ -441,6 +451,11 @@ mod tests {
             "cached": true,
             "rows": [{
                 "contract": "BTC 5m UP",
+                "contract_id": "btc-updown-5m-1780521900:UP",
+                "asset": "BTC",
+                "side": "UP",
+                "asof_ts": "2026-06-03T21:20:00Z",
+                "expiry_ts": "2026-06-03T21:25:00Z",
                 "p_finish": 0.57,
                 "p_no_touch": 0.31,
                 "z_path": 0.42,
@@ -467,6 +482,20 @@ mod tests {
 
         assert!(probabilities.cached);
         assert_eq!(probabilities.rows[0].contract, "BTC 5m UP");
+        assert_eq!(
+            probabilities.rows[0].contract_id.as_deref(),
+            Some("btc-updown-5m-1780521900:UP")
+        );
+        assert_eq!(probabilities.rows[0].asset.as_deref(), Some("BTC"));
+        assert_eq!(probabilities.rows[0].side.as_deref(), Some("UP"));
+        assert_eq!(
+            probabilities.rows[0].asof_ts.as_deref(),
+            Some("2026-06-03T21:20:00Z")
+        );
+        assert_eq!(
+            probabilities.rows[0].expiry_ts.as_deref(),
+            Some("2026-06-03T21:25:00Z")
+        );
         assert_eq!(probabilities.rows[0].p_finish, 0.57);
         assert_eq!(probabilities.rows[0].flags, vec!["OK"]);
         assert_eq!(probabilities.rows[0].mc_dispersion, Some(0.073));
