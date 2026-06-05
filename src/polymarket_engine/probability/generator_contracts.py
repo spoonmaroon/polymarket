@@ -16,30 +16,81 @@ class GeneratorId(str, Enum):
 
 
 @dataclass(frozen=True)
-class GeneratorRun:
-    generator_id: GeneratorId
+class GeneratorResult:
     p_finish: float
     p_no_touch: float
+    z_path: float
+    diagnostics: dict[str, Any]
+
+    def __post_init__(self) -> None:
+        _require_probability(self.p_finish, "p_finish")
+        _require_probability(self.p_no_touch, "p_no_touch")
+        _require_finite(self.z_path, "z_path")
+        _require_dict(self.diagnostics, "diagnostics")
+
+
+@dataclass(frozen=True)
+class HistoricalValidationWindow:
+    asof_ts: datetime
+    evaluated_through_ts: datetime
+    label_window_seconds: int
+
+    def __post_init__(self) -> None:
+        _require_timezone_aware(self.asof_ts, "asof_ts")
+        _require_timezone_aware(self.evaluated_through_ts, "evaluated_through_ts")
+        if self.evaluated_through_ts < self.asof_ts:
+            raise ValueError("evaluated_through_ts must not be before asof_ts")
+        _require_positive_int(self.label_window_seconds, "label_window_seconds")
+
+
+@dataclass(frozen=True)
+class GeneratorRun:
+    generator_id: GeneratorId
+    generator_name: str
+    generator_version: str
+    scope: DynamicWeightScope
+    conditioning: dict[str, Any]
+    result: GeneratorResult
     path_count: int
+    steps: int
     seed: int
     asof_ts: datetime
     diagnostics: dict[str, Any]
     sparse: bool = False
     fallback_level: str = "none"
+    weight_seed: float | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "generator_id", _coerce_generator_id(self.generator_id))
-        _require_probability(self.p_finish, "p_finish")
-        _require_probability(self.p_no_touch, "p_no_touch")
+        _require_nonempty_string(self.generator_name, "generator_name")
+        _require_nonempty_string(self.generator_version, "generator_version")
+        if not isinstance(self.scope, DynamicWeightScope):
+            raise ValueError("scope must be a DynamicWeightScope")
+        _require_dict(self.conditioning, "conditioning")
+        if not isinstance(self.result, GeneratorResult):
+            raise ValueError("result must be a GeneratorResult")
         _require_positive_int(self.path_count, "path_count")
+        _require_positive_int(self.steps, "steps")
         _require_int(self.seed, "seed")
         _require_timezone_aware(self.asof_ts, "asof_ts")
-        if not isinstance(self.diagnostics, dict):
-            raise ValueError("diagnostics must be a dict")
+        _require_dict(self.diagnostics, "diagnostics")
         if not isinstance(self.sparse, bool):
             raise ValueError("sparse must be bool")
-        if not isinstance(self.fallback_level, str) or not self.fallback_level:
-            raise ValueError("fallback_level must be a non-empty string")
+        _require_nonempty_string(self.fallback_level, "fallback_level")
+        if self.weight_seed is not None:
+            _require_probability(self.weight_seed, "weight_seed")
+
+    @property
+    def p_finish(self) -> float:
+        return self.result.p_finish
+
+    @property
+    def p_no_touch(self) -> float:
+        return self.result.p_no_touch
+
+    @property
+    def z_path(self) -> float:
+        return self.result.z_path
 
 
 @dataclass(frozen=True)
@@ -61,6 +112,7 @@ class GeneratorWeight:
     scope: DynamicWeightScope
     label_count: int
     source: str
+    validation_window: HistoricalValidationWindow
     score: float | None = None
 
     def __post_init__(self) -> None:
@@ -69,8 +121,9 @@ class GeneratorWeight:
         if not isinstance(self.scope, DynamicWeightScope):
             raise ValueError("scope must be a DynamicWeightScope")
         _require_nonnegative_int(self.label_count, "label_count")
-        if not isinstance(self.source, str) or not self.source:
-            raise ValueError("source must be a non-empty string")
+        _require_nonempty_string(self.source, "source")
+        if not isinstance(self.validation_window, HistoricalValidationWindow):
+            raise ValueError("validation_window must be a HistoricalValidationWindow")
         if self.score is not None:
             _require_finite(self.score, "score")
 
@@ -90,6 +143,16 @@ def _require_probability(value: float, field_name: str) -> None:
 def _require_finite(value: float, field_name: str) -> None:
     if not _is_finite_number(value):
         raise ValueError(f"{field_name} must be finite")
+
+
+def _require_nonempty_string(value: str, field_name: str) -> None:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{field_name} must be a non-empty string")
+
+
+def _require_dict(value: object, field_name: str) -> None:
+    if not isinstance(value, dict):
+        raise ValueError(f"{field_name} must be a dict")
 
 
 def _require_positive_int(value: int, field_name: str) -> None:

@@ -1,22 +1,36 @@
 import math
+from datetime import datetime, timezone
 
 import pytest
 
 from polymarket_engine.probability.ensemble_weights import (
     DEFAULT_SEED_WEIGHTS,
+    DynamicWeightSet,
     brier_loss,
     dynamic_weights_from_losses,
     log_loss,
 )
-from polymarket_engine.probability.generator_contracts import GeneratorId
+from polymarket_engine.probability.generator_contracts import (
+    GeneratorId,
+    HistoricalValidationWindow,
+)
+
+
+def _validation_window() -> HistoricalValidationWindow:
+    return HistoricalValidationWindow(
+        asof_ts=datetime(2026, 6, 5, 16, 0, tzinfo=timezone.utc),
+        evaluated_through_ts=datetime(2026, 6, 5, 17, 0, tzinfo=timezone.utc),
+        label_window_seconds=3600,
+    )
 
 
 def test_default_seed_weights_match_contract() -> None:
     assert DEFAULT_SEED_WEIGHTS == {
-        GeneratorId.EMPIRICAL_CONDITIONAL: 0.40,
-        GeneratorId.BLOCK_BOOTSTRAP: 0.25,
-        GeneratorId.FILTERED_HISTORICAL: 0.25,
-        GeneratorId.STRESS_OVERLAY: 0.10,
+        GeneratorId.LOGNORMAL_BASELINE: 0.45,
+        GeneratorId.EMPIRICAL_CONDITIONAL: 0.25,
+        GeneratorId.BLOCK_BOOTSTRAP: 0.15,
+        GeneratorId.FILTERED_HISTORICAL: 0.10,
+        GeneratorId.STRESS_OVERLAY: 0.05,
     }
 
 
@@ -59,23 +73,30 @@ def test_brier_loss_scores_binary_probability(
     assert brier_loss(probability, label) == pytest.approx(expected)
 
 
-def test_dynamic_weights_from_losses_rewards_lower_loss_and_normalizes() -> None:
+def test_dynamic_weights_from_losses_returns_historical_weight_set() -> None:
     losses = {
+        GeneratorId.LOGNORMAL_BASELINE: 1.60,
         GeneratorId.EMPIRICAL_CONDITIONAL: 0.10,
         GeneratorId.BLOCK_BOOTSTRAP: 0.60,
         GeneratorId.FILTERED_HISTORICAL: 0.80,
         GeneratorId.STRESS_OVERLAY: 1.20,
     }
+    validation_window = _validation_window()
 
-    weights = dynamic_weights_from_losses(
+    weight_set = dynamic_weights_from_losses(
         losses,
         DEFAULT_SEED_WEIGHTS,
         eta=1.5,
         weight_floor=0.02,
         stress_weight_cap=0.10,
+        validation_window=validation_window,
     )
 
+    assert isinstance(weight_set, DynamicWeightSet)
+    assert weight_set.validation_window == validation_window
+    weights = weight_set.weights
     assert sum(weights.values()) == pytest.approx(1.0)
+    assert weights[GeneratorId.EMPIRICAL_CONDITIONAL] > weights[GeneratorId.LOGNORMAL_BASELINE]
     assert weights[GeneratorId.EMPIRICAL_CONDITIONAL] > weights[GeneratorId.BLOCK_BOOTSTRAP]
     assert weights[GeneratorId.BLOCK_BOOTSTRAP] > weights[GeneratorId.STRESS_OVERLAY]
     assert weights[GeneratorId.STRESS_OVERLAY] <= 0.10
@@ -83,6 +104,7 @@ def test_dynamic_weights_from_losses_rewards_lower_loss_and_normalizes() -> None
 
 def test_dynamic_weights_from_losses_applies_floor_before_normalizing() -> None:
     losses = {
+        GeneratorId.LOGNORMAL_BASELINE: 0.20,
         GeneratorId.EMPIRICAL_CONDITIONAL: 0.20,
         GeneratorId.BLOCK_BOOTSTRAP: 100.0,
         GeneratorId.FILTERED_HISTORICAL: 0.20,
@@ -95,7 +117,8 @@ def test_dynamic_weights_from_losses_applies_floor_before_normalizing() -> None:
         eta=2.0,
         weight_floor=0.05,
         stress_weight_cap=0.20,
-    )
+        validation_window=_validation_window(),
+    ).weights
 
     assert sum(weights.values()) == pytest.approx(1.0)
     assert weights[GeneratorId.BLOCK_BOOTSTRAP] > 0.0

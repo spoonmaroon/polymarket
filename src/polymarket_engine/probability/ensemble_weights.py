@@ -2,16 +2,36 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
+from dataclasses import dataclass
 
-from polymarket_engine.probability.generator_contracts import GeneratorId
+from polymarket_engine.probability.generator_contracts import (
+    GeneratorId,
+    HistoricalValidationWindow,
+)
 
 
 DEFAULT_SEED_WEIGHTS: dict[GeneratorId, float] = {
-    GeneratorId.EMPIRICAL_CONDITIONAL: 0.40,
-    GeneratorId.BLOCK_BOOTSTRAP: 0.25,
-    GeneratorId.FILTERED_HISTORICAL: 0.25,
-    GeneratorId.STRESS_OVERLAY: 0.10,
+    GeneratorId.LOGNORMAL_BASELINE: 0.45,
+    GeneratorId.EMPIRICAL_CONDITIONAL: 0.25,
+    GeneratorId.BLOCK_BOOTSTRAP: 0.15,
+    GeneratorId.FILTERED_HISTORICAL: 0.10,
+    GeneratorId.STRESS_OVERLAY: 0.05,
 }
+
+
+@dataclass(frozen=True)
+class DynamicWeightSet:
+    weights: dict[GeneratorId, float]
+    validation_window: HistoricalValidationWindow
+    source: str = "historical_validation_losses"
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.validation_window, HistoricalValidationWindow):
+            raise ValueError("validation_window must be a HistoricalValidationWindow")
+        if not isinstance(self.source, str) or not self.source:
+            raise ValueError("source must be a non-empty string")
+        normalized = _normalize(self.weights)
+        object.__setattr__(self, "weights", normalized)
 
 
 def log_loss(probability: float, label: int, eps: float = 1e-6) -> float:
@@ -39,10 +59,14 @@ def dynamic_weights_from_losses(
     eta: float,
     weight_floor: float,
     stress_weight_cap: float,
-) -> dict[GeneratorId, float]:
+    *,
+    validation_window: HistoricalValidationWindow,
+) -> DynamicWeightSet:
     _require_nonnegative_finite(eta, "eta")
     _require_probability(weight_floor, "weight_floor")
     _require_probability(stress_weight_cap, "stress_weight_cap")
+    if not isinstance(validation_window, HistoricalValidationWindow):
+        raise ValueError("validation_window must be a HistoricalValidationWindow")
     if not seed_weights:
         raise ValueError("seed_weights must not be empty")
 
@@ -65,7 +89,8 @@ def dynamic_weights_from_losses(
         )
 
     normalized = _normalize(floored)
-    return _cap_final_stress_weight(normalized, stress_weight_cap)
+    weights = _cap_final_stress_weight(normalized, stress_weight_cap)
+    return DynamicWeightSet(weights=weights, validation_window=validation_window)
 
 
 def _cap_final_stress_weight(

@@ -19,6 +19,7 @@ CORE_GENERATOR_IDS = {
 class EnsembleOutput:
     p_finish: float
     p_no_touch: float
+    z_path: float
     mc_dispersion: float
     uncertainty_buffer: float
     path_diagnosis: tuple[str, ...]
@@ -27,6 +28,7 @@ class EnsembleOutput:
     def __post_init__(self) -> None:
         _require_probability(self.p_finish, "p_finish")
         _require_probability(self.p_no_touch, "p_no_touch")
+        _require_finite(self.z_path, "z_path")
         _require_nonnegative_finite(self.mc_dispersion, "mc_dispersion")
         _require_nonnegative_finite(self.uncertainty_buffer, "uncertainty_buffer")
         if not isinstance(self.path_diagnosis, tuple) or not all(
@@ -40,14 +42,12 @@ class EnsembleOutput:
 def reduce_generator_runs(
     runs: Sequence[GeneratorRun],
     weights: Sequence[GeneratorWeight] | Mapping[GeneratorId, float],
-    z_path: float,
     sparse_scope: bool,
     calibration_penalty: float,
     stale_weight_penalty: float,
 ) -> EnsembleOutput:
     if not runs:
         raise ValueError("runs must not be empty")
-    _require_finite(z_path, "z_path")
     _require_bool(sparse_scope, "sparse_scope")
     _require_nonnegative_finite(calibration_penalty, "calibration_penalty")
     _require_nonnegative_finite(stale_weight_penalty, "stale_weight_penalty")
@@ -62,7 +62,9 @@ def reduce_generator_runs(
         }
     )
     if set(effective_weights) != set(run_by_id):
-        missing = ", ".join(sorted(generator.value for generator in set(run_by_id) - set(effective_weights)))
+        missing = ", ".join(
+            sorted(generator.value for generator in set(run_by_id) - set(effective_weights))
+        )
         raise ValueError(f"weights missing generator runs: {missing}")
 
     effective_values = _effective_generator_values(run_by_id)
@@ -72,6 +74,10 @@ def reduce_generator_runs(
     )
     p_no_touch = sum(
         effective_weights[generator_id] * values[1]
+        for generator_id, values in effective_values.items()
+    )
+    z_path = sum(
+        effective_weights[generator_id] * values[2]
         for generator_id, values in effective_values.items()
     )
     mc_dispersion = _mc_dispersion(tuple(effective_values.values()))
@@ -87,6 +93,7 @@ def reduce_generator_runs(
     return EnsembleOutput(
         p_finish=p_finish,
         p_no_touch=p_no_touch,
+        z_path=z_path,
         mc_dispersion=mc_dispersion,
         uncertainty_buffer=uncertainty_buffer,
         path_diagnosis=_diagnose_path(
@@ -101,9 +108,9 @@ def reduce_generator_runs(
 
 def _effective_generator_values(
     run_by_id: Mapping[GeneratorId, GeneratorRun],
-) -> dict[GeneratorId, tuple[float, float]]:
+) -> dict[GeneratorId, tuple[float, float, float]]:
     values = {
-        generator_id: (run.p_finish, run.p_no_touch)
+        generator_id: (run.p_finish, run.p_no_touch, run.z_path)
         for generator_id, run in run_by_id.items()
     }
     stress_run = values.get(GeneratorId.STRESS_OVERLAY)
@@ -115,14 +122,16 @@ def _effective_generator_values(
     if stress_run is not None and core_values:
         core_finish_median = median(value[0] for value in core_values)
         core_no_touch_median = median(value[1] for value in core_values)
+        core_z_path_median = median(value[2] for value in core_values)
         values[GeneratorId.STRESS_OVERLAY] = (
             min(stress_run[0], core_finish_median),
             min(stress_run[1], core_no_touch_median),
+            min(stress_run[2], core_z_path_median),
         )
     return values
 
 
-def _mc_dispersion(values: Sequence[tuple[float, float]]) -> float:
+def _mc_dispersion(values: Sequence[tuple[float, float, float]]) -> float:
     finish_values = tuple(value[0] for value in values)
     no_touch_values = tuple(value[1] for value in values)
     finish_median = median(finish_values)

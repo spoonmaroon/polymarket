@@ -1,6 +1,9 @@
 import pytest
 
-from polymarket_engine.probability.decision_gates import evaluate_probability_gates
+from polymarket_engine.probability.decision_gates import (
+    ExecutableQualityInput,
+    evaluate_probability_gates,
+)
 from polymarket_engine.probability.ensemble_outputs import EnsembleOutput
 
 
@@ -8,6 +11,7 @@ def _ensemble(
     *,
     p_finish: float = 0.80,
     p_no_touch: float = 0.80,
+    z_path: float = 0.75,
     mc_dispersion: float = 0.03,
     uncertainty_buffer: float = 0.02,
     path_diagnosis: tuple[str, ...] = ("CLEAN",),
@@ -15,6 +19,7 @@ def _ensemble(
     return EnsembleOutput(
         p_finish=p_finish,
         p_no_touch=p_no_touch,
+        z_path=z_path,
         mc_dispersion=mc_dispersion,
         uncertainty_buffer=uncertainty_buffer,
         path_diagnosis=path_diagnosis,
@@ -22,13 +27,35 @@ def _ensemble(
     )
 
 
+def _quality(
+    *,
+    executable_entry_price: float = 0.70,
+    execution_costs: float = 0.01,
+    quote_age_ms: int = 250,
+    source_age_ms: int = 300,
+    book_age_ms: int = 250,
+    latency_ms: int = 150,
+    hard_failures: tuple[str, ...] = (),
+    source_fresh: bool = True,
+    book_fresh: bool = True,
+) -> ExecutableQualityInput:
+    return ExecutableQualityInput(
+        executable_entry_price=executable_entry_price,
+        execution_costs=execution_costs,
+        quote_age_ms=quote_age_ms,
+        source_age_ms=source_age_ms,
+        book_age_ms=book_age_ms,
+        latency_ms=latency_ms,
+        hard_failures=hard_failures,
+        source_fresh=source_fresh,
+        book_fresh=book_fresh,
+    )
+
+
 def test_evaluate_probability_gates_returns_trade_candidate_when_edge_clears_buffers() -> None:
     result = evaluate_probability_gates(
         _ensemble(),
-        z_path=0.75,
-        executable_entry_price=0.70,
-        execution_costs=0.01,
-        hard_failures=(),
+        _quality(),
     )
 
     assert result.decision_hint == "TRADE_CANDIDATE"
@@ -40,10 +67,7 @@ def test_evaluate_probability_gates_returns_trade_candidate_when_edge_clears_buf
 def test_evaluate_probability_gates_demands_more_edge_when_edge_is_too_small() -> None:
     result = evaluate_probability_gates(
         _ensemble(p_finish=0.75),
-        z_path=0.75,
-        executable_entry_price=0.71,
-        execution_costs=0.01,
-        hard_failures=(),
+        _quality(executable_entry_price=0.71),
     )
 
     assert result.decision_hint == "DEMAND_MORE_EDGE"
@@ -54,11 +78,12 @@ def test_evaluate_probability_gates_demands_more_edge_when_edge_is_too_small() -
 
 def test_evaluate_probability_gates_waits_on_terminal_or_near_threshold_risk() -> None:
     result = evaluate_probability_gates(
-        _ensemble(p_no_touch=0.52, path_diagnosis=("TERMINAL_ONLY", "NEAR_THRESHOLD")),
-        z_path=0.20,
-        executable_entry_price=0.60,
-        execution_costs=0.01,
-        hard_failures=(),
+        _ensemble(
+            p_no_touch=0.52,
+            z_path=0.20,
+            path_diagnosis=("TERMINAL_ONLY", "NEAR_THRESHOLD"),
+        ),
+        _quality(executable_entry_price=0.60),
     )
 
     assert result.decision_hint == "WAIT"
@@ -87,10 +112,31 @@ def test_evaluate_probability_gates_blocks_on_hard_failures_or_hard_diagnoses(
 ) -> None:
     result = evaluate_probability_gates(
         ensemble,
-        z_path=0.75,
-        executable_entry_price=0.60,
-        execution_costs=0.01,
-        hard_failures=hard_failures,
+        _quality(executable_entry_price=0.60, hard_failures=hard_failures),
+    )
+
+    assert result.decision_hint == "BLOCK"
+    assert expected_reason in result.reasons
+
+
+@pytest.mark.parametrize(
+    ("quality", "expected_reason"),
+    (
+        (_quality(quote_age_ms=1501), "QUOTE_STALE"),
+        (_quality(source_age_ms=2001), "SOURCE_STALE"),
+        (_quality(book_age_ms=1501), "BOOK_STALE"),
+        (_quality(latency_ms=501), "LATENCY_STALE"),
+        (_quality(source_fresh=False), "SOURCE_NOT_FRESH"),
+        (_quality(book_fresh=False), "BOOK_NOT_FRESH"),
+    ),
+)
+def test_evaluate_probability_gates_blocks_on_first_class_freshness_inputs(
+    quality: ExecutableQualityInput,
+    expected_reason: str,
+) -> None:
+    result = evaluate_probability_gates(
+        _ensemble(),
+        quality,
     )
 
     assert result.decision_hint == "BLOCK"

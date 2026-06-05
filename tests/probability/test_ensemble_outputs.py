@@ -6,8 +6,10 @@ from polymarket_engine.probability.ensemble_outputs import reduce_generator_runs
 from polymarket_engine.probability.generator_contracts import (
     DynamicWeightScope,
     GeneratorId,
+    GeneratorResult,
     GeneratorRun,
     GeneratorWeight,
+    HistoricalValidationWindow,
 )
 
 
@@ -28,18 +30,36 @@ def _scope() -> DynamicWeightScope:
     )
 
 
+def _validation_window() -> HistoricalValidationWindow:
+    return HistoricalValidationWindow(
+        asof_ts=datetime(2026, 6, 5, 16, 0, tzinfo=timezone.utc),
+        evaluated_through_ts=datetime(2026, 6, 5, 17, 0, tzinfo=timezone.utc),
+        label_window_seconds=3600,
+    )
+
+
 def _run(
     generator_id: GeneratorId,
     *,
     p_finish: float,
     p_no_touch: float,
+    z_path: float,
     sparse: bool = False,
 ) -> GeneratorRun:
     return GeneratorRun(
         generator_id=generator_id,
-        p_finish=p_finish,
-        p_no_touch=p_no_touch,
+        generator_name=generator_id.value,
+        generator_version="fixture-v1",
+        scope=_scope(),
+        conditioning={"asset": "BTC"},
+        result=GeneratorResult(
+            p_finish=p_finish,
+            p_no_touch=p_no_touch,
+            z_path=z_path,
+            diagnostics={},
+        ),
         path_count=10_000,
+        steps=60,
         seed=11,
         asof_ts=_asof(),
         diagnostics={},
@@ -54,15 +74,16 @@ def _weight(generator_id: GeneratorId, weight: float) -> GeneratorWeight:
         scope=_scope(),
         label_count=100,
         source="fixture",
+        validation_window=_validation_window(),
     )
 
 
 def test_reduce_generator_runs_clamps_stress_overlay_and_computes_buffer() -> None:
     runs = (
-        _run(GeneratorId.EMPIRICAL_CONDITIONAL, p_finish=0.80, p_no_touch=0.90),
-        _run(GeneratorId.BLOCK_BOOTSTRAP, p_finish=0.60, p_no_touch=0.80),
-        _run(GeneratorId.FILTERED_HISTORICAL, p_finish=0.70, p_no_touch=0.70),
-        _run(GeneratorId.STRESS_OVERLAY, p_finish=0.95, p_no_touch=0.95),
+        _run(GeneratorId.EMPIRICAL_CONDITIONAL, p_finish=0.80, p_no_touch=0.90, z_path=1.20),
+        _run(GeneratorId.BLOCK_BOOTSTRAP, p_finish=0.60, p_no_touch=0.80, z_path=0.80),
+        _run(GeneratorId.FILTERED_HISTORICAL, p_finish=0.70, p_no_touch=0.70, z_path=1.00),
+        _run(GeneratorId.STRESS_OVERLAY, p_finish=0.95, p_no_touch=0.95, z_path=2.00),
     )
     weights = (
         _weight(GeneratorId.EMPIRICAL_CONDITIONAL, 0.40),
@@ -74,7 +95,6 @@ def test_reduce_generator_runs_clamps_stress_overlay_and_computes_buffer() -> No
     output = reduce_generator_runs(
         runs,
         weights,
-        z_path=1.0,
         sparse_scope=False,
         calibration_penalty=0.015,
         stale_weight_penalty=0.020,
@@ -82,6 +102,7 @@ def test_reduce_generator_runs_clamps_stress_overlay_and_computes_buffer() -> No
 
     assert output.p_finish == pytest.approx(0.715)
     assert output.p_no_touch == pytest.approx(0.815)
+    assert output.z_path == pytest.approx(1.03)
     assert output.mc_dispersion == pytest.approx(0.10)
     assert output.uncertainty_buffer == pytest.approx(0.095)
     assert output.path_diagnosis == ("FRAGILE",)
@@ -95,9 +116,15 @@ def test_reduce_generator_runs_clamps_stress_overlay_and_computes_buffer() -> No
 
 def test_reduce_generator_runs_reports_all_path_diagnosis_labels() -> None:
     runs = (
-        _run(GeneratorId.EMPIRICAL_CONDITIONAL, p_finish=0.90, p_no_touch=0.40, sparse=True),
-        _run(GeneratorId.BLOCK_BOOTSTRAP, p_finish=0.10, p_no_touch=0.45),
-        _run(GeneratorId.FILTERED_HISTORICAL, p_finish=0.55, p_no_touch=0.50),
+        _run(
+            GeneratorId.EMPIRICAL_CONDITIONAL,
+            p_finish=0.90,
+            p_no_touch=0.40,
+            z_path=0.10,
+            sparse=True,
+        ),
+        _run(GeneratorId.BLOCK_BOOTSTRAP, p_finish=0.10, p_no_touch=0.45, z_path=0.20),
+        _run(GeneratorId.FILTERED_HISTORICAL, p_finish=0.55, p_no_touch=0.50, z_path=0.30),
     )
     weights = (
         _weight(GeneratorId.EMPIRICAL_CONDITIONAL, 0.34),
@@ -108,7 +135,6 @@ def test_reduce_generator_runs_reports_all_path_diagnosis_labels() -> None:
     output = reduce_generator_runs(
         runs,
         weights,
-        z_path=0.10,
         sparse_scope=True,
         calibration_penalty=0.0,
         stale_weight_penalty=0.0,
@@ -124,9 +150,9 @@ def test_reduce_generator_runs_reports_all_path_diagnosis_labels() -> None:
 
 def test_reduce_generator_runs_reports_clean_when_no_risk_labels_apply() -> None:
     runs = (
-        _run(GeneratorId.EMPIRICAL_CONDITIONAL, p_finish=0.61, p_no_touch=0.80),
-        _run(GeneratorId.BLOCK_BOOTSTRAP, p_finish=0.60, p_no_touch=0.79),
-        _run(GeneratorId.FILTERED_HISTORICAL, p_finish=0.62, p_no_touch=0.81),
+        _run(GeneratorId.EMPIRICAL_CONDITIONAL, p_finish=0.61, p_no_touch=0.80, z_path=1.20),
+        _run(GeneratorId.BLOCK_BOOTSTRAP, p_finish=0.60, p_no_touch=0.79, z_path=1.10),
+        _run(GeneratorId.FILTERED_HISTORICAL, p_finish=0.62, p_no_touch=0.81, z_path=1.30),
     )
     weights = (
         _weight(GeneratorId.EMPIRICAL_CONDITIONAL, 0.40),
@@ -137,7 +163,6 @@ def test_reduce_generator_runs_reports_clean_when_no_risk_labels_apply() -> None
     output = reduce_generator_runs(
         runs,
         weights,
-        z_path=1.2,
         sparse_scope=False,
         calibration_penalty=0.0,
         stale_weight_penalty=0.0,
