@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import time
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta, timezone
@@ -10,6 +10,9 @@ from typing import Any, Literal, cast
 
 import duckdb
 
+from polymarket_engine.probability.cuda_monte_carlo import (
+    run_cuda_monte_carlo_batch as _run_cuda_monte_carlo_batch_impl,
+)
 from polymarket_engine.probability.cuda_monte_carlo import run_cuda_monte_carlo_multi_seed
 from polymarket_engine.probability.fast_nowcast import FastNowcastInput
 from polymarket_engine.probability.fast_nowcast import compute_fast_nowcast
@@ -30,13 +33,40 @@ from polymarket_engine.probability.runtime import _seed_for_input
 from polymarket_engine.probability.runtime import _steps_for_input
 from polymarket_engine.probability.runtime import latest_probability_inputs
 from polymarket_engine.probability.runtime import probability_gate_diagnostics
-from polymarket_engine.probability.schema import ProbabilityInput
+from polymarket_engine.probability.schema import ProbabilityInput, ProbabilityOutput
 from polymarket_engine.storage.atomic import durable_replace
 
 
 DEFAULT_GPU_PROBABILITY_LIMIT = 24
 DEFAULT_GPU_PROBABILITY_INTERVAL_SECONDS = 1.0
 DEFAULT_INPUT_SNAPSHOT_MAX_AGE_SECONDS = 10.0
+
+
+def run_cuda_monte_carlo_batch(
+    probability_inputs: Sequence[ProbabilityInput],
+    *,
+    paths_per_seed: int,
+    steps: int,
+    seed: int,
+    seed_count: int,
+) -> tuple[ProbabilityOutput, ...]:
+    if len(probability_inputs) == 1:
+        return (
+            run_cuda_monte_carlo_multi_seed(
+                probability_inputs[0],
+                paths_per_seed=paths_per_seed,
+                steps=steps,
+                seed=seed,
+                seed_count=seed_count,
+            ),
+        )
+    return _run_cuda_monte_carlo_batch_impl(
+        probability_inputs,
+        paths_per_seed=paths_per_seed,
+        steps=steps,
+        seed=seed,
+        seed_count=seed_count,
+    )
 
 
 def run_cuda_probability_worker_cycle(
@@ -62,6 +92,7 @@ def run_cuda_probability_worker_cycle(
     generated_at = datetime.now(timezone.utc)
     rows: list[dict[str, Any]] = []
     nowcast_rows: list[dict[str, Any]] = []
+    nowcast_by_state_id: dict[str, dict[str, Any]] = {}
     event_rows: list[dict[str, Any]] = []
     errors: list[str] = []
     try:
@@ -93,9 +124,9 @@ def run_cuda_probability_worker_cycle(
         return payload
 
     for runtime_input in inputs:
-        probability_input = runtime_input.probability_input
         nowcast_row = _nowcast_row(runtime_input, generated_at=generated_at)
         nowcast_rows.append(nowcast_row)
+        nowcast_by_state_id[runtime_input.probability_input.state_id] = nowcast_row
         event_rows.append(
             _event_payload_from_row(
                 runtime_input=runtime_input,
@@ -104,125 +135,80 @@ def run_cuda_probability_worker_cycle(
                 output_id=None,
             )
         )
-        seed = _seed_for_input(probability_input)
-        steps = _steps_for_input(probability_input)
-        path_count = runtime_path_count_for_state(
-            seconds_left=probability_input.seconds_left,
-            z_path=probability_input.z_path,
-            executable_price=probability_input.executable_price,
-            wave_phase=str(nowcast_row["wave_phase"]),
+
+    if nowcast_rows:
+        _write_status(
+            probability_status_path,
+            _status_payload(
+                generated_at=generated_at,
+                rows=[],
+                nowcast_rows=nowcast_rows,
+                skipped=quality_skipped,
+                errors=[],
+                rows_seen=len(inputs),
+                rows_written=0,
+                last_good_rows=previous_rows or None,
+                state_override="NOWCAST",
+            ),
+        )
+
+    for group in _batch_runtime_inputs(inputs):
+        representative = group[0].probability_input
+        steps = _steps_for_input(representative)
+        path_count = max(
+            runtime_path_count_for_state(
+                seconds_left=runtime_input.probability_input.seconds_left,
+                z_path=runtime_input.probability_input.z_path,
+                executable_price=runtime_input.probability_input.executable_price,
+                wave_phase=str(
+                    nowcast_by_state_id[runtime_input.probability_input.state_id]["wave_phase"]
+                ),
+            )
+            for runtime_input in group
         )
         seed_count = _gpu_seed_count_for_total_paths(path_count)
         paths_per_seed = path_count // seed_count
+        seed = min(_seed_for_input(runtime_input.probability_input) for runtime_input in group)
         mc_started_ts = datetime.now(timezone.utc)
         try:
-            output = run_cuda_monte_carlo_multi_seed(
-                probability_input,
+            outputs = run_cuda_monte_carlo_batch(
+                tuple(runtime_input.probability_input for runtime_input in group),
                 paths_per_seed=paths_per_seed,
                 steps=steps,
                 seed=seed,
                 seed_count=seed_count,
             )
             mc_finished_ts = datetime.now(timezone.utc)
-            diagnostics = dict(output.diagnostics)
-            diagnostics["path_count"] = path_count
-            diagnostics["paths_per_seed"] = paths_per_seed
-            diagnostics["seed_count"] = seed_count
-            latency = ProbabilityLatencyTrace(
-                state_asof_ts=probability_input.asof_ts,
-                tick_observed_ts=None,
-                worker_received_ts=generated_at,
+        except (duckdb.Error, ValueError, RuntimeError) as exc:
+            state_ids = ",".join(
+                runtime_input.probability_input.state_id for runtime_input in group
+            )
+            errors.append(f"{state_ids}: {type(exc).__name__}: {exc}")
+            continue
+
+        for runtime_input, output in zip(group, outputs, strict=True):
+            row, output_id = _mc_row_from_output(
+                runtime_input=runtime_input,
+                output=output,
+                nowcast_row=nowcast_by_state_id[output.state_id],
+                generated_at=generated_at,
                 mc_started_ts=mc_started_ts,
                 mc_finished_ts=mc_finished_ts,
-                status_written_ts=mc_finished_ts,
-                ui_seen_ts=None,
-            )
-            diagnostics["cache"] = {
-                "source": "cuda-probability-worker",
-                "market_slug": runtime_input.market_slug,
-                "start_ts": runtime_input.start_ts.isoformat(),
-                "expiry_ts": runtime_input.expiry_ts.isoformat(),
-                "asof_ts": probability_input.asof_ts.isoformat(),
-                "path_count": path_count,
-                "paths_per_seed": paths_per_seed,
-                "seed_count": seed_count,
-            }
-            diagnostics["latency"] = latency.to_json_dict()
-            diagnostics.setdefault(
-                "gate",
-                probability_gate_diagnostics(
-                    probability_input=probability_input,
-                    output=output,
-                    latency_ms=latency.runtime_ms(),
-                ),
-            )
-            entry = grid_entry_from_probability_input(
-                probability_input,
-                market_slug=runtime_input.market_slug,
-                start_ts=runtime_input.start_ts,
-                expiry_ts=runtime_input.expiry_ts,
-                p_finish=output.p_finish,
-                p_no_touch=output.p_no_touch,
-                u_gen=0.0,
+                valid_seconds=valid_seconds,
                 path_count=path_count,
+                paths_per_seed=paths_per_seed,
+                seed_count=seed_count,
                 seed=seed,
-                volatility_regime=runtime_input.volatility_regime,
-                generator_version=output.model_version,
-                training_cutoff_ts=probability_input.asof_ts,
-                max_event_ts=probability_input.asof_ts,
-                max_observed_ts=probability_input.asof_ts,
-                generated_at=generated_at,
-                valid_from=generated_at,
-                valid_until=generated_at + timedelta(seconds=valid_seconds),
-                diagnostics=diagnostics,
             )
-            output_id = _output_id(probability_input, output)
-        except (duckdb.Error, ValueError, RuntimeError) as exc:
-            errors.append(f"{probability_input.state_id}: {type(exc).__name__}: {exc}")
-            continue
-        row = grid_runtime_row(
-            probability_input=probability_input,
-            contract=runtime_input.contract,
-            contract_id=runtime_input.contract_id,
-            market_slug=runtime_input.market_slug,
-            start_ts=runtime_input.start_ts,
-            expiry_ts=runtime_input.expiry_ts,
-            hit=ProbabilityGridHit(entry=entry, cache_status="REFRESH"),
-            now=generated_at,
-        )
-        _merge_grid_diagnostics(
-            row=row,
-            diagnostics=entry.diagnostics,
-            preview_is_current=True,
-        )
-        row.update(
-            {
-                "state_id": probability_input.state_id,
-                "probability_kind": "MC",
-                "backend": "cuda",
-                "seconds_left": probability_input.seconds_left,
-                "executable_price": probability_input.executable_price,
-                "source_age_ms": probability_input.source_age_ms,
-                "book_age_ms": probability_input.book_age_ms,
-                "latency": diagnostics["latency"],
-                "wave_phase": nowcast_row["wave_phase"],
-                "wave_score": nowcast_row["wave_score"],
-                "wave_reasons": nowcast_row["wave_reasons"],
-                "wave_markers": nowcast_row["wave_markers"],
-                "dynamic_edge": nowcast_row["dynamic_edge"],
-                "dynamic_required_edge": nowcast_row["dynamic_required_edge"],
-            }
-        )
-        row["output_id"] = output_id
-        rows.append(row)
-        event_rows.append(
-            _event_payload_from_row(
-                runtime_input=runtime_input,
-                row=row,
-                generated_at=generated_at,
-                output_id=output_id,
+            rows.append(row)
+            event_rows.append(
+                _event_payload_from_row(
+                    runtime_input=runtime_input,
+                    row=row,
+                    generated_at=generated_at,
+                    output_id=output_id,
+                )
             )
-        )
 
     payload = _status_payload(
         generated_at=generated_at,
@@ -251,9 +237,13 @@ def run_cuda_probability_worker_loop(
     max_state_age_seconds: float | None = DEFAULT_PROBABILITY_MAX_STATE_AGE_SECONDS,
     max_input_snapshot_age_seconds: float | None = DEFAULT_INPUT_SNAPSHOT_MAX_AGE_SECONDS,
     probability_event_path: Path | None = None,
+    snapshot_poll_seconds: float = 0.1,
 ) -> None:
     if interval_seconds <= 0:
         raise ValueError("interval_seconds must be positive")
+    if snapshot_poll_seconds <= 0:
+        raise ValueError("snapshot_poll_seconds must be positive")
+    last_snapshot_fingerprint = _snapshot_fingerprint(probability_inputs_path)
     while True:
         generated_at = datetime.now(timezone.utc)
         try:
@@ -279,7 +269,48 @@ def run_cuda_probability_worker_loop(
             )
             _write_status(probability_status_path, payload)
         print(json.dumps(payload, sort_keys=True, separators=(",", ":")), flush=True)
+        last_snapshot_fingerprint = _sleep_until_next_refresh(
+            probability_inputs_path=probability_inputs_path,
+            interval_seconds=interval_seconds,
+            snapshot_poll_seconds=snapshot_poll_seconds,
+            last_snapshot_fingerprint=last_snapshot_fingerprint,
+        )
+
+
+def _sleep_until_next_refresh(
+    *,
+    probability_inputs_path: Path | None,
+    interval_seconds: float,
+    snapshot_poll_seconds: float,
+    last_snapshot_fingerprint: str | None,
+) -> str | None:
+    if probability_inputs_path is None:
         time.sleep(interval_seconds)
+        return last_snapshot_fingerprint
+
+    deadline = time.monotonic() + interval_seconds
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return _snapshot_fingerprint(probability_inputs_path)
+        time.sleep(min(snapshot_poll_seconds, remaining))
+        current_fingerprint = _snapshot_fingerprint(probability_inputs_path)
+        if current_fingerprint is not None and current_fingerprint != last_snapshot_fingerprint:
+            return current_fingerprint
+
+
+def _snapshot_fingerprint(path: Path | None) -> str | None:
+    if path is None:
+        return None
+    try:
+        stat = path.stat()
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+    rows = payload.get("rows")
+    row_count = len(rows) if isinstance(rows, list) else 0
+    generated_at = payload.get("generated_at")
+    return f"{generated_at}|{row_count}|{stat.st_mtime_ns}"
 
 
 def _status_payload(
@@ -292,11 +323,12 @@ def _status_payload(
     rows_seen: int,
     rows_written: int,
     last_good_rows: list[dict[str, Any]] | None = None,
+    state_override: str | None = None,
 ) -> dict[str, Any]:
     payload = {
         "schema_version": "polymarket-probability-runtime-v1",
         "ok": not errors,
-        "state": "OK" if not errors else "PARTIAL",
+        "state": state_override or ("OK" if not errors else "PARTIAL"),
         "error": None if not errors else errors[0],
         "generated_at": generated_at.isoformat(),
         "cached": False,
@@ -383,6 +415,130 @@ def _nowcast_row(
     }
 
 
+def _mc_row_from_output(
+    *,
+    runtime_input: ProbabilityRuntimeInput,
+    output: ProbabilityOutput,
+    nowcast_row: Mapping[str, Any],
+    generated_at: datetime,
+    mc_started_ts: datetime,
+    mc_finished_ts: datetime,
+    valid_seconds: int,
+    path_count: int,
+    paths_per_seed: int,
+    seed_count: int,
+    seed: int,
+) -> tuple[dict[str, Any], str]:
+    probability_input = runtime_input.probability_input
+    diagnostics = dict(output.diagnostics)
+    diagnostics["path_count"] = path_count
+    diagnostics["paths_per_seed"] = paths_per_seed
+    diagnostics["seed_count"] = seed_count
+    latency = ProbabilityLatencyTrace(
+        state_asof_ts=probability_input.asof_ts,
+        tick_observed_ts=None,
+        worker_received_ts=generated_at,
+        mc_started_ts=mc_started_ts,
+        mc_finished_ts=mc_finished_ts,
+        status_written_ts=mc_finished_ts,
+        ui_seen_ts=None,
+    )
+    diagnostics["cache"] = {
+        "source": "cuda-probability-worker",
+        "market_slug": runtime_input.market_slug,
+        "start_ts": runtime_input.start_ts.isoformat(),
+        "expiry_ts": runtime_input.expiry_ts.isoformat(),
+        "asof_ts": probability_input.asof_ts.isoformat(),
+        "path_count": path_count,
+        "paths_per_seed": paths_per_seed,
+        "seed_count": seed_count,
+    }
+    diagnostics["latency"] = latency.to_json_dict()
+    diagnostics.setdefault(
+        "gate",
+        probability_gate_diagnostics(
+            probability_input=probability_input,
+            output=output,
+            latency_ms=latency.runtime_ms(),
+        ),
+    )
+    entry = grid_entry_from_probability_input(
+        probability_input,
+        market_slug=runtime_input.market_slug,
+        start_ts=runtime_input.start_ts,
+        expiry_ts=runtime_input.expiry_ts,
+        p_finish=output.p_finish,
+        p_no_touch=output.p_no_touch,
+        u_gen=0.0,
+        path_count=path_count,
+        seed=seed,
+        volatility_regime=runtime_input.volatility_regime,
+        generator_version=output.model_version,
+        training_cutoff_ts=probability_input.asof_ts,
+        max_event_ts=probability_input.asof_ts,
+        max_observed_ts=probability_input.asof_ts,
+        generated_at=generated_at,
+        valid_from=generated_at,
+        valid_until=generated_at + timedelta(seconds=valid_seconds),
+        diagnostics=diagnostics,
+    )
+    output_id = _output_id(probability_input, output)
+    row = grid_runtime_row(
+        probability_input=probability_input,
+        contract=runtime_input.contract,
+        contract_id=runtime_input.contract_id,
+        market_slug=runtime_input.market_slug,
+        start_ts=runtime_input.start_ts,
+        expiry_ts=runtime_input.expiry_ts,
+        hit=ProbabilityGridHit(entry=entry, cache_status="REFRESH"),
+        now=generated_at,
+    )
+    _merge_grid_diagnostics(
+        row=row,
+        diagnostics=entry.diagnostics,
+        preview_is_current=True,
+    )
+    row.update(
+        {
+            "state_id": probability_input.state_id,
+            "probability_kind": "MC",
+            "backend": "cuda",
+            "seconds_left": probability_input.seconds_left,
+            "executable_price": probability_input.executable_price,
+            "source_age_ms": probability_input.source_age_ms,
+            "book_age_ms": probability_input.book_age_ms,
+            "latency": diagnostics["latency"],
+            "wave_phase": nowcast_row["wave_phase"],
+            "wave_score": nowcast_row["wave_score"],
+            "wave_reasons": nowcast_row["wave_reasons"],
+            "wave_markers": nowcast_row["wave_markers"],
+            "dynamic_edge": nowcast_row["dynamic_edge"],
+            "dynamic_required_edge": nowcast_row["dynamic_required_edge"],
+        }
+    )
+    row["output_id"] = output_id
+    return row, output_id
+
+
+def _batch_runtime_inputs(
+    inputs: Sequence[ProbabilityRuntimeInput],
+) -> list[list[ProbabilityRuntimeInput]]:
+    groups: dict[tuple[object, ...], list[ProbabilityRuntimeInput]] = {}
+    for runtime_input in inputs:
+        probability_input = runtime_input.probability_input
+        steps = _steps_for_input(probability_input)
+        key = (
+            probability_input.asset,
+            probability_input.asof_ts,
+            round(probability_input.settlement_price, 8),
+            round(probability_input.sigma_tau, 12),
+            int(round(probability_input.seconds_left)),
+            steps,
+        )
+        groups.setdefault(key, []).append(runtime_input)
+    return list(groups.values())
+
+
 def _gpu_seed_count_for_total_paths(path_count: int) -> int:
     if path_count >= 250_000:
         return 5
@@ -426,9 +582,7 @@ def _status_latency(payload: Mapping[str, Any]) -> dict[str, float | None]:
     ]
     return {
         "max_total_lag_ms": max(total_lags) if total_lags else None,
-        "avg_total_lag_ms": round(sum(total_lags) / len(total_lags), 3)
-        if total_lags
-        else None,
+        "avg_total_lag_ms": round(sum(total_lags) / len(total_lags), 3) if total_lags else None,
         "max_runtime_ms": max(runtimes) if runtimes else None,
         "avg_runtime_ms": round(sum(runtimes) / len(runtimes), 3) if runtimes else None,
     }
@@ -504,7 +658,9 @@ def _event_payload_from_row(
         "valid_from": str(row.get("valid_from") or generated_at.isoformat()),
         "valid_until": str(
             row.get("valid_until")
-            or (generated_at + timedelta(seconds=DEFAULT_PROBABILITY_GRID_VALID_SECONDS)).isoformat()
+            or (
+                generated_at + timedelta(seconds=DEFAULT_PROBABILITY_GRID_VALID_SECONDS)
+            ).isoformat()
         ),
         "diagnostics": {
             "source": "cuda-probability-worker",

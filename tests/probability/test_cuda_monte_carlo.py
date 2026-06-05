@@ -231,9 +231,7 @@ def test_prior_sensitivity_rows_are_distribution_based() -> None:
     assert len(rows) == 12
     assert {row["dimension"] for row in rows} == {"prior_price_quantile"}
     assert {row["time_fraction"] for row in rows} == {0.25, 0.50, 0.75}
-    assert {
-        (row["quantile_low"], row["quantile_high"]) for row in rows
-    } == {
+    assert {(row["quantile_low"], row["quantile_high"]) for row in rows} == {
         (0.0, 0.25),
         (0.25, 0.50),
         (0.50, 0.75),
@@ -404,6 +402,102 @@ def test_cuda_multi_seed_aggregates_prior_sensitivity(
     assert rows[0]["log_return_quantile"] == pytest.approx(0.025)
     assert "price_delta" not in rows[0]
     assert "dollar_move" not in rows[0]
+
+
+def test_cuda_batch_scores_up_down_from_same_asset_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = importlib.import_module("polymarket_engine.probability.cuda_monte_carlo")
+    up = _probability_input()
+    down = module.ProbabilityInput(
+        state_id="state-btc-down",
+        asof_ts=up.asof_ts,
+        asset=up.asset,
+        side="DOWN",
+        comparison_operator="<",
+        seconds_left=up.seconds_left,
+        settlement_price=up.settlement_price,
+        threshold=up.threshold,
+        sigma_tau=up.sigma_tau,
+        executable_price=up.executable_price,
+        source_age_ms=up.source_age_ms,
+        book_age_ms=up.book_age_ms,
+        z_path=-up.z_path,
+    )
+    calls: list[tuple[str, int, int, int]] = []
+
+    def fake_seed_group(
+        probability_inputs: tuple[ProbabilityInput, ...],
+        *,
+        path_count: int,
+        steps: int,
+        seed: int,
+    ) -> tuple[ProbabilityOutput, ...]:
+        calls.append((probability_inputs[0].asset, path_count, steps, seed))
+        return tuple(
+            ProbabilityOutput(
+                state_id=item.state_id,
+                asof_ts=item.asof_ts,
+                p_finish=1.0 if item.side == "UP" else 0.0,
+                p_no_touch=1.0 if item.side == "UP" else 0.0,
+                z_path=item.z_path,
+                model_version="cuda-lognormal-chainlink-sigma-v1",
+                seed=seed,
+                diagnostics={
+                    "path_count": path_count,
+                    "steps": steps,
+                    "model": "cuda_lognormal_chainlink_sigma",
+                    "simulation_preview": {"path_count": path_count, "sampled_paths": []},
+                    "prior_sensitivity": [],
+                    "batch_group_key": "BTC",
+                },
+            )
+            for item in probability_inputs
+        )
+
+    monkeypatch.setattr(module, "_run_cuda_monte_carlo_seed_batch", fake_seed_group)
+
+    outputs = module.run_cuda_monte_carlo_batch(
+        (up, down),
+        paths_per_seed=10_000,
+        steps=60,
+        seed=20260605,
+        seed_count=3,
+    )
+
+    assert [output.state_id for output in outputs] == ["state-btc-up", "state-btc-down"]
+    assert [output.p_finish for output in outputs] == [1.0, 0.0]
+    assert all(output.diagnostics["path_count"] == 30_000 for output in outputs)
+    assert all(output.diagnostics["paths_per_seed"] == 10_000 for output in outputs)
+    assert all(output.diagnostics["seed_count"] == 3 for output in outputs)
+    assert [output.diagnostics["batch_group_key"] for output in outputs] == ["BTC", "BTC"]
+    assert calls == [
+        ("BTC", 10_000, 60, 20260605),
+        ("BTC", 10_000, 60, 20260616),
+        ("BTC", 10_000, 60, 20260627),
+    ]
+
+
+def test_cuda_batch_rejects_empty_inputs_and_nonpositive_paths() -> None:
+    module = importlib.import_module("polymarket_engine.probability.cuda_monte_carlo")
+
+    with pytest.raises(ValueError, match="probability_inputs"):
+        module.run_cuda_monte_carlo_batch(
+            (),
+            paths_per_seed=10_000,
+            steps=60,
+            seed=20260605,
+            seed_count=3,
+        )
+
+    with pytest.raises(ValueError, match="paths_per_seed"):
+        module.run_cuda_monte_carlo_batch(
+            (_probability_input(),),
+            paths_per_seed=0,
+            steps=60,
+            seed=20260605,
+            seed_count=3,
+        )
 
 
 def test_cuda_multi_seed_rejects_nonpositive_paths_per_seed() -> None:
