@@ -15,7 +15,7 @@ def test_schema_applies_to_empty_database(tmp_path: Path) -> None:
                 """
                 SELECT table_schema || '.' || table_name
                 FROM information_schema.tables
-                WHERE table_schema IN ('ops', 'core', 'features', 'validation')
+                WHERE table_schema IN ('ops', 'core', 'features', 'validation', 'research')
                 """
             ).fetchall()
         }
@@ -35,7 +35,41 @@ def test_schema_applies_to_empty_database(tmp_path: Path) -> None:
         "validation.contract_labels",
         "validation.decision_labels",
         "validation.market_outcome_history",
+        "research.generator_weight_snapshots",
     }.issubset(tables)
+
+
+def test_generator_weight_snapshots_schema_has_expected_columns(tmp_path: Path) -> None:
+    db_path = tmp_path / "test.duckdb"
+    schema_path = Path("src/polymarket_engine/storage/schema.sql")
+
+    with duckdb.connect(str(db_path)) as conn:
+        conn.sql(schema_path.read_text())
+        columns = [
+            row[0]
+            for row in conn.sql(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'research'
+                  AND table_name = 'generator_weight_snapshots'
+                ORDER BY ordinal_position
+                """
+            ).fetchall()
+        ]
+
+    assert columns == [
+        "snapshot_id",
+        "runtime_asof_ts",
+        "evaluated_through_ts",
+        "label_window_seconds",
+        "source",
+        "scope_json",
+        "weights_json",
+        "scores_json",
+        "label_counts_json",
+        "created_at",
+    ]
 
 
 def test_market_outcome_history_schema_has_expected_columns(tmp_path: Path) -> None:

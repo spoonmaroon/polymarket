@@ -2,6 +2,7 @@ CREATE SCHEMA IF NOT EXISTS ops;
 CREATE SCHEMA IF NOT EXISTS core;
 CREATE SCHEMA IF NOT EXISTS features;
 CREATE SCHEMA IF NOT EXISTS validation;
+CREATE SCHEMA IF NOT EXISTS research;
 
 CREATE TABLE IF NOT EXISTS ops.ingest_files (
     file_id VARCHAR PRIMARY KEY,
@@ -251,4 +252,17 @@ CREATE TABLE IF NOT EXISTS validation.market_outcome_history (
     rule_hash VARCHAR NOT NULL,
     mismatch BOOLEAN,
     updated_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS research.generator_weight_snapshots (
+    snapshot_id VARCHAR PRIMARY KEY,
+    runtime_asof_ts TIMESTAMPTZ NOT NULL,
+    evaluated_through_ts TIMESTAMPTZ NOT NULL,
+    label_window_seconds INTEGER NOT NULL,
+    source VARCHAR NOT NULL,
+    scope_json VARCHAR NOT NULL,
+    weights_json VARCHAR NOT NULL,
+    scores_json VARCHAR NOT NULL,
+    label_counts_json VARCHAR NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL
 );

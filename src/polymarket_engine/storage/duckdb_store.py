@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -15,7 +15,10 @@ import polars as pl
 from polymarket_engine.domain.contracts import ContractSpec
 from polymarket_engine.domain.contract_rules import NormalizedContractRule
 from polymarket_engine.domain.market_state import DecisionState, OrderBookObservation, PriceObservation
+from polymarket_engine.probability.ensemble_weights import DynamicWeightSet
+from polymarket_engine.probability.generator_contracts import DynamicWeightScope, GeneratorId
 from polymarket_engine.probability.schema import ProbabilityInput, ProbabilityOutput
+from polymarket_engine.research.generator_validation import generator_weight_snapshot_payload
 from polymarket_engine.storage.retention import RAW_HOT_RETENTION_DAYS, retention_manifest_class
 
 
@@ -853,6 +856,76 @@ class DuckDbIngestStore:
                     datetime.now(timezone.utc),
                 ],
             )
+
+    def insert_generator_weight_snapshot(
+        self,
+        *,
+        snapshot_id: str,
+        weight_set: DynamicWeightSet,
+        scope: DynamicWeightScope,
+        scores: Mapping[GeneratorId, float] | None = None,
+        label_counts: Mapping[GeneratorId, int] | None = None,
+    ) -> None:
+        created_at = datetime.now(timezone.utc)
+        payload = generator_weight_snapshot_payload(
+            weight_set,
+            scope=scope,
+            snapshot_id=snapshot_id,
+            scores=scores,
+            label_counts=label_counts,
+            created_at=created_at,
+        )
+        if payload["uses_future_labels"]:
+            raise ValueError("generator weight snapshot uses future labels")
+
+        with self._connection() as conn:
+            conn.execute(
+                """
+                insert or replace into research.generator_weight_snapshots
+                (snapshot_id, runtime_asof_ts, evaluated_through_ts, label_window_seconds,
+                 source, scope_json, weights_json, scores_json, label_counts_json, created_at)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    snapshot_id,
+                    weight_set.runtime_asof_ts,
+                    weight_set.validation_window.evaluated_through_ts,
+                    weight_set.validation_window.label_window_seconds,
+                    weight_set.source,
+                    _strict_json(payload["scope"]),
+                    _strict_json(payload["weights"]),
+                    _strict_json(payload["scores"]),
+                    _strict_json(payload["label_counts"]),
+                    created_at,
+                ],
+            )
+
+    def latest_generator_weight_snapshot(self) -> dict[str, Any] | None:
+        with self._connection() as conn:
+            row = conn.execute(
+                """
+                select snapshot_id, runtime_asof_ts, evaluated_through_ts,
+                       label_window_seconds, source, scope_json, weights_json,
+                       scores_json, label_counts_json, created_at
+                from research.generator_weight_snapshots
+                order by runtime_asof_ts desc, created_at desc
+                limit 1
+                """
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "snapshot_id": row[0],
+            "runtime_asof_ts": _isoformat_utc(row[1]),
+            "evaluated_through_ts": _isoformat_utc(row[2]),
+            "label_window_seconds": int(row[3]),
+            "source": row[4],
+            "scope": json.loads(row[5]),
+            "weights": json.loads(row[6]),
+            "scores": json.loads(row[7]),
+            "label_counts": json.loads(row[8]),
+            "created_at": _isoformat_utc(row[9]),
+        }
 
     def normalized_table_health(self) -> tuple[dict[str, object], ...]:
         with self._connection() as conn:
