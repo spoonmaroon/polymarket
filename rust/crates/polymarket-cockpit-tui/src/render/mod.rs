@@ -27,24 +27,24 @@ pub fn render(frame: &mut Frame<'_>, app: &AppState) {
     match app.active_tab {
         MainTab::Live => {
             live::render(frame, body.primary, app);
-            price_path::render(frame, body.secondary, app);
+            systems::render(frame, body.secondary, app);
         }
         MainTab::Systems => {
             systems::render(frame, body.primary, app);
             live::render(frame, body.secondary, app);
         }
         MainTab::Market => {
-            price_path::render(frame, body.primary, app);
-            let [markets, volatility] = Layout::default()
+            market::render(frame, body.primary, app);
+            let [prices, volatility] = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Percentage(72), Constraint::Percentage(28)])
                 .areas(body.secondary);
-            market::render(frame, markets, app);
+            price_path::render(frame, prices, app);
             volatility::render(frame, volatility, app);
         }
         MainTab::Probability => {
             probability::render(frame, body.primary, app);
-            price_path::render(frame, body.secondary, app);
+            systems::render(frame, body.secondary, app);
         }
         MainTab::Outcomes => {
             outcomes::render(frame, body.primary, app);

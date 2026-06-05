@@ -27,19 +27,6 @@ pub struct PricePathChartModel {
     pub y_bounds: [f64; 2],
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CompanionTargetRow {
-    pub asset: String,
-    pub latest: String,
-    pub target: String,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct PricePathPanelModel {
-    pub main: PricePathChartModel,
-    pub companions: Vec<CompanionTargetRow>,
-}
-
 #[cfg(test)]
 pub fn price_path_rows(app: &AppState) -> Vec<PricePathDisplayRow> {
     ["BTC", "ETH"]
@@ -61,78 +48,50 @@ pub fn price_path_rows(app: &AppState) -> Vec<PricePathDisplayRow> {
 }
 
 pub fn price_path_charts(app: &AppState) -> Vec<PricePathChartModel> {
-    let panel = price_path_panel(app);
-    std::iter::once(panel.main)
-        .chain(
-            panel
-                .companions
-                .iter()
-                .map(|companion| price_path_chart(app, &companion.asset)),
-        )
+    ["BTC", "ETH"]
+        .into_iter()
+        .map(|asset| {
+            let symbol = format!("{asset}/USD");
+            let history = app.price_history_for(&symbol);
+            let latest = history
+                .last()
+                .map(|point| format_usd_number(point.price))
+                .unwrap_or_else(|| "-".to_string());
+            let target_value = selected_target_value(app, asset);
+            let price_points = history
+                .into_iter()
+                .enumerate()
+                .map(|(index, point)| (index as f64, point.price))
+                .collect::<Vec<_>>();
+            let target_line = target_value
+                .map(|price| {
+                    let x_max = x_axis_upper_bound(&price_points);
+                    vec![(0.0, price), (x_max, price)]
+                })
+                .unwrap_or_default();
+
+            PricePathChartModel {
+                asset: asset.to_string(),
+                latest,
+                target: target_label(target_value),
+                y_bounds: chart_y_bounds(&price_points, target_value),
+                price_points,
+                target_line,
+            }
+        })
         .collect()
 }
 
-pub fn price_path_panel(app: &AppState) -> PricePathPanelModel {
-    let selected_asset = selected_chart_asset(app);
-    let main = price_path_chart(app, &selected_asset);
-    let companions = ["BTC", "ETH"]
-        .into_iter()
-        .filter(|asset| !asset.eq_ignore_ascii_case(&selected_asset))
-        .map(|asset| {
-            let chart = price_path_chart(app, asset);
-            CompanionTargetRow {
-                asset: chart.asset,
-                latest: chart.latest,
-                target: chart.target,
-            }
-        })
-        .collect();
-    PricePathPanelModel { main, companions }
-}
-
-fn price_path_chart(app: &AppState, asset: &str) -> PricePathChartModel {
-    let symbol = format!("{asset}/USD");
-    let history = app.price_history_for(&symbol);
-    let latest = history
-        .last()
-        .map(|point| format_usd_number(point.price))
-        .unwrap_or_else(|| "-".to_string());
-    let target_value = selected_target_value(app, asset);
-    let price_points = history
-        .into_iter()
-        .enumerate()
-        .map(|(index, point)| (index as f64, point.price))
-        .collect::<Vec<_>>();
-    let target_line = target_value
-        .map(|price| {
-            let x_max = x_axis_upper_bound(&price_points);
-            vec![(0.0, price), (x_max, price)]
-        })
-        .unwrap_or_default();
-
-    PricePathChartModel {
-        asset: asset.to_string(),
-        latest,
-        target: target_label(target_value),
-        y_bounds: chart_y_bounds(&price_points, target_value),
-        price_points,
-        target_line,
-    }
-}
-
 pub fn render(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
-    let panel = price_path_panel(app);
-    if area.height < 10 {
-        render_price_chart(frame, area, &panel.main);
-        return;
-    }
-
-    let [chart_area, companion_area] = Layout::default()
+    let charts = price_path_charts(app);
+    let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(8), Constraint::Length(3)])
-        .areas(area);
-    render_price_chart(frame, chart_area, &panel.main);
-    render_companion_targets(frame, companion_area, &panel.companions);
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(area);
+
+    for (chart, chunk) in charts.iter().zip(chunks.iter()) {
+        render_price_chart(frame, *chunk, chart);
+    }
 }
 
 fn render_price_chart(frame: &mut Frame<'_>, area: Rect, model: &PricePathChartModel) {
@@ -181,22 +140,6 @@ fn render_price_chart(frame: &mut Frame<'_>, area: Rect, model: &PricePathChartM
     frame.render_widget(chart, area);
 }
 
-fn render_companion_targets(frame: &mut Frame<'_>, area: Rect, companions: &[CompanionTargetRow]) {
-    let text = if companions.is_empty() {
-        "same-expiry companion: -".to_string()
-    } else {
-        companions
-            .iter()
-            .map(|row| format!("{} {} {}", row.asset, row.latest, row.target))
-            .collect::<Vec<_>>()
-            .join("  ")
-    };
-    frame.render_widget(
-        Paragraph::new(text).block(Block::bordered().title("Same Expiry")),
-        area,
-    );
-}
-
 #[cfg(test)]
 fn current_target_label(app: &AppState, asset: &str) -> String {
     target_label(selected_target_value(app, asset))
@@ -216,12 +159,6 @@ fn selected_target_value(app: &AppState, asset: &str) -> Option<f64> {
                 && candidate.expiry_ts == Some(selected_expiry)
         })
         .and_then(|candidate| threshold_price(&candidate))
-}
-
-fn selected_chart_asset(app: &AppState) -> String {
-    app.selected_market_group()
-        .map(|group| group.asset.to_ascii_uppercase())
-        .unwrap_or_else(|| "BTC".to_string())
 }
 
 fn threshold_price(group: &market_view::MarketGroup<'_>) -> Option<f64> {
@@ -334,7 +271,7 @@ mod tests {
         status::{RuntimeMonitor, RuntimeOrderbookRow, RuntimePriceRow},
     };
 
-    use super::{price_path_charts, price_path_panel, price_path_rows};
+    use super::{price_path_charts, price_path_rows};
 
     #[test]
     fn price_path_rows_include_latest_price_and_current_target() {
@@ -481,42 +418,6 @@ mod tests {
         assert_eq!(btc.target, "K 64,000.00");
         assert_eq!(eth.target, "K 1,801.00");
         assert_eq!(eth.target_line, vec![(0.0, 1801.0), (1.0, 1801.0)]);
-    }
-
-    #[test]
-    fn price_path_panel_uses_selected_asset_as_main_and_other_asset_as_companion() {
-        let mut app = AppState::default();
-        app.apply_runtime_monitor(RuntimeMonitor {
-            generated_at: "2026-06-04T07:43:10Z".to_string(),
-            price_rows: vec![price_row("BTC/USD", "64050"), price_row("ETH/USD", "1805")],
-            orderbooks: vec![
-                orderbook_with_window(
-                    "BTC",
-                    "btc-updown-5m-current",
-                    "2026-06-04T07:40:00Z",
-                    "2026-06-04T07:45:00Z",
-                    "64000",
-                ),
-                orderbook_with_window(
-                    "ETH",
-                    "eth-updown-5m-current",
-                    "2026-06-04T07:40:00Z",
-                    "2026-06-04T07:45:00Z",
-                    "1801",
-                ),
-            ],
-        });
-        app.sync_market_selection();
-        app.select_next_market();
-
-        let panel = price_path_panel(&app);
-
-        assert_eq!(panel.main.asset, "ETH");
-        assert_eq!(panel.main.target, "K 1,801.00");
-        assert_eq!(panel.companions.len(), 1);
-        assert_eq!(panel.companions[0].asset, "BTC");
-        assert_eq!(panel.companions[0].latest, "64,050.00");
-        assert_eq!(panel.companions[0].target, "K 64,000.00");
     }
 
     #[test]

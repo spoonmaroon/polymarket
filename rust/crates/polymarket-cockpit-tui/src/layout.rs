@@ -35,11 +35,11 @@ pub fn cockpit(area: Rect) -> CockpitLayout {
 pub fn body(area: Rect) -> BodyLayout {
     let [top, bottom] = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(7), Constraint::Length(4)])
+        .constraints([Constraint::Min(7), Constraint::Length(7)])
         .areas(area);
     let [primary, secondary] = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(66), Constraint::Percentage(34)])
+        .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
         .areas(top);
     let [systems, logs] = Layout::default()
         .direction(Direction::Horizontal)
@@ -68,15 +68,5 @@ mod tests {
         assert!(layout.systems.width < layout.logs.width);
         assert_eq!(layout.systems.x, 0);
         assert_eq!(layout.logs.x, layout.systems.width);
-    }
-
-    #[test]
-    fn body_layout_keeps_diagnostics_short_and_primary_dominant() {
-        let layout = body(Rect::new(0, 0, 100, 30));
-
-        assert_eq!(layout.logs.height, 4);
-        assert_eq!(layout.systems.height, 4);
-        assert!(layout.primary.width >= 64);
-        assert!(layout.primary.height > layout.logs.height * 5);
     }
 }

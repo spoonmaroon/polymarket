@@ -318,22 +318,22 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         .collect::<Vec<_>>();
     let table = Table::new(rows, widths)
         .header(Row::new(model.headers).style(Style::default().fg(Color::Cyan)))
-        .block(Block::bordered().title("Monte Carlo"));
+        .block(Block::bordered().title("Monte Carlo Health"));
 
     frame.render_widget(table, area);
 }
 
 fn probability_widths(_column_count: usize) -> Vec<Constraint> {
     vec![
-        Constraint::Length(14),
-        Constraint::Length(8),
-        Constraint::Length(9),
-        Constraint::Length(11),
-        Constraint::Length(14),
-        Constraint::Length(14),
-        Constraint::Length(14),
         Constraint::Length(16),
-        Constraint::Min(10),
+        Constraint::Length(9),
+        Constraint::Length(10),
+        Constraint::Length(12),
+        Constraint::Length(16),
+        Constraint::Length(18),
+        Constraint::Length(18),
+        Constraint::Length(20),
+        Constraint::Min(12),
     ]
 }
 
