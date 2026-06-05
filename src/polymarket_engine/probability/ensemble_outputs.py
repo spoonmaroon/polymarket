@@ -3,16 +3,10 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from statistics import median
 
 from polymarket_engine.probability.generator_contracts import GeneratorId, GeneratorRun, GeneratorWeight
-
-
-CORE_GENERATOR_IDS = {
-    GeneratorId.EMPIRICAL_CONDITIONAL,
-    GeneratorId.BLOCK_BOOTSTRAP,
-    GeneratorId.FILTERED_HISTORICAL,
-}
 
 
 @dataclass(frozen=True)
@@ -45,6 +39,8 @@ def reduce_generator_runs(
     sparse_scope: bool,
     calibration_penalty: float,
     stale_weight_penalty: float,
+    *,
+    runtime_asof_ts: datetime | None = None,
 ) -> EnsembleOutput:
     if not runs:
         raise ValueError("runs must not be empty")
@@ -53,7 +49,7 @@ def reduce_generator_runs(
     _require_nonnegative_finite(stale_weight_penalty, "stale_weight_penalty")
 
     run_by_id = {_coerce_generator_id(run.generator_id): run for run in runs}
-    weight_by_id = _coerce_weights(weights)
+    weight_by_id = _coerce_weights(weights, runtime_asof_ts=runtime_asof_ts)
     effective_weights = _normalize_weights(
         {
             generator_id: weight_by_id[generator_id]
@@ -114,19 +110,19 @@ def _effective_generator_values(
         for generator_id, run in run_by_id.items()
     }
     stress_run = values.get(GeneratorId.STRESS_OVERLAY)
-    core_values = [
-        values[generator_id]
-        for generator_id in CORE_GENERATOR_IDS
-        if generator_id in values
+    non_stress_values = [
+        value
+        for generator_id, value in values.items()
+        if generator_id != GeneratorId.STRESS_OVERLAY
     ]
-    if stress_run is not None and core_values:
-        core_finish_median = median(value[0] for value in core_values)
-        core_no_touch_median = median(value[1] for value in core_values)
-        core_z_path_median = median(value[2] for value in core_values)
+    if stress_run is not None and non_stress_values:
+        non_stress_finish_median = median(value[0] for value in non_stress_values)
+        non_stress_no_touch_median = median(value[1] for value in non_stress_values)
+        non_stress_z_path_median = median(value[2] for value in non_stress_values)
         values[GeneratorId.STRESS_OVERLAY] = (
-            min(stress_run[0], core_finish_median),
-            min(stress_run[1], core_no_touch_median),
-            min(stress_run[2], core_z_path_median),
+            min(stress_run[0], non_stress_finish_median),
+            min(stress_run[1], non_stress_no_touch_median),
+            min(stress_run[2], non_stress_z_path_median),
         )
     return values
 
@@ -165,15 +161,18 @@ def _diagnose_path(
 
 def _coerce_weights(
     weights: Sequence[GeneratorWeight] | Mapping[GeneratorId, float],
+    *,
+    runtime_asof_ts: datetime | None,
 ) -> dict[GeneratorId, float]:
     if isinstance(weights, Mapping):
         return {
             _coerce_generator_id(generator_id): weight
             for generator_id, weight in weights.items()
         }
+    _require_runtime_asof_for_generator_weights(runtime_asof_ts)
     return {
         _coerce_generator_id(generator_weight.generator_id): generator_weight.weight
-        for generator_weight in weights
+        for generator_weight in _validated_generator_weights(weights, runtime_asof_ts)
     }
 
 
@@ -195,6 +194,27 @@ def _coerce_generator_id(value: GeneratorId) -> GeneratorId:
         raise ValueError("generator_id must be a supported GeneratorId") from exc
 
 
+def _validated_generator_weights(
+    weights: Sequence[GeneratorWeight],
+    runtime_asof_ts: datetime | None,
+) -> tuple[GeneratorWeight, ...]:
+    _require_runtime_asof_for_generator_weights(runtime_asof_ts)
+    assert runtime_asof_ts is not None
+    validated = tuple(weights)
+    for generator_weight in validated:
+        if not isinstance(generator_weight, GeneratorWeight):
+            raise ValueError("weights must be GeneratorWeight objects")
+        if generator_weight.validation_window.evaluated_through_ts > runtime_asof_ts:
+            raise ValueError("evaluated_through_ts must not be after runtime_asof_ts")
+    return validated
+
+
+def _require_runtime_asof_for_generator_weights(runtime_asof_ts: datetime | None) -> None:
+    if runtime_asof_ts is None:
+        raise ValueError("runtime_asof_ts is required for GeneratorWeight objects")
+    _require_timezone_aware(runtime_asof_ts, "runtime_asof_ts")
+
+
 def _require_probability(value: float, field_name: str) -> None:
     if not _is_finite_number(value) or not 0 <= value <= 1:
         raise ValueError(f"{field_name} must be finite and between 0 and 1")
@@ -213,6 +233,13 @@ def _require_nonnegative_finite(value: float, field_name: str) -> None:
 def _require_bool(value: bool, field_name: str) -> None:
     if not isinstance(value, bool):
         raise ValueError(f"{field_name} must be bool")
+
+
+def _require_timezone_aware(value: datetime, field_name: str) -> None:
+    if not isinstance(value, datetime):
+        raise ValueError(f"{field_name} must be a datetime")
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(f"{field_name} must be timezone-aware")
 
 
 def _is_finite_number(value: object) -> bool:

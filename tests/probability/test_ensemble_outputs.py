@@ -17,6 +17,10 @@ def _asof() -> datetime:
     return datetime(2026, 6, 5, 16, 0, tzinfo=timezone.utc)
 
 
+def _runtime_asof() -> datetime:
+    return datetime(2026, 6, 5, 18, 0, tzinfo=timezone.utc)
+
+
 def _scope() -> DynamicWeightScope:
     return DynamicWeightScope(
         asset="BTC",
@@ -95,6 +99,7 @@ def test_reduce_generator_runs_clamps_stress_overlay_and_computes_buffer() -> No
     output = reduce_generator_runs(
         runs,
         weights,
+        runtime_asof_ts=_runtime_asof(),
         sparse_scope=False,
         calibration_penalty=0.015,
         stale_weight_penalty=0.020,
@@ -135,6 +140,7 @@ def test_reduce_generator_runs_reports_all_path_diagnosis_labels() -> None:
     output = reduce_generator_runs(
         runs,
         weights,
+        runtime_asof_ts=_runtime_asof(),
         sparse_scope=True,
         calibration_penalty=0.0,
         stale_weight_penalty=0.0,
@@ -163,6 +169,7 @@ def test_reduce_generator_runs_reports_clean_when_no_risk_labels_apply() -> None
     output = reduce_generator_runs(
         runs,
         weights,
+        runtime_asof_ts=_runtime_asof(),
         sparse_scope=False,
         calibration_penalty=0.0,
         stale_weight_penalty=0.0,
@@ -170,3 +177,80 @@ def test_reduce_generator_runs_reports_clean_when_no_risk_labels_apply() -> None
 
     assert output.path_diagnosis == ("CLEAN",)
     assert output.uncertainty_buffer == pytest.approx(0.015)
+
+
+def test_reduce_generator_runs_rejects_future_label_weight_artifact_at_runtime() -> None:
+    future_weight = GeneratorWeight(
+        generator_id=GeneratorId.LOGNORMAL_BASELINE,
+        weight=1.0,
+        scope=_scope(),
+        label_count=100,
+        source="fixture",
+        validation_window=HistoricalValidationWindow(
+            asof_ts=datetime(2026, 6, 5, 16, 0, tzinfo=timezone.utc),
+            evaluated_through_ts=datetime(2026, 6, 5, 17, 0, tzinfo=timezone.utc),
+            label_window_seconds=3600,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="evaluated_through_ts"):
+        reduce_generator_runs(
+            (
+                _run(
+                    GeneratorId.LOGNORMAL_BASELINE,
+                    p_finish=0.60,
+                    p_no_touch=0.80,
+                    z_path=1.20,
+                ),
+            ),
+            (future_weight,),
+            runtime_asof_ts=datetime(2026, 6, 5, 16, 59, 59, tzinfo=timezone.utc),
+            sparse_scope=False,
+            calibration_penalty=0.0,
+            stale_weight_penalty=0.0,
+        )
+
+
+def test_reduce_generator_runs_allows_static_mapping_weights_without_runtime_asof() -> None:
+    output = reduce_generator_runs(
+        (
+            _run(
+                GeneratorId.LOGNORMAL_BASELINE,
+                p_finish=0.60,
+                p_no_touch=0.80,
+                z_path=1.20,
+            ),
+        ),
+        {GeneratorId.LOGNORMAL_BASELINE: 1.0},
+        sparse_scope=False,
+        calibration_penalty=0.0,
+        stale_weight_penalty=0.0,
+    )
+
+    assert output.p_finish == pytest.approx(0.60)
+    assert output.p_no_touch == pytest.approx(0.80)
+    assert output.z_path == pytest.approx(1.20)
+
+
+def test_reduce_generator_runs_clamps_stress_overlay_against_lognormal_baseline_only() -> None:
+    runs = (
+        _run(GeneratorId.LOGNORMAL_BASELINE, p_finish=0.58, p_no_touch=0.76, z_path=0.90),
+        _run(GeneratorId.STRESS_OVERLAY, p_finish=0.99, p_no_touch=0.99, z_path=2.00),
+    )
+    weights = (
+        _weight(GeneratorId.LOGNORMAL_BASELINE, 0.80),
+        _weight(GeneratorId.STRESS_OVERLAY, 0.20),
+    )
+
+    output = reduce_generator_runs(
+        runs,
+        weights,
+        runtime_asof_ts=_runtime_asof(),
+        sparse_scope=False,
+        calibration_penalty=0.0,
+        stale_weight_penalty=0.0,
+    )
+
+    assert output.p_finish == pytest.approx(0.58)
+    assert output.p_no_touch == pytest.approx(0.76)
+    assert output.z_path == pytest.approx(0.90)
