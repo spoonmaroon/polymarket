@@ -12,6 +12,11 @@ from typing import Any, cast
 
 import duckdb
 
+from polymarket_engine.probability.empirical_prior import (
+    CHAINLINK_SOURCE_KEY,
+    EmpiricalPriorConfig,
+    run_empirical_conditional_monte_carlo,
+)
 from polymarket_engine.probability.native import run_native_or_python
 from polymarket_engine.probability.schema import ProbabilityInput, ProbabilityOutput
 from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
@@ -20,6 +25,8 @@ from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
 DEFAULT_PROBABILITY_CACHE_SECONDS = 1.0
 DEFAULT_PROBABILITY_PATH_COUNT = 1024
 DEFAULT_PROBABILITY_MAX_STATE_AGE_SECONDS = 600.0
+DEFAULT_EMPIRICAL_PRIOR_HISTORY_LIMIT = 2_000
+DEFAULT_EMPIRICAL_PRIOR_MIN_BUCKET_SIZE = 8
 
 
 @dataclass(frozen=True)
@@ -320,12 +327,12 @@ def _compute_and_persist_rows(
         seed = _seed_for_input(probability_input)
         steps = _steps_for_input(probability_input)
         try:
-            output = run_native_or_python(
-                probability_input,
+            output = _run_probability_output(
+                store=store,
+                probability_input=probability_input,
                 path_count=DEFAULT_PROBABILITY_PATH_COUNT,
                 steps=steps,
                 seed=seed,
-                backend=os.environ.get("POLYMARKET_PROBABILITY_BACKEND", "cpu_rayon"),
             )
             output_id = _output_id(probability_input, output)
             store.insert_probability_output(
@@ -338,6 +345,52 @@ def _compute_and_persist_rows(
             continue
         rows.append(_runtime_row(runtime_input, output=output, output_id=output_id))
     return rows, errors
+
+
+def _run_probability_output(
+    store: DuckDbIngestStore,
+    probability_input: ProbabilityInput,
+    *,
+    path_count: int,
+    steps: int,
+    seed: int,
+) -> ProbabilityOutput:
+    generator = os.environ.get("POLYMARKET_PROBABILITY_GENERATOR", "lognormal").strip().lower()
+    if generator in {"", "lognormal"}:
+        return run_native_or_python(
+            probability_input,
+            path_count=path_count,
+            steps=steps,
+            seed=seed,
+            backend=os.environ.get("POLYMARKET_PROBABILITY_BACKEND", "cpu_rayon"),
+        )
+    if generator == "empirical_conditional":
+        history_limit = _env_positive_int(
+            "POLYMARKET_EMPIRICAL_PRIOR_HISTORY_LIMIT",
+            DEFAULT_EMPIRICAL_PRIOR_HISTORY_LIMIT,
+        )
+        min_bucket_size = _env_positive_int(
+            "POLYMARKET_EMPIRICAL_PRIOR_MIN_BUCKET_SIZE",
+            DEFAULT_EMPIRICAL_PRIOR_MIN_BUCKET_SIZE,
+        )
+        price_ticks = store.price_ticks_before(
+            source_key=CHAINLINK_SOURCE_KEY,
+            symbol=_chainlink_symbol(probability_input.asset),
+            asof_ts=probability_input.asof_ts,
+            limit=history_limit,
+        )
+        return run_empirical_conditional_monte_carlo(
+            probability_input,
+            price_ticks=price_ticks,
+            path_count=path_count,
+            steps=steps,
+            seed=seed,
+            config=EmpiricalPriorConfig(
+                min_bucket_size=min_bucket_size,
+                history_limit=history_limit,
+            ),
+        )
+    raise ValueError(f"unsupported probability generator: {generator}")
 
 
 def _probability_input_from_row(row: tuple[Any, ...]) -> ProbabilityInput:
@@ -544,3 +597,24 @@ def _cutoff_timestamp(max_state_age_seconds: float | None) -> datetime | None:
     if max_state_age_seconds <= 0 or not math.isfinite(max_state_age_seconds):
         raise ValueError("max_state_age_seconds must be positive and finite")
     return datetime.fromtimestamp(time.time() - max_state_age_seconds, tz=timezone.utc)
+
+
+def _env_positive_int(name: str, default: int) -> int:
+    raw_value = os.environ.get(name)
+    if raw_value is None or raw_value.strip() == "":
+        return default
+    try:
+        value = int(raw_value)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a positive integer") from exc
+    if value <= 0:
+        raise ValueError(f"{name} must be a positive integer")
+    return value
+
+
+def _chainlink_symbol(asset: str) -> str:
+    if asset == "BTC":
+        return "BTC/USD"
+    if asset == "ETH":
+        return "ETH/USD"
+    raise ValueError("asset must be BTC or ETH")
