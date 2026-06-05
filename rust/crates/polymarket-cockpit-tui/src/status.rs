@@ -197,6 +197,20 @@ pub struct RuntimeProbabilityRow {
     pub p_no_touch: f64,
     pub z_path: f64,
     pub sigma_tau: f64,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub model_version: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub output_id: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub backend: Option<String>,
+    #[serde(default)]
+    pub path_count: Option<u64>,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub generator: Option<String>,
+    #[serde(default)]
+    pub prior_bucket_size: Option<u64>,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub prior_fallback_level: Option<String>,
     pub age_ms: u64,
     #[serde(default)]
     pub flags: Vec<String>,
@@ -302,7 +316,7 @@ impl RuntimeStatus {
 mod tests {
     use super::{
         RuntimeGates, RuntimeLive, RuntimeMonitor, RuntimeMonteCarloStatus, RuntimeOutcomes,
-        RuntimeProbabilities, RuntimeStatus,
+        RuntimeProbabilities, RuntimeProbabilityRow, RuntimeStatus,
     };
 
     #[test]
@@ -321,6 +335,61 @@ mod tests {
 
         assert_eq!(status.state_label(), "OK");
         assert_eq!(status.counts.current, 2);
+    }
+
+    #[test]
+    fn probability_row_deserializes_optional_model_diagnostics_when_present() {
+        let row: RuntimeProbabilityRow = serde_json::from_str(
+            r#"{
+                "contract": "BTC 5m UP",
+                "p_finish": 0.5749,
+                "p_no_touch": 0.3149,
+                "z_path": 0.4219,
+                "sigma_tau": 0.01234,
+                "age_ms": 850,
+                "flags": ["OK"],
+                "model_version": "empirical-v2",
+                "output_id": "out-123",
+                "backend": "duckdb",
+                "path_count": 65536,
+                "generator": "empirical",
+                "prior_bucket_size": 12,
+                "prior_fallback_level": "lognormal"
+            }"#,
+        )
+        .expect("runtime probability row should deserialize");
+
+        assert_eq!(row.model_version.as_deref(), Some("empirical-v2"));
+        assert_eq!(row.output_id.as_deref(), Some("out-123"));
+        assert_eq!(row.backend.as_deref(), Some("duckdb"));
+        assert_eq!(row.path_count, Some(65_536));
+        assert_eq!(row.generator.as_deref(), Some("empirical"));
+        assert_eq!(row.prior_bucket_size, Some(12));
+        assert_eq!(row.prior_fallback_level.as_deref(), Some("lognormal"));
+    }
+
+    #[test]
+    fn probability_row_deserializes_without_model_diagnostics() {
+        let row: RuntimeProbabilityRow = serde_json::from_str(
+            r#"{
+                "contract": "BTC 5m UP",
+                "p_finish": 0.5749,
+                "p_no_touch": 0.3149,
+                "z_path": 0.4219,
+                "sigma_tau": 0.01234,
+                "age_ms": 850
+            }"#,
+        )
+        .expect("runtime probability row should deserialize without diagnostics");
+
+        assert_eq!(row.model_version, None);
+        assert_eq!(row.output_id, None);
+        assert_eq!(row.backend, None);
+        assert_eq!(row.path_count, None);
+        assert_eq!(row.generator, None);
+        assert_eq!(row.prior_bucket_size, None);
+        assert_eq!(row.prior_fallback_level, None);
+        assert!(row.flags.is_empty());
     }
 
     #[test]

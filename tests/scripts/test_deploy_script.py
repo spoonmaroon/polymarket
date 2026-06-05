@@ -399,12 +399,60 @@ def test_normalizer_defaults_to_quarter_second_checkpointed_cadence() -> None:
     assert 'OUTCOME_STATUS_PATH="${POLYMARKET_OUTCOME_STATUS_PATH:-$LIVE_DIR/outcomes.json}"' in entrypoint
     assert 'VOLATILITY_STATUS_PATH="${POLYMARKET_VOLATILITY_STATUS_PATH:-$LIVE_DIR/volatility.json}"' in entrypoint
     assert "run-rust-normalizer-sidecar" in entrypoint
-    assert "exec polymarket-engine" in entrypoint
+    assert "set -- polymarket-engine" in entrypoint
+    assert 'exec "$@"' in entrypoint
     assert "while true" not in entrypoint
     assert '--interval-seconds "$INTERVAL_SECONDS"' in entrypoint
     assert '--normalized-health-path "$NORMALIZED_HEALTH_PATH"' in entrypoint
     assert '--outcome-status-path "$OUTCOME_STATUS_PATH"' in entrypoint
     assert '--volatility-status-path "$VOLATILITY_STATUS_PATH"' in entrypoint
+
+
+def test_normalizer_probability_outputs_are_env_gated() -> None:
+    env_example = (ROOT / "deploy" / "collector" / ".env.example").read_text(
+        encoding="utf-8"
+    )
+    compose = (ROOT / "deploy" / "collector" / "docker-compose.yml").read_text(
+        encoding="utf-8"
+    )
+    entrypoint = (
+        ROOT / "deploy" / "normalizer" / "normalizer-entrypoint.sh"
+    ).read_text(encoding="utf-8")
+
+    assert "POLYMARKET_ENABLE_PROBABILITIES=0" in env_example
+    assert "POLYMARKET_PROBABILITY_GENERATOR=lognormal" in env_example
+    assert "POLYMARKET_EMPIRICAL_PRIOR_HISTORY_LIMIT=2000" in env_example
+    assert "POLYMARKET_EMPIRICAL_PRIOR_MIN_BUCKET_SIZE=8" in env_example
+    assert "POLYMARKET_ENABLE_RUNTIME_PROBABILITIES=0" in env_example
+    assert "POLYMARKET_ENABLE_PROBABILITIES: ${POLYMARKET_ENABLE_PROBABILITIES:-0}" in compose
+    assert "POLYMARKET_PROBABILITY_GENERATOR: ${POLYMARKET_PROBABILITY_GENERATOR:-lognormal}" in compose
+    assert "POLYMARKET_EMPIRICAL_PRIOR_HISTORY_LIMIT: ${POLYMARKET_EMPIRICAL_PRIOR_HISTORY_LIMIT:-2000}" in compose
+    assert "POLYMARKET_EMPIRICAL_PRIOR_MIN_BUCKET_SIZE: ${POLYMARKET_EMPIRICAL_PRIOR_MIN_BUCKET_SIZE:-8}" in compose
+    assert 'ENABLE_PROBABILITIES="${POLYMARKET_ENABLE_PROBABILITIES:-0}"' in entrypoint
+    assert 'if [ "$ENABLE_PROBABILITIES" = "1" ]; then' in entrypoint
+    assert 'set -- "$@" --enable-probabilities' in entrypoint
+
+
+def test_pc_deploy_enables_empirical_runtime_probabilities() -> None:
+    script = (ROOT / "scripts" / "deploy_pc.sh").read_text(encoding="utf-8")
+
+    assert 'set_env POLYMARKET_ENABLE_PROBABILITIES "1" deploy/collector/.env' in script
+    assert (
+        'set_env POLYMARKET_ENABLE_RUNTIME_PROBABILITIES "1" deploy/collector/.env'
+        in script
+    )
+    assert (
+        'set_env POLYMARKET_PROBABILITY_GENERATOR "empirical_conditional" deploy/collector/.env'
+        in script
+    )
+    assert (
+        'set_env POLYMARKET_EMPIRICAL_PRIOR_HISTORY_LIMIT "2000" deploy/collector/.env'
+        in script
+    )
+    assert (
+        'set_env POLYMARKET_EMPIRICAL_PRIOR_MIN_BUCKET_SIZE "8" deploy/collector/.env'
+        in script
+    )
 
 
 def test_deploy_script_requires_running_normalizer_before_success() -> None:

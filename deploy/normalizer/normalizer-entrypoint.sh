@@ -10,6 +10,7 @@ PROBABILITY_STATUS_PATH="${POLYMARKET_PROBABILITY_STATUS_PATH:-$LIVE_DIR/probabi
 OUTCOME_STATUS_PATH="${POLYMARKET_OUTCOME_STATUS_PATH:-$LIVE_DIR/outcomes.json}"
 VOLATILITY_STATUS_PATH="${POLYMARKET_VOLATILITY_STATUS_PATH:-$LIVE_DIR/volatility.json}"
 INTERVAL_SECONDS="${POLYMARKET_NORMALIZER_INTERVAL_SECONDS:-0.25}"
+ENABLE_PROBABILITIES="${POLYMARKET_ENABLE_PROBABILITIES:-0}"
 
 if [ ! -f "$RAW_DIR/.polymarket_archive_root" ]; then
   echo "missing archive sentinel: $RAW_DIR/.polymarket_archive_root" >&2
@@ -18,7 +19,7 @@ fi
 
 mkdir -p "$(dirname "$DB_PATH")" "$LIVE_DIR"
 
-exec polymarket-engine run-rust-normalizer-sidecar \
+set -- polymarket-engine run-rust-normalizer-sidecar \
   --raw-root "$RAW_DIR" \
   --duckdb-path "$DB_PATH" \
   --status-path "$STATUS_PATH" \
@@ -28,3 +29,9 @@ exec polymarket-engine run-rust-normalizer-sidecar \
   --volatility-status-path "$VOLATILITY_STATUS_PATH" \
   --interval-seconds "$INTERVAL_SECONDS" \
   --include-next
+
+if [ "$ENABLE_PROBABILITIES" = "1" ]; then
+  set -- "$@" --enable-probabilities
+fi
+
+exec "$@"

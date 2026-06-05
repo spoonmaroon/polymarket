@@ -8,7 +8,7 @@ use ratatui::{
 
 use crate::{
     market_view,
-    render::orderbook,
+    render::{orderbook, probability},
     state::AppState,
     status::{RuntimeOrderbookRow, RuntimeOutcomeRow, RuntimeOutcomes},
 };
@@ -29,6 +29,15 @@ pub struct MarketDisplayRow {
     pub outcome: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MarketProbabilityDisplayRow {
+    pub contract: String,
+    pub p_finish: String,
+    pub p_no_touch: String,
+    pub z_path: String,
+    pub generator: String,
+}
+
 pub fn market_header_labels() -> [&'static str; 9] {
     [
         "",
@@ -43,9 +52,36 @@ pub fn market_header_labels() -> [&'static str; 9] {
     ]
 }
 
+pub fn market_probability_header_labels() -> [&'static str; 5] {
+    ["Contract", "p_finish", "p_no_touch", "z_path", "generator"]
+}
+
 #[cfg(test)]
 pub fn market_rows(app: &AppState) -> Vec<MarketDisplayRow> {
     market_rows_for_visible_count(app, MARKET_VISIBLE_ROWS)
+}
+
+pub fn market_probability_rows(app: &AppState) -> Vec<MarketProbabilityDisplayRow> {
+    let rows = probability::probability_rows(app);
+    if rows.is_empty() {
+        return vec![MarketProbabilityDisplayRow {
+            contract: "probability pending".to_string(),
+            p_finish: "-".to_string(),
+            p_no_touch: "-".to_string(),
+            z_path: "-".to_string(),
+            generator: "-".to_string(),
+        }];
+    }
+
+    rows.into_iter()
+        .map(|row| MarketProbabilityDisplayRow {
+            contract: row.contract,
+            p_finish: row.p_finish,
+            p_no_touch: row.p_no_touch,
+            z_path: row.z_path,
+            generator: row.generator,
+        })
+        .collect()
 }
 
 pub fn market_rows_for_visible_count(app: &AppState, visible_rows: usize) -> Vec<MarketDisplayRow> {
@@ -337,9 +373,13 @@ fn duration_label(seconds: i64) -> String {
 }
 
 pub fn render(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
-    let [counts_area, orderbook_area] = Layout::default()
+    let [counts_area, probabilities_area, orderbook_area] = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(13), Constraint::Min(3)])
+        .constraints([
+            Constraint::Length(13),
+            Constraint::Length(6),
+            Constraint::Min(3),
+        ])
         .areas(area);
     let visible_rows = counts_area.height.saturating_sub(3).max(1) as usize;
     let rows = market_rows_for_visible_count(app, visible_rows)
@@ -391,7 +431,42 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     .block(Block::bordered().title("Market"));
 
     frame.render_widget(table, counts_area);
+    render_probability_summary(frame, probabilities_area, app);
     orderbook::render(frame, orderbook_area, app);
+}
+
+fn render_probability_summary(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
+    let visible_rows = area.height.saturating_sub(3).max(1) as usize;
+    let rows = market_probability_rows(app)
+        .into_iter()
+        .take(visible_rows)
+        .map(|row| {
+            Row::new(vec![
+                Cell::from(row.contract),
+                Cell::from(row.p_finish),
+                Cell::from(row.p_no_touch),
+                Cell::from(row.z_path),
+                Cell::from(row.generator),
+            ])
+        })
+        .collect::<Vec<_>>();
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(14),
+            Constraint::Length(9),
+            Constraint::Length(11),
+            Constraint::Length(8),
+            Constraint::Min(10),
+        ],
+    )
+    .header(
+        Row::new(market_probability_header_labels().to_vec())
+            .style(Style::default().fg(Color::Cyan)),
+    )
+    .block(Block::bordered().title("Probabilities"));
+
+    frame.render_widget(table, area);
 }
 
 #[cfg(test)]
@@ -406,7 +481,10 @@ mod tests {
         },
     };
 
-    use super::{market_header_labels, market_rows, market_rows_for_visible_count};
+    use super::{
+        market_header_labels, market_probability_header_labels, market_probability_rows,
+        market_rows, market_rows_for_visible_count,
+    };
 
     #[test]
     fn market_rows_show_contract_identity_and_top_of_book() {
@@ -460,6 +538,46 @@ mod tests {
         assert_eq!(rows[1].outcome, "-");
         assert!(!rows[1].market.ends_with('Z'));
         assert!(!rows[1].expires.ends_with('Z'));
+    }
+
+    #[test]
+    fn market_probability_rows_render_cached_probability_outputs() {
+        let app = AppState {
+            runtime_probabilities: Some(crate::status::RuntimeProbabilities {
+                generated_at: "2026-06-05T12:00:00Z".to_string(),
+                cached: true,
+                rows: vec![crate::status::RuntimeProbabilityRow {
+                    contract: "BTC 5m UP".to_string(),
+                    p_finish: 0.5749,
+                    p_no_touch: 0.3149,
+                    z_path: 0.4219,
+                    sigma_tau: 0.01234,
+                    model_version: Some("empirical-v1".to_string()),
+                    output_id: Some("out-1".to_string()),
+                    backend: None,
+                    path_count: Some(1024),
+                    generator: Some("empirical".to_string()),
+                    prior_bucket_size: Some(12),
+                    prior_fallback_level: Some("none".to_string()),
+                    age_ms: 850,
+                    flags: vec!["OK".to_string()],
+                }],
+            }),
+            ..Default::default()
+        };
+
+        let rows = market_probability_rows(&app);
+
+        assert_eq!(
+            market_probability_header_labels(),
+            ["Contract", "p_finish", "p_no_touch", "z_path", "generator"]
+        );
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].contract, "BTC 5m UP");
+        assert_eq!(rows[0].p_finish, "0.575");
+        assert_eq!(rows[0].p_no_touch, "0.315");
+        assert_eq!(rows[0].z_path, "0.422");
+        assert_eq!(rows[0].generator, "empirical bucket=12");
     }
 
     #[test]

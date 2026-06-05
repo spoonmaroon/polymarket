@@ -17,6 +17,7 @@ pub struct ProbabilityDisplayRow {
     pub p_no_touch: String,
     pub z_path: String,
     pub sigma_tau: String,
+    pub generator: String,
     pub age_flags: String,
 }
 
@@ -44,14 +45,15 @@ pub struct MonteCarloTableModel {
     pub rows: Vec<Vec<String>>,
 }
 
-pub fn probability_header_labels() -> [&'static str; 6] {
+pub fn probability_header_labels() -> [&'static str; 7] {
     [
         "Contract",
         "p_finish",
         "p_no_touch",
         "z_path",
         "sigma_tau",
-        "Age/Flags",
+        "generator",
+        "age/flags",
     ]
 }
 
@@ -82,6 +84,7 @@ pub fn probability_table(app: &AppState) -> ProbabilityTableModel {
                         row.p_no_touch,
                         row.z_path,
                         row.sigma_tau,
+                        row.generator,
                         row.age_flags,
                     ]
                 })
@@ -93,6 +96,7 @@ pub fn probability_table(app: &AppState) -> ProbabilityTableModel {
         headers: probability_header_labels().to_vec(),
         rows: vec![vec![
             "probability pending".to_string(),
+            "-".to_string(),
             "-".to_string(),
             "-".to_string(),
             "-".to_string(),
@@ -167,6 +171,7 @@ fn probability_row(row: &RuntimeProbabilityRow) -> ProbabilityDisplayRow {
         p_no_touch: format_probability(row.p_no_touch),
         z_path: format!("{:.3}", row.z_path),
         sigma_tau: format!("{:.5}", row.sigma_tau),
+        generator: probability_generator(row),
         age_flags: age_flags(row),
     }
 }
@@ -220,6 +225,28 @@ fn age_flags(row: &RuntimeProbabilityRow) -> String {
         row.flags.join(",")
     };
     format!("{}ms {flags}", row.age_ms)
+}
+
+fn probability_generator(row: &RuntimeProbabilityRow) -> String {
+    let mut parts = Vec::new();
+    if let Some(generator) = row.generator.as_deref() {
+        parts.push(generator.to_string());
+    }
+    if let Some(bucket_size) = row.prior_bucket_size {
+        parts.push(format!("bucket={bucket_size}"));
+    }
+    if let Some(fallback_level) = row
+        .prior_fallback_level
+        .as_deref()
+        .filter(|level| !level.eq_ignore_ascii_case("none"))
+    {
+        parts.push(format!("fallback={fallback_level}"));
+    }
+    if parts.is_empty() {
+        "-".to_string()
+    } else {
+        parts.join(" ")
+    }
 }
 
 fn monte_carlo_age_flags(row: &MonteCarloRow) -> String {
@@ -294,6 +321,7 @@ fn probability_widths() -> Vec<Constraint> {
         Constraint::Length(12),
         Constraint::Length(9),
         Constraint::Length(11),
+        Constraint::Length(24),
         Constraint::Min(12),
     ]
 }
@@ -338,6 +366,13 @@ mod tests {
                     p_no_touch: 0.3149,
                     z_path: 0.4219,
                     sigma_tau: 0.01234,
+                    generator: Some("empirical".to_string()),
+                    prior_bucket_size: Some(12),
+                    prior_fallback_level: Some("lognormal".to_string()),
+                    model_version: Some("empirical-v2".to_string()),
+                    output_id: Some("out-123".to_string()),
+                    backend: Some("duckdb".to_string()),
+                    path_count: Some(65_536),
                     age_ms: 850,
                     flags: vec!["OK".to_string()],
                 }],
@@ -355,7 +390,8 @@ mod tests {
                 "p_no_touch",
                 "z_path",
                 "sigma_tau",
-                "Age/Flags"
+                "generator",
+                "age/flags"
             ]
         );
         assert_eq!(rows[0].contract, "BTC 5m UP");
@@ -363,6 +399,7 @@ mod tests {
         assert_eq!(rows[0].p_no_touch, "0.315");
         assert_eq!(rows[0].z_path, "0.422");
         assert_eq!(rows[0].sigma_tau, "0.01234");
+        assert_eq!(rows[0].generator, "empirical bucket=12 fallback=lognormal");
         assert_eq!(rows[0].age_flags, "850ms OK");
     }
 
@@ -395,6 +432,7 @@ mod tests {
             table.rows[0],
             vec![
                 "probability pending".to_string(),
+                "-".to_string(),
                 "-".to_string(),
                 "-".to_string(),
                 "-".to_string(),

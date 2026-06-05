@@ -426,11 +426,12 @@ def _runtime_row(
     output_id: str,
 ) -> dict[str, Any]:
     probability_input = runtime_input.probability_input
+    diagnostics = dict(output.diagnostics)
     age_ms = max(
         0,
         int((datetime.now(timezone.utc) - probability_input.asof_ts).total_seconds() * 1000),
     )
-    return {
+    runtime_row = {
         "contract": runtime_input.contract,
         "contract_id": runtime_input.contract_id,
         "asset": probability_input.asset,
@@ -446,7 +447,10 @@ def _runtime_row(
         "model_version": output.model_version,
         "seed": output.seed,
         "output_id": output_id,
+        "diagnostics": diagnostics,
     }
+    _promote_probability_diagnostics(runtime_row, diagnostics)
+    return runtime_row
 
 
 def _persisted_runtime_row(row: tuple[Any, ...]) -> dict[str, Any]:
@@ -479,9 +483,23 @@ def _persisted_runtime_row(row: tuple[Any, ...]) -> dict[str, Any]:
         "output_id": str(row[0]),
         "diagnostics": diagnostics,
     }
-    for field in ("backend", "path_count", "artifact_id"):
-        runtime_row[field] = diagnostics.get(field)
+    _promote_probability_diagnostics(runtime_row, diagnostics)
     return runtime_row
+
+
+def _promote_probability_diagnostics(
+    runtime_row: dict[str, Any],
+    diagnostics: dict[str, Any],
+) -> None:
+    for field in (
+        "backend",
+        "path_count",
+        "artifact_id",
+        "generator",
+        "prior_bucket_size",
+        "prior_fallback_level",
+    ):
+        runtime_row[field] = diagnostics.get(field)
 
 
 def _diagnostics_from_output_json(output_json: object) -> dict[str, Any]:

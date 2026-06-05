@@ -173,6 +173,11 @@ set_env POLYMARKET_DATA_DIR "\$PC_DATA_DIR" deploy/collector/.env
 set_env POLYMARKET_NORMALIZER_INTERVAL_SECONDS "\$PC_NORMALIZER_INTERVAL_SECONDS" deploy/collector/.env
 set_env POLYMARKET_REST_BACKUP_INTERVAL_MS "\$PC_REST_BACKUP_INTERVAL_MS" deploy/collector/.env
 set_env POLYMARKET_API_PORT "\$PC_API_PORT" deploy/collector/.env
+set_env POLYMARKET_ENABLE_PROBABILITIES "1" deploy/collector/.env
+set_env POLYMARKET_ENABLE_RUNTIME_PROBABILITIES "1" deploy/collector/.env
+set_env POLYMARKET_PROBABILITY_GENERATOR "empirical_conditional" deploy/collector/.env
+set_env POLYMARKET_EMPIRICAL_PRIOR_HISTORY_LIMIT "2000" deploy/collector/.env
+set_env POLYMARKET_EMPIRICAL_PRIOR_MIN_BUCKET_SIZE "8" deploy/collector/.env
 set_env POLYMARKET_COLLECTOR_IMAGE "\$COLLECTOR_IMAGE" deploy/collector/.env
 set_env POLYMARKET_NORMALIZER_IMAGE "\$NORMALIZER_IMAGE" deploy/collector/.env
 

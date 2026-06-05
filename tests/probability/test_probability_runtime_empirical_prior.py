@@ -9,7 +9,10 @@ import pytest
 
 from polymarket_engine.domain.contracts import ContractSpec
 from polymarket_engine.domain.market_state import DecisionState, PriceObservation
-from polymarket_engine.probability.runtime import compute_and_persist_probability_outputs
+from polymarket_engine.probability.runtime import (
+    compute_and_persist_probability_outputs,
+    latest_probability_output_rows,
+)
 from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
 
 
@@ -46,6 +49,10 @@ def test_runtime_persists_empirical_prior_output_when_enabled(
     assert diagnostics["asof_safe"] is True
     assert diagnostics["prior_bucket_size"] >= 1
     assert diagnostics["eligible_tick_count"] >= 3
+    rows = latest_probability_output_rows(duckdb_path=db_path, limit=4)
+    assert rows[0]["generator"] == "empirical_conditional_prior"
+    assert rows[0]["prior_bucket_size"] >= 1
+    assert rows[0]["prior_fallback_level"] == "none"
 
 
 def _contract() -> ContractSpec:
