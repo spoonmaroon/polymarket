@@ -561,6 +561,7 @@ function SelectedDetails({
 
   const preview = parseSimulationPreview(row.simulation_preview);
   const pairRows = currentMarketRows(marketRows);
+  const selectedMarketRow = marketRowForProbability(row, marketRows);
   return (
     <section className="panel detail-panel">
       <div className="simulation-head">
@@ -585,9 +586,12 @@ function SelectedDetails({
         onSelectProbability={onSelectProbability}
       />
 
-      <div className="details-layout">
-        <MonteCarloCanvas preview={preview} row={row} />
-      </div>
+      <MonteCarloComparisonGrid
+        fallbackRow={row}
+        marketRow={selectedMarketRow}
+        onSelectProbability={onSelectProbability}
+        selectedKey={rowKey(row)}
+      />
 
       <div className="simulation-footer">
         <Metric label="as-of" value={formatTimestamp(row.asof_ts)} />
@@ -615,7 +619,7 @@ function ContractPairSelector({
     <section className="pair-selector" aria-label="Current UP / DOWN comparison">
       <div className="pair-selector-heading">
         <h3>Current UP / DOWN</h3>
-        <span>Click a side to inspect its chart</span>
+        <span>Click a side to focus details</span>
       </div>
       <div className="pair-selector-grid">
         {rows.map((marketRow) => (
@@ -679,6 +683,104 @@ function PairProbabilityButton({
       <span>{formatProbability(row.p_finish)}</span>
       <small>{quote}</small>
     </button>
+  );
+}
+
+function MonteCarloComparisonGrid({
+  fallbackRow,
+  marketRow,
+  selectedKey,
+  onSelectProbability,
+}: {
+  fallbackRow: ProbabilityRow;
+  marketRow?: MarketMonitorRow;
+  selectedKey: string;
+  onSelectProbability: (key: string) => void;
+}) {
+  const upValue = normalizedProbability(marketRow?.upProbability?.p_finish);
+  const downValue = normalizedProbability(marketRow?.downProbability?.p_finish);
+  const leader =
+    upValue === null || downValue === null
+      ? null
+      : upValue > downValue
+        ? "UP"
+        : downValue > upValue
+          ? "DOWN"
+          : null;
+  const sides = marketRow
+    ? [
+        { label: "UP", row: marketRow.upProbability, quote: formatQuote(marketRow.up) },
+        { label: "DOWN", row: marketRow.downProbability, quote: formatQuote(marketRow.down) },
+      ]
+    : [{ label: fallbackRow.side ?? "Selected", row: fallbackRow, quote: "-" }];
+
+  return (
+    <section className="comparison-grid" aria-label="UP and DOWN Monte Carlo comparison">
+      {sides.map((side) => (
+        <MonteCarloComparisonCard
+          key={side.label}
+          label={side.label}
+          quote={side.quote}
+          row={side.row}
+          selectedKey={selectedKey}
+          isLeader={leader === side.label}
+          onSelectProbability={onSelectProbability}
+        />
+      ))}
+    </section>
+  );
+}
+
+function MonteCarloComparisonCard({
+  label,
+  row,
+  quote,
+  selectedKey,
+  isLeader,
+  onSelectProbability,
+}: {
+  label: string;
+  row?: ProbabilityRow;
+  quote: string;
+  selectedKey: string;
+  isLeader: boolean;
+  onSelectProbability: (key: string) => void;
+}) {
+  if (!row) {
+    return (
+      <section className="comparison-card">
+        <div className="comparison-card-head">
+          <div>
+            <h3>{label} Monte Carlo</h3>
+            <span>Waiting for row</span>
+          </div>
+        </div>
+        <EmptyState title={`${label} pending`} body="Waiting for the matching Monte Carlo row." />
+      </section>
+    );
+  }
+  const key = rowKey(row);
+  const preview = parseSimulationPreview(row.simulation_preview);
+  const className = compactList([
+    "comparison-card",
+    key === selectedKey ? "selected-comparison" : undefined,
+    isLeader ? "leader-comparison" : undefined,
+  ]);
+  return (
+    <section className={className}>
+      <button
+        className="comparison-card-head"
+        onClick={() => onSelectProbability(key)}
+        type="button"
+      >
+        <div>
+          <h3>{label} Monte Carlo</h3>
+          <span>{compactList([formatProbability(row.p_finish), quote, isLeader ? "leading" : undefined])}</span>
+        </div>
+        <GatePill value={row.decision_hint} />
+      </button>
+      <MonteCarloCanvas preview={preview} row={row} />
+    </section>
   );
 }
 
