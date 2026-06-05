@@ -26,6 +26,7 @@ from polymarket_engine.probability.runtime import _seed_for_input
 from polymarket_engine.probability.runtime import _steps_for_input
 from polymarket_engine.probability.runtime import latest_probability_inputs
 from polymarket_engine.probability.schema import ProbabilityInput
+from polymarket_engine.storage.atomic import durable_replace
 
 
 DEFAULT_GPU_PROBABILITY_LIMIT = 24
@@ -70,11 +71,12 @@ def run_cuda_probability_worker_cycle(
     except (duckdb.Error, json.JSONDecodeError, OSError, TypeError, ValueError) as exc:
         payload = _status_payload(
             generated_at=generated_at,
-            rows=previous_rows,
+            rows=[],
             skipped=0,
             errors=[f"probability input unavailable: {type(exc).__name__}: {exc}"],
             rows_seen=0,
             rows_written=0,
+            last_good_rows=previous_rows,
         )
         _write_status(probability_status_path, payload)
         return payload
@@ -142,9 +144,6 @@ def run_cuda_probability_worker_cycle(
         row["output_id"] = output_id
         rows.append(row)
 
-    if errors and not rows:
-        rows = previous_rows
-
     payload = _status_payload(
         generated_at=generated_at,
         rows=rows,
@@ -152,6 +151,7 @@ def run_cuda_probability_worker_cycle(
         errors=errors,
         rows_seen=len(inputs),
         rows_written=len(rows),
+        last_good_rows=previous_rows if errors and not rows else None,
     )
     _write_status(probability_status_path, payload)
     return payload
@@ -185,11 +185,12 @@ def run_cuda_probability_worker_loop(
         except duckdb.Error as exc:
             payload = _status_payload(
                 generated_at=generated_at,
-                rows=_read_status_rows(probability_status_path),
+                rows=[],
                 skipped=0,
                 errors=[f"probability worker duckdb unavailable: {type(exc).__name__}: {exc}"],
                 rows_seen=0,
                 rows_written=0,
+                last_good_rows=_read_status_rows(probability_status_path),
             )
             _write_status(probability_status_path, payload)
         print(json.dumps(payload, sort_keys=True, separators=(",", ":")), flush=True)
@@ -204,8 +205,9 @@ def _status_payload(
     errors: list[str],
     rows_seen: int,
     rows_written: int,
+    last_good_rows: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    return {
+    payload = {
         "schema_version": "polymarket-probability-runtime-v1",
         "ok": not errors,
         "state": "OK" if not errors else "PARTIAL",
@@ -219,6 +221,9 @@ def _status_payload(
         "rows_seen": rows_seen,
         "rows_written": rows_written,
     }
+    if last_good_rows:
+        payload["last_good_rows"] = last_good_rows
+    return payload
 
 
 def _write_status(path: Path, payload: dict[str, Any]) -> None:
@@ -228,7 +233,7 @@ def _write_status(path: Path, payload: dict[str, Any]) -> None:
         json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False),
         encoding="utf-8",
     )
-    tmp_path.replace(path)
+    durable_replace(tmp_path, path)
 
 
 def _read_status_rows(path: Path) -> list[dict[str, Any]]:

@@ -18,6 +18,35 @@ def test_deploy_defaults_disable_cpu_runtime_probabilities() -> None:
     assert "POLYMARKET_ENABLE_RUNTIME_PROBABILITIES=0" in env_example
 
 
+def test_pc_deploy_forces_existing_env_to_gpu_runtime_probabilities() -> None:
+    script = (ROOT / "scripts/deploy_pc.sh").read_text(encoding="utf-8")
+
+    assert 'set_env POLYMARKET_NORMALIZER_ENABLE_PROBABILITIES "0" deploy/collector/.env' in script
+    assert 'set_env POLYMARKET_ENABLE_RUNTIME_PROBABILITIES "0" deploy/collector/.env' in script
+    assert 'export POLYMARKET_NORMALIZER_ENABLE_PROBABILITIES="0"' in script
+    assert 'export POLYMARKET_ENABLE_RUNTIME_PROBABILITIES="0"' in script
+
+
+def test_pc_deploy_probability_smoke_requires_fresh_cuda_rows() -> None:
+    script = (ROOT / "scripts/deploy_pc.sh").read_text(encoding="utf-8")
+
+    assert "deploy_started_at = time.time()" in script
+    assert 'row.get("generator_version") != "cuda-lognormal-chainlink-sigma-v1"' in script
+    assert 'int(row.get("path_count") or 0) < 10_000' in script
+    assert "required_contracts" in script
+    assert '("BTC", "UP")' in script
+    assert '("BTC", "DOWN")' in script
+    assert '("ETH", "UP")' in script
+    assert '("ETH", "DOWN")' in script
+    assert "generated_at.timestamp() < deploy_started_at" in script
+
+
+def test_pc_deploy_docs_list_cuda_probability_artifact_for_skip_builds() -> None:
+    docs = (ROOT / "docs/SPOON_DEPLOYMENT.md").read_text(encoding="utf-8")
+
+    assert "polymarket-cuda-probability-<sha>.tar" in docs
+
+
 def test_deploy_compose_adds_nvidia_gpu_probability_worker() -> None:
     compose = (ROOT / "deploy/collector/docker-compose.yml").read_text(encoding="utf-8")
     dockerfile = (ROOT / "deploy/gpu/Dockerfile").read_text(encoding="utf-8")

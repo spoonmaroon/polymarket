@@ -181,6 +181,8 @@ set_env POLYMARKET_UID "\$(id -u)" deploy/collector/.env
 set_env POLYMARKET_GID "\$(id -g)" deploy/collector/.env
 set_env POLYMARKET_DATA_DIR "\$PC_DATA_DIR" deploy/collector/.env
 set_env POLYMARKET_NORMALIZER_INTERVAL_SECONDS "\$PC_NORMALIZER_INTERVAL_SECONDS" deploy/collector/.env
+set_env POLYMARKET_NORMALIZER_ENABLE_PROBABILITIES "0" deploy/collector/.env
+set_env POLYMARKET_ENABLE_RUNTIME_PROBABILITIES "0" deploy/collector/.env
 set_env POLYMARKET_REST_BACKUP_INTERVAL_MS "\$PC_REST_BACKUP_INTERVAL_MS" deploy/collector/.env
 set_env POLYMARKET_API_PORT "\$PC_API_PORT" deploy/collector/.env
 set_env POLYMARKET_COLLECTOR_IMAGE "\$COLLECTOR_IMAGE" deploy/collector/.env
@@ -367,6 +369,8 @@ export POLYMARKET_NORMALIZER_IMAGE="\$NORMALIZER_IMAGE"
 export POLYMARKET_CUDA_PROBABILITY_IMAGE="\$CUDA_PROBABILITY_IMAGE"
 export POLYMARKET_DATA_DIR="\$PC_DATA_DIR"
 export POLYMARKET_NORMALIZER_INTERVAL_SECONDS="\$PC_NORMALIZER_INTERVAL_SECONDS"
+export POLYMARKET_NORMALIZER_ENABLE_PROBABILITIES="0"
+export POLYMARKET_ENABLE_RUNTIME_PROBABILITIES="0"
 export POLYMARKET_REST_BACKUP_INTERVAL_MS="\$PC_REST_BACKUP_INTERVAL_MS"
 export DEPLOY_FORCE=1
 ./scripts/deploy.sh
@@ -396,8 +400,10 @@ import json
 import os
 import time
 import urllib.request
+from datetime import datetime, timezone
 
 base = f"http://127.0.0.1:{os.environ['POLYMARKET_API_PORT']}"
+deploy_started_at = time.time()
 
 
 def get_json(path: str) -> dict[str, object]:
@@ -417,14 +423,58 @@ outcomes = get_json("/api/runtime/outcomes?limit=8")
 if outcomes.get("ok") is not True or not isinstance(outcomes.get("rows"), list):
     raise SystemExit(f"runtime outcomes smoke failed: {outcomes}")
 
+
+def parse_ts(value):
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def cuda_probability_payload_ready(payload):
+    if payload.get("ok") is not True:
+        return False
+    if payload.get("schema_version") != "polymarket-probability-runtime-v1":
+        return False
+    generated_at = parse_ts(payload.get("generated_at"))
+    if generated_at is None:
+        return False
+    if generated_at.tzinfo is None:
+        generated_at = generated_at.replace(tzinfo=timezone.utc)
+    if generated_at.timestamp() < deploy_started_at:
+        return False
+    rows = payload.get("rows")
+    if not isinstance(rows, list) or not rows:
+        return False
+    now = datetime.now(timezone.utc)
+    required_contracts = {("BTC", "UP"), ("BTC", "DOWN"), ("ETH", "UP"), ("ETH", "DOWN")}
+    seen = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        asset = str(row.get("asset") or "").upper()
+        side = str(row.get("side") or "").upper()
+        expiry_ts = parse_ts(row.get("expiry_ts"))
+        if expiry_ts is None:
+            continue
+        if expiry_ts.tzinfo is None:
+            expiry_ts = expiry_ts.replace(tzinfo=timezone.utc)
+        if expiry_ts <= now:
+            continue
+        if row.get("generator_version") != "cuda-lognormal-chainlink-sigma-v1":
+            continue
+        if int(row.get("path_count") or 0) < 10_000:
+            continue
+        if (asset, side) in required_contracts:
+            seen.add((asset, side))
+    return seen == required_contracts
+
+
 probabilities = get_json("/api/runtime/probabilities?limit=8")
 for _ in range(60):
-    if (
-        probabilities.get("ok") is True
-        and probabilities.get("schema_version") == "polymarket-probability-runtime-v1"
-        and isinstance(probabilities.get("rows"), list)
-        and len(probabilities.get("rows")) > 0
-    ):
+    if cuda_probability_payload_ready(probabilities):
         break
     time.sleep(1)
     probabilities = get_json("/api/runtime/probabilities?limit=8")

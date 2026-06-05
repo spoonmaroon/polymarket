@@ -154,7 +154,7 @@ def test_cuda_probability_worker_cycle_reads_input_snapshot_without_duckdb(
     assert result["rows"][0]["path_count"] == 20_000
 
 
-def test_cuda_probability_worker_cycle_preserves_rows_when_inputs_unavailable(
+def test_cuda_probability_worker_cycle_clears_active_rows_when_inputs_unavailable(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -180,12 +180,15 @@ def test_cuda_probability_worker_cycle_preserves_rows_when_inputs_unavailable(
     )
 
     assert result["ok"] is False
-    assert result["rows"] == [previous_row]
+    assert result["rows"] == []
+    assert result["last_good_rows"] == [previous_row]
     assert "conflicting lock" in result["error"]
-    assert json.loads(status_path.read_text(encoding="utf-8"))["rows"] == [previous_row]
+    payload = json.loads(status_path.read_text(encoding="utf-8"))
+    assert payload["rows"] == []
+    assert payload["last_good_rows"] == [previous_row]
 
 
-def test_cuda_probability_worker_loop_preserves_rows_on_duckdb_lock(
+def test_cuda_probability_worker_loop_clears_active_rows_on_duckdb_lock(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -219,8 +222,95 @@ def test_cuda_probability_worker_loop_preserves_rows_on_duckdb_lock(
 
     result = json.loads(status_path.read_text(encoding="utf-8"))
     assert result["ok"] is False
-    assert result["rows"] == [previous_row]
+    assert result["rows"] == []
+    assert result["last_good_rows"] == [previous_row]
     assert "probability worker duckdb unavailable" in result["error"]
+
+
+def test_cuda_probability_worker_cycle_clears_active_rows_when_all_cuda_runs_fail(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polymarket_engine.probability import gpu_worker
+
+    db_path = tmp_path / "state.duckdb"
+    status_path = tmp_path / "live" / "probabilities.json"
+    previous_row = {"contract_id": "btc-updown-5m:UP", "model_version": "cached-grid-v1"}
+    status_path.parent.mkdir(parents=True)
+    status_path.write_text(json.dumps({"rows": [previous_row]}), encoding="utf-8")
+
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    state = _decision_state()
+    store.upsert_contract_spec(state.contract)
+    store.upsert_asof_state_input(state)
+
+    def failing_cuda(*_: object, **__: object) -> object:
+        raise RuntimeError("cuda device lost")
+
+    monkeypatch.setattr(gpu_worker, "run_cuda_monte_carlo", failing_cuda)
+
+    result = gpu_worker.run_cuda_probability_worker_cycle(
+        duckdb_path=db_path,
+        probability_status_path=status_path,
+    )
+
+    assert result["ok"] is False
+    assert result["rows"] == []
+    assert result["last_good_rows"] == [previous_row]
+    assert result["rows_seen"] == 1
+    assert result["rows_written"] == 0
+    assert "cuda device lost" in result["error"]
+
+
+def test_cuda_probability_worker_reads_only_non_expired_probability_inputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polymarket_engine.probability import gpu_worker
+
+    captured: list[bool | None] = []
+
+    def fake_inputs(**kwargs: object) -> tuple[tuple[object, ...], int]:
+        captured.append(kwargs.get("active_only"))
+        return (), 0
+
+    monkeypatch.setattr(gpu_worker, "latest_probability_inputs", fake_inputs)
+
+    result = gpu_worker.run_cuda_probability_worker_cycle(
+        duckdb_path=tmp_path / "state.duckdb",
+        probability_status_path=tmp_path / "live" / "probabilities.json",
+    )
+
+    assert result["ok"] is True
+    assert captured == [True]
+
+
+def test_cuda_probability_worker_status_write_uses_durable_replace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polymarket_engine.probability import gpu_worker
+
+    status_path = tmp_path / "live" / "probabilities.json"
+    calls: list[tuple[Path, Path]] = []
+
+    def fake_durable_replace(tmp: Path, final: Path) -> None:
+        calls.append((tmp, final))
+        tmp.replace(final)
+
+    monkeypatch.setattr(gpu_worker, "durable_replace", fake_durable_replace)
+
+    gpu_worker._write_status(
+        status_path,
+        {
+            "schema_version": "polymarket-probability-runtime-v1",
+            "rows": [],
+        },
+    )
+
+    assert calls == [(status_path.with_suffix(".json.tmp"), status_path)]
+    assert json.loads(status_path.read_text(encoding="utf-8"))["rows"] == []
 
 
 def _contract() -> ContractSpec:

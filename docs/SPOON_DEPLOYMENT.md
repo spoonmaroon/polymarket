@@ -80,7 +80,8 @@ Defaults:
 
 Set `PC_DEPLOY_BUILD_IMAGES=0` only when matching
 `dist/docker/polymarket-rust-collector-<sha>.tar` and
-`dist/docker/polymarket-normalizer-<sha>.tar` plus
+`dist/docker/polymarket-normalizer-<sha>.tar`,
+`dist/docker/polymarket-cuda-probability-<sha>.tar`, plus
 `dist/docker/polymarket-cockpit-tui-<sha>` already exist for the checked-out
 commit.
 

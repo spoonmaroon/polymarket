@@ -1168,15 +1168,6 @@ function toProbabilityApiState(
   const next = toApiState(result);
   const previousRows = safeRows(previous.payload);
   const nextRows = safeRows(next.payload);
-  if (!result.error && next.payload && nextRows.length === 0 && previousRows.length > 0) {
-    return {
-      ...previous,
-      status: "ready",
-      error: null,
-      notice: `Monte Carlo rollover returned 0 rows; showing last ${previousRows.length}.`,
-      updatedAt: Date.now(),
-    };
-  }
   if (!result.error && next.payload && previousRows.length > 0 && nextRows.length > 0) {
     return {
       ...next,
@@ -1186,8 +1177,25 @@ function toProbabilityApiState(
   return next;
 }
 
-function safeRows(payload: ProbabilityPayload | null): ProbabilityRow[] {
-  return Array.isArray(payload?.rows) ? payload.rows.filter(isRecord) : [];
+function safeRows(payload: ProbabilityPayload | null, nowMs = Date.now()): ProbabilityRow[] {
+  if (payload?.ok === false) {
+    return [];
+  }
+  return Array.isArray(payload?.rows)
+    ? payload.rows
+        .filter(isRecord)
+        .filter((row) => isGraphableProbabilityRow(row, nowMs))
+    : [];
+}
+
+function isGraphableProbabilityRow(row: ProbabilityRow, nowMs: number) {
+  const expiryMs = contractExpiryMs(row);
+  const expiryIsFresh = Number.isFinite(expiryMs) && expiryMs > nowMs;
+  if (!expiryIsFresh) {
+    return false;
+  }
+  const validUntilMs = timestampMs(row.valid_until);
+  return !Number.isFinite(validUntilMs) || validUntilMs > nowMs;
 }
 
 function selectProbabilityRow(
