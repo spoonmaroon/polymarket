@@ -450,6 +450,10 @@ def cuda_probability_payload_ready(payload):
         return False
     now = datetime.now(timezone.utc)
     required_contracts = {("BTC", "UP"), ("BTC", "DOWN"), ("ETH", "UP"), ("ETH", "DOWN")}
+    cuda_generator_versions = {
+        "cuda-lognormal-chainlink-sigma-batch-v1",
+        "cuda-lognormal-chainlink-sigma-multiseed-v1",
+    }
     seen = set()
     for row in rows:
         if not isinstance(row, dict):
@@ -463,7 +467,7 @@ def cuda_probability_payload_ready(payload):
             expiry_ts = expiry_ts.replace(tzinfo=timezone.utc)
         if expiry_ts <= now:
             continue
-        if row.get("generator_version") != "cuda-lognormal-chainlink-sigma-multiseed-v1":
+        if row.get("generator_version") not in cuda_generator_versions:
             continue
         if int(row.get("path_count") or 0) < 10_000:
             continue
