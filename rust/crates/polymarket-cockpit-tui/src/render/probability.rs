@@ -5,10 +5,7 @@ use ratatui::{
     widgets::{Block, Cell, Row, Table},
 };
 
-use crate::{
-    state::AppState,
-    status::{RuntimeProbabilityRow, RuntimeVolatilityRow},
-};
+use crate::{state::AppState, status::RuntimeProbabilityRow};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProbabilityDisplayRow {
@@ -58,32 +55,6 @@ pub fn probability_table(app: &AppState) -> ProbabilityTableModel {
         };
     }
 
-    let volatility_rows = app
-        .runtime_volatility
-        .as_ref()
-        .map(|volatility| {
-            volatility
-                .rows
-                .iter()
-                .map(volatility_probability_row)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    if !volatility_rows.is_empty() {
-        return ProbabilityTableModel {
-            headers: vec![
-                "Asset",
-                "sigma_tau",
-                "short",
-                "medium",
-                "long",
-                "regime",
-                "Age/Flags",
-            ],
-            rows: volatility_rows,
-        };
-    }
-
     ProbabilityTableModel {
         headers: probability_header_labels().to_vec(),
         rows: vec![vec![
@@ -108,36 +79,6 @@ pub fn probability_rows(app: &AppState) -> Vec<ProbabilityDisplayRow> {
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default()
-}
-
-fn volatility_probability_row(row: &RuntimeVolatilityRow) -> Vec<String> {
-    vec![
-        row.asset.clone(),
-        format_optional_vol(row.sigma_tau),
-        format_optional_vol(row.short_realized_vol),
-        format_optional_vol(row.medium_realized_vol),
-        format_optional_vol(row.long_realized_vol),
-        row.volatility_regime
-            .clone()
-            .unwrap_or_else(|| "-".to_string()),
-        volatility_age_flags(row),
-    ]
-}
-
-fn format_optional_vol(value: Option<f64>) -> String {
-    value.map_or_else(|| "-".to_string(), |value| format!("{value:.5}"))
-}
-
-fn volatility_age_flags(row: &RuntimeVolatilityRow) -> String {
-    let flags = if row.flags.is_empty() {
-        "OK".to_string()
-    } else {
-        row.flags.join(",")
-    };
-    match row.age_ms {
-        Some(age_ms) => format!("{age_ms}ms {flags}"),
-        None => format!("- {flags}"),
-    }
 }
 
 fn probability_row(row: &RuntimeProbabilityRow) -> ProbabilityDisplayRow {
@@ -179,18 +120,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     frame.render_widget(table, area);
 }
 
-fn probability_widths(column_count: usize) -> Vec<Constraint> {
-    if column_count == 7 {
-        return vec![
-            Constraint::Length(8),
-            Constraint::Length(11),
-            Constraint::Length(10),
-            Constraint::Length(10),
-            Constraint::Length(10),
-            Constraint::Length(12),
-            Constraint::Min(12),
-        ];
-    }
+fn probability_widths(_column_count: usize) -> Vec<Constraint> {
     vec![
         Constraint::Length(18),
         Constraint::Length(10),
@@ -253,7 +183,7 @@ mod tests {
     }
 
     #[test]
-    fn probability_table_renders_volatility_when_probabilities_are_empty() {
+    fn probability_table_stays_pending_when_probabilities_are_empty_even_with_volatility() {
         let app = AppState {
             runtime_volatility: Some(RuntimeVolatility {
                 state: "OK".to_string(),
@@ -276,28 +206,16 @@ mod tests {
 
         let table = probability_table(&app);
 
-        assert_eq!(
-            table.headers,
-            vec![
-                "Asset",
-                "sigma_tau",
-                "short",
-                "medium",
-                "long",
-                "regime",
-                "Age/Flags"
-            ]
-        );
+        assert_eq!(table.headers, probability_header_labels().to_vec());
         assert_eq!(
             table.rows[0],
             vec![
-                "BTC".to_string(),
-                "0.00120".to_string(),
-                "0.00010".to_string(),
-                "0.00020".to_string(),
-                "0.00030".to_string(),
-                "normal".to_string(),
-                "120ms OK".to_string(),
+                "probability pending".to_string(),
+                "-".to_string(),
+                "-".to_string(),
+                "-".to_string(),
+                "-".to_string(),
+                "-".to_string(),
             ]
         );
     }
