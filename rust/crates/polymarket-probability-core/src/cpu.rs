@@ -8,8 +8,8 @@ use std::time::Instant;
 
 use crate::backend::SimulationBackend;
 use crate::schema::{
-    HistogramBin, PercentilePoint, ProbabilityInput, SimulationArtifacts, SimulationBackendKind,
-    SimulationConfig, SimulationRun,
+    ComparisonOperator, HistogramBin, PercentilePoint, ProbabilityInput, Side, SimulationArtifacts,
+    SimulationBackendKind, SimulationConfig, SimulationRun,
 };
 use crate::scoring::price_satisfies_contract;
 
@@ -101,9 +101,13 @@ impl SimulationBackend for CpuRayonBackend {
 }
 
 fn validate_input(input: &ProbabilityInput) -> Result<()> {
+    validate_non_negative_finite("seconds_left", input.seconds_left)?;
     validate_positive_finite("settlement_price", input.settlement_price)?;
     validate_positive_finite("threshold", input.threshold)?;
-    validate_positive_finite("sigma_tau", input.sigma_tau)
+    validate_positive_finite("sigma_tau", input.sigma_tau)?;
+    validate_probability("executable_price", input.executable_price)?;
+    validate_finite("z_path", input.z_path)?;
+    validate_side_operator(input)
 }
 
 fn validate_config(config: &SimulationConfig) -> Result<()> {
@@ -124,6 +128,41 @@ fn validate_positive_finite(name: &str, value: f64) -> Result<()> {
         Ok(())
     } else {
         bail!("{name} must be positive and finite")
+    }
+}
+
+fn validate_non_negative_finite(name: &str, value: f64) -> Result<()> {
+    if value.is_finite() && value >= 0.0 {
+        Ok(())
+    } else {
+        bail!("{name} must be non-negative and finite")
+    }
+}
+
+fn validate_probability(name: &str, value: f64) -> Result<()> {
+    if value.is_finite() && (0.0..=1.0).contains(&value) {
+        Ok(())
+    } else {
+        bail!("{name} must be finite and in [0, 1]")
+    }
+}
+
+fn validate_finite(name: &str, value: f64) -> Result<()> {
+    if value.is_finite() {
+        Ok(())
+    } else {
+        bail!("{name} must be finite")
+    }
+}
+
+fn validate_side_operator(input: &ProbabilityInput) -> Result<()> {
+    match (input.side, input.comparison_operator) {
+        (Side::UP, ComparisonOperator::GreaterThan | ComparisonOperator::GreaterThanOrEqual)
+        | (Side::DOWN, ComparisonOperator::LessThan | ComparisonOperator::LessThanOrEqual) => {
+            Ok(())
+        }
+        (Side::UP, _) => bail!("UP side requires greater-than comparison operator"),
+        (Side::DOWN, _) => bail!("DOWN side requires less-than comparison operator"),
     }
 }
 
@@ -437,5 +476,53 @@ mod tests {
         let mut bad_version = config();
         bad_version.model_version = " ".to_string();
         assert!(backend.run(&input(), &bad_version).is_err());
+    }
+
+    #[test]
+    fn cpu_backend_rejects_invalid_z_path() {
+        let backend = CpuRayonBackend;
+        let mut bad_input = input();
+        bad_input.z_path = f64::INFINITY;
+
+        assert!(backend.run(&bad_input, &config()).is_err());
+    }
+
+    #[test]
+    fn cpu_backend_rejects_invalid_executable_price() {
+        let backend = CpuRayonBackend;
+        for executable_price in [f64::NAN, -0.01, 1.01] {
+            let mut bad_input = input();
+            bad_input.executable_price = executable_price;
+
+            assert!(backend.run(&bad_input, &config()).is_err());
+        }
+    }
+
+    #[test]
+    fn cpu_backend_rejects_negative_seconds_left() {
+        let backend = CpuRayonBackend;
+        let mut bad_input = input();
+        bad_input.seconds_left = -1.0;
+
+        assert!(backend.run(&bad_input, &config()).is_err());
+    }
+
+    #[test]
+    fn cpu_backend_rejects_side_operator_mismatch() {
+        let backend = CpuRayonBackend;
+
+        let down_with_greater = ProbabilityInput {
+            side: Side::DOWN,
+            comparison_operator: ComparisonOperator::GreaterThan,
+            ..input()
+        };
+        assert!(backend.run(&down_with_greater, &config()).is_err());
+
+        let up_with_less = ProbabilityInput {
+            side: Side::UP,
+            comparison_operator: ComparisonOperator::LessThan,
+            ..input()
+        };
+        assert!(backend.run(&up_with_less, &config()).is_err());
     }
 }
