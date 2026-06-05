@@ -8,11 +8,11 @@ from polymarket_engine.probability.path_policy import runtime_path_count_for_sec
 @pytest.mark.parametrize(
     ("seconds_left", "expected_path_count"),
     (
-        (1_200.0, 2_500),
-        (901.0, 2_500),
-        (900.0, 5_000),
-        (750.0, 5_000),
-        (601.0, 5_000),
+        (1_200.0, 10_000),
+        (901.0, 10_000),
+        (900.0, 10_000),
+        (750.0, 10_000),
+        (601.0, 10_000),
         (600.0, 10_000),
         (450.0, 10_000),
         (301.0, 10_000),
@@ -29,3 +29,10 @@ def test_runtime_path_count_policy_scales_by_seconds_left(
     expected_path_count: int,
 ) -> None:
     assert runtime_path_count_for_seconds_left(seconds_left) == expected_path_count
+
+
+@pytest.mark.parametrize("seconds_left", (1.0, 30.0, 120.0, 300.0, 600.0, 900.0, 1_200.0))
+def test_runtime_path_count_policy_never_drops_below_ten_thousand(
+    seconds_left: float,
+) -> None:
+    assert runtime_path_count_for_seconds_left(seconds_left) >= 10_000

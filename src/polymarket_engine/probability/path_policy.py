@@ -15,8 +15,4 @@ def runtime_path_count_for_seconds_left(seconds_left: float) -> int:
         return 30_000
     if value <= 300:
         return 20_000
-    if value <= 600:
-        return 10_000
-    if value <= 900:
-        return 5_000
-    return 2_500
+    return 10_000

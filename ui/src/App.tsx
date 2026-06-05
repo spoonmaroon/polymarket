@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { filterGraphableProbabilityRows } from "./probabilityRows";
 
 const LIVE_LIMIT = 12;
 const PROBABILITY_LIMIT = 24;
@@ -1178,24 +1179,7 @@ function toProbabilityApiState(
 }
 
 function safeRows(payload: ProbabilityPayload | null, nowMs = Date.now()): ProbabilityRow[] {
-  if (payload?.ok === false) {
-    return [];
-  }
-  return Array.isArray(payload?.rows)
-    ? payload.rows
-        .filter(isRecord)
-        .filter((row) => isGraphableProbabilityRow(row, nowMs))
-    : [];
-}
-
-function isGraphableProbabilityRow(row: ProbabilityRow, nowMs: number) {
-  const expiryMs = contractExpiryMs(row);
-  const expiryIsFresh = Number.isFinite(expiryMs) && expiryMs > nowMs;
-  if (!expiryIsFresh) {
-    return false;
-  }
-  const validUntilMs = timestampMs(row.valid_until);
-  return !Number.isFinite(validUntilMs) || validUntilMs > nowMs;
+  return filterGraphableProbabilityRows(payload, nowMs);
 }
 
 function selectProbabilityRow(
