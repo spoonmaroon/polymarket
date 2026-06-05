@@ -93,13 +93,17 @@ wsl_put_file() {
   local dest="$2"
   local dest_dir
   local dest_dir_q
+  local dest_tmp
+  local dest_tmp_q
   local dest_q
 
   dest_dir="$(dirname "$dest")"
+  dest_tmp="$dest.tmp.$$"
   dest_dir_q="$(shell_quote "$dest_dir")"
+  dest_tmp_q="$(shell_quote "$dest_tmp")"
   dest_q="$(shell_quote "$dest")"
 
-  ssh "$PC_HOST" "wsl.exe -d $PC_WSL_DISTRO -- bash -lc \"mkdir -p $dest_dir_q && cat > $dest_q\"" < "$src"
+  ssh "$PC_HOST" "wsl.exe -d $PC_WSL_DISTRO -- bash -lc \"set -euo pipefail; mkdir -p $dest_dir_q && cat > $dest_tmp_q && mv -f $dest_tmp_q $dest_q\"" < "$src"
 }
 
 echo "copying git bundle and image tarballs to THEPC WSL"

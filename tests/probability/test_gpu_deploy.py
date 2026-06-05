@@ -44,6 +44,13 @@ def test_pc_deploy_probability_smoke_requires_fresh_cuda_rows() -> None:
     assert "generated_at.timestamp() < deploy_started_at" in script
 
 
+def test_pc_deploy_copies_artifacts_atomically() -> None:
+    script = (ROOT / "scripts/deploy_pc.sh").read_text(encoding="utf-8")
+
+    assert 'dest_tmp="$dest.tmp.$$"' in script
+    assert "cat > $dest_tmp_q && mv -f $dest_tmp_q $dest_q" in script
+
+
 def test_pc_deploy_docs_list_cuda_probability_artifact_for_skip_builds() -> None:
     docs = (ROOT / "docs/SPOON_DEPLOYMENT.md").read_text(encoding="utf-8")
 
