@@ -90,7 +90,7 @@ pub fn probability_rows(app: &AppState) -> Vec<ProbabilityDisplayRow> {
         Some(group) if probabilities.rows.iter().any(row_has_market_identity) => probabilities
             .rows
             .iter()
-            .filter(|row| probability_matches_group(row, &group))
+            .filter(|row| probability_matches_selected_window(row, &group))
             .collect::<Vec<_>>(),
         _ => probabilities.rows.iter().collect::<Vec<_>>(),
     };
@@ -221,6 +221,27 @@ fn probability_matches_group(
             .is_none_or(|value| value.trim().is_empty())
 }
 
+fn probability_matches_selected_window(
+    row: &RuntimeProbabilityRow,
+    group: &crate::market_view::MarketGroup<'_>,
+) -> bool {
+    if let (Some(row_expiry), Some(group_expiry)) = (
+        parse_probability_ts(row.expiry_ts.as_deref()),
+        group.expiry_ts,
+    ) {
+        let row_interval = market_interval(row.market_slug.as_deref())
+            .or_else(|| contract_interval(&row.contract));
+        let group_interval = market_interval(Some(&group.market_slug));
+        return row_expiry == group_expiry
+            && match (row_interval, group_interval) {
+                (Some(row_interval), Some(group_interval)) => row_interval == group_interval,
+                _ => true,
+            };
+    }
+
+    probability_matches_group(row, group)
+}
+
 fn probability_contract_matches_group(
     row: &RuntimeProbabilityRow,
     group: &crate::market_view::MarketGroup<'_>,
@@ -258,6 +279,24 @@ fn parse_probability_ts(value: Option<&str>) -> Option<DateTime<Utc>> {
 
 fn compact_ts(value: Option<&str>) -> Option<String> {
     parse_probability_ts(value).map(|timestamp| timestamp.format("%H:%M:%S").to_string())
+}
+
+fn market_interval(value: Option<&str>) -> Option<String> {
+    let parts = value?.split('-').collect::<Vec<_>>();
+    if parts.len() >= 4 && parts[1] == "updown" {
+        Some(parts[2].to_string())
+    } else {
+        None
+    }
+}
+
+fn contract_interval(value: &str) -> Option<String> {
+    value
+        .split_whitespace()
+        .find(|part| {
+            part.ends_with('m') && part[..part.len().saturating_sub(1)].parse::<u32>().is_ok()
+        })
+        .map(str::to_string)
 }
 
 fn weight_label(name: &str) -> &str {
@@ -394,7 +433,7 @@ mod tests {
     }
 
     #[test]
-    fn probability_rows_follow_selected_market_group() {
+    fn probability_rows_show_all_current_expiry_legs_for_selected_market_group() {
         let expiry_ts = "2026-06-03T21:25:00Z";
         let mut app = AppState {
             runtime_monitor: Some(RuntimeMonitor {
@@ -415,6 +454,7 @@ mod tests {
                     probability("BTC 5m DOWN", "BTC", "DOWN", expiry_ts, 0.43),
                     probability("ETH 5m UP", "ETH", "UP", expiry_ts, 0.61),
                     probability("ETH 5m DOWN", "ETH", "DOWN", expiry_ts, 0.39),
+                    probability_with_interval("BTC 15m UP", "BTC", "UP", "15m", expiry_ts, 0.58),
                 ],
             }),
             ..Default::default()
@@ -426,7 +466,12 @@ mod tests {
 
         assert_eq!(
             rows.into_iter().map(|row| row.contract).collect::<Vec<_>>(),
-            vec!["ETH 5m UP".to_string(), "ETH 5m DOWN".to_string()]
+            vec![
+                "BTC 5m UP".to_string(),
+                "BTC 5m DOWN".to_string(),
+                "ETH 5m UP".to_string(),
+                "ETH 5m DOWN".to_string(),
+            ]
         );
     }
 
@@ -478,6 +523,17 @@ mod tests {
         expiry_ts: &str,
         p_finish: f64,
     ) -> RuntimeProbabilityRow {
+        probability_with_interval(contract, asset, side, "5m", expiry_ts, p_finish)
+    }
+
+    fn probability_with_interval(
+        contract: &str,
+        asset: &str,
+        side: &str,
+        interval: &str,
+        expiry_ts: &str,
+        p_finish: f64,
+    ) -> RuntimeProbabilityRow {
         RuntimeProbabilityRow {
             contract: contract.to_string(),
             contract_id: Some(format!(
@@ -486,7 +542,7 @@ mod tests {
                 side
             )),
             market_slug: Some(format!(
-                "{}-updown-5m-1780521900",
+                "{}-updown-{interval}-1780521900",
                 asset.to_ascii_lowercase()
             )),
             asset: Some(asset.to_string()),

@@ -199,39 +199,11 @@ def build_runtime_router(
                 "skipped": 0,
                 "errors": [str(exc)],
             }
-        if payload.get("state") != "MISSING" or not probability_status_path.exists():
-            return payload
-        if probability_status_path.exists():
-            status_payload, read_error = _read_json_or_error(probability_status_path)
-            if status_payload is None:
-                return {
-                    "ok": False,
-                    "state": read_error["state"],
-                    "error": read_error["error"],
-                    "generated_at": datetime.now(timezone.utc).isoformat(),
-                    "cached": False,
-                    "model_version": None,
-                    "rows": [],
-                    "skipped": 0,
-                    "errors": [read_error["error"]],
-                }
-            rows = status_payload.get("rows")
-            if not isinstance(rows, list):
-                return {
-                    "ok": False,
-                    "state": "INVALID",
-                    "error": "probability status shape invalid: rows must be a list",
-                    "generated_at": datetime.now(timezone.utc).isoformat(),
-                    "cached": False,
-                    "model_version": None,
-                    "rows": [],
-                    "skipped": 0,
-                    "errors": ["probability status shape invalid: rows must be a list"],
-                }
-            limited = dict(status_payload)
-            limited["rows"] = rows[:limit]
-            limited["cached"] = False
-            return limited
+        if payload.get("state") in {"MISSING", "INVALID"} and probability_status_path.exists():
+            return _probability_status_payload(
+                probability_status_path=probability_status_path,
+                limit=limit,
+            )
         return payload
 
     @router.get("/outcomes")
@@ -292,6 +264,43 @@ def _probabilities_disabled_payload() -> dict[str, Any]:
         "skipped": 0,
         "errors": [],
     }
+
+
+def _probability_status_payload(
+    *,
+    probability_status_path: Path,
+    limit: int,
+) -> dict[str, Any]:
+    status_payload, read_error = _read_json_or_error(probability_status_path)
+    if status_payload is None:
+        return {
+            "ok": False,
+            "state": read_error["state"],
+            "error": read_error["error"],
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "cached": False,
+            "model_version": None,
+            "rows": [],
+            "skipped": 0,
+            "errors": [read_error["error"]],
+        }
+    rows = status_payload.get("rows")
+    if not isinstance(rows, list):
+        return {
+            "ok": False,
+            "state": "INVALID",
+            "error": "probability status shape invalid: rows must be a list",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "cached": False,
+            "model_version": None,
+            "rows": [],
+            "skipped": 0,
+            "errors": ["probability status shape invalid: rows must be a list"],
+        }
+    limited = dict(status_payload)
+    limited["rows"] = rows[:limit]
+    limited["cached"] = False
+    return limited
 
 
 def _runtime_live_payload(

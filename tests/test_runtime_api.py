@@ -1275,6 +1275,61 @@ def test_runtime_probabilities_reads_live_probability_status_file_when_duckdb_mi
     assert payload["rows"] == [{"contract": "BTC 5m UP", "output_id": "btc-up"}]
 
 
+def test_runtime_probabilities_reads_live_probability_status_file_when_duckdb_locked(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "polymarket.duckdb"
+    db_path.touch()
+    probability_status_path = tmp_path / "live" / "probabilities.json"
+    probability_status_path.parent.mkdir()
+    probability_status_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "polymarket-probability-runtime-v1",
+                "ok": True,
+                "state": "OK",
+                "generated_at": datetime.now(UTC).isoformat(),
+                "cached": False,
+                "model_version": "cached-grid-v1",
+                "rows": [
+                    {"contract": "BTC 5m UP", "asset": "BTC", "side": "UP"},
+                    {"contract": "BTC 5m DOWN", "asset": "BTC", "side": "DOWN"},
+                    {"contract": "ETH 5m UP", "asset": "ETH", "side": "UP"},
+                    {"contract": "ETH 5m DOWN", "asset": "ETH", "side": "DOWN"},
+                ],
+                "skipped": 0,
+                "errors": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def locked_connect(*_: object, **__: object) -> NoReturn:
+        raise duckdb.IOException("Could not set lock on file")
+
+    monkeypatch.setattr(duckdb, "connect", locked_connect)
+    app = create_app(
+        status_path=tmp_path / "missing-status.json",
+        duckdb_path=db_path,
+        probability_status_path=probability_status_path,
+        enable_runtime_probabilities=True,
+    )
+
+    response = TestClient(app).get("/api/runtime/probabilities?limit=4")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["state"] == "OK"
+    assert [row["contract"] for row in payload["rows"]] == [
+        "BTC 5m UP",
+        "BTC 5m DOWN",
+        "ETH 5m UP",
+        "ETH 5m DOWN",
+    ]
+
+
 def test_runtime_probabilities_prefers_grid_cache_over_persisted_outputs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
