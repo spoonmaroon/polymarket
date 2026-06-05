@@ -138,6 +138,8 @@ type ProbabilityRow = {
   age_ms?: number;
   flags?: string[];
   model_version?: string;
+  seed?: number | null;
+  u_gen?: number | null;
   mc_dispersion?: number | null;
   uncertainty_buffer?: number | null;
   path_diagnosis?: string[];
@@ -194,6 +196,14 @@ type MarketMonitorRow = {
   upProbability?: ProbabilityRow;
   downProbability?: ProbabilityRow;
   volatility?: RuntimeVolatilityRow;
+};
+
+type RuntimeLogEntry = {
+  at: number;
+  source: string;
+  level: "info" | "warn";
+  message: string;
+  sequence: number;
 };
 
 const emptyLive: ApiState<RuntimeLivePayload> = {
@@ -272,9 +282,9 @@ export function App() {
       <header className="topbar">
         <div>
           <h1>Runtime Monitor</h1>
-          <p>Read-only live status, probability outputs, gates, and cache health.</p>
+          <p>Live status, Monte Carlo outputs, decision checks, and cache health.</p>
         </div>
-        <div className="mode-lock">Paper / read-only</div>
+        <CompactLiveHealth live={live} probabilities={probabilities} rows={rows} />
       </header>
 
       <StatusStrip
@@ -291,21 +301,53 @@ export function App() {
             selectedProbabilityKey={selectedRow ? rowKey(selectedRow) : null}
             onSelectProbability={setSelectedId}
           />
-          <SelectedDetails row={selectedRow} probabilities={probabilities.payload} />
+          <SelectedDetails
+            row={selectedRow}
+            probabilities={probabilities.payload}
+            marketRows={marketRows}
+            onSelectProbability={setSelectedId}
+          />
           <ProbabilityTable
             rows={rows}
             selectedKey={selectedRow ? rowKey(selectedRow) : null}
             onSelect={setSelectedId}
             state={probabilities}
           />
+          <MonteCarloInputsPanel
+            row={selectedRow}
+            probabilities={probabilities}
+            marketRows={marketRows}
+          />
+          <RuntimeLogPanel live={live} probabilities={probabilities} selectedRow={selectedRow} />
         </section>
         <aside className="side-stack">
-          <SystemHealth live={live} probabilities={probabilities} />
           <CompactVolatility volatility={live.payload?.volatility ?? null} />
-          <GateAndWeights row={selectedRow} />
         </aside>
       </section>
     </main>
+  );
+}
+
+function CompactLiveHealth({
+  live,
+  probabilities,
+  rows,
+}: {
+  live: ApiState<RuntimeLivePayload>;
+  probabilities: ApiState<ProbabilityPayload>;
+  rows: ProbabilityRow[];
+}) {
+  const payload = live.payload;
+  const orderbookCount = arrayLength(payload?.monitor?.orderbooks);
+  return (
+    <div className="topbar-health" aria-label="Compact live health">
+      <span>{payload?.status?.state ?? statusLabel(live.status)}</span>
+      <span>{formatInteger(orderbookCount)} books</span>
+      <span>{payload?.volatility?.state ?? "vol -"}</span>
+      <span>{probabilities.payload?.state ?? statusLabel(probabilities.status)}</span>
+      <span>{formatInteger(rows.length)} MC rows</span>
+      <span>{formatLatency(payload?.latency)}</span>
+    </div>
   );
 }
 
@@ -335,7 +377,7 @@ function StatusStrip({
       <Metric label="Live state" value={liveState} tone={liveTone(livePayload?.ok, live.status)} />
       <Metric label="Generated" value={formatTimestamp(generatedAt)} />
       <Metric
-        label="Probability"
+        label="Monte Carlo"
         value={probabilityPayload?.state ?? statusLabel(probabilities.status)}
         tone={probabilityTone(probabilityPayload)}
       />
@@ -344,7 +386,7 @@ function StatusStrip({
       <Metric label="API build" value={formatLatency(livePayload?.latency)} />
       {live.error ? <div className="status-note">Live API: {live.error}</div> : null}
       {probabilities.error ? (
-        <div className="status-note">Probability API: {probabilities.error}</div>
+        <div className="status-note">Monte Carlo API: {probabilities.error}</div>
       ) : null}
       {probabilities.notice ? (
         <div className="status-note status-note-info">{probabilities.notice}</div>
@@ -366,20 +408,20 @@ function MarketMonitor({
     <section className="panel market-panel">
       <PanelHeader
         title="Market Monitor"
-        subtitle="Orderbook, target, probability, and volatility context by market."
+        subtitle="Orderbook, target, Monte Carlo, and volatility context by market."
       />
       {rows.length === 0 ? (
         <EmptyState title="No markets" body="Waiting for live orderbooks." />
       ) : (
-        <div className="market-table" role="table" aria-label="Market probabilities">
+        <div className="market-table" role="table" aria-label="Market Monte Carlo outputs">
           <div className="market-row market-head" role="row">
             <span>Market</span>
             <span>Expiry</span>
             <span>K</span>
             <span>UP bid/ask</span>
-            <span>P UP</span>
+            <span>MC UP</span>
             <span>DOWN bid/ask</span>
-            <span>P DOWN</span>
+            <span>MC DOWN</span>
             <span>Vol</span>
           </div>
           {rows.map((row) => (
@@ -451,21 +493,20 @@ function ProbabilityTable({
   return (
     <section className="panel probability-panel">
       <PanelHeader
-        title="Probability Diagnostics"
-        subtitle="Full cached-grid row diagnostics from /api/runtime/probabilities."
+        title="Monte Carlo Diagnostics"
+        subtitle="Cached-grid Monte Carlo rows from /api/runtime/probabilities."
       />
       {rows.length === 0 ? (
         <EmptyState
-          title="No probability rows"
+          title="No Monte Carlo rows"
           body={probabilityEmptyBody(state)}
         />
       ) : (
-        <div className="probability-table" role="table" aria-label="Probability outputs">
+        <div className="probability-table" role="table" aria-label="Monte Carlo outputs">
           <div className="probability-row table-head" role="row">
             <span>Contract</span>
-            <span>p_finish</span>
-            <span>p_no_touch</span>
-            <span>Gate</span>
+            <span>Monte Carlo</span>
+            <span>Decision check</span>
             <span>Cache</span>
             <span>Age</span>
           </div>
@@ -484,7 +525,6 @@ function ProbabilityTable({
                   <small>{compactList([row.asset, row.side, row.contract_id])}</small>
                 </span>
                 <span>{formatProbability(row.p_finish)}</span>
-                <span>{formatProbability(row.p_no_touch)}</span>
                 <span>
                   <GatePill value={row.decision_hint} />
                 </span>
@@ -502,37 +542,48 @@ function ProbabilityTable({
 function SelectedDetails({
   row,
   probabilities,
+  marketRows,
+  onSelectProbability,
 }: {
   row: ProbabilityRow | null;
   probabilities: ProbabilityPayload | null;
+  marketRows: MarketMonitorRow[];
+  onSelectProbability: (key: string) => void;
 }) {
   if (!row) {
     return (
       <section className="panel detail-panel">
-        <PanelHeader title="Selected Contract" subtitle="Waiting for a probability row." />
+        <PanelHeader title="Selected Contract" subtitle="Waiting for a Monte Carlo row." />
         <EmptyState title="Nothing selected" body="The details panel appears when rows arrive." />
       </section>
     );
   }
 
   const preview = parseSimulationPreview(row.simulation_preview);
+  const pairRows = currentMarketRows(marketRows);
   return (
     <section className="panel detail-panel">
       <div className="simulation-head">
         <div>
           <p className="panel-kicker">Selected contract</p>
           <h2>{contractLabel(row)}</h2>
-          <p>{row.output_id ?? row.contract_id ?? "runtime probability row"}</p>
+          <p>{selectedContractSubtitle(row)}</p>
         </div>
         <GatePill value={row.decision_hint} />
       </div>
 
       <div className="hero-metrics">
-        <Metric label="p_finish" value={formatProbability(row.p_finish)} />
-        <Metric label="p_no_touch" value={formatProbability(row.p_no_touch)} />
+        <Metric label="Monte Carlo" value={formatProbability(row.p_finish)} />
         <Metric label="edge / required" value={formatEdge(row)} />
         <Metric label="sigma_tau" value={formatSmall(row.sigma_tau)} />
+        <Metric label="runtime sample n" value={formatInteger(row.path_count)} />
       </div>
+
+      <ContractPairSelector
+        rows={pairRows}
+        selectedKey={rowKey(row)}
+        onSelectProbability={onSelectProbability}
+      />
 
       <div className="details-layout">
         <MonteCarloCanvas preview={preview} row={row} />
@@ -548,56 +599,86 @@ function SelectedDetails({
   );
 }
 
-function SystemHealth({
-  live,
-  probabilities,
+function ContractPairSelector({
+  rows,
+  selectedKey,
+  onSelectProbability,
 }: {
-  live: ApiState<RuntimeLivePayload>;
-  probabilities: ApiState<ProbabilityPayload>;
+  rows: MarketMonitorRow[];
+  selectedKey: string;
+  onSelectProbability: (key: string) => void;
 }) {
-  const payload = live.payload;
-  const monitor = payload?.monitor;
-  const gates = payload?.gates;
-  const volatility = payload?.volatility;
+  if (rows.length === 0) {
+    return null;
+  }
   return (
-    <section className="panel health-panel">
-      <PanelHeader title="Live Health" subtitle="Polling /api/runtime/live." />
-      <div className="detail-grid">
-        <Metric label="Status" value={payload?.status?.state ?? statusLabel(live.status)} />
-        <Metric label="Gates" value={gates?.ok === false ? "BLOCKED" : gates?.state ?? "OK"} />
-        <Metric label="Orderbooks" value={formatInteger(arrayLength(monitor?.orderbooks))} />
-        <Metric label="Volatility" value={volatility?.state ?? "-"} />
+    <section className="pair-selector" aria-label="Current UP / DOWN comparison">
+      <div className="pair-selector-heading">
+        <h3>Current UP / DOWN</h3>
+        <span>Click a side to inspect its chart</span>
       </div>
-
-      <section className="detail-section">
-        <h3>Gate / Diagnosis</h3>
-        <ChipRow
-          values={[
-            ...unknownList(gates?.failures),
-            ...unknownList(gates?.errors),
-            ...unknownList(gates?.reasons),
-            ...unknownList(monitor?.health_flags),
-            ...unknownList(probabilities.payload?.errors),
-          ]}
-          fallback={gates?.ok === false ? "BLOCKED" : "CLEAR"}
-        />
-      </section>
-
-      <section className="detail-section">
-        <h3>Runtime Metadata</h3>
-        <KeyValueList
-          entries={[
-            ["server_sent_at", payload?.server_sent_at],
-            ["status_generated_at", payload?.status?.generated_at],
-            ["monitor_generated_at", monitor?.generated_at],
-            ["schema", payload?.status?.schema_kind],
-            ["mode", payload?.status?.mode],
-            ["vol_source", volatility?.source_key],
-            ["vol_lookback", volatility?.lookback_limit],
-          ]}
-        />
-      </section>
+      <div className="pair-selector-grid">
+        {rows.map((marketRow) => (
+          <div className="pair-card" key={marketRow.key}>
+            <div>
+              <strong>{marketRow.asset}</strong>
+              <span>Expires {formatTimestamp(marketRow.expiryTs)}</span>
+            </div>
+            <div className="pair-actions">
+              <PairProbabilityButton
+                label="UP"
+                row={marketRow.upProbability}
+                quote={formatQuote(marketRow.up)}
+                selectedKey={selectedKey}
+                onSelect={onSelectProbability}
+              />
+              <PairProbabilityButton
+                label="DOWN"
+                row={marketRow.downProbability}
+                quote={formatQuote(marketRow.down)}
+                selectedKey={selectedKey}
+                onSelect={onSelectProbability}
+              />
+            </div>
+          </div>
+        ))}
+      </div>
     </section>
+  );
+}
+
+function PairProbabilityButton({
+  label,
+  row,
+  quote,
+  selectedKey,
+  onSelect,
+}: {
+  label: string;
+  row?: ProbabilityRow;
+  quote: string;
+  selectedKey: string;
+  onSelect: (key: string) => void;
+}) {
+  if (!row) {
+    return (
+      <span className="pair-button pair-empty">
+        <strong>{label}</strong>
+        <span>pending</span>
+      </span>
+    );
+  }
+  const key = rowKey(row);
+  return (
+    <button
+      className={key === selectedKey ? "pair-button pair-selected" : "pair-button"}
+      onClick={() => onSelect(key)}
+      type="button"
+    >
+      <strong>{label}</strong>
+      <span>{formatProbability(row.p_finish)}</span>
+      <small>{quote}</small>
+    </button>
   );
 }
 
@@ -629,34 +710,145 @@ function CompactVolatility({ volatility }: { volatility: RuntimeVolatility | nul
   );
 }
 
-function GateAndWeights({ row }: { row: ProbabilityRow | null }) {
+function MonteCarloInputsPanel({
+  row,
+  probabilities,
+  marketRows,
+}: {
+  row: ProbabilityRow | null;
+  probabilities: ApiState<ProbabilityPayload>;
+  marketRows: MarketMonitorRow[];
+}) {
   if (!row) {
-    return null;
-  }
-  return (
-    <section className="panel compact-detail">
-      <PanelHeader title="Gate + Weights" subtitle={row.contract_id ?? "selected row"} />
-      <div className="detail-grid">
-        <Metric label="mc_dispersion" value={formatOptional(row.mc_dispersion)} />
-        <Metric label="uncertainty" value={formatOptional(row.uncertainty_buffer)} />
-        <Metric label="required_edge" value={formatOptional(row.required_edge)} />
-        <Metric label="edge_after" value={formatOptional(row.edge_after_costs)} />
-      </div>
-      <section className="detail-section">
-        <h3>Weights</h3>
-        <WeightBars weights={row.effective_weights ?? {}} />
+    return (
+      <section className="panel mc-input-panel">
+        <PanelHeader
+          title="Monte Carlo Inputs + Cache"
+          subtitle="Selected cached-grid state and path-count targets."
+        />
+        <EmptyState title="No selected row" body="Select a Monte Carlo row to inspect inputs." />
       </section>
-      <section className="detail-section">
-        <h3>Row Diagnosis</h3>
-        <ChipRow
-          values={[
-            ...unknownList(row.gate_reasons),
-            ...unknownList(row.path_diagnosis),
-            ...unknownList(row.flags),
+    );
+  }
+
+  const preview = parseSimulationPreview(row.simulation_preview);
+  const marketRow = marketRowForProbability(row, marketRows);
+  const selectedBook = orderbookForSide(row, marketRow);
+  return (
+    <section className="panel mc-input-panel">
+      <PanelHeader
+        title="Monte Carlo Inputs + Cache"
+        subtitle="Selected cached-grid state and path-count targets."
+      />
+      <div className="mc-metric-grid">
+        <Metric label="UI updated" value={formatLocalTimestamp(probabilities.updatedAt)} />
+        <Metric label="row generated" value={formatTimestamp(row.generated_at)} />
+        <Metric label="valid until" value={formatTimestamp(row.valid_until)} />
+        <Metric label="cache" value={formatRowCache(row)} />
+        <Metric label="Runtime sample n" value={formatInteger(row.path_count)} />
+        <Metric label="Research path tests" value="1k / 5k / 10k / cached" />
+      </div>
+      <div className="mc-input-grid">
+        <section className="mc-input-section">
+          <h3>Contract State</h3>
+          <KeyValueList
+            entries={[
+              ["asset", row.asset],
+              ["side", row.side],
+              ["expires", formatTimestamp(row.expiry_ts)],
+              ["threshold_k", formatThreshold(marketRow?.threshold ?? preview?.threshold)],
+              ["settlement_start", preview?.start_price ? formatPrice(preview.start_price) : undefined],
+              ["comparison", preview?.comparison_operator],
+              ["z_path", formatSigned(row.z_path)],
+              ["sigma_tau", formatSmall(row.sigma_tau)],
+            ]}
+          />
+        </section>
+        <section className="mc-input-section">
+          <h3>Market Data</h3>
+          <KeyValueList
+            entries={[
+              ["up_bid_ask", formatQuote(marketRow?.up)],
+              ["down_bid_ask", formatQuote(marketRow?.down)],
+              ["selected_quote", formatQuote(selectedBook)],
+              ["book_event_ts", selectedBook?.event_ts],
+              ["book_observed_ts", selectedBook?.observed_ts],
+              ["row_age", formatAge(row.age_ms)],
+              ["flags", compactList(row.flags)],
+            ]}
+          />
+        </section>
+        <section className="mc-input-section">
+          <h3>Grid Dimensions</h3>
+          <KeyValueList
+            entries={[
+              ["model", row.model_version ?? probabilities.payload?.model_version],
+              ["generator", row.generator_version],
+              ["seed", row.seed],
+              ["time_bucket", row.time_bucket],
+              ["z_bucket", row.z_path_bucket],
+              ["sigma_bucket", row.sigma_bucket],
+              ["vol_regime", row.volatility_regime],
+              ["u_gen", row.u_gen],
+            ]}
+          />
+        </section>
+        <section className="mc-input-section">
+          <h3>Path Preview</h3>
+          <KeyValueList
+            entries={[
+              ["preview_paths", preview?.path_count],
+              ["steps", preview?.steps],
+              ["wins", preview?.terminal_win_count],
+              ["mc_dispersion", row.mc_dispersion],
+              ["uncertainty", row.uncertainty_buffer],
+              ["decision_check", formatGate(row.decision_hint)],
+              ["decision_reasons", compactList(row.gate_reasons)],
+            ]}
+          />
+        </section>
+      </div>
+      <section className="mc-input-section cache-key-section">
+        <h3>Cache Key</h3>
+        <KeyValueList
+          entries={[
+            ["cache_key", row.cache_key],
+            ["cache_asof", row.cache_asof_ts],
+            ["cache_start", row.cache_start_ts],
+            ["cache_expiry", row.cache_expiry_ts],
           ]}
-          fallback="CLEAR"
         />
       </section>
+    </section>
+  );
+}
+
+function RuntimeLogPanel({
+  live,
+  probabilities,
+  selectedRow,
+}: {
+  live: ApiState<RuntimeLivePayload>;
+  probabilities: ApiState<ProbabilityPayload>;
+  selectedRow: ProbabilityRow | null;
+}) {
+  const entries = buildRuntimeLogEntries(live, probabilities, selectedRow);
+  return (
+    <section className="panel runtime-log-panel">
+      <PanelHeader title="Runtime Log" subtitle="Oldest at top; newest at bottom." />
+      {entries.length === 0 ? (
+        <EmptyState title="No log entries" body="Runtime diagnostics will append downward." />
+      ) : (
+        <div className="runtime-log-list" aria-label="Runtime log entries ordered top to bottom">
+          {entries.map((entry) => (
+            <div className={`runtime-log-row runtime-log-${entry.level}`} key={entry.sequence}>
+              <span>{formatLogTimestamp(entry.at)}</span>
+              <strong>{entry.source}</strong>
+              <p>{sanitizeOperatorLabel(entry.message)}</p>
+            </div>
+          ))}
+        </div>
+      )}
     </section>
   );
 }
@@ -712,26 +904,20 @@ function MonteCarloCanvas({
 
 function ProbabilityFallbackChart({ row }: { row: ProbabilityRow }) {
   const finishProbability = normalizedProbability(row.p_finish);
-  const noTouchProbability = normalizedProbability(row.p_no_touch);
   const bars = [
     {
-      label: "p_finish",
+      label: "Monte Carlo",
       value: finishProbability,
       className: "fallback-finish",
-    },
-    {
-      label: "p_no_touch",
-      value: noTouchProbability,
-      className: "fallback-no-touch",
     },
   ];
   return (
     <div className="path-chart fallback-chart">
       <div className="chart-labels">
-        <span>Cached probability snapshot</span>
+        <span>Cached Monte Carlo snapshot</span>
         <span>{formatTimestamp(row.asof_ts)}</span>
       </div>
-      <svg viewBox="0 0 760 310" role="img" aria-label="Cached probability fallback chart">
+      <svg viewBox="0 0 760 310" role="img" aria-label="Cached Monte Carlo fallback chart">
         {[0, 0.25, 0.5, 0.75, 1].map((tick) => {
           const x = 150 + tick * 540;
           return (
@@ -768,18 +954,9 @@ function ProbabilityFallbackChart({ row }: { row: ProbabilityRow }) {
         })}
       </svg>
       <div className="chart-caption">
-        <span>Sampled paths not attached in this poll</span>
+        <span>Sampled path preview not attached in this poll</span>
         <span>z {formatSigned(row.z_path)}</span>
       </div>
-    </div>
-  );
-}
-
-function MetadataPanel({ title, entries }: { title: string; entries: Array<[string, unknown]> }) {
-  return (
-    <div className="metadata-panel">
-      <h3>{title}</h3>
-      <KeyValueList entries={entries} />
     </div>
   );
 }
@@ -821,46 +998,9 @@ function Metric({
   );
 }
 
-function WeightBars({ weights }: { weights: Record<string, number> }) {
-  const entries = Object.entries(weights)
-    .filter(([, value]) => Number.isFinite(value))
-    .sort(([left], [right]) => left.localeCompare(right));
-  if (entries.length === 0) {
-    return <p className="quiet">No generator weights attached.</p>;
-  }
-  return (
-    <div className="weight-bars">
-      {entries.map(([name, value]) => (
-        <div className="weight-row" key={name}>
-          <div className="weight-label">
-            <span>{shortWeightLabel(name)}</span>
-            <strong>{Math.round(value * 100)}%</strong>
-          </div>
-          <div className="bar-track" aria-hidden="true">
-            <div className="bar-fill" style={{ width: `${clamp01(value) * 100}%` }} />
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
 function GatePill({ value }: { value?: string | null }) {
   const label = formatGate(value);
   return <span className={`gate-pill gate-${gateTone(label)}`}>{label}</span>;
-}
-
-function ChipRow({ values, fallback }: { values: unknown[]; fallback: string }) {
-  const chips = values.map(compactValue).filter(Boolean);
-  return (
-    <div className="chip-row">
-      {(chips.length > 0 ? chips : [fallback]).map((value) => (
-        <span className="chip" key={value}>
-          {sanitizeOperatorLabel(value)}
-        </span>
-      ))}
-    </div>
-  );
 }
 
 function KeyValueList({ entries }: { entries: Array<[string, unknown]> }) {
@@ -920,7 +1060,7 @@ function toProbabilityApiState(
       ...previous,
       status: "ready",
       error: null,
-      notice: `Probability rollover returned 0 rows; showing last ${previousRows.length}.`,
+      notice: `Monte Carlo rollover returned 0 rows; showing last ${previousRows.length}.`,
       updatedAt: Date.now(),
     };
   }
@@ -1039,6 +1179,153 @@ function buildMarketMonitorRows(
   }));
 }
 
+function currentMarketRows(rows: MarketMonitorRow[]) {
+  const preferredAssets = ["BTC", "ETH"];
+  return preferredAssets.flatMap((asset) => {
+    const candidates = rows
+      .filter(
+        (row) =>
+          row.asset === asset &&
+          (row.upProbability || row.downProbability) &&
+          row.expiryTs,
+      )
+      .sort(compareMarketExpiry);
+    const current =
+      candidates.find((row) => row.threshold !== undefined && row.threshold !== null) ??
+      candidates[0];
+    return current ? [current] : [];
+  });
+}
+
+function compareMarketExpiry(left: MarketMonitorRow, right: MarketMonitorRow) {
+  return timestampMs(left.expiryTs) - timestampMs(right.expiryTs);
+}
+
+function timestampMs(value?: string | number | null) {
+  if (!value) {
+    return Number.POSITIVE_INFINITY;
+  }
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : Number.POSITIVE_INFINITY;
+  }
+  const parsed = new Date(value).getTime();
+  return Number.isNaN(parsed) ? Number.POSITIVE_INFINITY : parsed;
+}
+
+function marketRowForProbability(row: ProbabilityRow, marketRows: MarketMonitorRow[]) {
+  const selectedKey = marketSideKey(row.market_slug, row.asset, row.expiry_ts, row.side);
+  return (
+    marketRows.find((marketRow) => {
+      const upKey = marketSideKey(
+        marketRow.marketSlug,
+        marketRow.asset,
+        marketRow.expiryTs,
+        "UP",
+      );
+      const downKey = marketSideKey(
+        marketRow.marketSlug,
+        marketRow.asset,
+        marketRow.expiryTs,
+        "DOWN",
+      );
+      return selectedKey === upKey || selectedKey === downKey;
+    }) ??
+    marketRows.find(
+      (marketRow) => marketRow.asset === row.asset && marketRow.expiryTs === row.expiry_ts,
+    )
+  );
+}
+
+function buildRuntimeLogEntries(
+  live: ApiState<RuntimeLivePayload>,
+  probabilities: ApiState<ProbabilityPayload>,
+  selectedRow: ProbabilityRow | null,
+) {
+  const entries: RuntimeLogEntry[] = [];
+  let sequence = 0;
+  const push = (
+    source: string,
+    message: unknown,
+    options: { at?: string | number | null; level?: RuntimeLogEntry["level"] } = {},
+  ) => {
+    const text = compactValue(message);
+    if (!text) {
+      return;
+    }
+    entries.push({
+      at: timestampMs(options.at),
+      source,
+      level: options.level ?? "info",
+      message: text,
+      sequence: sequence++,
+    });
+  };
+
+  push("live", live.error, { at: live.updatedAt, level: "warn" });
+  push("monte_carlo", probabilities.error, { at: probabilities.updatedAt, level: "warn" });
+  push("monte_carlo", probabilities.notice, { at: probabilities.updatedAt });
+
+  const livePayload = live.payload;
+  const liveAt =
+    livePayload?.server_sent_at ??
+    livePayload?.status?.generated_at ??
+    livePayload?.monitor?.generated_at;
+  push("status", livePayload?.status?.error, { at: liveAt, level: "warn" });
+  for (const [source, message] of objectEntries(livePayload?.monitor?.source_errors)) {
+    push(source, message, { at: livePayload?.monitor?.generated_at, level: "warn" });
+  }
+  for (const message of unknownList(livePayload?.monitor?.health_flags)) {
+    push("health", message, { at: livePayload?.monitor?.generated_at, level: "warn" });
+  }
+  for (const message of [
+    ...unknownList(livePayload?.gates?.failures),
+    ...unknownList(livePayload?.gates?.errors),
+    ...unknownList(livePayload?.gates?.reasons),
+  ]) {
+    push("decision", message, { at: livePayload?.gates?.generated_at, level: "warn" });
+  }
+  for (const message of unknownList(livePayload?.volatility?.errors)) {
+    push("volatility", message, { at: livePayload?.volatility?.generated_at, level: "warn" });
+  }
+
+  const probabilityPayload = probabilities.payload;
+  for (const message of unknownList(probabilityPayload?.errors)) {
+    push("monte_carlo", message, { at: probabilityPayload?.generated_at, level: "warn" });
+  }
+
+  if (selectedRow) {
+    push(
+      "selected",
+      compactList([
+        selectedRow.asset,
+        selectedRow.side,
+        `MC ${formatProbability(selectedRow.p_finish)}`,
+        `n=${formatInteger(selectedRow.path_count)}`,
+      ]),
+      { at: selectedRow.asof_ts },
+    );
+    for (const message of [
+      ...unknownList(selectedRow.gate_reasons),
+      ...unknownList(selectedRow.path_diagnosis),
+      ...unknownList(selectedRow.flags),
+    ]) {
+      push("selected", message, { at: selectedRow.asof_ts, level: "warn" });
+    }
+  }
+
+  return entries.sort((left, right) => left.at - right.at || left.sequence - right.sequence);
+}
+
+function orderbookForSide(row: ProbabilityRow, marketRow?: MarketMonitorRow) {
+  if (row.side?.toUpperCase() === "UP") {
+    return marketRow?.up;
+  }
+  if (row.side?.toUpperCase() === "DOWN") {
+    return marketRow?.down;
+  }
+  return undefined;
+}
+
 function rowKey(row: ProbabilityRow) {
   return row.output_id ?? row.contract_id ?? `${contractLabel(row)}-${row.asof_ts ?? ""}`;
 }
@@ -1048,51 +1335,22 @@ function contractLabel(row: ProbabilityRow) {
   return (row.contract ?? assetSide) || "Unknown contract";
 }
 
+function selectedContractSubtitle(row: ProbabilityRow) {
+  const expiry = formatTimestamp(row.expiry_ts);
+  return expiry === "pending" ? "Expiry pending" : `Expires ${expiry}`;
+}
+
 function probabilityEmptyBody(state: ApiState<ProbabilityPayload>) {
   if (state.status === "loading") {
-    return "Waiting for the probability endpoint.";
+    return "Waiting for the Monte Carlo endpoint.";
   }
   if (state.error) {
     return `Endpoint unavailable: ${state.error}`;
   }
   if (state.payload?.state === "DISABLED") {
-    return "Runtime probability generation is disabled. The browser stays read-only.";
+    return "Runtime Monte Carlo generation is disabled.";
   }
   return state.payload?.error ?? "The endpoint returned an empty row set.";
-}
-
-function cacheMetadataEntries(
-  payload: ProbabilityPayload | null,
-  row: ProbabilityRow,
-): Array<[string, unknown]> {
-  return [
-    ["payload_cached", payload?.cached],
-    ["payload_state", payload?.state],
-    ["schema_version", payload?.schema_version],
-    ["payload_model", payload?.model_version],
-    ["payload_generated_at", payload?.generated_at],
-    ["payload_skipped", payload?.skipped],
-    ["payload_cache", payload?.cache],
-    ["payload_cache_metadata", payload?.cache_metadata],
-    ["payload_grid_cache", payload?.grid_cache],
-    ["row_cache_status", row.cache_status],
-    ["row_cache_key", row.cache_key],
-    ["row_cache_market", row.cache_market_slug],
-    ["row_cache_start", row.cache_start_ts],
-    ["row_cache_expiry", row.cache_expiry_ts],
-    ["row_cache_asof", row.cache_asof_ts],
-    ["row_generated_at", row.generated_at],
-    ["row_valid_from", row.valid_from],
-    ["row_valid_until", row.valid_until],
-    ["row_path_count", row.path_count],
-    ["row_time_bucket", row.time_bucket],
-    ["row_z_bucket", row.z_path_bucket],
-    ["row_sigma_bucket", row.sigma_bucket],
-    ["row_vol_regime", row.volatility_regime],
-    ["row_cache_metadata", row.cache_metadata],
-    ["row_grid_cache", row.grid_cache],
-    ["generator_metadata", row.generator_metadata],
-  ];
 }
 
 function parseSimulationPreview(value: unknown): SimulationPreview | null {
@@ -1201,12 +1459,18 @@ function unknownList(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
 }
 
+function objectEntries(value: unknown): Array<[string, unknown]> {
+  return isRecord(value) ? Object.entries(value) : [];
+}
+
 function arrayLength(value: unknown): number {
   return Array.isArray(value) ? value.length : 0;
 }
 
-function compactList(values: Array<string | undefined>) {
-  return values.filter(Boolean).join(" / ");
+function compactList(values?: Array<string | number | boolean | null | undefined>) {
+  return (values ?? [])
+    .filter((value) => value !== undefined && value !== null && value !== "")
+    .join(" / ");
 }
 
 function marketSideKey(
@@ -1259,7 +1523,7 @@ function compactValue(value: unknown): string {
 }
 
 function sanitizeOperatorLabel(value: string) {
-  return value.replaceAll("TRADE", "PAPER").replaceAll("ORDER", "PAPER");
+  return value.replaceAll("TRADE", "ENTRY").replaceAll("ORDER", "ENTRY");
 }
 
 function formatProbability(value?: number) {
@@ -1272,10 +1536,6 @@ function formatSmall(value?: number) {
 
 function formatSigned(value?: number) {
   return isFiniteNumber(value) ? `${value >= 0 ? "+" : ""}${value.toFixed(3)}` : "-";
-}
-
-function formatOptional(value?: number | null) {
-  return isFiniteNumber(value) ? value.toFixed(3) : "-";
 }
 
 function formatQuote(row?: RuntimeOrderbookRow) {
@@ -1352,8 +1612,8 @@ function formatLatency(latency?: JsonRecord) {
 }
 
 function formatPreviewWinCounts(preview: SimulationPreview) {
-  return `terminal ${formatInteger(preview.terminal_win_count)} / no-touch ${formatInteger(
-    preview.no_touch_win_count,
+  return `wins ${formatInteger(preview.terminal_win_count)} / paths ${formatInteger(
+    preview.path_count,
   )}`;
 }
 
@@ -1404,19 +1664,6 @@ function statusLabel(status: ApiState<unknown>["status"]) {
   return "OK";
 }
 
-function shortWeightLabel(value: string) {
-  if (value === "empirical_conditional") {
-    return "empirical";
-  }
-  if (value === "lognormal_baseline") {
-    return "lognormal";
-  }
-  if (value === "stress_overlay") {
-    return "stress";
-  }
-  return value.replaceAll("_", " ");
-}
-
 function clamp01(value: number) {
   return Math.max(0, Math.min(1, value));
 }
@@ -1438,6 +1685,28 @@ function formatTimestamp(value?: string) {
     minute: "2-digit",
     second: "2-digit",
   }).format(date);
+}
+
+function formatLocalTimestamp(value?: number | null) {
+  if (!isFiniteNumber(value)) {
+    return "pending";
+  }
+  return new Intl.DateTimeFormat("en-US", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).format(new Date(value));
+}
+
+function formatLogTimestamp(value: number) {
+  if (!Number.isFinite(value)) {
+    return "--:--:--";
+  }
+  return new Intl.DateTimeFormat("en-US", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).format(new Date(value));
 }
 
 function formatInteger(value?: number) {
