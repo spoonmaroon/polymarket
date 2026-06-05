@@ -4,7 +4,7 @@ import asyncio
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Sequence, cast
 import json
 import os
 import subprocess
@@ -19,8 +19,12 @@ from polymarket_engine.monitor import (
     fetch_monitor_snapshot,
     snapshot_from_status_payload,
 )
-from polymarket_engine.probability.runtime import ProbabilityRuntimeCache
+from polymarket_engine.probability.runtime import (
+    ProbabilityRuntimeCache,
+    latest_probability_output_rows,
+)
 from polymarket_engine.runtime_gates import evaluate_runtime_gates
+from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
 from polymarket_engine.validation.outcomes import build_outcome_history_payload
 
 
@@ -230,6 +234,63 @@ def build_runtime_router(
                 "errors": [str(exc)],
             }
 
+    @router.get("/monte-carlo/status")
+    def monte_carlo_status(limit: int = 8) -> dict[str, Any]:
+        generated_at = datetime.now(timezone.utc)
+        if limit <= 0:
+            return _monte_carlo_status_error_payload(
+                state="INVALID",
+                error="limit must be positive",
+                generated_at=generated_at,
+            )
+        if not duckdb_path.exists():
+            return _monte_carlo_status_error_payload(
+                state="MISSING",
+                error=f"{duckdb_path} missing",
+                generated_at=generated_at,
+            )
+        try:
+            rows = latest_probability_output_rows(duckdb_path=duckdb_path, limit=limit)
+        except duckdb.Error as exc:
+            return _monte_carlo_status_error_payload(
+                state="INVALID",
+                error=f"DuckDB Monte Carlo status unavailable: {_format_error(exc)}",
+                generated_at=generated_at,
+            )
+        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+            return _monte_carlo_status_error_payload(
+                state="INVALID",
+                error=f"Monte Carlo status unavailable: {_format_error(exc)}",
+                generated_at=generated_at,
+            )
+        return {
+            "ok": True,
+            "state": "OK",
+            "generated_at": generated_at.isoformat(),
+            "rows": rows,
+            "errors": [],
+        }
+
+    @router.get("/simulation-artifacts/{artifact_id}")
+    def simulation_artifact(artifact_id: str) -> dict[str, Any]:
+        if not duckdb_path.exists():
+            raise HTTPException(status_code=404, detail="simulation artifact missing")
+        try:
+            artifact = DuckDbIngestStore(duckdb_path).simulation_artifact(artifact_id)
+        except duckdb.Error as exc:
+            raise HTTPException(
+                status_code=404,
+                detail="simulation artifact missing",
+            ) from exc
+        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=500,
+                detail=f"simulation artifact invalid: {_format_error(exc)}",
+            ) from exc
+        if artifact is None:
+            raise HTTPException(status_code=404, detail="simulation artifact missing")
+        return {"ok": True, **artifact}
+
     @router.get("/outcomes")
     def runtime_outcomes(limit: int = 20) -> dict[str, Any]:
         return build_outcome_history_payload(
@@ -287,6 +348,22 @@ def _probabilities_disabled_payload() -> dict[str, Any]:
         "rows": [],
         "skipped": 0,
         "errors": [],
+    }
+
+
+def _monte_carlo_status_error_payload(
+    *,
+    state: str,
+    error: str,
+    generated_at: datetime,
+) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "state": state,
+        "error": error,
+        "generated_at": generated_at.isoformat(),
+        "rows": [],
+        "errors": [error],
     }
 
 
@@ -549,7 +626,7 @@ def _volatility_flags(raw_flags: object, *, sigma_tau: object) -> list[str]:
 def _optional_float(value: object) -> float | None:
     if value is None:
         return None
-    return float(value)
+    return float(cast(Any, value))
 
 
 def _read_json_or_error(path: Path) -> tuple[dict[str, Any] | None, dict[str, str]]:

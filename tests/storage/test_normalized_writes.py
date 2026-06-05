@@ -252,6 +252,40 @@ def test_store_inserts_probability_output_with_json_artifacts(tmp_path: Path) ->
     assert json.loads(output_json)["diagnostics"]["paths"] == 1000
 
 
+def test_store_inserts_and_reads_simulation_artifact(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.duckdb"
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    asof_ts = datetime(2026, 5, 31, 20, 3, tzinfo=timezone.utc)
+
+    store.insert_simulation_artifact(
+        artifact_id="artifact-1",
+        output_id="probability-output-1",
+        state_id="state-1",
+        asof_ts=asof_ts,
+        model_version="offline-replay-v1",
+        backend="cpu_rayon",
+        artifact={"paths": [0.1, -0.2], "summary": {"path_count": 2}},
+    )
+
+    artifact = store.simulation_artifact("artifact-1")
+
+    assert artifact is not None
+    assert artifact["artifact_id"] == "artifact-1"
+    assert artifact["output_id"] == "probability-output-1"
+    assert artifact["state_id"] == "state-1"
+    assert artifact["asof_ts"] == asof_ts.isoformat()
+    assert artifact["model_version"] == "offline-replay-v1"
+    assert artifact["backend"] == "cpu_rayon"
+    assert artifact["artifact"] == {"paths": [0.1, -0.2], "summary": {"path_count": 2}}
+    assert isinstance(artifact["created_at"], str)
+    with duckdb.connect(str(db_path), read_only=True) as conn:
+        (artifact_json,) = conn.execute(
+            "select artifact_json from features.simulation_artifacts"
+        ).fetchone()
+    assert json.loads(artifact_json)["summary"]["path_count"] == 2
+
+
 def test_store_upserts_and_reads_market_outcome_history(tmp_path: Path) -> None:
     db_path = tmp_path / "state.duckdb"
     store = DuckDbIngestStore(db_path)

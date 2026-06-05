@@ -203,6 +203,17 @@ CREATE TABLE IF NOT EXISTS features.probability_outputs (
     created_at TIMESTAMPTZ NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS features.simulation_artifacts (
+    artifact_id VARCHAR PRIMARY KEY,
+    output_id VARCHAR NOT NULL,
+    state_id VARCHAR NOT NULL,
+    asof_ts TIMESTAMPTZ NOT NULL,
+    model_version VARCHAR NOT NULL,
+    backend VARCHAR NOT NULL,
+    artifact_json VARCHAR NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS validation.contract_labels (
     contract_id VARCHAR PRIMARY KEY,
     resolved_side VARCHAR NOT NULL,

@@ -854,6 +854,62 @@ class DuckDbIngestStore:
                 ],
             )
 
+    def insert_simulation_artifact(
+        self,
+        *,
+        artifact_id: str,
+        output_id: str,
+        state_id: str,
+        asof_ts: datetime,
+        model_version: str,
+        backend: str,
+        artifact: dict[str, Any],
+    ) -> None:
+        artifact_json = _strict_json(artifact)
+        with self._connection() as conn:
+            conn.execute(
+                """
+                insert or replace into features.simulation_artifacts
+                (artifact_id, output_id, state_id, asof_ts, model_version, backend,
+                 artifact_json, created_at)
+                values (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    artifact_id,
+                    output_id,
+                    state_id,
+                    asof_ts,
+                    model_version,
+                    backend,
+                    artifact_json,
+                    datetime.now(timezone.utc),
+                ],
+            )
+
+    def simulation_artifact(self, artifact_id: str) -> dict[str, Any] | None:
+        with self._connection() as conn:
+            row = conn.execute(
+                """
+                select artifact_id, output_id, state_id, asof_ts, model_version, backend,
+                       artifact_json, created_at
+                from features.simulation_artifacts
+                where artifact_id = ?
+                """,
+                [artifact_id],
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "artifact_id": str(row[0]),
+            "output_id": str(row[1]),
+            "state_id": str(row[2]),
+            "asof_ts": _isoformat_utc(row[3]),
+            "model_version": str(row[4]),
+            "backend": str(row[5]),
+            "artifact": json.loads(str(row[6])),
+            "created_at": _isoformat_utc(row[7]),
+        }
+
     def normalized_table_health(self) -> tuple[dict[str, object], ...]:
         with self._connection() as conn:
             rows = conn.execute(
@@ -888,7 +944,11 @@ class DuckDbIngestStore:
                            count(*) as rows, max(created_at) as latest_ts
                     from features.probability_outputs
                     union all
-                    select 8 as sort_order, 'validation.market_outcome_history' as table_name,
+                    select 8 as sort_order, 'features.simulation_artifacts' as table_name,
+                           count(*) as rows, max(created_at) as latest_ts
+                    from features.simulation_artifacts
+                    union all
+                    select 9 as sort_order, 'validation.market_outcome_history' as table_name,
                            count(*) as rows, max(updated_at) as latest_ts
                     from validation.market_outcome_history
                 ) as health_rows

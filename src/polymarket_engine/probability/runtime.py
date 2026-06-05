@@ -401,8 +401,9 @@ def _persisted_runtime_row(row: tuple[Any, ...]) -> dict[str, Any]:
     start_ts = _parse_datetime(row[14])
     expiry_ts = _parse_datetime(row[15])
     flags = tuple(str(flag) for flag in json.loads(row[16]))
+    diagnostics = _diagnostics_from_output_json(row[9])
     age_ms = max(0, int((datetime.now(timezone.utc) - asof_ts).total_seconds() * 1000))
-    return {
+    runtime_row = {
         "contract": _contract_label(
             asset=str(row[11]),
             side=str(row[12]),
@@ -423,7 +424,23 @@ def _persisted_runtime_row(row: tuple[Any, ...]) -> dict[str, Any]:
         "model_version": str(row[3]),
         "seed": _optional_int(row[7]),
         "output_id": str(row[0]),
+        "diagnostics": diagnostics,
     }
+    for field in ("backend", "path_count", "artifact_id"):
+        runtime_row[field] = diagnostics.get(field)
+    return runtime_row
+
+
+def _diagnostics_from_output_json(output_json: object) -> dict[str, Any]:
+    output_payload = json.loads(str(output_json))
+    if not isinstance(output_payload, dict):
+        raise ValueError("probability output_json must be an object")
+    diagnostics = output_payload.get("diagnostics", {})
+    if diagnostics is None:
+        return {}
+    if not isinstance(diagnostics, dict):
+        raise ValueError("probability output diagnostics must be an object")
+    return dict(diagnostics)
 
 
 def _empty_payload(*, state: str, error: str, generated_at: datetime) -> dict[str, Any]:

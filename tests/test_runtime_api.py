@@ -1192,6 +1192,172 @@ def test_runtime_probabilities_prefers_persisted_outputs_without_recomputing(
     assert payload["rows"][0]["p_finish"] == pytest.approx(0.62)
 
 
+def test_runtime_probability_rows_parse_output_diagnostics(tmp_path: Path) -> None:
+    db_path = tmp_path / "polymarket.duckdb"
+    state = _decision_state()
+    probability_input = ProbabilityInput.from_decision_state(state)
+    output = ProbabilityOutput(
+        state_id=probability_input.state_id,
+        asof_ts=probability_input.asof_ts,
+        p_finish=0.62,
+        p_no_touch=0.58,
+        z_path=probability_input.z_path,
+        model_version="fixture-mc-v1",
+        seed=123,
+        diagnostics={
+            "backend": "cuda",
+            "path_count": 8192,
+            "artifact_id": "artifact-fixture",
+        },
+    )
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    store.upsert_contract_spec(state.contract)
+    store.upsert_asof_state_input(state)
+    store.insert_probability_output(
+        output_id="prob-fixture",
+        probability_input=probability_input,
+        output=output,
+    )
+
+    app = create_app(
+        status_path=tmp_path / "missing-status.json",
+        duckdb_path=db_path,
+        enable_runtime_probabilities=True,
+    )
+    response = TestClient(app).get("/api/runtime/probabilities?limit=4")
+
+    assert response.status_code == 200
+    row = response.json()["rows"][0]
+    assert row["backend"] == "cuda"
+    assert row["path_count"] == 8192
+    assert row["artifact_id"] == "artifact-fixture"
+
+
+def test_runtime_monte_carlo_status_reads_persisted_outputs_without_computing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "polymarket.duckdb"
+    state = _decision_state()
+    probability_input = ProbabilityInput.from_decision_state(state)
+    output = ProbabilityOutput(
+        state_id=probability_input.state_id,
+        asof_ts=probability_input.asof_ts,
+        p_finish=0.62,
+        p_no_touch=0.58,
+        z_path=probability_input.z_path,
+        model_version="fixture-mc-v1",
+        seed=123,
+        diagnostics={
+            "backend": "cpu_rayon",
+            "path_count": 4096,
+            "artifact_id": "artifact-fixture",
+        },
+    )
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    store.upsert_contract_spec(state.contract)
+    store.upsert_asof_state_input(state)
+    store.insert_probability_output(
+        output_id="prob-fixture",
+        probability_input=probability_input,
+        output=output,
+    )
+
+    def fail_compute(*_: object, **__: object) -> NoReturn:
+        raise AssertionError("monte-carlo status must not compute fresh outputs")
+
+    monkeypatch.setattr(
+        "polymarket_engine.probability.runtime._compute_and_persist_rows",
+        fail_compute,
+    )
+    app = create_app(status_path=tmp_path / "missing-status.json", duckdb_path=db_path)
+
+    response = TestClient(app).get("/api/runtime/monte-carlo/status?limit=4")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["state"] == "OK"
+    assert len(payload["rows"]) == 1
+    row = payload["rows"][0]
+    assert row["contract"] == "BTC 5m UP"
+    assert row["p_finish"] == pytest.approx(0.62)
+    assert row["p_no_touch"] == pytest.approx(0.58)
+    assert row["z_path"] == pytest.approx(probability_input.z_path)
+    assert row["sigma_tau"] == pytest.approx(0.01)
+    assert row["backend"] == "cpu_rayon"
+    assert row["path_count"] == 4096
+    assert row["model_version"] == "fixture-mc-v1"
+    assert row["flags"] == ["OK"]
+    assert row["output_id"] == "prob-fixture"
+    assert row["artifact_id"] == "artifact-fixture"
+
+
+def test_runtime_monte_carlo_status_missing_duckdb_returns_missing_state(
+    tmp_path: Path,
+) -> None:
+    app = create_app(
+        status_path=tmp_path / "missing-status.json",
+        duckdb_path=tmp_path / "missing.duckdb",
+    )
+
+    response = TestClient(app).get("/api/runtime/monte-carlo/status")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["state"] == "MISSING"
+    assert payload["rows"] == []
+
+
+def test_runtime_simulation_artifact_returns_duckdb_payload(tmp_path: Path) -> None:
+    db_path = tmp_path / "polymarket.duckdb"
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    asof_ts = datetime(2026, 6, 3, 20, 3, tzinfo=timezone.utc)
+    store.insert_simulation_artifact(
+        artifact_id="artifact-fixture",
+        output_id="prob-fixture",
+        state_id="state-btc-up",
+        asof_ts=asof_ts,
+        model_version="fixture-mc-v1",
+        backend="cpu_rayon",
+        artifact={"paths": [{"finish": True}], "summary": {"path_count": 1}},
+    )
+    app = create_app(status_path=tmp_path / "missing-status.json", duckdb_path=db_path)
+
+    response = TestClient(app).get("/api/runtime/simulation-artifacts/artifact-fixture")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["artifact_id"] == "artifact-fixture"
+    assert payload["output_id"] == "prob-fixture"
+    assert payload["state_id"] == "state-btc-up"
+    assert payload["asof_ts"] == asof_ts.isoformat()
+    assert payload["model_version"] == "fixture-mc-v1"
+    assert payload["backend"] == "cpu_rayon"
+    assert payload["artifact"] == {
+        "paths": [{"finish": True}],
+        "summary": {"path_count": 1},
+    }
+    assert isinstance(payload["created_at"], str)
+
+
+def test_runtime_simulation_artifact_missing_returns_404(tmp_path: Path) -> None:
+    db_path = tmp_path / "polymarket.duckdb"
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    app = create_app(status_path=tmp_path / "missing-status.json", duckdb_path=db_path)
+
+    response = TestClient(app).get("/api/runtime/simulation-artifacts/missing-artifact")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "simulation artifact missing"
+
+
 def _contract() -> ContractSpec:
     return ContractSpec(
         contract_id="btc-market:UP",
