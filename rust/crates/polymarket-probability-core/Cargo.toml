@@ -1,0 +1,16 @@
+[package]
+name = "polymarket-probability-core"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+rand.workspace = true
+rand_chacha.workspace = true
+rand_distr.workspace = true
+rayon.workspace = true
+serde.workspace = true
+serde_json.workspace = true

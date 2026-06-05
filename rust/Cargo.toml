@@ -4,6 +4,7 @@ members = [
     "crates/polymarket-runtime-types",
     "crates/polymarket-live-probe",
     "crates/polymarket-cockpit-tui",
+    "crates/polymarket-probability-core",
 ]
 
 [workspace.package]
@@ -28,3 +29,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 unicode-width = "0.2"
 polymarket_client_sdk_v2 = { git = "https://github.com/Polymarket/rs-clob-client-v2", features = ["clob", "gamma", "rtds", "ws", "tracing"] }
+rand = "0.9"
+rand_chacha = "0.9"
+rand_distr = "0.5"
+rayon = "1.10"
