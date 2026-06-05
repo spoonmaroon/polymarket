@@ -1,5 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { filterGraphableProbabilityRows } from "./probabilityRows";
+import {
+  filterGraphableProbabilityRows,
+  probabilityDisplayValue,
+  probabilityMetadata,
+  probabilityRowKey,
+} from "./probabilityRows";
 
 const LIVE_LIMIT = 12;
 const PROBABILITY_LIMIT = 24;
@@ -133,6 +138,7 @@ type ProbabilityRow = {
   asof_ts?: string;
   expiry_ts?: string;
   p_finish?: number;
+  p_hat?: number;
   p_no_touch?: number;
   z_path?: number;
   sigma_tau?: number;
@@ -170,6 +176,8 @@ type ProbabilityRow = {
   volatility_regime?: string;
   generator_version?: string;
   path_count?: number;
+  paths_per_seed?: number;
+  seed_count?: number;
   generator_metadata?: JsonRecord;
   cache_metadata?: JsonRecord;
   grid_cache?: JsonRecord;
@@ -487,7 +495,7 @@ function ProbabilityButton({
       onClick={() => onSelect(key)}
       type="button"
     >
-      {formatProbability(row.p_finish)}
+      {formatProbability(probabilityDisplayValue(row))}
     </button>
   );
 }
@@ -538,7 +546,7 @@ function ProbabilityTable({
                   <strong>{contractLabel(row)}</strong>
                   <small>{compactList([row.asset, row.side, row.contract_id])}</small>
                 </span>
-                <span>{formatProbability(row.p_finish)}</span>
+                <span>{formatProbability(probabilityDisplayValue(row))}</span>
                 <span>
                   <GatePill value={row.decision_hint} />
                 </span>
@@ -592,13 +600,13 @@ function SelectedDetails({
       </div>
 
       <div className="hero-metrics">
-        <Metric label="Monte Carlo" value={formatProbability(row.p_finish)} />
+        <Metric label="Monte Carlo" value={formatProbability(probabilityDisplayValue(row))} />
         <Metric label={timingLabel} value={formatTimestamp(row.expiry_ts)} />
         <Metric label="edge / required" value={formatEdge(row)} />
         <Metric label="wave" value={formatWave(row)} />
         <Metric label="dynamic edge" value={formatDynamicEdge(row)} />
         <Metric label="sigma_tau" value={formatSmall(row.sigma_tau)} />
-        <Metric label="runtime sample n" value={formatInteger(row.path_count)} />
+        <Metric label="Total CUDA paths" value={formatInteger(probabilityMetadata(row).totalPaths)} />
       </div>
 
       <ContractPairSelector
@@ -704,7 +712,7 @@ function PairProbabilityButton({
       type="button"
     >
       <strong>{label}</strong>
-      <span>{formatProbability(row.p_finish)}</span>
+      <span>{formatProbability(probabilityDisplayValue(row))}</span>
       <small>{quote}</small>
     </button>
   );
@@ -721,8 +729,8 @@ function MonteCarloComparisonGrid({
   selectedKey: string;
   onSelectProbability: (key: string) => void;
 }) {
-  const upValue = normalizedProbability(marketRow?.upProbability?.p_finish);
-  const downValue = normalizedProbability(marketRow?.downProbability?.p_finish);
+  const upValue = normalizedProbability(probabilityDisplayValue(marketRow?.upProbability));
+  const downValue = normalizedProbability(probabilityDisplayValue(marketRow?.downProbability));
   const leader =
     upValue === null || downValue === null
       ? null
@@ -799,7 +807,7 @@ function MonteCarloComparisonCard({
       >
         <div>
           <h3>{label} Monte Carlo</h3>
-          <span>{compactList([formatProbability(row.p_finish), quote, isLeader ? "leading" : undefined])}</span>
+          <span>{compactList([formatProbability(probabilityDisplayValue(row)), quote, isLeader ? "leading" : undefined])}</span>
         </div>
         <GatePill value={row.decision_hint} />
       </button>
@@ -858,6 +866,7 @@ function MonteCarloInputsPanel({
   }
 
   const preview = parseSimulationPreview(row.simulation_preview);
+  const metadata = probabilityMetadata(row);
   const marketRow = marketRowForProbability(row, marketRows);
   const selectedBook = orderbookForSide(row, marketRow);
   return (
@@ -871,8 +880,10 @@ function MonteCarloInputsPanel({
         <Metric label="row generated" value={formatTimestamp(row.generated_at)} />
         <Metric label="valid until" value={formatTimestamp(row.valid_until)} />
         <Metric label="cache" value={formatRowCache(row)} />
-        <Metric label="Runtime sample n" value={formatInteger(row.path_count)} />
-        <Metric label="Research path tests" value="1k / 5k / 10k / cached" />
+        <Metric label="Total CUDA paths" value={formatInteger(metadata.totalPaths)} />
+        <Metric label="Paths / seed" value={formatInteger(metadata.pathsPerSeed)} />
+        <Metric label="Seeds" value={formatInteger(metadata.seedCount)} />
+        <Metric label="Preview paths" value={formatInteger(metadata.previewPathCount)} />
       </div>
       <div className="mc-input-grid">
         <section className="mc-input-section">
@@ -923,7 +934,7 @@ function MonteCarloInputsPanel({
           <h3>Path Preview</h3>
           <KeyValueList
             entries={[
-              ["preview_paths", preview?.path_count],
+              ["preview_paths", metadata.previewPathCount],
               ["steps", preview?.steps],
               ["wins", preview?.terminal_win_count],
               ["mc_dispersion", row.mc_dispersion],
@@ -998,7 +1009,7 @@ function MonteCarloCanvas({
     <div className="path-chart">
       <div className="chart-labels">
         <span>Threshold {formatPrice(preview.threshold)}</span>
-        <span>{formatInteger(preview.path_count)} paths</span>
+        <span>{formatInteger(preview.sampled_paths.length)} preview paths</span>
       </div>
       <svg viewBox="0 0 760 310" role="img" aria-label="Monte Carlo sampled path fan">
         <line
@@ -1032,7 +1043,7 @@ function MonteCarloCanvas({
 }
 
 function ProbabilityFallbackChart({ row }: { row: ProbabilityRow }) {
-  const finishProbability = normalizedProbability(row.p_finish);
+  const finishProbability = normalizedProbability(probabilityDisplayValue(row));
   const bars = [
     {
       label: "Monte Carlo",
@@ -1677,9 +1688,9 @@ function buildRuntimeLogEntries(
       compactList([
         selectedRow.asset,
         selectedRow.side,
-        `MC ${formatProbability(selectedRow.p_finish)}`,
+        `MC ${formatProbability(probabilityDisplayValue(selectedRow))}`,
         `wave ${formatWave(selectedRow)}`,
-        `n=${formatInteger(selectedRow.path_count)}`,
+        `total paths=${formatInteger(selectedRow.path_count)}`,
       ]),
       { at: selectedRow.asof_ts },
     );
@@ -1708,13 +1719,7 @@ function orderbookForSide(row: ProbabilityRow, marketRow?: MarketMonitorRow) {
 }
 
 function rowKey(row: ProbabilityRow) {
-  return (
-    marketSideKey(row.market_slug, row.asset, row.expiry_ts, row.side, row.start_ts) ??
-    currentNextIdentityKey(row) ??
-    row.output_id ??
-    row.contract_id ??
-    `${contractLabel(row)}-${row.asof_ts ?? ""}`
-  );
+  return probabilityRowKey(row);
 }
 
 function contractLabel(row: ProbabilityRow) {
@@ -2041,7 +2046,7 @@ function formatCacheState(payload: ProbabilityPayload | null, rows: ProbabilityR
   if (cacheRows.length > 0) {
     const hits = cacheRows.filter((row) => row.cache_status === "HIT").length;
     const pathCount = cacheRows.find((row) => isFiniteNumber(row.path_count))?.path_count;
-    const suffix = isFiniteNumber(pathCount) ? ` n=${formatInteger(pathCount)}` : "";
+    const suffix = isFiniteNumber(pathCount) ? ` total paths=${formatInteger(pathCount)}` : "";
     return `${hits}/${rows.length} grid${suffix}`;
   }
   return payload.cached ? "api hit" : "no grid";
@@ -2049,7 +2054,9 @@ function formatCacheState(payload: ProbabilityPayload | null, rows: ProbabilityR
 
 function formatRowCache(row: ProbabilityRow) {
   if (row.cache_status) {
-    const pathCount = isFiniteNumber(row.path_count) ? ` n=${formatInteger(row.path_count)}` : "";
+    const pathCount = isFiniteNumber(row.path_count)
+      ? ` total paths=${formatInteger(row.path_count)}`
+      : "";
     return `${row.cache_status}${pathCount}`;
   }
   return row.output_id ? "persisted" : "-";
@@ -2061,7 +2068,7 @@ function formatLatency(latency?: JsonRecord) {
 }
 
 function formatPreviewWinCounts(preview: SimulationPreview) {
-  return `wins ${formatInteger(preview.terminal_win_count)} / paths ${formatInteger(
+  return `wins ${formatInteger(preview.terminal_win_count)} / total paths ${formatInteger(
     preview.path_count,
   )}`;
 }
