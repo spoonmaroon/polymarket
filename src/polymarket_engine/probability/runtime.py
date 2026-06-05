@@ -410,6 +410,8 @@ def _merge_grid_diagnostics(
     cache_metadata = dict(row.get("generator_metadata", {}))
     cache_metadata.update(detail.get("generator_metadata", {}))
     row.update(detail)
+    if row.get("p_hat") is None and row.get("p_finish") is not None:
+        row["p_hat"] = row["p_finish"]
     row["generator_metadata"] = cache_metadata
 
 
@@ -612,6 +614,34 @@ def _runtime_detail_from_diagnostics(diagnostics: Mapping[str, Any]) -> dict[str
         )
     )
     return {
+        "p_hat": _optional_runtime_float(
+            diagnostics.get("p_hat"),
+            "p_hat",
+        ),
+        "p_hat_std": _optional_runtime_float(
+            diagnostics.get("p_hat_std"),
+            "p_hat_std",
+        ),
+        "p_hat_ci_low": _optional_runtime_float(
+            diagnostics.get("p_hat_ci_low"),
+            "p_hat_ci_low",
+        ),
+        "p_hat_ci_high": _optional_runtime_float(
+            diagnostics.get("p_hat_ci_high"),
+            "p_hat_ci_high",
+        ),
+        "paths_per_seed": _optional_runtime_int(
+            diagnostics.get("paths_per_seed"),
+            "paths_per_seed",
+        ),
+        "seed_count": _optional_runtime_int(
+            diagnostics.get("seed_count"),
+            "seed_count",
+        ),
+        "prior_sensitivity": _optional_json_list(
+            diagnostics.get("prior_sensitivity"),
+            "prior_sensitivity",
+        ),
         "mc_dispersion": _optional_runtime_float(
             ensemble.get("mc_dispersion"),
             "mc_dispersion",
@@ -703,6 +733,20 @@ def _optional_runtime_float(value: object, field_name: str) -> float | None:
     if value is None:
         return None
     return _float(value, field_name)
+
+
+def _optional_runtime_int(value: object, field_name: str) -> int | None:
+    if value is None:
+        return None
+    return _int(value, field_name)
+
+
+def _optional_json_list(value: object, field_name: str) -> list[object]:
+    if value is None:
+        return []
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+        raise ValueError(f"{field_name} must be a JSON list")
+    return list(value)
 
 
 def _optional_string(value: object, field_name: str) -> str | None:

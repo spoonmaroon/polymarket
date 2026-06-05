@@ -27,33 +27,44 @@ def test_cuda_probability_worker_cycle_writes_status_file(
     store.upsert_contract_spec(state.contract)
     store.upsert_asof_state_input(state)
 
-    calls: list[tuple[int, int, int]] = []
+    calls: list[dict[str, int]] = []
 
     def fake_cuda(
         probability_input: ProbabilityInput,
         *,
-        path_count: int,
+        paths_per_seed: int,
         steps: int,
         seed: int,
+        seed_count: int,
     ) -> ProbabilityOutput:
-        calls.append((path_count, steps, seed))
+        calls.append(
+            {
+                "paths_per_seed": paths_per_seed,
+                "steps": steps,
+                "seed": seed,
+                "seed_count": seed_count,
+            }
+        )
+        path_count = paths_per_seed * seed_count
         return ProbabilityOutput(
             state_id=probability_input.state_id,
             asof_ts=probability_input.asof_ts,
             p_finish=0.61,
             p_no_touch=0.58,
             z_path=probability_input.z_path,
-            model_version="cuda-lognormal-chainlink-sigma-v1",
+            model_version="cuda-lognormal-chainlink-sigma-multiseed-v1",
             seed=seed,
             diagnostics={
                 "path_count": path_count,
+                "paths_per_seed": paths_per_seed,
+                "seed_count": seed_count,
                 "steps": steps,
-                "model": "cuda_lognormal_chainlink_sigma",
+                "model": "cuda_lognormal_chainlink_sigma_multi_seed",
                 "simulation_preview": {"path_count": path_count, "sampled_paths": []},
             },
         )
 
-    monkeypatch.setattr(gpu_worker, "run_cuda_monte_carlo", fake_cuda)
+    monkeypatch.setattr(gpu_worker, "run_cuda_monte_carlo_multi_seed", fake_cuda)
 
     result = gpu_worker.run_cuda_probability_worker_cycle(
         duckdb_path=db_path,
@@ -66,15 +77,19 @@ def test_cuda_probability_worker_cycle_writes_status_file(
     assert result["schema_version"] == "polymarket-probability-runtime-v1"
     assert result["rows_written"] == 1
     assert result["rows"][0]["p_finish"] == pytest.approx(0.61)
+    assert result["rows"][0]["p_hat"] == pytest.approx(0.61)
     assert result["rows"][0]["cache_status"] == "REFRESH"
-    assert result["rows"][0]["generator_version"] == "cuda-lognormal-chainlink-sigma-v1"
-    assert result["rows"][0]["simulation_preview"]["path_count"] == calls[0][0]
-    assert calls[0][0] == 20_000
+    assert result["rows"][0]["generator_version"] == "cuda-lognormal-chainlink-sigma-multiseed-v1"
+    assert result["rows"][0]["simulation_preview"]["path_count"] == (
+        calls[0]["paths_per_seed"] * calls[0]["seed_count"]
+    )
+    assert calls[0]["paths_per_seed"] == 20_000
+    assert calls[0]["seed_count"] == 4
 
     payload = json.loads(status_path.read_text(encoding="utf-8"))
     assert payload["schema_version"] == "polymarket-probability-runtime-v1"
     assert payload["rows"][0]["model_version"] == "cached-grid-v1"
-    assert payload["rows"][0]["path_count"] == 20_000
+    assert payload["rows"][0]["path_count"] == 80_000
 
 
 def test_cuda_probability_worker_cycle_reads_input_snapshot_without_duckdb(
@@ -121,27 +136,31 @@ def test_cuda_probability_worker_cycle_reads_input_snapshot_without_duckdb(
     def fake_cuda(
         probability_input: ProbabilityInput,
         *,
-        path_count: int,
+        paths_per_seed: int,
         steps: int,
         seed: int,
+        seed_count: int,
     ) -> ProbabilityOutput:
+        path_count = paths_per_seed * seed_count
         return ProbabilityOutput(
             state_id=probability_input.state_id,
             asof_ts=probability_input.asof_ts,
             p_finish=0.62,
             p_no_touch=0.51,
             z_path=probability_input.z_path,
-            model_version="cuda-lognormal-chainlink-sigma-v1",
+            model_version="cuda-lognormal-chainlink-sigma-multiseed-v1",
             seed=seed,
             diagnostics={
                 "path_count": path_count,
+                "paths_per_seed": paths_per_seed,
+                "seed_count": seed_count,
                 "steps": steps,
                 "simulation_preview": {"path_count": path_count, "sampled_paths": []},
             },
         )
 
     monkeypatch.setattr(gpu_worker, "latest_probability_inputs", duckdb_inputs_unavailable)
-    monkeypatch.setattr(gpu_worker, "run_cuda_monte_carlo", fake_cuda)
+    monkeypatch.setattr(gpu_worker, "run_cuda_monte_carlo_multi_seed", fake_cuda)
 
     result = gpu_worker.run_cuda_probability_worker_cycle(
         duckdb_path=db_path,
@@ -152,8 +171,8 @@ def test_cuda_probability_worker_cycle_reads_input_snapshot_without_duckdb(
     assert result["ok"] is True
     assert result["rows_seen"] == 1
     assert result["rows_written"] == 1
-    assert result["rows"][0]["generator_version"] == "cuda-lognormal-chainlink-sigma-v1"
-    assert result["rows"][0]["path_count"] == 20_000
+    assert result["rows"][0]["generator_version"] == "cuda-lognormal-chainlink-sigma-multiseed-v1"
+    assert result["rows"][0]["path_count"] == 80_000
 
 
 def test_cuda_probability_worker_cycle_clears_active_rows_when_inputs_unavailable(
@@ -283,7 +302,7 @@ def test_cuda_probability_worker_cycle_clears_active_rows_when_all_cuda_runs_fai
     def failing_cuda(*_: object, **__: object) -> object:
         raise RuntimeError("cuda device lost")
 
-    monkeypatch.setattr(gpu_worker, "run_cuda_monte_carlo", failing_cuda)
+    monkeypatch.setattr(gpu_worker, "run_cuda_monte_carlo_multi_seed", failing_cuda)
 
     result = gpu_worker.run_cuda_probability_worker_cycle(
         duckdb_path=db_path,
@@ -296,6 +315,102 @@ def test_cuda_probability_worker_cycle_clears_active_rows_when_all_cuda_runs_fai
     assert result["rows_seen"] == 1
     assert result["rows_written"] == 0
     assert "cuda device lost" in result["error"]
+
+
+def test_cuda_probability_worker_writes_p_hat_confidence_and_seed_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polymarket_engine.probability import gpu_worker
+
+    db_path = tmp_path / "state.duckdb"
+    status_path = tmp_path / "live" / "probabilities.json"
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    state = _decision_state()
+    store.upsert_contract_spec(state.contract)
+    store.upsert_asof_state_input(state)
+
+    calls: list[dict[str, int]] = []
+
+    def fake_multi_seed(
+        probability_input: ProbabilityInput,
+        *,
+        paths_per_seed: int,
+        steps: int,
+        seed: int,
+        seed_count: int,
+    ) -> ProbabilityOutput:
+        calls.append(
+            {
+                "paths_per_seed": paths_per_seed,
+                "steps": steps,
+                "seed": seed,
+                "seed_count": seed_count,
+            }
+        )
+        total_paths = paths_per_seed * seed_count
+        return ProbabilityOutput(
+            state_id=probability_input.state_id,
+            asof_ts=probability_input.asof_ts,
+            p_finish=0.625,
+            p_no_touch=0.575,
+            z_path=probability_input.z_path,
+            model_version="cuda-lognormal-chainlink-sigma-multiseed-v1",
+            seed=seed,
+            diagnostics={
+                "path_count": total_paths,
+                "paths_per_seed": paths_per_seed,
+                "seed_count": seed_count,
+                "steps": steps,
+                "model": "cuda_lognormal_chainlink_sigma_multi_seed",
+                "p_hat": 0.625,
+                "p_hat_std": 0.025,
+                "p_hat_ci_low": 0.58,
+                "p_hat_ci_high": 0.65,
+                "seed_runs": [
+                    {"seed": seed, "p_hat": 0.60, "p_no_touch": 0.55, "path_count": paths_per_seed},
+                    {"seed": seed + 11, "p_hat": 0.65, "p_no_touch": 0.60, "path_count": paths_per_seed},
+                ],
+                "prior_sensitivity": [
+                    {
+                        "dimension": "prior_price_quantile",
+                        "time_fraction": 0.5,
+                        "quantile_low": 0.5,
+                        "quantile_high": 0.75,
+                        "sample_count": 200,
+                        "price_quantile": probability_input.settlement_price,
+                        "log_return_quantile": 0.0,
+                        "p_hat": 0.625,
+                        "source_seed_count": seed_count,
+                    }
+                ],
+                "simulation_preview": {
+                    "path_count": total_paths,
+                    "sampled_paths": [],
+                    "prior_sensitivity": [],
+                },
+            },
+        )
+
+    monkeypatch.setattr(gpu_worker, "run_cuda_monte_carlo_multi_seed", fake_multi_seed)
+
+    result = gpu_worker.run_cuda_probability_worker_cycle(
+        duckdb_path=db_path,
+        probability_status_path=status_path,
+        limit=24,
+        valid_seconds=30,
+    )
+
+    row = result["rows"][0]
+    assert row["p_finish"] == pytest.approx(0.625)
+    assert row["p_hat"] == pytest.approx(0.625)
+    assert row["p_hat_ci_low"] == pytest.approx(0.58)
+    assert row["p_hat_ci_high"] == pytest.approx(0.65)
+    assert row["seed_count"] == calls[0]["seed_count"]
+    assert row["paths_per_seed"] == calls[0]["paths_per_seed"]
+    assert row["path_count"] == calls[0]["paths_per_seed"] * calls[0]["seed_count"]
+    assert row["prior_sensitivity"][0]["dimension"] == "prior_price_quantile"
 
 
 def test_cuda_probability_worker_reads_only_non_expired_probability_inputs(

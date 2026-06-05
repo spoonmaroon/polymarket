@@ -404,6 +404,8 @@ def grid_runtime_row(
     now: datetime,
 ) -> dict[str, Any]:
     entry = hit.entry
+    diagnostics = dict(entry.diagnostics)
+    p_hat = _optional_float(diagnostics.get("p_hat"))
     safe_now = _to_utc(now, "now")
     start_utc = _to_utc(start_ts, "start_ts")
     expiry_utc = _to_utc(expiry_ts, "expiry_ts")
@@ -434,6 +436,10 @@ def grid_runtime_row(
         "expiry_ts": expiry_utc.isoformat(),
         "asof_ts": probability_input.asof_ts.isoformat(),
         "p_finish": entry.p_finish,
+        "p_hat": entry.p_finish if p_hat is None else p_hat,
+        "p_hat_std": _optional_float(diagnostics.get("p_hat_std")),
+        "p_hat_ci_low": _optional_float(diagnostics.get("p_hat_ci_low")),
+        "p_hat_ci_high": _optional_float(diagnostics.get("p_hat_ci_high")),
         "p_no_touch": entry.p_no_touch,
         "z_path": probability_input.z_path,
         "sigma_tau": probability_input.sigma_tau,
@@ -457,6 +463,9 @@ def grid_runtime_row(
         "volatility_regime": entry.volatility_regime,
         "generator_version": entry.generator_version,
         "path_count": entry.path_count,
+        "paths_per_seed": _optional_int(diagnostics.get("paths_per_seed")),
+        "seed_count": _optional_int(diagnostics.get("seed_count")),
+        "prior_sensitivity": _optional_list(diagnostics.get("prior_sensitivity")),
         "grid_cache": grid_cache,
         "generator_metadata": {
             "cache_key": entry.cache_key,
@@ -608,6 +617,31 @@ def _float(value: object, field_name: str) -> float:
     if not math.isfinite(number):
         raise ValueError(f"{field_name} must be finite")
     return number
+
+
+def _optional_float(value: object) -> float | None:
+    if value is None:
+        return None
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError("optional float must be finite")
+    return number
+
+
+def _optional_int(value: object) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError("optional int must be an int")
+    return value
+
+
+def _optional_list(value: object) -> list[object]:
+    if value is None:
+        return []
+    if isinstance(value, (str, bytes)) or not isinstance(value, list):
+        raise ValueError("optional list must be a list")
+    return list(value)
 
 
 def _is_finite_number(value: object) -> bool:

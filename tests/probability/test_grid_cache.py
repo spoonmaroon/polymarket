@@ -5,8 +5,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import duckdb
+import pytest
 
 from polymarket_engine.probability.grid_cache import ProbabilityGridEntry
+from polymarket_engine.probability.grid_cache import ProbabilityGridHit
 from polymarket_engine.probability.grid_cache import grid_entry_from_probability_input
 from polymarket_engine.probability.grid_cache import grid_runtime_row
 from polymarket_engine.probability.grid_cache import lookup_probability_grid_entry
@@ -43,7 +45,11 @@ def _probability_input(
     )
 
 
-def _entry(probability_input: ProbabilityInput) -> ProbabilityGridEntry:
+def _entry(
+    probability_input: ProbabilityInput,
+    *,
+    diagnostics: dict[str, object] | None = None,
+) -> ProbabilityGridEntry:
     return grid_entry_from_probability_input(
         probability_input,
         market_slug="btc-updown-5m-1780668000",
@@ -65,7 +71,7 @@ def _entry(probability_input: ProbabilityInput) -> ProbabilityGridEntry:
         generated_at=datetime(2026, 6, 5, 14, 3, tzinfo=timezone.utc),
         valid_from=datetime(2026, 6, 5, 14, 3, tzinfo=timezone.utc),
         valid_until=datetime(2026, 6, 5, 14, 3, 30, tzinfo=timezone.utc),
-        diagnostics={"ensemble": {"path_diagnosis": ["NEAR_THRESHOLD"]}},
+        diagnostics=diagnostics or {"ensemble": {"path_diagnosis": ["NEAR_THRESHOLD"]}},
     )
 
 
@@ -172,7 +178,56 @@ def test_probability_grid_entry_round_trips_and_returns_runtime_metadata(tmp_pat
     assert runtime_row["sigma_bucket"] == "0.010-0.015"
     assert runtime_row["volatility_regime"] == "normal"
     assert runtime_row["path_count"] == 10_000
+    assert runtime_row["p_hat"] == pytest.approx(runtime_row["p_finish"])
     assert runtime_row["age_ms"] == 1000
+
+
+def test_grid_runtime_row_extracts_confidence_and_sensitivity_diagnostics() -> None:
+    probability_input = _probability_input()
+    sensitivity = [
+        {
+            "dimension": "prior_price_quantile",
+            "time_fraction": 0.5,
+            "quantile_low": 0.5,
+            "quantile_high": 0.75,
+            "sample_count": 200,
+            "price_quantile": 70_100.0,
+            "log_return_quantile": 0.001,
+            "p_hat": 0.674,
+            "source_seed_count": 3,
+        }
+    ]
+    entry = _entry(
+        probability_input,
+        diagnostics={
+            "p_hat": 0.674,
+            "p_hat_std": 0.012,
+            "p_hat_ci_low": 0.650,
+            "p_hat_ci_high": 0.698,
+            "paths_per_seed": 10_000,
+            "seed_count": 3,
+            "prior_sensitivity": sensitivity,
+        },
+    )
+
+    runtime_row = grid_runtime_row(
+        probability_input=probability_input,
+        contract="BTC 5m UP",
+        contract_id="btc-5m-up",
+        market_slug="btc-updown-5m-1780668000",
+        start_ts=datetime(2026, 6, 5, 14, 0, tzinfo=timezone.utc),
+        expiry_ts=datetime(2026, 6, 5, 14, 5, tzinfo=timezone.utc),
+        hit=ProbabilityGridHit(entry=entry),
+        now=datetime(2026, 6, 5, 14, 3, 21, tzinfo=timezone.utc),
+    )
+
+    assert runtime_row["p_hat"] == pytest.approx(0.674)
+    assert runtime_row["p_hat_std"] == pytest.approx(0.012)
+    assert runtime_row["p_hat_ci_low"] == pytest.approx(0.650)
+    assert runtime_row["p_hat_ci_high"] == pytest.approx(0.698)
+    assert runtime_row["paths_per_seed"] == 10_000
+    assert runtime_row["seed_count"] == 3
+    assert runtime_row["prior_sensitivity"] == sensitivity
 
 
 def test_probability_grid_lookup_rejects_wall_clock_stale_or_future_leaking_entries(

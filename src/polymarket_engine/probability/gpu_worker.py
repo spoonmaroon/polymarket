@@ -9,11 +9,13 @@ from typing import Any
 
 import duckdb
 
-from polymarket_engine.probability.cuda_monte_carlo import run_cuda_monte_carlo
+from polymarket_engine.probability.cuda_monte_carlo import run_cuda_monte_carlo_multi_seed
 from polymarket_engine.probability.grid_cache import ProbabilityGridHit
 from polymarket_engine.probability.grid_cache import grid_entry_from_probability_input
 from polymarket_engine.probability.grid_cache import grid_runtime_row
-from polymarket_engine.probability.path_policy import runtime_path_count_for_seconds_left
+from polymarket_engine.probability.path_policy import runtime_paths_per_seed_for_seconds_left
+from polymarket_engine.probability.path_policy import runtime_seed_count_for_seconds_left
+from polymarket_engine.probability.path_policy import runtime_total_path_count_for_seconds_left
 from polymarket_engine.probability.runtime import DEFAULT_PROBABILITY_GRID_VALID_SECONDS
 from polymarket_engine.probability.runtime import DEFAULT_PROBABILITY_MAX_STATE_AGE_SECONDS
 from polymarket_engine.probability.runtime import ProbabilityRuntimeInput
@@ -85,15 +87,21 @@ def run_cuda_probability_worker_cycle(
         probability_input = runtime_input.probability_input
         seed = _seed_for_input(probability_input)
         steps = _steps_for_input(probability_input)
-        path_count = runtime_path_count_for_seconds_left(probability_input.seconds_left)
+        paths_per_seed = runtime_paths_per_seed_for_seconds_left(probability_input.seconds_left)
+        seed_count = runtime_seed_count_for_seconds_left(probability_input.seconds_left)
+        path_count = runtime_total_path_count_for_seconds_left(probability_input.seconds_left)
         try:
-            output = run_cuda_monte_carlo(
+            output = run_cuda_monte_carlo_multi_seed(
                 probability_input,
-                path_count=path_count,
+                paths_per_seed=paths_per_seed,
                 steps=steps,
                 seed=seed,
+                seed_count=seed_count,
             )
             diagnostics = dict(output.diagnostics)
+            diagnostics["path_count"] = path_count
+            diagnostics["paths_per_seed"] = paths_per_seed
+            diagnostics["seed_count"] = seed_count
             diagnostics["cache"] = {
                 "source": "cuda-probability-worker",
                 "market_slug": runtime_input.market_slug,
