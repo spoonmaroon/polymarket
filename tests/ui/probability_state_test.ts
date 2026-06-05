@@ -39,6 +39,7 @@ const next = toProbabilityApiState(
 
 assert.equal(next.status, "ready");
 assert.equal(next.error, null);
+assert.equal(next.source, "poll");
 assert.equal(next.payload?.rows?.length, 1);
 assert.equal(next.payload?.rows?.[0]?.contract_id, "btc-up");
 assert.equal(next.payload?.state, "OK");
@@ -163,3 +164,4 @@ const streamMcNext = toProbabilityEventApiState(
 
 assert.equal(streamMcNext.payload?.rows?.length, 1);
 assert.equal(streamMcNext.payload?.rows?.[0]?.p_hat, 0.72);
+assert.equal(streamMcNext.source, "stream");
