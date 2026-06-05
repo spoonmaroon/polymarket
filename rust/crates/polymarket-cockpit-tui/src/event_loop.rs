@@ -594,6 +594,15 @@ mod tests {
                 sigma_tau: 0.0123,
                 age_ms: 850,
                 flags: vec!["OK".to_string()],
+                mc_dispersion: None,
+                uncertainty_buffer: None,
+                path_diagnosis: Vec::new(),
+                effective_weights: Default::default(),
+                decision_hint: None,
+                edge_after_costs: None,
+                required_edge: None,
+                gate_reasons: Vec::new(),
+                generator_metadata: Default::default(),
             }],
         }
     }

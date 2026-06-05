@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import time
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -391,6 +392,7 @@ def _runtime_row(
         "model_version": output.model_version,
         "seed": output.seed,
         "output_id": output_id,
+        **_runtime_detail_from_diagnostics(output.diagnostics),
     }
 
 
@@ -399,6 +401,10 @@ def _persisted_runtime_row(row: tuple[Any, ...]) -> dict[str, Any]:
     start_ts = _parse_datetime(row[14])
     expiry_ts = _parse_datetime(row[15])
     flags = tuple(str(flag) for flag in json.loads(row[16]))
+    output_payload = json.loads(row[9])
+    diagnostics = output_payload.get("diagnostics")
+    if not isinstance(diagnostics, Mapping):
+        raise ValueError("probability output diagnostics must be a JSON object")
     age_ms = max(0, int((datetime.now(timezone.utc) - asof_ts).total_seconds() * 1000))
     return {
         "contract": _contract_label(
@@ -421,7 +427,117 @@ def _persisted_runtime_row(row: tuple[Any, ...]) -> dict[str, Any]:
         "model_version": str(row[3]),
         "seed": _optional_int(row[7]),
         "output_id": str(row[0]),
+        **_runtime_detail_from_diagnostics(diagnostics),
     }
+
+
+def _runtime_detail_from_diagnostics(diagnostics: Mapping[str, Any]) -> dict[str, Any]:
+    ensemble = _optional_mapping(diagnostics.get("ensemble"), "ensemble") or diagnostics
+    gate = _optional_mapping(diagnostics.get("gate"), "gate") or diagnostics
+    generator_metadata = _metadata_mapping(
+        diagnostics.get("generator_metadata"),
+        "generator_metadata",
+    )
+    generator_metadata.update(
+        _metadata_mapping(
+            diagnostics.get("cache"),
+            "cache",
+        )
+    )
+    generator_metadata.update(
+        _metadata_mapping(
+            diagnostics.get("generator"),
+            "generator",
+        )
+    )
+    return {
+        "mc_dispersion": _optional_runtime_float(
+            ensemble.get("mc_dispersion"),
+            "mc_dispersion",
+        ),
+        "uncertainty_buffer": _optional_runtime_float(
+            ensemble.get("uncertainty_buffer"),
+            "uncertainty_buffer",
+        ),
+        "path_diagnosis": _string_list(
+            ensemble.get("path_diagnosis"),
+            "path_diagnosis",
+        ),
+        "effective_weights": _float_mapping(
+            ensemble.get("effective_weights"),
+            "effective_weights",
+        ),
+        "decision_hint": _optional_string(
+            gate.get("decision_hint"),
+            "decision_hint",
+        ),
+        "edge_after_costs": _optional_runtime_float(
+            gate.get("edge_after_costs"),
+            "edge_after_costs",
+        ),
+        "required_edge": _optional_runtime_float(
+            gate.get("required_edge"),
+            "required_edge",
+        ),
+        "gate_reasons": _string_list(
+            gate.get("reasons", diagnostics.get("gate_reasons")),
+            "gate_reasons",
+        ),
+        "generator_metadata": generator_metadata,
+    }
+
+
+def _optional_mapping(value: object, field_name: str) -> Mapping[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{field_name} must be a JSON object")
+    return cast(Mapping[str, Any], value)
+
+
+def _metadata_mapping(value: object, field_name: str) -> dict[str, Any]:
+    if value is None:
+        return {}
+    metadata = _optional_mapping(value, field_name)
+    assert metadata is not None
+    return dict(sorted((str(key), item) for key, item in metadata.items()))
+
+
+def _optional_runtime_float(value: object, field_name: str) -> float | None:
+    if value is None:
+        return None
+    return _float(value, field_name)
+
+
+def _optional_string(value: object, field_name: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{field_name} must be a non-empty string")
+    return value
+
+
+def _string_list(value: object, field_name: str) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+        raise ValueError(f"{field_name} must be a list of strings")
+    if not all(isinstance(item, str) for item in value):
+        raise ValueError(f"{field_name} must be a list of strings")
+    return list(value)
+
+
+def _float_mapping(value: object, field_name: str) -> dict[str, float]:
+    if value is None:
+        return {}
+    mapping = _optional_mapping(value, field_name)
+    assert mapping is not None
+    result: dict[str, float] = {}
+    for key, item in mapping.items():
+        if not isinstance(key, str) or not key:
+            raise ValueError(f"{field_name} keys must be non-empty strings")
+        result[key] = _float(item, f"{field_name}.{key}")
+    return dict(sorted(result.items()))
 
 
 def _empty_payload(*, state: str, error: str, generated_at: datetime) -> dict[str, Any]:

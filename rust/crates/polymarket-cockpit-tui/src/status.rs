@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize, de};
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -161,6 +163,24 @@ pub struct RuntimeProbabilityRow {
     pub age_ms: u64,
     #[serde(default)]
     pub flags: Vec<String>,
+    #[serde(default)]
+    pub mc_dispersion: Option<f64>,
+    #[serde(default)]
+    pub uncertainty_buffer: Option<f64>,
+    #[serde(default)]
+    pub path_diagnosis: Vec<String>,
+    #[serde(default)]
+    pub effective_weights: BTreeMap<String, f64>,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub decision_hint: Option<String>,
+    #[serde(default)]
+    pub edge_after_costs: Option<f64>,
+    #[serde(default)]
+    pub required_edge: Option<f64>,
+    #[serde(default)]
+    pub gate_reasons: Vec<String>,
+    #[serde(default)]
+    pub generator_metadata: BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -426,7 +446,20 @@ mod tests {
                 "z_path": 0.42,
                 "sigma_tau": 0.0123,
                 "age_ms": 850,
-                "flags": ["OK"]
+                "flags": ["OK"],
+                "mc_dispersion": 0.073,
+                "uncertainty_buffer": 0.046,
+                "path_diagnosis": ["FRAGILE", "NEAR_THRESHOLD"],
+                "effective_weights": {
+                    "lognormal_baseline": 0.55,
+                    "empirical_conditional": 0.30,
+                    "stress_overlay": 0.15
+                },
+                "decision_hint": "WAIT",
+                "edge_after_costs": 0.019,
+                "required_edge": 0.086,
+                "gate_reasons": ["NEAR_THRESHOLD"],
+                "generator_metadata": {"snapshot_id": "weights-1"}
             }]
         }"#;
 
@@ -436,6 +469,24 @@ mod tests {
         assert_eq!(probabilities.rows[0].contract, "BTC 5m UP");
         assert_eq!(probabilities.rows[0].p_finish, 0.57);
         assert_eq!(probabilities.rows[0].flags, vec!["OK"]);
+        assert_eq!(probabilities.rows[0].mc_dispersion, Some(0.073));
+        assert_eq!(probabilities.rows[0].uncertainty_buffer, Some(0.046));
+        assert_eq!(
+            probabilities.rows[0].path_diagnosis,
+            vec!["FRAGILE", "NEAR_THRESHOLD"]
+        );
+        assert_eq!(
+            probabilities.rows[0].effective_weights["stress_overlay"],
+            0.15
+        );
+        assert_eq!(probabilities.rows[0].decision_hint.as_deref(), Some("WAIT"));
+        assert_eq!(probabilities.rows[0].edge_after_costs, Some(0.019));
+        assert_eq!(probabilities.rows[0].required_edge, Some(0.086));
+        assert_eq!(probabilities.rows[0].gate_reasons, vec!["NEAR_THRESHOLD"]);
+        assert_eq!(
+            probabilities.rows[0].generator_metadata["snapshot_id"],
+            serde_json::json!("weights-1")
+        );
     }
 
     #[test]

@@ -1091,6 +1091,86 @@ def test_runtime_probabilities_prefers_persisted_outputs_without_recomputing(
     assert payload["rows"][0]["p_finish"] == pytest.approx(0.62)
 
 
+def test_runtime_probabilities_exposes_persisted_ensemble_and_gate_diagnostics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "polymarket.duckdb"
+    state = _decision_state()
+    probability_input = ProbabilityInput.from_decision_state(state)
+    output = ProbabilityOutput(
+        state_id=probability_input.state_id,
+        asof_ts=probability_input.asof_ts,
+        p_finish=0.67,
+        p_no_touch=0.72,
+        z_path=0.81,
+        model_version="fixture-ensemble-v1",
+        seed=456,
+        diagnostics={
+            "ensemble": {
+                "mc_dispersion": 0.073,
+                "uncertainty_buffer": 0.046,
+                "path_diagnosis": ["FRAGILE", "NEAR_THRESHOLD"],
+                "effective_weights": {
+                    "lognormal_baseline": 0.55,
+                    "empirical_conditional": 0.30,
+                    "stress_overlay": 0.15,
+                },
+            },
+            "gate": {
+                "decision_hint": "WAIT",
+                "edge_after_costs": 0.019,
+                "required_edge": 0.086,
+                "reasons": ["NEAR_THRESHOLD"],
+            },
+            "generator": {
+                "snapshot_id": "weights-2026-06-05T20:00Z",
+                "source": "fixture_losses",
+            },
+        },
+    )
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    store.upsert_contract_spec(state.contract)
+    store.upsert_asof_state_input(state)
+    store.insert_probability_output(
+        output_id="prob-ensemble",
+        probability_input=probability_input,
+        output=output,
+    )
+
+    def fail_compute(*_: object, **__: object) -> NoReturn:
+        raise AssertionError("probability API should read persisted rows first")
+
+    monkeypatch.setattr(
+        "polymarket_engine.probability.runtime._compute_and_persist_rows",
+        fail_compute,
+    )
+    app = create_app(
+        status_path=tmp_path / "missing-status.json",
+        duckdb_path=db_path,
+        enable_runtime_probabilities=True,
+    )
+
+    response = TestClient(app).get("/api/runtime/probabilities?limit=4")
+
+    assert response.status_code == 200
+    row = response.json()["rows"][0]
+    assert row["output_id"] == "prob-ensemble"
+    assert row["mc_dispersion"] == pytest.approx(0.073)
+    assert row["uncertainty_buffer"] == pytest.approx(0.046)
+    assert row["path_diagnosis"] == ["FRAGILE", "NEAR_THRESHOLD"]
+    assert row["effective_weights"]["stress_overlay"] == pytest.approx(0.15)
+    assert row["decision_hint"] == "WAIT"
+    assert row["edge_after_costs"] == pytest.approx(0.019)
+    assert row["required_edge"] == pytest.approx(0.086)
+    assert row["gate_reasons"] == ["NEAR_THRESHOLD"]
+    assert row["generator_metadata"] == {
+        "snapshot_id": "weights-2026-06-05T20:00Z",
+        "source": "fixture_losses",
+    }
+
+
 def _contract() -> ContractSpec:
     return ContractSpec(
         contract_id="btc-market:UP",

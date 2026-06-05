@@ -12,8 +12,10 @@ pub struct ProbabilityDisplayRow {
     pub contract: String,
     pub p_finish: String,
     pub p_no_touch: String,
-    pub z_path: String,
-    pub sigma_tau: String,
+    pub edge_required: String,
+    pub gate: String,
+    pub diagnosis: String,
+    pub weights: String,
     pub age_flags: String,
 }
 
@@ -23,13 +25,15 @@ pub struct ProbabilityTableModel {
     pub rows: Vec<Vec<String>>,
 }
 
-pub fn probability_header_labels() -> [&'static str; 6] {
+pub fn probability_header_labels() -> [&'static str; 8] {
     [
         "Contract",
         "p_finish",
         "p_no_touch",
-        "z_path",
-        "sigma_tau",
+        "edge/req",
+        "gate",
+        "diag",
+        "weights",
         "Age/Flags",
     ]
 }
@@ -46,8 +50,10 @@ pub fn probability_table(app: &AppState) -> ProbabilityTableModel {
                         row.contract,
                         row.p_finish,
                         row.p_no_touch,
-                        row.z_path,
-                        row.sigma_tau,
+                        row.edge_required,
+                        row.gate,
+                        row.diagnosis,
+                        row.weights,
                         row.age_flags,
                     ]
                 })
@@ -59,6 +65,8 @@ pub fn probability_table(app: &AppState) -> ProbabilityTableModel {
         headers: probability_header_labels().to_vec(),
         rows: vec![vec![
             "probability pending".to_string(),
+            "-".to_string(),
+            "-".to_string(),
             "-".to_string(),
             "-".to_string(),
             "-".to_string(),
@@ -86,8 +94,10 @@ fn probability_row(row: &RuntimeProbabilityRow) -> ProbabilityDisplayRow {
         contract: row.contract.clone(),
         p_finish: format_probability(row.p_finish),
         p_no_touch: format_probability(row.p_no_touch),
-        z_path: format!("{:.3}", row.z_path),
-        sigma_tau: format!("{:.5}", row.sigma_tau),
+        edge_required: edge_required(row),
+        gate: gate_label(row),
+        diagnosis: diagnosis(row),
+        weights: weights(row),
         age_flags: age_flags(row),
     }
 }
@@ -103,6 +113,48 @@ fn age_flags(row: &RuntimeProbabilityRow) -> String {
         row.flags.join(",")
     };
     format!("{}ms {flags}", row.age_ms)
+}
+
+fn edge_required(row: &RuntimeProbabilityRow) -> String {
+    match (row.edge_after_costs, row.required_edge) {
+        (Some(edge), Some(required)) => format!("{edge:.3}/{required:.3}"),
+        _ => "-".to_string(),
+    }
+}
+
+fn gate_label(row: &RuntimeProbabilityRow) -> String {
+    match row.decision_hint.as_deref() {
+        Some("TRADE_CANDIDATE") => "PAPER_CANDIDATE".to_string(),
+        Some(value) => value.to_string(),
+        None => "-".to_string(),
+    }
+}
+
+fn diagnosis(row: &RuntimeProbabilityRow) -> String {
+    if !row.path_diagnosis.is_empty() {
+        return row.path_diagnosis.join(",");
+    }
+    format!("z {:.3}", row.z_path)
+}
+
+fn weights(row: &RuntimeProbabilityRow) -> String {
+    if row.effective_weights.is_empty() {
+        return "-".to_string();
+    }
+    row.effective_weights
+        .iter()
+        .map(|(name, weight)| format!("{} {:.0}%", weight_label(name), weight * 100.0))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn weight_label(name: &str) -> &str {
+    match name {
+        "empirical_conditional" => "emp",
+        "lognormal_baseline" => "log",
+        "stress_overlay" => "stress",
+        value => value,
+    }
 }
 
 pub fn render(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
@@ -122,11 +174,13 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
 
 fn probability_widths(_column_count: usize) -> Vec<Constraint> {
     vec![
-        Constraint::Length(18),
+        Constraint::Length(16),
+        Constraint::Length(9),
         Constraint::Length(10),
         Constraint::Length(12),
-        Constraint::Length(9),
-        Constraint::Length(11),
+        Constraint::Length(16),
+        Constraint::Length(18),
+        Constraint::Length(22),
         Constraint::Min(12),
     ]
 }
@@ -156,6 +210,24 @@ mod tests {
                     sigma_tau: 0.01234,
                     age_ms: 850,
                     flags: vec!["OK".to_string()],
+                    mc_dispersion: Some(0.073),
+                    uncertainty_buffer: Some(0.046),
+                    path_diagnosis: vec!["FRAGILE".to_string(), "NEAR_THRESHOLD".to_string()],
+                    effective_weights: [
+                        ("lognormal_baseline".to_string(), 0.55),
+                        ("empirical_conditional".to_string(), 0.30),
+                        ("stress_overlay".to_string(), 0.15),
+                    ]
+                    .into(),
+                    decision_hint: Some("WAIT".to_string()),
+                    edge_after_costs: Some(0.019),
+                    required_edge: Some(0.086),
+                    gate_reasons: vec!["NEAR_THRESHOLD".to_string()],
+                    generator_metadata: [(
+                        "snapshot_id".to_string(),
+                        serde_json::json!("weights-1"),
+                    )]
+                    .into(),
                 }],
             }),
             ..Default::default()
@@ -169,16 +241,20 @@ mod tests {
                 "Contract",
                 "p_finish",
                 "p_no_touch",
-                "z_path",
-                "sigma_tau",
+                "edge/req",
+                "gate",
+                "diag",
+                "weights",
                 "Age/Flags"
             ]
         );
         assert_eq!(rows[0].contract, "BTC 5m UP");
         assert_eq!(rows[0].p_finish, "0.575");
         assert_eq!(rows[0].p_no_touch, "0.315");
-        assert_eq!(rows[0].z_path, "0.422");
-        assert_eq!(rows[0].sigma_tau, "0.01234");
+        assert_eq!(rows[0].edge_required, "0.019/0.086");
+        assert_eq!(rows[0].gate, "WAIT");
+        assert_eq!(rows[0].diagnosis, "FRAGILE,NEAR_THRESHOLD");
+        assert_eq!(rows[0].weights, "emp 30% log 55% stress 15%");
         assert_eq!(rows[0].age_flags, "850ms OK");
     }
 
@@ -211,6 +287,8 @@ mod tests {
             table.rows[0],
             vec![
                 "probability pending".to_string(),
+                "-".to_string(),
+                "-".to_string(),
                 "-".to_string(),
                 "-".to_string(),
                 "-".to_string(),
