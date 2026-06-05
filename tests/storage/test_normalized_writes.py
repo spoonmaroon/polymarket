@@ -280,9 +280,11 @@ def test_store_inserts_and_reads_simulation_artifact(tmp_path: Path) -> None:
     assert artifact["artifact"] == {"paths": [0.1, -0.2], "summary": {"path_count": 2}}
     assert isinstance(artifact["created_at"], str)
     with duckdb.connect(str(db_path), read_only=True) as conn:
-        (artifact_json,) = conn.execute(
+        artifact_json_row = conn.execute(
             "select artifact_json from features.simulation_artifacts"
         ).fetchone()
+    assert artifact_json_row is not None
+    (artifact_json,) = artifact_json_row
     assert json.loads(artifact_json)["summary"]["path_count"] == 2
 
 

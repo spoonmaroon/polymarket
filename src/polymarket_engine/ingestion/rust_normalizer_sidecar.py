@@ -991,7 +991,7 @@ def _volatility_status_flags(raw_flags: object, *, sigma_tau: object) -> list[st
 def _optional_float(value: object) -> float | None:
     if value is None:
         return None
-    return float(value)
+    return float(str(value))
 
 
 def _target_cache_windows(status_path: Path) -> tuple[dict[str, Any], ...]:

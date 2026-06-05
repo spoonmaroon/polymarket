@@ -987,9 +987,11 @@ def test_runtime_probabilities_marks_backend_in_diagnostics(
     payload = response.json()
     assert payload["ok"] is True
     with duckdb.connect(str(db_path)) as conn:
-        (output_json,) = conn.execute(
+        output_json_row = conn.execute(
             "select output_json from features.probability_outputs"
         ).fetchone()
+    assert output_json_row is not None
+    (output_json,) = output_json_row
     diagnostics = json.loads(output_json)["diagnostics"]
     assert diagnostics["backend_request"] == "python_numpy"
     assert diagnostics["backend"] == "python_numpy"
@@ -1059,9 +1061,11 @@ def test_runtime_probabilities_backend_env_is_passed_to_native_wrapper_and_persi
     assert isinstance(captured["seed"], int)
     assert payload["rows"][0]["model_version"] == "fixture-native-wrapper-v1"
     with duckdb.connect(str(db_path)) as conn:
-        (output_json,) = conn.execute(
+        output_json_row = conn.execute(
             "select output_json from features.probability_outputs"
         ).fetchone()
+    assert output_json_row is not None
+    (output_json,) = output_json_row
     assert json.loads(output_json)["diagnostics"]["native_available"] is True
 
 
