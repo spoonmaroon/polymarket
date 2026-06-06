@@ -81,6 +81,34 @@ Set `PC_DEPLOY_BUILD_IMAGES=0` only when matching
 `dist/docker/polymarket-cockpit-tui-<sha>` already exist for the checked-out
 commit.
 
+### THEPC DuckDB UI
+
+THEPC can expose the live Polymarket DuckDB data through DuckDB's official
+browser UI at `http://127.0.0.1:4213`.
+
+The launcher does not open the live DuckDB file directly. It briefly pauses
+`normalizer` and `outcome-refresh`, creates
+`/home/ender/polymarket-data/duckdb-ui/current-polymarket.duckdb` by attaching
+the source database read-only and running `COPY FROM DATABASE`, restarts the
+paused services, then starts the UI with a writable catalog that attaches the
+snapshot as read-only.
+
+On THEPC, open the desktop shortcut:
+
+```text
+Polymarket DuckDB UI
+```
+
+On the Mac, run:
+
+```bash
+./scripts/open_duckdb_ui_mac.sh
+```
+
+The Mac script starts the THEPC helper, opens an SSH tunnel from Mac
+`localhost:4213` to THEPC `localhost:4213`, and opens
+`http://127.0.0.1:4213`.
+
 ### Spoon Deploy
 
 Build images on the Mac. The default target platform is

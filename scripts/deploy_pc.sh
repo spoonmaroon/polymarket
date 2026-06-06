@@ -231,6 +231,111 @@ TUI_WINDOW_LAUNCHER
 sed -i "s|__PC_BIN_DIR__|\$PC_BIN_DIR|g" "\$PC_BIN_DIR/open-polymarket-tui-window.sh"
 chmod 755 "\$PC_BIN_DIR/open-polymarket-tui-window.sh"
 
+cat > "\$PC_BIN_DIR/open-polymarket-duckdb-ui.sh" <<'DUCKDB_UI_LAUNCHER'
+#!/usr/bin/env bash
+set -euo pipefail
+
+PORT="\${POLYMARKET_DUCKDB_UI_PORT:-4213}"
+while [ "\$#" -gt 0 ]; do
+  case "\$1" in
+    --port)
+      PORT="\$2"
+      shift 2
+      ;;
+    *)
+      echo "unknown argument: \$1" >&2
+      exit 2
+      ;;
+  esac
+done
+
+PC_REPO="\${PC_REPO:-/home/ender/polymarket}"
+DATA_DIR="\${POLYMARKET_DATA_DIR:-/home/ender/polymarket-data}"
+SOURCE_DB="\${POLYMARKET_DUCKDB_SOURCE_DB:-\$DATA_DIR/db/polymarket.duckdb}"
+SNAPSHOT_DIR="\${POLYMARKET_DUCKDB_UI_SNAPSHOT_DIR:-\$DATA_DIR/duckdb-ui}"
+SNAPSHOT_DB="\$SNAPSHOT_DIR/current-polymarket.duckdb"
+SNAPSHOT_TMP="\$SNAPSHOT_DIR/current-polymarket.tmp.duckdb"
+UI_CATALOG="\$SNAPSHOT_DIR/ui-catalog.duckdb"
+LOG_DIR="\$DATA_DIR/logs"
+LOG_FILE="\$LOG_DIR/duckdb-ui.log"
+DUCKDB_BIN="\${DUCKDB_BIN:-\$HOME/.duckdb/cli/latest/duckdb}"
+
+mkdir -p "\$SNAPSHOT_DIR" "\$LOG_DIR" "\$HOME/bin"
+
+if ! command -v duckdb >/dev/null 2>&1 && [ ! -x "\$DUCKDB_BIN" ]; then
+  curl -fsSL https://install.duckdb.org | sh >> "\$LOG_FILE" 2>&1
+fi
+
+if command -v duckdb >/dev/null 2>&1; then
+  DUCKDB_BIN="\$(command -v duckdb)"
+elif [ -x "\$DUCKDB_BIN" ]; then
+  DUCKDB_BIN="\$DUCKDB_BIN"
+else
+  echo "DuckDB CLI is not installed and could not be found" >&2
+  exit 1
+fi
+
+if [ ! -f "\$SOURCE_DB" ]; then
+  echo "source DuckDB missing: \$SOURCE_DB" >&2
+  exit 1
+fi
+
+quote_sql_string() {
+  printf "%s" "\$1" | sed "s/'/''/g; s/^/'/; s/\$/'/"
+}
+
+restart_refresh_services() {
+  (
+    cd "\$PC_REPO" &&
+      docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml up -d --no-deps normalizer outcome-refresh >/dev/null
+  ) || true
+}
+
+cd "\$PC_REPO"
+trap restart_refresh_services EXIT
+docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml stop normalizer outcome-refresh >/dev/null
+rm -f "\$SNAPSHOT_TMP" "\$SNAPSHOT_TMP.wal"
+"\$DUCKDB_BIN" "\$SNAPSHOT_TMP" -batch -c "ATTACH \$(quote_sql_string "\$SOURCE_DB") AS source_db (READ_ONLY); COPY FROM DATABASE source_db TO snapshot;"
+mv "\$SNAPSHOT_TMP" "\$SNAPSHOT_DB"
+restart_refresh_services
+trap - EXIT
+
+pkill -f "duckdb.*\$UI_CATALOG" >/dev/null 2>&1 || true
+UI_SQL="SET ui_local_port=\${PORT}; ATTACH \$(quote_sql_string "\$SNAPSHOT_DB") AS polymarket (READ_ONLY); USE polymarket; CALL start_ui_server();"
+nohup bash -c 'tail -f /dev/null | "$@"' duckdb-ui "\$DUCKDB_BIN" "\$UI_CATALOG" -cmd "\$UI_SQL" >/dev/null 2>> "\$LOG_FILE" &
+
+for _ in \$(seq 1 30); do
+  if curl -fsS --max-time 2 "http://127.0.0.1:\${PORT}" >/dev/null 2>> "\$LOG_FILE"; then
+    echo "DuckDB UI ready at http://127.0.0.1:\${PORT}"
+    echo "Snapshot: \$SNAPSHOT_DB"
+    exit 0
+  fi
+  sleep 0.5
+done
+
+echo "DuckDB UI did not answer on http://127.0.0.1:\${PORT}" >&2
+exit 1
+DUCKDB_UI_LAUNCHER
+chmod 755 "\$PC_BIN_DIR/open-polymarket-duckdb-ui.sh"
+
+cat > "\$PC_BIN_DIR/open-polymarket-duckdb-ui-window.sh" <<'DUCKDB_UI_WINDOW_LAUNCHER'
+#!/usr/bin/env bash
+set +e
+__PC_BIN_DIR__/open-polymarket-duckdb-ui.sh
+status=\$?
+if [ "\$status" -ne 0 ]; then
+  echo
+  echo "Polymarket DuckDB UI exited with status \$status"
+  read -r -p "Press Enter to close"
+  exit "\$status"
+fi
+echo
+echo "Open http://127.0.0.1:4213 in the Windows browser."
+read -r -p "Press Enter to close"
+DUCKDB_UI_WINDOW_LAUNCHER
+sed -i "s|__PC_BIN_DIR__|\$PC_BIN_DIR|g" "\$PC_BIN_DIR/open-polymarket-duckdb-ui-window.sh"
+chmod 755 "\$PC_BIN_DIR/open-polymarket-duckdb-ui-window.sh"
+
 WINDOWS_USER_DIR="/mnt/c/Users/ender"
 if [ -d "\$WINDOWS_USER_DIR" ]; then
   cat > "\$WINDOWS_USER_DIR/open-polymarket-tui.ps1" <<'PS_LAUNCHER'
@@ -266,11 +371,27 @@ PS_LAUNCHER
 @echo off
 start "Polymarket TUI" wsl.exe -d \$PC_WSL_DISTRO -- \$PC_BIN_DIR/open-polymarket-tui-window.sh
 CMD_LAUNCHER
+  cat > "\$WINDOWS_USER_DIR/open-polymarket-duckdb-ui.cmd" <<CMD_DUCKDB_UI_LAUNCHER
+@echo off
+start "Polymarket DuckDB UI" wsl.exe -d \$PC_WSL_DISTRO -- \$PC_BIN_DIR/open-polymarket-duckdb-ui-window.sh
+timeout /t 3 >nul
+start "" "http://127.0.0.1:4213"
+CMD_DUCKDB_UI_LAUNCHER
   POWERSHELL_SCRIPT="\$WINDOWS_USER_DIR/AppData/Local/Temp/polymarket-tui-shortcut.ps1"
   cat > "\$POWERSHELL_SCRIPT" <<'PS1'
 \$shortcutPath = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Polymarket TUI.lnk'
 \$launcherPath = Join-Path ([Environment]::GetFolderPath('UserProfile')) 'open-polymarket-tui.cmd'
 \$shell = New-Object -ComObject WScript.Shell
+\$shortcut = \$shell.CreateShortcut(\$shortcutPath)
+\$shortcut.TargetPath = \$launcherPath
+\$shortcut.Arguments = ''
+\$shortcut.WorkingDirectory = [Environment]::GetFolderPath('UserProfile')
+\$shortcut.IconLocation = 'C:\WINDOWS\System32\cmd.exe,0'
+\$shortcut.WindowStyle = 1
+\$shortcut.Save()
+
+\$shortcutPath = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Polymarket DuckDB UI.lnk'
+\$launcherPath = Join-Path ([Environment]::GetFolderPath('UserProfile')) 'open-polymarket-duckdb-ui.cmd'
 \$shortcut = \$shell.CreateShortcut(\$shortcutPath)
 \$shortcut.TargetPath = \$launcherPath
 \$shortcut.Arguments = ''

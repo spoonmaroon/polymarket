@@ -257,6 +257,26 @@ def test_pc_image_build_script_exports_docker_tarballs_and_manifest() -> None:
     assert "cuda_probability_tar=" in script
 
 
+def test_pc_deploy_installs_duckdb_ui_snapshot_launcher() -> None:
+    script = (ROOT / "scripts" / "deploy_pc.sh").read_text(encoding="utf-8")
+
+    assert "open-polymarket-duckdb-ui.sh" in script
+    assert "open-polymarket-duckdb-ui-window.sh" in script
+    assert "open-polymarket-duckdb-ui.cmd" in script
+    assert "Polymarket DuckDB UI.lnk" in script
+    assert "https://install.duckdb.org" in script
+    assert "CALL start_ui_server()" in script
+    assert "SET ui_local_port" in script
+    assert "ATTACH \\$(quote_sql_string \"\\$SOURCE_DB\") AS source_db (READ_ONLY)" in script
+    assert "COPY FROM DATABASE source_db TO snapshot" in script
+    assert (
+        "ATTACH \\$(quote_sql_string \"\\$SNAPSHOT_DB\") AS polymarket (READ_ONLY)"
+        in script
+    )
+    assert "stop normalizer outcome-refresh" in script
+    assert "up -d --no-deps normalizer outcome-refresh" in script
+
+
 def test_prebuilt_image_deploy_script_loads_images_and_uses_deploy_fast_path() -> None:
     script = (ROOT / "scripts" / "deploy_prebuilt_images.sh").read_text(
         encoding="utf-8"
@@ -355,13 +375,14 @@ def test_pc_tui_desktop_launcher_logs_failures_and_forces_new_terminal_window() 
 
     assert "open-polymarket-tui.ps1" in script
     assert "open-polymarket-tui-window.sh" in script
-    assert "polymarket-tui-launch.log" in script
+    assert "polymarket-tui-launch-{0}.log" in script
     assert "Start-Transcript" in script
     assert "Add-Content -Path \\$logPath" not in script
     assert "Start-Process -FilePath 'wt.exe'" in script
     assert "'-w', 'new'" in script
     assert "Read-Host 'Press Enter to close'" in script
-    assert "\\$shortcut.TargetPath = 'powershell.exe'" in script
+    assert "\\$shortcut.TargetPath = \\$launcherPath" in script
+    assert "\\$shortcut.TargetPath = 'powershell.exe'" not in script
 
 
 def test_pc_deploy_script_prevents_powershell_from_consuming_remote_script() -> None:
