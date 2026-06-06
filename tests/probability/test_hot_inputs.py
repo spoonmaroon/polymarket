@@ -17,6 +17,7 @@ from polymarket_engine.probability.hot_inputs import (
     read_hot_probability_inputs,
     write_hot_probability_inputs,
 )
+from polymarket_engine.probability.gpu_worker import _latest_probability_inputs_from_snapshot
 
 
 def _contract(side: ContractSide = "UP") -> ContractSpec:
@@ -115,6 +116,29 @@ def test_hot_probability_inputs_round_trips_one_ready_state(tmp_path: Path) -> N
     assert runtime_input.start_ts == datetime(2026, 5, 31, 20, 0, tzinfo=timezone.utc)
     assert runtime_input.expiry_ts == datetime(2026, 5, 31, 20, 5, tzinfo=timezone.utc)
     assert runtime_input.flags == ("OK",)
+
+
+def test_cuda_worker_loads_hot_probability_inputs_snapshot(tmp_path: Path) -> None:
+    out_path = tmp_path / "hot" / "inputs.json"
+    generated_at = datetime.now(timezone.utc)
+
+    write_hot_probability_inputs(
+        out_path=out_path,
+        states=(_state("UP"), _state("DOWN")),
+        generated_at=generated_at,
+    )
+
+    inputs, skipped = _latest_probability_inputs_from_snapshot(
+        path=out_path,
+        limit=10,
+        max_state_age_seconds=60 * 60 * 24 * 365,
+        max_snapshot_age_seconds=60,
+    )
+
+    assert skipped == 0
+    assert [row.contract_id for row in inputs] == ["btc-market:UP", "btc-market:DOWN"]
+    assert [row.probability_input.side for row in inputs] == ["UP", "DOWN"]
+    assert [row.market_slug for row in inputs] == ["", ""]
 
 
 def test_hot_probability_inputs_skip_quality_blocked_states(tmp_path: Path) -> None:

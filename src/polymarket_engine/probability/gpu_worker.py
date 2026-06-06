@@ -19,6 +19,7 @@ from polymarket_engine.probability.fast_nowcast import compute_fast_nowcast
 from polymarket_engine.probability.grid_cache import ProbabilityGridHit
 from polymarket_engine.probability.grid_cache import grid_entry_from_probability_input
 from polymarket_engine.probability.grid_cache import grid_runtime_row
+from polymarket_engine.probability.hot_inputs import HOT_PROBABILITY_INPUTS_SCHEMA_VERSION
 from polymarket_engine.probability.latency import ProbabilityLatencyTrace
 from polymarket_engine.probability.path_policy import runtime_path_count_for_state
 from polymarket_engine.probability.runtime import DEFAULT_PROBABILITY_GRID_VALID_SECONDS
@@ -40,6 +41,7 @@ from polymarket_engine.storage.atomic import durable_replace
 DEFAULT_GPU_PROBABILITY_LIMIT = 24
 DEFAULT_GPU_PROBABILITY_INTERVAL_SECONDS = 1.0
 DEFAULT_INPUT_SNAPSHOT_MAX_AGE_SECONDS = 10.0
+PROBABILITY_INPUTS_SCHEMA_VERSION = "polymarket-probability-inputs-v1"
 
 
 def run_cuda_monte_carlo_batch(
@@ -852,7 +854,13 @@ def _latest_probability_inputs_from_snapshot(
         raise ValueError("limit must be positive")
     payload = _mapping(json.loads(path.read_text(encoding="utf-8")), "probability input snapshot")
     schema_version = payload.get("schema_version")
-    if schema_version != "polymarket-probability-inputs-v1":
+    if schema_version == PROBABILITY_INPUTS_SCHEMA_VERSION:
+        row_field = "rows"
+        require_market_slug = True
+    elif schema_version == HOT_PROBABILITY_INPUTS_SCHEMA_VERSION:
+        row_field = "inputs"
+        require_market_slug = False
+    else:
         raise ValueError(f"unsupported probability input snapshot schema: {schema_version}")
     generated_at = _parse_datetime(payload.get("generated_at"))
     now = datetime.now(timezone.utc)
@@ -865,9 +873,9 @@ def _latest_probability_inputs_from_snapshot(
                 "probability input snapshot stale: "
                 f"age_seconds={age_seconds:.3f} max={max_snapshot_age_seconds:.3f}"
             )
-    rows = payload.get("rows")
+    rows = payload.get(row_field)
     if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
-        raise ValueError("probability input snapshot rows must be a list")
+        raise ValueError(f"probability input snapshot {row_field} must be a list")
 
     cutoff = (
         now - timedelta(seconds=max_state_age_seconds)
@@ -887,7 +895,7 @@ def _latest_probability_inputs_from_snapshot(
                 probability_input=probability_input,
                 contract_id=_nonempty_str(row.get("contract_id"), "contract_id"),
                 contract=_nonempty_str(row.get("contract"), "contract"),
-                market_slug=_nonempty_str(row.get("market_slug"), "market_slug"),
+                market_slug=_snapshot_market_slug(row, required=require_market_slug),
                 start_ts=_parse_datetime(row.get("start_ts")),
                 expiry_ts=_parse_datetime(row.get("expiry_ts")),
                 volatility_regime=_optional_str(
@@ -900,6 +908,12 @@ def _latest_probability_inputs_from_snapshot(
         if len(inputs) >= limit:
             break
     return tuple(inputs), skipped
+
+
+def _snapshot_market_slug(row: Mapping[str, Any], *, required: bool) -> str:
+    if required:
+        return _nonempty_str(row.get("market_slug"), "market_slug")
+    return _optional_str(row.get("market_slug"), "market_slug") or ""
 
 
 def _probability_input_from_snapshot_row(row: Mapping[str, Any]) -> ProbabilityInput:
