@@ -269,6 +269,7 @@ def test_pc_deploy_installs_duckdb_ui_snapshot_launcher() -> None:
     assert "CALL start_ui_server()" in script
     assert "SET ui_local_port" in script
     assert 'SNAPSHOT_TMP="\\$SNAPSHOT_DIR/snapshot.duckdb"' in script
+    assert 'tail -f /dev/null | "\\$@"' in script
     assert "ATTACH \\$(quote_sql_string \"\\$SOURCE_DB\") AS source_db (READ_ONLY)" in script
     assert "COPY FROM DATABASE source_db TO snapshot" in script
     assert (
