@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -25,6 +26,71 @@ def _json(value: Any) -> str:
 
 def _strict_json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def _configure_connection(conn: duckdb.DuckDBPyConnection) -> None:
+    if "POLYMARKET_DUCKDB_THREADS" in os.environ:
+        threads = _parse_duckdb_threads(os.environ["POLYMARKET_DUCKDB_THREADS"])
+        _set_duckdb_setting(conn, "threads", threads, "POLYMARKET_DUCKDB_THREADS")
+    if "POLYMARKET_DUCKDB_MEMORY_LIMIT" in os.environ:
+        memory_limit = _parse_duckdb_memory_limit(
+            os.environ["POLYMARKET_DUCKDB_MEMORY_LIMIT"]
+        )
+        _set_duckdb_setting(
+            conn,
+            "memory_limit",
+            memory_limit,
+            "POLYMARKET_DUCKDB_MEMORY_LIMIT",
+        )
+    if "POLYMARKET_DUCKDB_PRESERVE_INSERTION_ORDER" in os.environ:
+        preserve = _parse_duckdb_bool(
+            os.environ["POLYMARKET_DUCKDB_PRESERVE_INSERTION_ORDER"],
+            "POLYMARKET_DUCKDB_PRESERVE_INSERTION_ORDER",
+        )
+        _set_duckdb_setting(
+            conn,
+            "preserve_insertion_order",
+            preserve,
+            "POLYMARKET_DUCKDB_PRESERVE_INSERTION_ORDER",
+        )
+
+
+def _parse_duckdb_threads(value: str) -> int:
+    try:
+        threads = int(value)
+    except ValueError as exc:
+        raise ValueError("POLYMARKET_DUCKDB_THREADS must be a positive integer") from exc
+    if threads <= 0:
+        raise ValueError("POLYMARKET_DUCKDB_THREADS must be a positive integer")
+    return threads
+
+
+def _parse_duckdb_memory_limit(value: str) -> str:
+    memory_limit = value.strip()
+    if not memory_limit:
+        raise ValueError("POLYMARKET_DUCKDB_MEMORY_LIMIT must be non-empty")
+    return memory_limit
+
+
+def _parse_duckdb_bool(value: str, env_name: str) -> bool:
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "t", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "f", "no", "n", "off"}:
+        return False
+    raise ValueError(f"{env_name} must be a boolean value")
+
+
+def _set_duckdb_setting(
+    conn: duckdb.DuckDBPyConnection,
+    setting_name: str,
+    value: object,
+    env_name: str,
+) -> None:
+    try:
+        conn.execute(f"SET {setting_name} = ?", [value])
+    except duckdb.Error as exc:
+        raise ValueError(f"{env_name} has invalid DuckDB setting value: {value!r}") from exc
 
 
 def _contract_specs_signature(contracts: Sequence[ContractSpec]) -> tuple[tuple[object, ...], ...]:
@@ -145,14 +211,16 @@ class MarketOutcomeRecord:
 
 
 class DuckDbIngestStore:
-    def __init__(self, db_path: Path) -> None:
+    def __init__(self, db_path: Path, *, persistent_connection: bool = True) -> None:
         self.db_path = db_path
+        self._persistent_connection = persistent_connection
         self._conn: duckdb.DuckDBPyConnection | None = None
         self._last_contract_specs_signature: tuple[tuple[object, ...], ...] | None = None
 
     def __enter__(self) -> DuckDbIngestStore:
-        if self._conn is None:
+        if self._persistent_connection and self._conn is None:
             self._conn = duckdb.connect(str(self.db_path))
+            _configure_connection(self._conn)
         return self
 
     def __exit__(
@@ -171,6 +239,7 @@ class DuckDbIngestStore:
             yield self._conn
             return
         with duckdb.connect(str(self.db_path)) as conn:
+            _configure_connection(conn)
             yield conn
 
     def apply_schema(self) -> None:
@@ -827,31 +896,53 @@ class DuckDbIngestStore:
         probability_input: ProbabilityInput,
         output: ProbabilityOutput,
     ) -> None:
-        if output.state_id != probability_input.state_id:
-            raise ValueError("output state_id must match probability_input state_id")
-        if output.asof_ts != probability_input.asof_ts:
-            raise ValueError("output asof_ts must match probability_input asof_ts")
+        self.insert_probability_outputs(((output_id, probability_input, output),))
+
+    def insert_probability_outputs(
+        self,
+        rows: Sequence[tuple[str, ProbabilityInput, ProbabilityOutput]],
+    ) -> None:
+        if not rows:
+            return
+        for _, probability_input, output in rows:
+            if output.state_id != probability_input.state_id:
+                raise ValueError("output state_id must match probability_input state_id")
+            if output.asof_ts != probability_input.asof_ts:
+                raise ValueError("output asof_ts must match probability_input asof_ts")
+
+        now = datetime.now(timezone.utc)
+        frame = pl.DataFrame(
+            {
+                "output_id": [output_id for output_id, _, _ in rows],
+                "state_id": [output.state_id for _, _, output in rows],
+                "asof_ts": [output.asof_ts for _, _, output in rows],
+                "model_version": [output.model_version for _, _, output in rows],
+                "p_finish": [output.p_finish for _, _, output in rows],
+                "p_no_touch": [output.p_no_touch for _, _, output in rows],
+                "z_path": [output.z_path for _, _, output in rows],
+                "seed": pl.Series("seed", [output.seed for _, _, output in rows], dtype=pl.Int64),
+                "input_json": [
+                    _strict_json(probability_input.to_json_dict())
+                    for _, probability_input, _ in rows
+                ],
+                "output_json": [
+                    _strict_json(output.to_json_dict()) for _, _, output in rows
+                ],
+                "created_at": [now for _ in rows],
+            }
+        )
         with self._connection() as conn:
+            conn.register("probability_output_rows", frame)
             conn.execute(
                 """
                 insert or replace into features.probability_outputs
                 (output_id, state_id, asof_ts, model_version, p_finish, p_no_touch,
                  z_path, seed, input_json, output_json, created_at)
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                select output_id, state_id, asof_ts::TIMESTAMPTZ, model_version,
+                       p_finish, p_no_touch, z_path, seed, input_json, output_json,
+                       created_at::TIMESTAMPTZ
+                from probability_output_rows
                 """,
-                [
-                    output_id,
-                    output.state_id,
-                    output.asof_ts,
-                    output.model_version,
-                    output.p_finish,
-                    output.p_no_touch,
-                    output.z_path,
-                    output.seed,
-                    _strict_json(probability_input.to_json_dict()),
-                    _strict_json(output.to_json_dict()),
-                    datetime.now(timezone.utc),
-                ],
             )
 
     def normalized_table_health(self) -> tuple[dict[str, object], ...]:

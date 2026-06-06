@@ -114,6 +114,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=Path("data/live/probabilities.json"),
     )
     sidecar.add_argument(
+        "--probability-inputs-path",
+        type=Path,
+        default=Path("data/live/probability_inputs.json"),
+    )
+    sidecar.add_argument(
         "--outcome-status-path",
         type=Path,
         default=Path("data/live/outcomes.json"),
@@ -135,6 +140,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Opt in to runtime probability computation; disabled by default.",
     )
     sidecar.add_argument(
+        "--enable-outcome-refresh",
+        action="store_true",
+        help="Opt in to official outcome refresh from the normalizer loop.",
+    )
+    sidecar.add_argument(
         "--reprocess-all",
         action="store_true",
         help="Ignore raw-file byte checkpoints and reprocess complete JSONL files.",
@@ -144,6 +154,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Run one sidecar cycle and exit.",
     )
+
+    outcome_sidecar = subparsers.add_parser("run-outcome-refresh-sidecar")
+    outcome_sidecar.add_argument("--duckdb-path", type=Path, required=True)
+    outcome_sidecar.add_argument("--outcome-status-path", type=Path, required=True)
+    outcome_sidecar.add_argument("--interval-seconds", type=float, default=30.0)
+    outcome_sidecar.add_argument("--max-cycles", type=int, default=None)
 
     verify_hot_replay = subparsers.add_parser("verify-hot-decision-replay")
     verify_hot_replay.add_argument("--raw-root", type=Path, required=True)
@@ -179,6 +195,8 @@ async def run_collect_command(argv: list[str] | None = None) -> int:
         return _run_build_current_decision_states(args)
     if args.command == "run-rust-normalizer-sidecar":
         return _run_rust_normalizer_sidecar(args)
+    if args.command == "run-outcome-refresh-sidecar":
+        return _run_outcome_refresh_sidecar(args)
     if args.command == "verify-hot-decision-replay":
         return _run_verify_hot_decision_replay(args)
     if args.command == "backfill-outcomes":
@@ -285,10 +303,12 @@ def _run_rust_normalizer_sidecar(args: argparse.Namespace) -> int:
             status_path=args.status_path,
             normalized_health_path=args.normalized_health_path,
             probability_status_path=args.probability_status_path,
+            probability_inputs_path=args.probability_inputs_path,
             outcome_status_path=args.outcome_status_path,
             volatility_status_path=args.volatility_status_path,
             include_next=args.include_next,
             compute_probabilities=args.enable_probabilities,
+            refresh_outcomes=args.enable_outcome_refresh,
             reprocess_all=args.reprocess_all,
             apply_schema=True,
         )
@@ -300,12 +320,26 @@ def _run_rust_normalizer_sidecar(args: argparse.Namespace) -> int:
         status_path=args.status_path,
         normalized_health_path=args.normalized_health_path,
         probability_status_path=args.probability_status_path,
+        probability_inputs_path=args.probability_inputs_path,
         outcome_status_path=args.outcome_status_path,
         volatility_status_path=args.volatility_status_path,
         interval_seconds=args.interval_seconds,
         include_next=args.include_next,
         compute_probabilities=args.enable_probabilities,
+        enable_outcome_refresh=args.enable_outcome_refresh,
         reprocess_all=args.reprocess_all,
+    )
+    return 0
+
+
+def _run_outcome_refresh_sidecar(args: argparse.Namespace) -> int:
+    from polymarket_engine.validation.outcome_sidecar import run_outcome_refresh_loop
+
+    run_outcome_refresh_loop(
+        duckdb_path=args.duckdb_path,
+        outcome_status_path=args.outcome_status_path,
+        interval_seconds=args.interval_seconds,
+        max_cycles=args.max_cycles,
     )
     return 0
 

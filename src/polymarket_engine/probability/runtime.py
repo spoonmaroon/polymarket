@@ -4,14 +4,15 @@ import hashlib
 import json
 import math
 import time
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, cast
 
 import duckdb
 
+from polymarket_engine.probability.hot_inputs import read_hot_probability_inputs
 from polymarket_engine.probability.monte_carlo import run_seeded_monte_carlo
+from polymarket_engine.probability.runtime_inputs import ProbabilityRuntimeInput, contract_label
 from polymarket_engine.probability.schema import ProbabilityInput, ProbabilityOutput
 from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
 
@@ -20,27 +21,34 @@ DEFAULT_PROBABILITY_CACHE_SECONDS = 1.0
 DEFAULT_PROBABILITY_PATH_COUNT = 1024
 DEFAULT_PROBABILITY_MAX_STATE_AGE_SECONDS = 600.0
 
-
-@dataclass(frozen=True)
-class ProbabilityRuntimeInput:
-    probability_input: ProbabilityInput
-    contract_id: str
-    contract: str
-    start_ts: datetime
-    expiry_ts: datetime
-    flags: tuple[str, ...]
+_contract_label = contract_label
 
 
 class ProbabilityRuntimeCache:
     def __init__(self, min_interval_seconds: float = DEFAULT_PROBABILITY_CACHE_SECONDS) -> None:
         self.min_interval_seconds = min_interval_seconds
         self._cached_at_monotonic: float | None = None
+        self._cached_key: tuple[Any, ...] | None = None
         self._cached_payload: dict[str, Any] | None = None
 
-    def payload(self, *, duckdb_path: Path, limit: int) -> dict[str, Any]:
+    def payload(
+        self,
+        *,
+        duckdb_path: Path,
+        limit: int,
+        allow_compute: bool = False,
+        probability_inputs_path: Path | None = None,
+    ) -> dict[str, Any]:
         now_monotonic = time.monotonic()
+        cache_key = _probability_cache_key(
+            duckdb_path=duckdb_path,
+            limit=limit,
+            allow_compute=allow_compute,
+            probability_inputs_path=probability_inputs_path,
+        )
         if (
             self._cached_payload is not None
+            and self._cached_key == cache_key
             and self._cached_at_monotonic is not None
             and now_monotonic - self._cached_at_monotonic < self.min_interval_seconds
         ):
@@ -48,63 +56,175 @@ class ProbabilityRuntimeCache:
             cached["cached"] = True
             return cached
 
-        payload = build_probability_payload(duckdb_path=duckdb_path, limit=limit)
+        payload = build_probability_payload(
+            duckdb_path=duckdb_path,
+            limit=limit,
+            allow_compute=allow_compute,
+            probability_inputs_path=probability_inputs_path,
+        )
         self._cached_payload = dict(payload)
+        self._cached_key = cache_key
         self._cached_at_monotonic = now_monotonic
         return payload
 
 
-def build_probability_payload(*, duckdb_path: Path, limit: int) -> dict[str, Any]:
+def build_probability_payload(
+    *,
+    duckdb_path: Path,
+    limit: int,
+    allow_compute: bool = False,
+    probability_inputs_path: Path | None = None,
+) -> dict[str, Any]:
     generated_at = datetime.now(timezone.utc)
+    hot_input_error: str | None = None
+    if probability_inputs_path is not None:
+        try:
+            hot_payload = read_hot_probability_inputs(
+                out_path=probability_inputs_path,
+                limit=limit,
+                max_age_seconds=DEFAULT_PROBABILITY_MAX_STATE_AGE_SECONDS,
+            )
+        except FileNotFoundError:
+            hot_payload = None
+        except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+            hot_input_error = (
+                f"hot probability inputs unavailable: {type(exc).__name__}: {exc}"
+            )
+            hot_payload = None
+        if hot_payload is not None:
+            hot_rows, hot_errors = _compute_rows_without_persistence(
+                inputs=hot_payload.inputs
+            )
+            return {
+                "ok": not hot_errors,
+                "state": "OK" if not hot_errors else "PARTIAL",
+                "source": "hot_inputs",
+                "generated_at": generated_at.isoformat(),
+                "cached": False,
+                "model_version": hot_rows[0]["model_version"] if hot_rows else None,
+                "rows": hot_rows,
+                "skipped": hot_payload.skipped,
+                "errors": hot_errors,
+            }
+
     if not duckdb_path.exists():
-        return _empty_payload(
-            state="MISSING",
-            error=f"{duckdb_path} missing",
-            generated_at=generated_at,
+        return _with_hot_input_warning(
+            _empty_payload(
+                state="MISSING",
+                error=f"{duckdb_path} missing",
+                generated_at=generated_at,
+            ),
+            hot_input_error,
         )
 
     try:
         persisted_rows = latest_probability_output_rows(duckdb_path=duckdb_path, limit=limit)
         if persisted_rows:
-            return {
-                "ok": True,
-                "state": "OK",
-                "generated_at": generated_at.isoformat(),
-                "cached": False,
-                "model_version": persisted_rows[0]["model_version"],
-                "rows": persisted_rows,
-                "skipped": 0,
-                "errors": [],
-            }
+            return _with_hot_input_warning(
+                {
+                    "ok": True,
+                    "state": "OK",
+                    "source": "duckdb_persisted",
+                    "generated_at": generated_at.isoformat(),
+                    "cached": False,
+                    "model_version": persisted_rows[0]["model_version"],
+                    "rows": persisted_rows,
+                    "skipped": 0,
+                    "errors": [],
+                },
+                hot_input_error,
+            )
+        if not allow_compute:
+            return _with_hot_input_warning(
+                _empty_payload(
+                    state="COMPUTE_DISABLED",
+                    error=(
+                        "probability status missing and runtime probability compute "
+                        "fallback disabled"
+                    ),
+                    generated_at=generated_at,
+                ),
+                hot_input_error,
+            )
         inputs, skipped = latest_probability_inputs(duckdb_path=duckdb_path, limit=limit)
     except duckdb.Error as exc:
-        return _empty_payload(
-            state="INVALID",
-            error=f"DuckDB probability unavailable: {type(exc).__name__}: {exc}",
-            generated_at=generated_at,
+        return _with_hot_input_warning(
+            _empty_payload(
+                state="INVALID",
+                error=f"DuckDB probability unavailable: {type(exc).__name__}: {exc}",
+                generated_at=generated_at,
+            ),
+            hot_input_error,
         )
     except (json.JSONDecodeError, TypeError, ValueError) as exc:
-        return _empty_payload(
-            state="INVALID",
-            error=f"probability input unavailable: {type(exc).__name__}: {exc}",
-            generated_at=generated_at,
+        return _with_hot_input_warning(
+            _empty_payload(
+                state="INVALID",
+                error=f"probability input unavailable: {type(exc).__name__}: {exc}",
+                generated_at=generated_at,
+            ),
+            hot_input_error,
         )
 
-    rows: list[dict[str, Any]] = []
-    errors: list[str] = []
     store = DuckDbIngestStore(duckdb_path)
     rows, errors = _compute_and_persist_rows(store=store, inputs=inputs)
 
-    return {
-        "ok": not errors,
-        "state": "OK" if not errors else "PARTIAL",
-        "generated_at": generated_at.isoformat(),
-        "cached": False,
-        "model_version": rows[0]["model_version"] if rows else None,
-        "rows": rows,
-        "skipped": skipped,
-        "errors": errors,
-    }
+    return _with_hot_input_warning(
+        {
+            "ok": not errors,
+            "state": "OK" if not errors else "PARTIAL",
+            "source": "duckdb_compute",
+            "generated_at": generated_at.isoformat(),
+            "cached": False,
+            "model_version": rows[0]["model_version"] if rows else None,
+            "rows": rows,
+            "skipped": skipped,
+            "errors": errors,
+        },
+        hot_input_error,
+    )
+
+
+def _probability_cache_key(
+    *,
+    duckdb_path: Path,
+    limit: int,
+    allow_compute: bool,
+    probability_inputs_path: Path | None,
+) -> tuple[Any, ...]:
+    return (
+        str(duckdb_path),
+        limit,
+        allow_compute,
+        _hot_inputs_cache_fingerprint(probability_inputs_path),
+    )
+
+
+def _hot_inputs_cache_fingerprint(path: Path | None) -> tuple[Any, ...] | None:
+    if path is None:
+        return None
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return (str(path), "missing")
+    except OSError as exc:
+        return (str(path), "unavailable", type(exc).__name__, str(exc))
+    return (str(path), stat.st_mtime_ns, stat.st_size)
+
+
+def _with_hot_input_warning(
+    payload: dict[str, Any],
+    hot_input_error: str | None,
+) -> dict[str, Any]:
+    if hot_input_error is None:
+        return payload
+    payload = dict(payload)
+    payload["hot_input_error"] = hot_input_error
+    warnings = payload.get("warnings")
+    payload["warnings"] = (
+        [*warnings, hot_input_error] if isinstance(warnings, list) else [hot_input_error]
+    )
+    return payload
 
 
 def latest_probability_inputs(
@@ -307,9 +427,8 @@ def compute_and_persist_probability_outputs(
     return len(inputs) - len(errors), skipped, tuple(errors)
 
 
-def _compute_and_persist_rows(
+def _compute_rows_without_persistence(
     *,
-    store: DuckDbIngestStore,
     inputs: tuple[ProbabilityRuntimeInput, ...],
 ) -> tuple[list[dict[str, Any]], list[str]]:
     rows: list[dict[str, Any]] = []
@@ -326,15 +445,48 @@ def _compute_and_persist_rows(
                 seed=seed,
             )
             output_id = _output_id(probability_input, output)
-            store.insert_probability_output(
-                output_id=output_id,
-                probability_input=probability_input,
-                output=output,
-            )
-        except (duckdb.Error, ValueError) as exc:
+        except Exception as exc:
             errors.append(f"{probability_input.state_id}: {type(exc).__name__}: {exc}")
             continue
         rows.append(_runtime_row(runtime_input, output=output, output_id=output_id))
+    return rows, errors
+
+
+def _compute_and_persist_rows(
+    *,
+    store: DuckDbIngestStore,
+    inputs: tuple[ProbabilityRuntimeInput, ...],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    rows: list[dict[str, Any]] = []
+    errors: list[str] = []
+    output_rows: list[tuple[str, ProbabilityInput, ProbabilityOutput]] = []
+    for runtime_input in inputs:
+        probability_input = runtime_input.probability_input
+        seed = _seed_for_input(probability_input)
+        steps = _steps_for_input(probability_input)
+        try:
+            output = run_seeded_monte_carlo(
+                probability_input,
+                path_count=DEFAULT_PROBABILITY_PATH_COUNT,
+                steps=steps,
+                seed=seed,
+            )
+            output_id = _output_id(probability_input, output)
+        except Exception as exc:
+            errors.append(f"{probability_input.state_id}: {type(exc).__name__}: {exc}")
+            continue
+        output_rows.append((output_id, probability_input, output))
+        rows.append(_runtime_row(runtime_input, output=output, output_id=output_id))
+
+    if output_rows:
+        try:
+            store.insert_probability_outputs(output_rows)
+        except (duckdb.Error, ValueError) as exc:
+            errors.extend(
+                f"{probability_input.state_id}: {type(exc).__name__}: {exc}"
+                for _, probability_input, _ in output_rows
+            )
+            rows = []
     return rows, errors
 
 
@@ -463,11 +615,6 @@ def _output_id(probability_input: ProbabilityInput, output: ProbabilityOutput) -
         ).encode()
     ).hexdigest()
     return f"prob-{digest[:24]}"
-
-
-def _contract_label(*, asset: str, side: str, start_ts: datetime, expiry_ts: datetime) -> str:
-    interval_minutes = max(1, round((expiry_ts - start_ts).total_seconds() / 60))
-    return f"{asset} {interval_minutes}m {side}"
 
 
 def _float(value: object, field_name: str) -> float:

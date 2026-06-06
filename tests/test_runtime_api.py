@@ -8,6 +8,7 @@ import json
 import subprocess
 
 import duckdb
+from fastapi import FastAPI
 import pytest
 from fastapi.testclient import TestClient
 
@@ -16,7 +17,9 @@ from polymarket_engine.app import create_app_from_env
 from polymarket_engine.domain.contracts import ContractSpec
 from polymarket_engine.domain.market_state import DataQualityFlag
 from polymarket_engine.domain.market_state import DecisionState
+from polymarket_engine.probability.hot_inputs import write_hot_probability_inputs
 from polymarket_engine.probability.schema import ProbabilityInput, ProbabilityOutput
+from polymarket_engine.runtime_api import build_runtime_router
 from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
 
 
@@ -93,6 +96,64 @@ def test_create_app_from_env_uses_runtime_paths(
 
     assert response.status_code == 200
     assert response.json()["status_path"] == str(status_path)
+
+
+def test_create_app_from_env_uses_probability_inputs_path_for_runtime_probabilities(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    status_path = tmp_path / "live" / "status.json"
+    status_path.parent.mkdir()
+    _write_status(status_path)
+    probability_inputs_path = tmp_path / "live" / "probability_inputs.json"
+    write_hot_probability_inputs(
+        out_path=probability_inputs_path,
+        states=(_decision_state(),),
+        generated_at=datetime.now(UTC),
+    )
+    monkeypatch.setenv("POLYMARKET_STATUS_PATH", str(status_path))
+    monkeypatch.setenv("POLYMARKET_DUCKDB_PATH", str(tmp_path / "missing.duckdb"))
+    monkeypatch.setenv("POLYMARKET_ENABLE_RUNTIME_PROBABILITIES", "1")
+    monkeypatch.setenv("POLYMARKET_PROBABILITY_INPUTS_PATH", str(probability_inputs_path))
+
+    response = TestClient(create_app_from_env()).get("/api/runtime/probabilities?limit=4")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["state"] == "OK"
+    assert payload["errors"] == []
+    assert payload["rows"][0]["contract"] == "BTC 5m UP"
+
+
+def test_runtime_router_defaults_to_live_probability_inputs_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    probability_inputs_path = tmp_path / "data" / "live" / "probability_inputs.json"
+    write_hot_probability_inputs(
+        out_path=probability_inputs_path,
+        states=(_decision_state(),),
+        generated_at=datetime.now(UTC),
+    )
+    app = FastAPI()
+    app.include_router(
+        build_runtime_router(
+            status_path=tmp_path / "missing-status.json",
+            duckdb_path=tmp_path / "missing.duckdb",
+            enable_runtime_probabilities=True,
+            allow_probability_compute_fallback=True,
+        )
+    )
+
+    response = TestClient(app).get("/api/runtime/probabilities?limit=4")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["state"] == "OK"
+    assert payload["rows"][0]["contract"] == "BTC 5m UP"
 
 
 def test_create_app_from_env_uses_status_sibling_target_cache_by_default(
@@ -927,7 +988,43 @@ def test_runtime_probabilities_disabled_by_default_returns_empty_envelope(
     assert payload["errors"] == []
 
 
-def test_runtime_probabilities_runs_cached_read_only_mc_and_persists_output(
+def test_runtime_probabilities_skips_compute_when_fallback_disabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "polymarket.duckdb"
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    state = _decision_state()
+    store.upsert_contract_spec(state.contract)
+    store.upsert_asof_state_input(state)
+
+    def fail_compute(*_: object, **__: object) -> NoReturn:
+        raise AssertionError("runtime probability display should not compute CPU fallback")
+
+    monkeypatch.setattr(
+        "polymarket_engine.probability.runtime._compute_and_persist_rows",
+        fail_compute,
+    )
+    app = create_app(
+        status_path=tmp_path / "missing-status.json",
+        duckdb_path=db_path,
+        enable_runtime_probabilities=True,
+    )
+
+    response = TestClient(app).get("/api/runtime/probabilities?limit=4")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["state"] == "COMPUTE_DISABLED"
+    assert payload["rows"] == []
+    assert payload["errors"] == [
+        "probability status missing and runtime probability compute fallback disabled"
+    ]
+
+
+def test_runtime_probabilities_runs_cached_read_only_mc_when_compute_fallback_allowed(
     tmp_path: Path,
 ) -> None:
     db_path = tmp_path / "polymarket.duckdb"
@@ -940,6 +1037,7 @@ def test_runtime_probabilities_runs_cached_read_only_mc_and_persists_output(
         status_path=tmp_path / "missing-status.json",
         duckdb_path=db_path,
         enable_runtime_probabilities=True,
+        allow_runtime_probability_compute=True,
     )
     client = TestClient(app)
 
@@ -993,6 +1091,7 @@ def test_runtime_probabilities_skips_quality_blocked_asof_states(tmp_path: Path)
         status_path=tmp_path / "missing-status.json",
         duckdb_path=db_path,
         enable_runtime_probabilities=True,
+        allow_runtime_probability_compute=True,
     )
 
     response = TestClient(app).get("/api/runtime/probabilities")
@@ -1040,6 +1139,49 @@ def test_runtime_probabilities_reads_live_probability_status_file(tmp_path: Path
     payload = response.json()
     assert payload["ok"] is True
     assert payload["rows"] == [{"contract": "BTC 5m UP", "output_id": "btc-up"}]
+
+
+def test_runtime_probabilities_prefers_hot_inputs_over_status_file(
+    tmp_path: Path,
+) -> None:
+    probability_status_path = tmp_path / "live" / "probabilities.json"
+    probability_inputs_path = tmp_path / "live" / "probability_inputs.json"
+    probability_status_path.parent.mkdir()
+    probability_status_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "polymarket-probability-runtime-v1",
+                "ok": True,
+                "state": "OK",
+                "generated_at": datetime(2026, 6, 1, tzinfo=UTC).isoformat(),
+                "cached": False,
+                "model_version": "stale-file",
+                "rows": [{"contract": "STALE", "output_id": "stale"}],
+                "skipped": 0,
+                "errors": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    write_hot_probability_inputs(
+        out_path=probability_inputs_path,
+        states=(_decision_state(),),
+        generated_at=datetime.now(UTC),
+    )
+    app = create_app(
+        status_path=tmp_path / "missing-status.json",
+        duckdb_path=tmp_path / "missing.duckdb",
+        probability_status_path=probability_status_path,
+        probability_inputs_path=probability_inputs_path,
+        enable_runtime_probabilities=True,
+    )
+
+    response = TestClient(app).get("/api/runtime/probabilities?limit=4")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["source"] == "hot_inputs"
+    assert payload["rows"][0]["contract"] == "BTC 5m UP"
 
 
 def test_runtime_probabilities_prefers_persisted_outputs_without_recomputing(

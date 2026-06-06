@@ -81,13 +81,13 @@ services:
       POLYMARKET_STATUS_PATH: /var/lib/polymarket/live/status.json
       POLYMARKET_NORMALIZED_HEALTH_PATH: /var/lib/polymarket/live/normalized_health.json
       POLYMARKET_PROBABILITY_STATUS_PATH: /var/lib/polymarket/live/probabilities.json
+      POLYMARKET_PROBABILITY_INPUTS_PATH: /var/lib/polymarket/live/probability_inputs.json
       POLYMARKET_OUTCOME_STATUS_PATH: /var/lib/polymarket/live/outcomes.json
       POLYMARKET_VOLATILITY_STATUS_PATH: /var/lib/polymarket/live/volatility.json
-      POLYMARKET_OFFICIAL_OUTCOME_SOURCE: ${POLYMARKET_OFFICIAL_OUTCOME_SOURCE:-clob}
-      POLYMARKET_OFFICIAL_OUTCOME_TIMEOUT_SECONDS: ${POLYMARKET_OFFICIAL_OUTCOME_TIMEOUT_SECONDS:-2.0}
-      POLYMARKET_OFFICIAL_OUTCOME_REFRESH_LIMIT: ${POLYMARKET_OFFICIAL_OUTCOME_REFRESH_LIMIT:-4}
-      POLYMARKET_OFFICIAL_OUTCOME_PENDING_SWEEP_LIMIT: ${POLYMARKET_OFFICIAL_OUTCOME_PENDING_SWEEP_LIMIT:-20}
       POLYMARKET_NORMALIZER_INTERVAL_SECONDS: ${POLYMARKET_NORMALIZER_INTERVAL_SECONDS:-0.25}
+      POLYMARKET_DUCKDB_THREADS: ${POLYMARKET_DUCKDB_THREADS:-1}
+      POLYMARKET_DUCKDB_MEMORY_LIMIT: ${POLYMARKET_DUCKDB_MEMORY_LIMIT:-512MiB}
+      POLYMARKET_DUCKDB_PRESERVE_INSERTION_ORDER: ${POLYMARKET_DUCKDB_PRESERVE_INSERTION_ORDER:-false}
     volumes:
       - ${POLYMARKET_DATA_DIR:-/home/spoon/polymarket-data}/raw:/var/lib/polymarket/raw
       - ${POLYMARKET_DATA_DIR:-/home/spoon/polymarket-data}/db:/var/lib/polymarket/db
@@ -105,6 +105,50 @@ services:
       timeout: 5s
       retries: 3
       start_period: 30s
+
+  outcome-refresh:
+    image: ${POLYMARKET_NORMALIZER_IMAGE:-polymarket-normalizer:latest}
+    restart: unless-stopped
+    user: "${POLYMARKET_UID:-1000}:${POLYMARKET_GID:-1000}"
+    depends_on:
+      - normalizer
+    entrypoint: ["/usr/bin/tini", "--"]
+    command:
+      [
+        "polymarket-engine",
+        "run-outcome-refresh-sidecar",
+        "--duckdb-path",
+        "/var/lib/polymarket/db/polymarket.duckdb",
+        "--outcome-status-path",
+        "/var/lib/polymarket/live/outcomes.json",
+        "--interval-seconds",
+        "${POLYMARKET_OUTCOME_REFRESH_INTERVAL_SECONDS:-30}",
+      ]
+    environment:
+      TZ: ${POLYMARKET_DISPLAY_TZ:-America/Chicago}
+      POLYMARKET_OFFICIAL_OUTCOME_SOURCE: ${POLYMARKET_OFFICIAL_OUTCOME_SOURCE:-clob}
+      POLYMARKET_OFFICIAL_OUTCOME_TIMEOUT_SECONDS: ${POLYMARKET_OFFICIAL_OUTCOME_TIMEOUT_SECONDS:-2.0}
+      POLYMARKET_OFFICIAL_OUTCOME_REFRESH_LIMIT: ${POLYMARKET_OFFICIAL_OUTCOME_REFRESH_LIMIT:-4}
+      POLYMARKET_OFFICIAL_OUTCOME_PENDING_SWEEP_LIMIT: ${POLYMARKET_OFFICIAL_OUTCOME_PENDING_SWEEP_LIMIT:-20}
+      POLYMARKET_OUTCOME_OUTPUT_LIMIT: ${POLYMARKET_OUTCOME_OUTPUT_LIMIT:-5000}
+      POLYMARKET_DUCKDB_THREADS: ${POLYMARKET_DUCKDB_THREADS:-1}
+      POLYMARKET_DUCKDB_MEMORY_LIMIT: ${POLYMARKET_DUCKDB_MEMORY_LIMIT:-512MiB}
+      POLYMARKET_DUCKDB_PRESERVE_INSERTION_ORDER: ${POLYMARKET_DUCKDB_PRESERVE_INSERTION_ORDER:-false}
+    volumes:
+      - ${POLYMARKET_DATA_DIR:-/home/spoon/polymarket-data}/db:/var/lib/polymarket/db
+      - ${POLYMARKET_DATA_DIR:-/home/spoon/polymarket-data}/live:/var/lib/polymarket/live
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "sh",
+          "-c",
+          "python -c \"import json, os, time; p='/var/lib/polymarket/live/outcomes.json'; payload=json.load(open(p)); assert payload['schema_version']=='polymarket-outcome-runtime-v1'; assert time.time()-os.stat(p).st_mtime < 120\"",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
 
   api:
     image: ${POLYMARKET_NORMALIZER_IMAGE:-polymarket-normalizer:latest}
@@ -129,11 +173,13 @@ services:
       POLYMARKET_DUCKDB_PATH: /var/lib/polymarket/db/polymarket.duckdb
       POLYMARKET_NORMALIZED_HEALTH_PATH: /var/lib/polymarket/live/normalized_health.json
       POLYMARKET_PROBABILITY_STATUS_PATH: /var/lib/polymarket/live/probabilities.json
+      POLYMARKET_PROBABILITY_INPUTS_PATH: /var/lib/polymarket/live/probability_inputs.json
       POLYMARKET_OUTCOME_STATUS_PATH: /var/lib/polymarket/live/outcomes.json
       POLYMARKET_VOLATILITY_STATUS_PATH: /var/lib/polymarket/live/volatility.json
       POLYMARKET_DATA_DIR: /var/lib/polymarket
       POLYMARKET_ENABLE_CONTAINER_STATUS: ${POLYMARKET_ENABLE_CONTAINER_STATUS:-0}
       POLYMARKET_ENABLE_RUNTIME_PROBABILITIES: ${POLYMARKET_ENABLE_RUNTIME_PROBABILITIES:-0}
+      POLYMARKET_ALLOW_RUNTIME_PROBABILITY_COMPUTE: ${POLYMARKET_ALLOW_RUNTIME_PROBABILITY_COMPUTE:-0}
     ports:
       - "${POLYMARKET_API_PORT:-8000}:8000"
     volumes:

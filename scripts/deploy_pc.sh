@@ -189,7 +189,7 @@ install -m 755 "\$TUI_BIN" "\$PC_BIN_DIR/polymarket-cockpit-tui"
   printf '%s\n' "  echo 'Runtime already live.'"
   printf '%s\n' 'else'
   printf '%s\n' "  echo 'Runtime not live; starting containers...'"
-  printf '%s\n' '  docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml up -d --no-recreate collector normalizer api >/dev/null 2>&1 || true'
+  printf '%s\n' '  docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml up -d --no-recreate collector normalizer outcome-refresh api >/dev/null 2>&1 || true'
   printf '%s\n' 'fi'
   printf '%s\n' "echo 'Waiting for runtime API and live market rows...'"
   printf '%s\n' 'for _ in \$(seq 1 45); do'

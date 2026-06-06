@@ -8,6 +8,7 @@ REPO="${REPO:-$HOME/polymarket}"
 DATA_DIR="${POLYMARKET_DATA_DIR:-$HOME/polymarket-data}"
 COMPOSE_FILE="$REPO/deploy/collector/docker-compose.yml"
 STATUS_PATH="$DATA_DIR/live/status.json"
+OUTCOME_STATUS_PATH="$DATA_DIR/live/outcomes.json"
 LOCK_DIR="/tmp/polymarket-deploy.lock.d"
 LOG_FILE="$REPO/logs/deploy.log"
 DEPLOYED_MARKER="$HOME/.polymarket/last-deployed-sha"
@@ -47,6 +48,27 @@ normalizer_running() {
 normalizer_uses_sidecar() {
   compose -f "$COMPOSE_FILE" top normalizer 2>> "$LOG_FILE" \
     | grep "$NORMALIZER_SIDECAR_COMMAND" >> "$LOG_FILE" 2>&1
+}
+
+outcome_refresh_running() {
+  compose -f "$COMPOSE_FILE" ps --services --status running outcome-refresh 2>> "$LOG_FILE" \
+    | grep -qx outcome-refresh
+}
+
+outcome_status_fresh() {
+  python3 - "$OUTCOME_STATUS_PATH" <<'PY' >> "$LOG_FILE" 2>&1
+import json
+import os
+import sys
+import time
+
+path = sys.argv[1]
+payload = json.load(open(path, encoding="utf-8"))
+if payload.get("schema_version") != "polymarket-outcome-runtime-v1":
+    raise SystemExit(1)
+if time.time() - os.stat(path).st_mtime > 120:
+    raise SystemExit(1)
+PY
 }
 
 required_image_available() {
@@ -109,7 +131,11 @@ if [ "$USE_PREBUILT" = "1" ]; then
 fi
 DEPLOYED_SHA="$(cat "$DEPLOYED_MARKER" 2>/dev/null || true)"
 if [ "$USE_PREBUILT" != "1" ] && [ "$LOCAL" = "$REMOTE" ] && [ "$DEPLOYED_SHA" = "$REMOTE" ] && [ "${DEPLOY_FORCE:-0}" != "1" ]; then
-  if normalizer_running && normalizer_uses_sidecar && python3 "$REPO/scripts/check_collector_status.py" \
+  if normalizer_running \
+    && normalizer_uses_sidecar \
+    && outcome_refresh_running \
+    && outcome_status_fresh \
+    && python3 "$REPO/scripts/check_collector_status.py" \
     --status-path "$STATUS_PATH" \
     --max-status-age-seconds 30 \
     --max-price-age-ms 30000 \
@@ -156,7 +182,7 @@ if [ "$USE_PREBUILT" = "1" ]; then
   if ! (
     export POLYMARKET_COLLECTOR_IMAGE="$COLLECTOR_IMAGE"
     export POLYMARKET_NORMALIZER_IMAGE="$NORMALIZER_IMAGE"
-    compose -f "$COMPOSE_FILE" up -d collector normalizer api
+    compose -f "$COMPOSE_FILE" up -d collector normalizer outcome-refresh api
   ) >> "$LOG_FILE" 2>&1; then
     LOG "docker compose failed"
     exit 1
@@ -167,14 +193,18 @@ else
     exit 1
   fi
   export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-1}"
-  if ! compose -f "$COMPOSE_FILE" up -d --build collector normalizer api >> "$LOG_FILE" 2>&1; then
+  if ! compose -f "$COMPOSE_FILE" up -d --build collector normalizer outcome-refresh api >> "$LOG_FILE" 2>&1; then
     LOG "docker compose failed"
     exit 1
   fi
 fi
 
 for _ in $(seq 1 "$DEPLOY_SMOKE_ATTEMPTS"); do
-  if normalizer_running && normalizer_uses_sidecar && python3 "$REPO/scripts/check_collector_status.py" \
+  if normalizer_running \
+    && normalizer_uses_sidecar \
+    && outcome_refresh_running \
+    && outcome_status_fresh \
+    && python3 "$REPO/scripts/check_collector_status.py" \
     --status-path "$STATUS_PATH" \
     --max-status-age-seconds 30 \
     --max-price-age-ms 30000 \
@@ -193,5 +223,5 @@ for _ in $(seq 1 "$DEPLOY_SMOKE_ATTEMPTS"); do
 done
 
 LOG "collector smoke failed; leaving container logs in docker compose"
-compose -f "$COMPOSE_FILE" logs --tail=80 collector normalizer api >> "$LOG_FILE" 2>&1 || true
+compose -f "$COMPOSE_FILE" logs --tail=80 collector normalizer outcome-refresh api >> "$LOG_FILE" 2>&1 || true
 exit 1

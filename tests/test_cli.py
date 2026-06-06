@@ -171,9 +171,11 @@ def test_parse_run_rust_normalizer_sidecar_args() -> None:
     assert args.status_path == Path("data/live/status.json")
     assert args.normalized_health_path == Path("data/live/normalized_health.json")
     assert args.probability_status_path == Path("data/live/probabilities.json")
+    assert args.probability_inputs_path == Path("data/live/probability_inputs.json")
     assert args.outcome_status_path == Path("data/live/outcomes.json")
     assert args.interval_seconds == 1.0
     assert args.enable_probabilities is False
+    assert args.enable_outcome_refresh is False
     assert args.once is True
 
 
@@ -194,6 +196,67 @@ def test_parse_run_rust_normalizer_sidecar_enable_probabilities_arg() -> None:
     )
 
     assert args.enable_probabilities is True
+
+
+def test_parse_run_rust_normalizer_sidecar_enable_outcome_refresh_arg() -> None:
+    args = parse_args(
+        [
+            "run-rust-normalizer-sidecar",
+            "--raw-root",
+            "data/raw",
+            "--duckdb-path",
+            "data/db/polymarket.duckdb",
+            "--status-path",
+            "data/live/status.json",
+            "--normalized-health-path",
+            "data/live/normalized_health.json",
+            "--enable-outcome-refresh",
+        ]
+    )
+
+    assert args.enable_outcome_refresh is True
+
+
+def test_parse_run_outcome_refresh_sidecar_args() -> None:
+    args = parse_args(
+        [
+            "run-outcome-refresh-sidecar",
+            "--duckdb-path",
+            "data/db/polymarket.duckdb",
+            "--outcome-status-path",
+            "data/live/outcomes.json",
+            "--interval-seconds",
+            "12.5",
+            "--max-cycles",
+            "2",
+        ]
+    )
+
+    assert args.command == "run-outcome-refresh-sidecar"
+    assert args.duckdb_path == Path("data/db/polymarket.duckdb")
+    assert args.outcome_status_path == Path("data/live/outcomes.json")
+    assert args.interval_seconds == 12.5
+    assert args.max_cycles == 2
+
+
+def test_parse_run_rust_normalizer_sidecar_probability_inputs_path_arg() -> None:
+    args = parse_args(
+        [
+            "run-rust-normalizer-sidecar",
+            "--raw-root",
+            "data/raw",
+            "--duckdb-path",
+            "data/db/polymarket.duckdb",
+            "--status-path",
+            "data/live/status.json",
+            "--normalized-health-path",
+            "data/live/normalized_health.json",
+            "--probability-inputs-path",
+            "tmp/probability_inputs.json",
+        ]
+    )
+
+    assert args.probability_inputs_path == Path("tmp/probability_inputs.json")
 
 
 def test_run_rust_normalizer_sidecar_defaults_to_quarter_second_cadence() -> None:
@@ -587,6 +650,8 @@ async def test_run_rust_normalizer_sidecar_once_command(
         encoding="utf-8",
     )
     health_path = tmp_path / "live" / "normalized_health.json"
+    probability_inputs_path = tmp_path / "live" / "probability_inputs.json"
+    outcome_path = tmp_path / "live" / "outcomes.json"
 
     result = await cli.run_collect_command(
         [
@@ -599,6 +664,10 @@ async def test_run_rust_normalizer_sidecar_once_command(
             str(status_path),
             "--normalized-health-path",
             str(health_path),
+            "--probability-inputs-path",
+            str(probability_inputs_path),
+            "--outcome-status-path",
+            str(outcome_path),
             "--once",
         ]
     )
@@ -609,7 +678,10 @@ async def test_run_rust_normalizer_sidecar_once_command(
     assert payload["bytes_read"] > 0
     assert payload["elapsed_ms"] >= 0
     assert payload["contracts_upserted"] == 2
+    assert payload["market_outcomes_written"] == 0
     assert health_path.exists()
+    assert probability_inputs_path.exists()
+    assert not outcome_path.exists()
 
 
 @pytest.mark.anyio
@@ -653,11 +725,54 @@ async def test_run_rust_normalizer_sidecar_loop_command_dispatches(
             "status_path": tmp_path / "live" / "status.json",
             "normalized_health_path": tmp_path / "live" / "normalized_health.json",
             "probability_status_path": Path("data/live/probabilities.json"),
+            "probability_inputs_path": Path("data/live/probability_inputs.json"),
             "outcome_status_path": Path("data/live/outcomes.json"),
+            "volatility_status_path": Path("data/live/volatility.json"),
             "interval_seconds": 1.5,
             "include_next": True,
             "compute_probabilities": False,
+            "enable_outcome_refresh": False,
             "reprocess_all": True,
+        }
+    ]
+
+
+@pytest.mark.anyio
+async def test_run_outcome_refresh_sidecar_command_dispatches(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_loop(**kwargs: object) -> None:
+        calls.append(kwargs)
+
+    monkeypatch.setattr(
+        "polymarket_engine.validation.outcome_sidecar.run_outcome_refresh_loop",
+        fake_loop,
+    )
+
+    result = await cli.run_collect_command(
+        [
+            "run-outcome-refresh-sidecar",
+            "--duckdb-path",
+            str(tmp_path / "state.duckdb"),
+            "--outcome-status-path",
+            str(tmp_path / "live" / "outcomes.json"),
+            "--interval-seconds",
+            "15",
+            "--max-cycles",
+            "2",
+        ]
+    )
+
+    assert result == 0
+    assert calls == [
+        {
+            "duckdb_path": tmp_path / "state.duckdb",
+            "outcome_status_path": tmp_path / "live" / "outcomes.json",
+            "interval_seconds": 15.0,
+            "max_cycles": 2,
         }
     ]
 

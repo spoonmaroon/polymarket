@@ -19,9 +19,11 @@ from polymarket_engine.ingestion.rust_normalizer_sidecar import (
     run_rust_normalizer_cycle,
     run_rust_normalizer_loop,
 )
+from polymarket_engine.probability.hot_inputs import read_hot_probability_inputs
 from polymarket_engine.domain.market_state import PriceObservation
 from polymarket_engine.storage import duckdb_store
 from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
+from polymarket_engine.validation import outcome_sidecar
 
 
 def test_sidecar_cycle_normalizes_builds_states_and_writes_health(tmp_path: Path) -> None:
@@ -54,6 +56,7 @@ def test_sidecar_cycle_normalizes_builds_states_and_writes_health(tmp_path: Path
     assert result.normalize_ms >= 0
     assert result.state_ms >= 0
     assert result.health_ms >= 0
+    assert result.to_json_dict()["state_build_reason"] == "forced"
     assert health_path.exists()
     health_payload = json.loads(health_path.read_text(encoding="utf-8"))
     assert health_payload["schema_version"] == "polymarket-normalized-health-v1"
@@ -61,6 +64,13 @@ def test_sidecar_cycle_normalizes_builds_states_and_writes_health(tmp_path: Path
     probability_payload = json.loads(probability_path.read_text(encoding="utf-8"))
     assert probability_payload["schema_version"] == "polymarket-probability-runtime-v1"
     assert len(probability_payload["rows"]) == 2
+    probability_inputs_path = health_path.with_name("probability_inputs.json")
+    probability_inputs = read_hot_probability_inputs(
+        out_path=probability_inputs_path,
+        limit=10,
+        max_age_seconds=10_000_000,
+    )
+    assert len(probability_inputs.inputs) == 2
     with duckdb.connect(str(db_path), read_only=True) as conn:
         assert conn.execute("select count(*) from core.price_ticks").fetchone() == (5,)
         assert conn.execute("select count(*) from core.orderbook_snapshots").fetchone() == (2,)
@@ -121,8 +131,36 @@ def test_sidecar_cycle_writes_health_when_status_is_missing(tmp_path: Path) -> N
     assert result.rows_read == 4
     assert result.contracts_upserted == 0
     assert result.states_written == 0
+    assert result.state_skipped is True
+    assert result.state_build_reason == "missing_status"
     assert result.unavailable == ()
     assert health_path.exists()
+
+
+def test_state_build_mtime_fallback_preserves_forced_and_reprocess_builds() -> None:
+    payload: dict[str, Any] = {"current": [{"token_id": "up-token"}]}
+
+    forced = rust_normalizer_sidecar._state_build_decision_with_mtime_fallback(
+        previous_signature=None,
+        previous_mtime_ns=123,
+        status_mtime_ns=123,
+        status_payload=payload,
+        force_state_build=True,
+        reprocess_all=False,
+    )
+    reprocessed = rust_normalizer_sidecar._state_build_decision_with_mtime_fallback(
+        previous_signature=None,
+        previous_mtime_ns=123,
+        status_mtime_ns=123,
+        status_payload=payload,
+        force_state_build=False,
+        reprocess_all=True,
+    )
+
+    assert forced.should_build is True
+    assert forced.reason == "forced"
+    assert reprocessed.should_build is True
+    assert reprocessed.reason == "reprocess_all"
 
 
 def test_normalizer_writes_market_outcome_history(tmp_path: Path) -> None:
@@ -170,22 +208,22 @@ def test_upsert_market_outcomes_limits_official_refresh_from_env(
 
     monkeypatch.setenv("POLYMARKET_OFFICIAL_OUTCOME_REFRESH_LIMIT", "2")
     monkeypatch.setattr(
-        rust_normalizer_sidecar,
+        outcome_sidecar,
         "upsert_official_market_outcomes",
         fake_upsert_official_market_outcomes,
     )
     monkeypatch.setattr(
-        rust_normalizer_sidecar,
+        outcome_sidecar,
         "latest_market_outcome_rows_from_connection",
         lambda *, conn, limit: [],
     )
     monkeypatch.setattr(
-        rust_normalizer_sidecar,
+        outcome_sidecar,
         "write_outcome_history_status",
         lambda *, out_path, rows: None,
     )
 
-    rust_normalizer_sidecar._upsert_market_outcomes(
+    outcome_sidecar.refresh_market_outcomes(
         store=cast(DuckDbIngestStore, _FakeConnectionStore()),
         out_path=tmp_path / "outcomes.json",
     )
@@ -205,22 +243,22 @@ def test_upsert_market_outcomes_uses_pending_sweep_limit_from_env(
 
     monkeypatch.setenv("POLYMARKET_OFFICIAL_OUTCOME_PENDING_SWEEP_LIMIT", "7")
     monkeypatch.setattr(
-        rust_normalizer_sidecar,
+        outcome_sidecar,
         "upsert_official_market_outcomes",
         fake_upsert_official_market_outcomes,
     )
     monkeypatch.setattr(
-        rust_normalizer_sidecar,
+        outcome_sidecar,
         "latest_market_outcome_rows_from_connection",
         lambda *, conn, limit: [],
     )
     monkeypatch.setattr(
-        rust_normalizer_sidecar,
+        outcome_sidecar,
         "write_outcome_history_status",
         lambda *, out_path, rows: None,
     )
 
-    rust_normalizer_sidecar._upsert_market_outcomes(
+    outcome_sidecar.refresh_market_outcomes(
         store=cast(DuckDbIngestStore, _FakeConnectionStore()),
         out_path=tmp_path / "outcomes.json",
     )
@@ -240,22 +278,22 @@ def test_upsert_market_outcomes_uses_output_limit_from_env(
 
     monkeypatch.setenv("POLYMARKET_OUTCOME_OUTPUT_LIMIT", "1440")
     monkeypatch.setattr(
-        rust_normalizer_sidecar,
+        outcome_sidecar,
         "upsert_official_market_outcomes",
         lambda **_kwargs: 0,
     )
     monkeypatch.setattr(
-        rust_normalizer_sidecar,
+        outcome_sidecar,
         "latest_market_outcome_rows_from_connection",
         fake_latest_market_outcome_rows_from_connection,
     )
     monkeypatch.setattr(
-        rust_normalizer_sidecar,
+        outcome_sidecar,
         "write_outcome_history_status",
         lambda *, out_path, rows: None,
     )
 
-    rust_normalizer_sidecar._upsert_market_outcomes(
+    outcome_sidecar.refresh_market_outcomes(
         store=cast(DuckDbIngestStore, _FakeConnectionStore()),
         out_path=tmp_path / "outcomes.json",
     )
@@ -414,7 +452,7 @@ def test_sidecar_loop_writes_target_cache_for_active_contracts(
     _write_status(status_path, start_ts=start_ts, asof_ts=asof_ts)
     monkeypatch.setattr(
         rust_normalizer_sidecar,
-        "_upsert_market_outcomes",
+        "refresh_market_outcomes",
         lambda *, store, out_path: 0,
     )
     monkeypatch.setattr(
@@ -515,6 +553,52 @@ def test_sidecar_loop_reuses_process_and_sleeps_between_cycles(
     assert 0.0 < sleeps[0] <= 1.25
 
 
+def test_sidecar_loop_uses_nonpersistent_duckdb_connection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_root = tmp_path / "raw"
+    db_path = tmp_path / "state.duckdb"
+    status_path = tmp_path / "live" / "status.json"
+    health_path = tmp_path / "live" / "normalized_health.json"
+    start_ts = datetime(2026, 6, 2, 6, 0, tzinfo=timezone.utc)
+    asof_ts = start_ts + timedelta(minutes=2)
+    _write_raw_tree(raw_root=raw_root, start_ts=start_ts, asof_ts=asof_ts)
+    _write_status(status_path, start_ts=start_ts, asof_ts=asof_ts)
+    persistent_flags: list[bool] = []
+
+    class CapturingStore(DuckDbIngestStore):
+        def __init__(
+            self,
+            db_path: Path,
+            *,
+            persistent_connection: bool = True,
+        ) -> None:
+            persistent_flags.append(persistent_connection)
+            super().__init__(
+                db_path,
+                persistent_connection=persistent_connection,
+            )
+
+    monkeypatch.setattr(
+        rust_normalizer_sidecar,
+        "DuckDbIngestStore",
+        CapturingStore,
+    )
+
+    run_rust_normalizer_loop(
+        raw_root=raw_root,
+        db_path=db_path,
+        status_path=status_path,
+        normalized_health_path=health_path,
+        interval_seconds=0.0,
+        include_next=False,
+        max_cycles=1,
+    )
+
+    assert persistent_flags == [False]
+
+
 def test_sidecar_loop_throttles_market_outcome_refresh(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -535,7 +619,7 @@ def test_sidecar_loop_throttles_market_outcome_refresh(
 
     monkeypatch.setattr(
         rust_normalizer_sidecar,
-        "_upsert_market_outcomes",
+        "refresh_market_outcomes",
         fake_upsert_market_outcomes,
     )
     monkeypatch.setattr(
@@ -550,10 +634,48 @@ def test_sidecar_loop_throttles_market_outcome_refresh(
         normalized_health_path=health_path,
         interval_seconds=0.0,
         include_next=False,
+        enable_outcome_refresh=True,
         max_cycles=3,
     )
 
     assert outcome_refreshes == [health_path.with_name("outcomes.json")]
+
+
+def test_sidecar_loop_skips_market_outcome_refresh_by_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_root = tmp_path / "raw"
+    db_path = tmp_path / "state.duckdb"
+    status_path = tmp_path / "live" / "status.json"
+    health_path = tmp_path / "live" / "normalized_health.json"
+    start_ts = datetime(2026, 6, 2, 6, 0, tzinfo=timezone.utc)
+    asof_ts = start_ts + timedelta(minutes=2)
+    _write_raw_tree(raw_root=raw_root, start_ts=start_ts, asof_ts=asof_ts)
+    _write_status(status_path, start_ts=start_ts, asof_ts=asof_ts)
+
+    def fail_upsert_market_outcomes(*, store: DuckDbIngestStore, out_path: Path) -> int:
+        raise AssertionError("normalizer loop should not refresh outcomes by default")
+
+    monkeypatch.setattr(
+        rust_normalizer_sidecar,
+        "refresh_market_outcomes",
+        fail_upsert_market_outcomes,
+    )
+    monkeypatch.setattr(
+        "polymarket_engine.ingestion.rust_normalizer_sidecar.time.sleep",
+        lambda _: None,
+    )
+
+    run_rust_normalizer_loop(
+        raw_root=raw_root,
+        db_path=db_path,
+        status_path=status_path,
+        normalized_health_path=health_path,
+        interval_seconds=0.0,
+        include_next=False,
+        max_cycles=2,
+    )
 
 
 def test_sidecar_loop_retries_pending_outcomes_every_five_seconds(
@@ -577,12 +699,12 @@ def test_sidecar_loop_retries_pending_outcomes_every_five_seconds(
 
     monkeypatch.setattr(
         rust_normalizer_sidecar,
-        "_upsert_market_outcomes",
+        "refresh_market_outcomes",
         fake_upsert_market_outcomes,
     )
     monkeypatch.setattr(
         rust_normalizer_sidecar,
-        "_has_expired_pending_official_outcomes",
+        "has_expired_pending_official_outcomes",
         lambda *, store: True,
         raising=False,
     )
@@ -602,6 +724,7 @@ def test_sidecar_loop_retries_pending_outcomes_every_five_seconds(
         normalized_health_path=health_path,
         interval_seconds=0.0,
         include_next=False,
+        enable_outcome_refresh=True,
         max_cycles=3,
     )
 
@@ -795,7 +918,9 @@ def test_sidecar_loop_skips_state_build_for_cross_cycle_duplicate_raw_state(
         if line.startswith("normalizer_cycle ")
     ]
     assert len(lines) == 2
+    assert _log_values(lines[0])["state_build_reason"] == "forced"
     assert _log_values(lines[1])["rows_read"] == "1"
+    assert _log_values(lines[1])["state_build_reason"] == "status_inputs_unchanged"
     assert _log_values(lines[1])["state_skipped"] == "true"
     assert build_calls == 1
 
@@ -875,8 +1000,137 @@ def test_sidecar_loop_skips_state_build_for_raw_append_when_status_is_idle(
     ]
     assert len(lines) == 2
     assert _log_values(lines[1])["rows_read"] == "1"
+    assert _log_values(lines[1])["state_build_reason"] == "status_inputs_unchanged"
     assert _log_values(lines[1])["state_skipped"] == "true"
     assert build_calls == 1
+
+
+def test_sidecar_loop_does_not_rewrite_hot_probability_inputs_for_raw_append_when_status_is_idle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    raw_root = tmp_path / "raw"
+    db_path = tmp_path / "state.duckdb"
+    status_path = tmp_path / "live" / "status.json"
+    health_path = tmp_path / "live" / "normalized_health.json"
+    probability_inputs_path = tmp_path / "live" / "probability_inputs.json"
+    start_ts = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    asof_ts = start_ts + timedelta(minutes=2)
+    _write_current_hour_raw_tree(raw_root=raw_root, start_ts=start_ts, asof_ts=asof_ts)
+    _write_status(status_path, start_ts=start_ts, asof_ts=asof_ts)
+    changed_path = (
+        raw_root
+        / "polymarket_clob_market_ws"
+        / "best_bid_ask"
+        / f"date={asof_ts.date().isoformat()}"
+        / f"hour={asof_ts.hour:02d}"
+        / "events.jsonl"
+    )
+
+    def corrupt_hot_inputs_and_append_raw(_: float) -> None:
+        probability_inputs_path.write_text("sentinel\n", encoding="utf-8")
+        with changed_path.open("a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(
+                    _orderbook_row(
+                        "up-token",
+                        asof_ts + timedelta(seconds=1),
+                        asof_ts + timedelta(seconds=1),
+                        0.63,
+                        0.66,
+                    ),
+                    separators=(",", ":"),
+                )
+                + "\n"
+            )
+
+    monkeypatch.setattr(
+        "polymarket_engine.ingestion.rust_normalizer_sidecar.time.sleep",
+        corrupt_hot_inputs_and_append_raw,
+    )
+
+    run_rust_normalizer_loop(
+        raw_root=raw_root,
+        db_path=db_path,
+        status_path=status_path,
+        normalized_health_path=health_path,
+        probability_inputs_path=probability_inputs_path,
+        interval_seconds=0.0,
+        include_next=False,
+        max_cycles=2,
+    )
+
+    lines = [
+        line
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith("normalizer_cycle ")
+    ]
+    assert _log_values(lines[1])["state_build_reason"] == "status_inputs_unchanged"
+    assert _log_values(lines[1])["state_skipped"] == "true"
+    assert probability_inputs_path.read_text(encoding="utf-8") == "sentinel\n"
+
+
+def test_sidecar_loop_updates_hot_probability_inputs_when_status_inputs_change(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_root = tmp_path / "raw"
+    db_path = tmp_path / "state.duckdb"
+    status_path = tmp_path / "live" / "status.json"
+    health_path = tmp_path / "live" / "normalized_health.json"
+    probability_inputs_path = tmp_path / "live" / "probability_inputs.json"
+    start_ts = datetime(2026, 6, 2, 6, 0, tzinfo=timezone.utc)
+    first_asof_ts = start_ts + timedelta(minutes=2)
+    second_asof_ts = first_asof_ts + timedelta(seconds=1)
+    _write_probability_ready_raw_tree(
+        raw_root=raw_root,
+        start_ts=start_ts,
+        asof_ts=first_asof_ts,
+    )
+    _write_status(status_path, start_ts=start_ts, asof_ts=first_asof_ts)
+
+    def change_status_inputs(_: float) -> None:
+        payload = json.loads(status_path.read_text(encoding="utf-8"))
+        payload["orderbooks"][0]["best_bid"] = "0.62"
+        payload["orderbooks"][0]["best_ask"] = "0.65"
+        payload["orderbooks"][0]["bid_size_top"] = "50.0"
+        payload["orderbooks"][0]["ask_size_top"] = "40.0"
+        payload["orderbooks"][0]["spread"] = "0.03"
+        payload["orderbooks"][0]["event_ts"] = second_asof_ts.isoformat()
+        payload["orderbooks"][0]["observed_ts"] = second_asof_ts.isoformat()
+        payload["generated_at"] = second_asof_ts.isoformat()
+        status_path.write_text(json.dumps(payload), encoding="utf-8")
+        next_mtime = time.time() + 1
+        os.utime(status_path, (next_mtime, next_mtime))
+
+    monkeypatch.setattr(
+        "polymarket_engine.ingestion.rust_normalizer_sidecar.time.sleep",
+        change_status_inputs,
+    )
+
+    run_rust_normalizer_loop(
+        raw_root=raw_root,
+        db_path=db_path,
+        status_path=status_path,
+        normalized_health_path=health_path,
+        probability_inputs_path=probability_inputs_path,
+        interval_seconds=0.0,
+        include_next=False,
+        max_cycles=2,
+    )
+
+    payload = read_hot_probability_inputs(
+        out_path=probability_inputs_path,
+        limit=10,
+        max_age_seconds=10_000_000,
+    )
+    assert payload.generated_at == second_asof_ts
+    rows = sorted(payload.inputs, key=lambda row: row.probability_input.side)
+    assert [
+        (row.probability_input.side, row.probability_input.executable_price)
+        for row in rows
+    ] == [("DOWN", 0.39), ("UP", 0.65)]
 
 
 def test_sidecar_loop_skips_normalize_when_raw_tree_is_idle(
@@ -1228,15 +1482,26 @@ def test_changed_sidecar_cycle_skips_path_at_cached_checkpoint(
     checkpoint_cache = {changed_path: changed_path.stat().st_size}
     real_normalize = getattr(rust_normalizer_sidecar, "normalize_rust_event_file")
     normalize_calls = 0
+    build_calls = 0
 
     def counting_normalize(*args: Any, **kwargs: Any) -> Any:
         nonlocal normalize_calls
         normalize_calls += 1
         return real_normalize(*args, **kwargs)
 
+    def counting_build(*args: Any, **kwargs: Any) -> Any:
+        nonlocal build_calls
+        build_calls += 1
+        return SimpleNamespace(contracts_upserted=0, states_written=0, unavailable=())
+
     monkeypatch.setattr(
         "polymarket_engine.ingestion.rust_normalizer_sidecar.normalize_rust_event_file",
         counting_normalize,
+    )
+    monkeypatch.setattr(
+        "polymarket_engine.ingestion.rust_normalizer_sidecar."
+        "build_current_decision_state_snapshots",
+        counting_build,
     )
     status_mtime = status_path.stat().st_mtime_ns
 
@@ -1253,11 +1518,112 @@ def test_changed_sidecar_cycle_skips_path_at_cached_checkpoint(
     )
 
     assert normalize_calls == 0
+    assert build_calls == 0
     assert result.files == 1
     assert result.files_skipped == 1
     assert result.bytes_read == 0
     assert result.rows_read == 0
+    assert result.state_skipped is True
+    assert result.state_build_reason == "status_inputs_unchanged"
     assert checkpoint_cache[changed_path] == changed_path.stat().st_size
+
+
+def test_idle_sidecar_cycle_uses_mtime_fallback_without_previous_signature(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_root = tmp_path / "raw"
+    db_path = tmp_path / "state.duckdb"
+    status_path = tmp_path / "live" / "status.json"
+    health_path = tmp_path / "live" / "normalized_health.json"
+    start_ts = datetime(2026, 6, 2, 6, 0, tzinfo=timezone.utc)
+    asof_ts = start_ts + timedelta(minutes=2)
+    _write_raw_tree(raw_root=raw_root, start_ts=start_ts, asof_ts=asof_ts)
+    _write_status(status_path, start_ts=start_ts, asof_ts=asof_ts)
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    raw_signature = rust_normalizer_sidecar._raw_tree_signature(
+        raw_root=raw_root,
+        include_state_snapshots=False,
+    )
+    build_calls = 0
+
+    def counting_build(*args: Any, **kwargs: Any) -> Any:
+        nonlocal build_calls
+        build_calls += 1
+        return SimpleNamespace(contracts_upserted=0, states_written=0, unavailable=())
+
+    monkeypatch.setattr(
+        "polymarket_engine.ingestion.rust_normalizer_sidecar."
+        "build_current_decision_state_snapshots",
+        counting_build,
+    )
+    status_mtime = status_path.stat().st_mtime_ns
+
+    result = rust_normalizer_sidecar._run_idle_rust_normalizer_cycle_with_store(
+        raw_signature=raw_signature,
+        store=store,
+        status_path=status_path,
+        normalized_health_path=health_path,
+        include_next=False,
+        reprocess_all=False,
+        previous_status_mtime_ns=status_mtime,
+        status_mtime_ns=status_mtime,
+        force_state_build=False,
+        write_health=False,
+        refresh_outcomes=False,
+    )
+
+    assert build_calls == 0
+    assert result.state_skipped is True
+    assert result.state_build_reason == "status_inputs_unchanged"
+
+
+def test_full_sidecar_cycle_uses_mtime_fallback_without_previous_signature(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_root = tmp_path / "raw"
+    db_path = tmp_path / "state.duckdb"
+    status_path = tmp_path / "live" / "status.json"
+    health_path = tmp_path / "live" / "normalized_health.json"
+    start_ts = datetime(2026, 6, 2, 6, 0, tzinfo=timezone.utc)
+    asof_ts = start_ts + timedelta(minutes=2)
+    _write_raw_tree(raw_root=raw_root, start_ts=start_ts, asof_ts=asof_ts)
+    _write_status(status_path, start_ts=start_ts, asof_ts=asof_ts)
+    store = DuckDbIngestStore(db_path)
+    build_calls = 0
+
+    def counting_build(*args: Any, **kwargs: Any) -> Any:
+        nonlocal build_calls
+        build_calls += 1
+        return SimpleNamespace(contracts_upserted=0, states_written=0, unavailable=())
+
+    monkeypatch.setattr(
+        "polymarket_engine.ingestion.rust_normalizer_sidecar."
+        "build_current_decision_state_snapshots",
+        counting_build,
+    )
+    status_mtime = status_path.stat().st_mtime_ns
+
+    result = rust_normalizer_sidecar._run_rust_normalizer_cycle_with_store(
+        raw_root=raw_root,
+        store=store,
+        status_path=status_path,
+        normalized_health_path=health_path,
+        include_next=False,
+        reprocess_all=False,
+        apply_schema=True,
+        previous_status_mtime_ns=status_mtime,
+        status_mtime_ns=status_mtime,
+        force_state_build=False,
+        refresh_outcomes=False,
+    )
+
+    assert result.rows_read == 4
+    assert build_calls == 0
+    assert result.state_skipped is True
+    assert result.state_build_reason == "status_inputs_unchanged"
 
 
 def test_normalizer_summary_scans_cycle_results_once() -> None:
@@ -1632,6 +1998,7 @@ def test_sidecar_loop_skips_state_build_when_only_generated_at_changes(
 def test_sidecar_loop_rebuilds_state_when_status_inputs_change_without_raw_rows(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     raw_root = tmp_path / "raw"
     db_path = tmp_path / "state.duckdb"
@@ -1676,6 +2043,13 @@ def test_sidecar_loop_rebuilds_state_when_status_inputs_change_without_raw_rows(
         max_cycles=2,
     )
 
+    lines = [
+        line
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith("normalizer_cycle ")
+    ]
+    assert len(lines) == 2
+    assert _log_values(lines[1])["state_build_reason"] == "status_inputs_changed"
     assert build_calls == 2
 
 
@@ -1780,7 +2154,7 @@ def test_sidecar_loop_writes_health_when_status_inputs_change_without_raw_rows(
     assert health_writes == 2
 
 
-def test_sidecar_loop_reuses_one_duckdb_connection_across_cycles(
+def test_sidecar_loop_uses_short_lived_duckdb_connections_across_cycles(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1817,7 +2191,7 @@ def test_sidecar_loop_reuses_one_duckdb_connection_across_cycles(
         max_cycles=2,
     )
 
-    assert connect_count == 1
+    assert connect_count > 1
 
 
 def _write_raw_tree(*, raw_root: Path, start_ts: datetime, asof_ts: datetime) -> None:

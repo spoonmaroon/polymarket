@@ -150,10 +150,13 @@ def test_normalizer_sidecar_is_deployed_and_health_checked() -> None:
     assert "normalizer:" in compose
     assert "deploy/normalizer/Dockerfile" in compose
     assert "NORMALIZER_INTERVAL_SECONDS" in compose
+    assert "POLYMARKET_PROBABILITY_INPUTS_PATH" in compose
     assert "polymarket-engine" in compose
     assert "--normalized-health-path" in compose
     assert "/var/lib/polymarket/live/normalized_health.json" in compose
-    assert "up -d --build collector normalizer" in script
+    assert "up -d --build collector normalizer outcome-refresh api" in script
+    assert "outcome_refresh_running()" in script
+    assert "outcome_status_fresh()" in script
     assert "--normalized-health-path" in script
     assert "$DATA_DIR/live/normalized_health.json" in script
 
@@ -178,9 +181,9 @@ def test_runtime_api_service_is_deployed_with_engine_compose() -> None:
     assert "${POLYMARKET_API_PORT:-8000}:8000" in compose
     assert "POLYMARKET_API_PORT=8000" in env_example
     assert "POLYMARKET_ENABLE_CONTAINER_STATUS=1" in env_example
-    assert "up -d collector normalizer api" in script
-    assert "up -d --build collector normalizer api" in script
-    assert "logs --tail=80 collector normalizer api" in script
+    assert "up -d collector normalizer outcome-refresh api" in script
+    assert "up -d --build collector normalizer outcome-refresh api" in script
+    assert "logs --tail=80 collector normalizer outcome-refresh api" in script
     assert "docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml ps" in pc_script
     assert 'get_json("/health")' in pc_script
     assert 'get_json("/api/runtime/live?limit=8")' in pc_script
@@ -313,7 +316,7 @@ def test_pc_deploy_script_refreshes_tui_desktop_launcher() -> None:
     assert "Runtime not live; starting containers..." in script
     assert (
         "docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml "
-        "up -d --no-recreate collector normalizer api"
+        "up -d --no-recreate collector normalizer outcome-refresh api"
     ) in script
     assert "python3 -c %q" in script
     assert 'm=p.get("monitor") or {}' in script
@@ -368,8 +371,11 @@ def test_deploy_script_supports_prebuilt_images_with_build_fallback() -> None:
     assert '[ "$USE_PREBUILT" != "1" ] && [ "$LOCAL" = "$REMOTE" ]' in script
     assert 'export POLYMARKET_COLLECTOR_IMAGE="$COLLECTOR_IMAGE"' in script
     assert 'export POLYMARKET_NORMALIZER_IMAGE="$NORMALIZER_IMAGE"' in script
-    assert 'compose -f "$COMPOSE_FILE" up -d collector normalizer' in script
-    assert 'compose -f "$COMPOSE_FILE" up -d --build collector normalizer' in script
+    assert 'compose -f "$COMPOSE_FILE" up -d collector normalizer outcome-refresh api' in script
+    assert (
+        'compose -f "$COMPOSE_FILE" up -d --build '
+        "collector normalizer outcome-refresh api"
+    ) in script
     assert 'export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-1}"' in script
 
 
@@ -396,23 +402,72 @@ def test_normalizer_defaults_to_quarter_second_checkpointed_cadence() -> None:
     assert "POLYMARKET_NORMALIZER_INTERVAL_SECONDS=0.25" in env_example
     assert "POLYMARKET_NORMALIZER_INTERVAL_SECONDS:-0.25" in compose
     assert 'INTERVAL_SECONDS="${POLYMARKET_NORMALIZER_INTERVAL_SECONDS:-0.25}"' in entrypoint
-    assert 'OUTCOME_STATUS_PATH="${POLYMARKET_OUTCOME_STATUS_PATH:-$LIVE_DIR/outcomes.json}"' in entrypoint
-    assert 'VOLATILITY_STATUS_PATH="${POLYMARKET_VOLATILITY_STATUS_PATH:-$LIVE_DIR/volatility.json}"' in entrypoint
+    assert (
+        'OUTCOME_STATUS_PATH="${POLYMARKET_OUTCOME_STATUS_PATH:-$LIVE_DIR/outcomes.json}"'
+        in entrypoint
+    )
+    assert (
+        "PROBABILITY_INPUTS_PATH="
+        '"${POLYMARKET_PROBABILITY_INPUTS_PATH:-$LIVE_DIR/probability_inputs.json}"'
+        in entrypoint
+    )
+    assert (
+        'VOLATILITY_STATUS_PATH="${POLYMARKET_VOLATILITY_STATUS_PATH:-$LIVE_DIR/volatility.json}"'
+        in entrypoint
+    )
     assert "run-rust-normalizer-sidecar" in entrypoint
     assert "exec polymarket-engine" in entrypoint
     assert "while true" not in entrypoint
     assert '--interval-seconds "$INTERVAL_SECONDS"' in entrypoint
     assert '--normalized-health-path "$NORMALIZED_HEALTH_PATH"' in entrypoint
+    assert '--probability-inputs-path "$PROBABILITY_INPUTS_PATH"' in entrypoint
     assert '--outcome-status-path "$OUTCOME_STATUS_PATH"' in entrypoint
     assert '--volatility-status-path "$VOLATILITY_STATUS_PATH"' in entrypoint
+    assert "--enable-outcome-refresh" not in entrypoint
+
+
+def test_outcome_refresh_sidecar_is_deployed_separately_from_hot_normalizer() -> None:
+    env_example = (ROOT / "deploy" / "collector" / ".env.example").read_text(
+        encoding="utf-8"
+    )
+    compose = (ROOT / "deploy" / "collector" / "docker-compose.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        "POLYMARKET_PROBABILITY_INPUTS_PATH="
+        "/var/lib/polymarket/live/probability_inputs.json"
+        in env_example
+    )
+    assert "POLYMARKET_OUTCOME_REFRESH_INTERVAL_SECONDS=30" in env_example
+    assert "POLYMARKET_DUCKDB_THREADS=1" in env_example
+    assert "POLYMARKET_DUCKDB_MEMORY_LIMIT=512MiB" in env_example
+    assert "POLYMARKET_DUCKDB_PRESERVE_INSERTION_ORDER=false" in env_example
+    assert "outcome-refresh:" in compose
+    assert "run-outcome-refresh-sidecar" in compose
+    assert "polymarket-outcome-runtime-v1" in compose
+    assert "/var/lib/polymarket/live/outcomes.json" in compose
+    assert "${POLYMARKET_OUTCOME_REFRESH_INTERVAL_SECONDS:-30}" in compose
+    assert (
+        "POLYMARKET_PROBABILITY_INPUTS_PATH: "
+        "/var/lib/polymarket/live/probability_inputs.json"
+        in compose
+    )
+    assert "--enable-outcome-refresh" not in compose
 
 
 def test_deploy_script_requires_running_normalizer_before_success() -> None:
     script = (ROOT / "scripts" / "deploy.sh").read_text(encoding="utf-8")
 
     assert "normalizer_running()" in script
+    assert "outcome_refresh_running()" in script
+    assert "outcome_status_fresh()" in script
     assert "ps --services --status running normalizer" in script
-    assert "normalizer_running && normalizer_uses_sidecar && python3" in script
+    assert "ps --services --status running outcome-refresh" in script
+    assert "normalizer_running \\" in script
+    assert "&& normalizer_uses_sidecar \\" in script
+    assert "&& outcome_refresh_running \\" in script
+    assert "&& outcome_status_fresh \\" in script
 
 
 def test_deploy_script_rejects_old_normalize_rust_events_normalizer() -> None:
@@ -422,4 +477,5 @@ def test_deploy_script_rejects_old_normalize_rust_events_normalizer() -> None:
     assert "run-rust-normalizer-sidecar" in script
     assert 'compose -f "$COMPOSE_FILE" top normalizer' in script
     assert "ps -eo args" not in script
-    assert "normalizer_running && normalizer_uses_sidecar && python3" in script
+    assert "&& outcome_refresh_running \\" in script
+    assert "&& outcome_status_fresh \\" in script

@@ -4,7 +4,7 @@ import asyncio
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Sequence, cast
 import json
 import os
 import subprocess
@@ -34,12 +34,14 @@ def build_runtime_router(
     duckdb_path: Path = Path("data/db/polymarket.duckdb"),
     normalized_health_path: Path = Path("data/live/normalized_health.json"),
     probability_status_path: Path = Path("data/live/probabilities.json"),
+    probability_inputs_path: Path | None = Path("data/live/probability_inputs.json"),
     outcome_status_path: Path = Path("data/live/outcomes.json"),
     target_cache_path: Path = Path("data/live/targets.json"),
     volatility_status_path: Path = Path("data/live/volatility.json"),
     data_dir: Path = Path("data"),
     enable_container_status: bool = False,
     enable_runtime_probabilities: bool = False,
+    allow_probability_compute_fallback: bool = False,
 ) -> APIRouter:
     router = APIRouter(prefix="/api/runtime")
     probability_cache = ProbabilityRuntimeCache()
@@ -184,6 +186,29 @@ def build_runtime_router(
     def runtime_probabilities(limit: int = 8) -> dict[str, Any]:
         if not enable_runtime_probabilities:
             return _probabilities_disabled_payload()
+        hot_or_fallback_payload: dict[str, Any] | None = None
+        try:
+            if probability_inputs_path is not None and probability_inputs_path.exists():
+                hot_or_fallback_payload = probability_cache.payload(
+                    duckdb_path=duckdb_path,
+                    limit=limit,
+                    allow_compute=allow_probability_compute_fallback,
+                    probability_inputs_path=probability_inputs_path,
+                )
+                if hot_or_fallback_payload.get("source") == "hot_inputs":
+                    return hot_or_fallback_payload
+        except ValueError as exc:
+            return {
+                "ok": False,
+                "state": "INVALID",
+                "error": str(exc),
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "cached": False,
+                "model_version": None,
+                "rows": [],
+                "skipped": 0,
+                "errors": [str(exc)],
+            }
         if probability_status_path.exists():
             payload, read_error = _read_json_or_error(probability_status_path)
             if payload is None:
@@ -215,8 +240,15 @@ def build_runtime_router(
             limited["rows"] = rows[:limit]
             limited["cached"] = False
             return limited
+        if hot_or_fallback_payload is not None:
+            return hot_or_fallback_payload
         try:
-            return probability_cache.payload(duckdb_path=duckdb_path, limit=limit)
+            return probability_cache.payload(
+                duckdb_path=duckdb_path,
+                limit=limit,
+                allow_compute=allow_probability_compute_fallback,
+                probability_inputs_path=probability_inputs_path,
+            )
         except ValueError as exc:
             return {
                 "ok": False,
@@ -273,6 +305,10 @@ def container_status_enabled_from_env() -> bool:
 
 def runtime_probabilities_enabled_from_env() -> bool:
     return os.getenv("POLYMARKET_ENABLE_RUNTIME_PROBABILITIES") == "1"
+
+
+def runtime_probability_compute_fallback_enabled_from_env() -> bool:
+    return os.getenv("POLYMARKET_ALLOW_RUNTIME_PROBABILITY_COMPUTE") == "1"
 
 
 def _probabilities_disabled_payload() -> dict[str, Any]:
@@ -549,7 +585,7 @@ def _volatility_flags(raw_flags: object, *, sigma_tau: object) -> list[str]:
 def _optional_float(value: object) -> float | None:
     if value is None:
         return None
-    return float(value)
+    return float(cast(Any, value))
 
 
 def _read_json_or_error(path: Path) -> tuple[dict[str, Any] | None, dict[str, str]]:

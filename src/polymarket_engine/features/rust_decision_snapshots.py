@@ -18,6 +18,7 @@ from polymarket_engine.domain.market_state import (
 from polymarket_engine.features import volatility as volatility_module
 from polymarket_engine.features.state_builder import DecisionStateUnavailable
 from polymarket_engine.features.state_replay import build_decision_state_from_store
+from polymarket_engine.probability.hot_inputs import write_hot_probability_inputs
 from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
 
 
@@ -57,12 +58,50 @@ class CurrentDecisionStateReadCache:
         self.price_history.clear()
 
 
+def hot_state_signature(payload: dict[str, Any]) -> str:
+    semantic = {
+        "current": payload.get("current", []),
+        "next": payload.get("next", []),
+        "orderbooks": payload.get("orderbooks", []),
+        "chainlink_prices": payload.get("chainlink_prices", []),
+        "prices": payload.get("prices", []),
+        "websocket_status": _stable_websocket_status(
+            payload.get("websocket_status", {})
+        ),
+    }
+    encoded = json.dumps(semantic, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _stable_websocket_status(value: object) -> object:
+    if isinstance(value, list):
+        return [_stable_websocket_status(row) for row in value]
+    if isinstance(value, dict):
+        return {
+            key: _stable_websocket_status(item)
+            for key, item in value.items()
+            if not _volatile_status_key(key)
+        }
+    return value
+
+
+def _volatile_status_key(key: str) -> bool:
+    normalized = key.lower()
+    return (
+        normalized.endswith("_age_ms")
+        or normalized.endswith("_lag_ms")
+        or normalized.endswith("_elapsed_ms")
+        or normalized in {"age_ms", "lag_ms", "elapsed_ms"}
+    )
+
+
 def build_current_decision_state_snapshots(
     *,
     status_path: Path,
     store: DuckDbIngestStore,
     include_next: bool = False,
     read_cache: CurrentDecisionStateReadCache | None = None,
+    probability_inputs_path: Path | None = None,
 ) -> CurrentDecisionStateSnapshotResult:
     payload = _read_status(status_path)
     asof_ts = _parse_ts(payload["generated_at"])
@@ -136,6 +175,12 @@ def build_current_decision_state_snapshots(
             continue
         states.append(state)
     store.upsert_asof_state_inputs(states)
+    if probability_inputs_path is not None:
+        write_hot_probability_inputs(
+            out_path=probability_inputs_path,
+            states=states,
+            generated_at=asof_ts,
+        )
     return CurrentDecisionStateSnapshotResult(
         asof_ts=asof_ts,
         contracts_upserted=len(contracts),
