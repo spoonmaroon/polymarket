@@ -733,7 +733,7 @@ def _event_payload_from_row(
         str(row.get("probability_kind") or "MC"),
         generated_at,
     )
-    return {
+    payload: dict[str, Any] = {
         "event_id": event_id,
         "output_id": output_id,
         "state_id": probability_input.state_id,
@@ -778,6 +778,10 @@ def _event_payload_from_row(
             "latency": dict(cast(Mapping[str, Any], latency)),
         },
     }
+    preview = row.get("simulation_preview")
+    if isinstance(preview, Mapping):
+        payload["simulation_preview"] = dict(cast(Mapping[str, Any], preview))
+    return payload
 
 
 def _event_id(state_id: str, asof_ts: datetime, kind: str, generated_at: datetime) -> str:

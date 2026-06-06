@@ -20,6 +20,7 @@ from polymarket_engine.domain.market_state import DataQualityFlag
 from polymarket_engine.domain.market_state import DecisionState
 from polymarket_engine.probability.hot_inputs import write_hot_probability_inputs
 from polymarket_engine.probability.schema import ProbabilityInput, ProbabilityOutput
+from polymarket_engine.runtime_api import _probability_events_payload
 from polymarket_engine.runtime_api import build_runtime_router
 from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
 
@@ -1293,6 +1294,42 @@ def test_probability_events_stream_reads_newest_drain_when_jsonl_missing(
     assert "event: probability" in body
     assert '"event_id":"new"' in body
     assert '"event_id":"old"' not in body
+
+
+def test_probability_events_payload_reuses_unchanged_event_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    probability_event_path = tmp_path / "live" / "probability-events.jsonl"
+    probability_event_path.parent.mkdir()
+    probability_event_path.write_text(
+        json.dumps({"event_id": "event-1", "state_id": "state-btc-up"}) + "\n",
+        encoding="utf-8",
+    )
+    read_count = 0
+    real_read_text = Path.read_text
+
+    def counting_read_text(path: Path, *args: Any, **kwargs: Any) -> str:
+        nonlocal read_count
+        if path == probability_event_path:
+            read_count += 1
+        return real_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", counting_read_text)
+
+    first = _probability_events_payload(
+        probability_event_path=probability_event_path,
+        limit=4,
+        after_event_id=None,
+    )
+    second = _probability_events_payload(
+        probability_event_path=probability_event_path,
+        limit=4,
+        after_event_id=None,
+    )
+
+    assert first["events"] == second["events"]
+    assert read_count == 1
 
 
 def test_runtime_probabilities_prefers_persisted_outputs_without_recomputing(

@@ -26,6 +26,11 @@ from polymarket_engine.validation.outcomes import build_outcome_history_payload
 
 NORMALIZED_HEALTH_SCHEMA_VERSION = "polymarket-normalized-health-v1"
 VOLATILITY_STATUS_SCHEMA_VERSION = "polymarket-volatility-runtime-v1"
+_PROBABILITY_EVENT_ROWS_CACHE: dict[
+    tuple[str, int, int, int],
+    tuple[list[dict[str, Any]], list[str]],
+] = {}
+_PROBABILITY_EVENT_ROWS_CACHE_LIMIT = 32
 
 
 def build_runtime_router(
@@ -435,6 +440,15 @@ def _read_probability_event_rows(
     if read_path is None:
         return [], [f"{path} missing"]
     try:
+        stat = read_path.stat()
+    except OSError as exc:
+        return [], [f"file stat failed: {_format_error(exc)}"]
+    cache_key = (str(read_path), stat.st_mtime_ns, stat.st_size, limit)
+    cached = _PROBABILITY_EVENT_ROWS_CACHE.get(cache_key)
+    if cached is not None:
+        cached_rows, cached_errors = cached
+        return [dict(row) for row in cached_rows], list(cached_errors)
+    try:
         lines = read_path.read_text(encoding="utf-8").splitlines()
     except OSError as exc:
         return [], [f"file read failed: {_format_error(exc)}"]
@@ -453,7 +467,11 @@ def _read_probability_event_rows(
             errors.append("probability event line must be an object")
             continue
         rows.append(payload)
-    return rows[-limit:], errors
+    result_rows = rows[-limit:]
+    if len(_PROBABILITY_EVENT_ROWS_CACHE) >= _PROBABILITY_EVENT_ROWS_CACHE_LIMIT:
+        _PROBABILITY_EVENT_ROWS_CACHE.clear()
+    _PROBABILITY_EVENT_ROWS_CACHE[cache_key] = ([dict(row) for row in result_rows], list(errors))
+    return result_rows, errors
 
 
 def _newest_probability_event_drain(path: Path) -> Path | None:
