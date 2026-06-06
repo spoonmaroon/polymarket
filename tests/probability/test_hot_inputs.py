@@ -104,6 +104,8 @@ def test_hot_probability_inputs_round_trips_one_ready_state(tmp_path: Path) -> N
     assert "\n" not in raw_text[:-1]
     assert raw["schema_version"] == HOT_PROBABILITY_INPUTS_SCHEMA_VERSION
     assert raw["generated_at"] == "2026-06-01T01:03:30+00:00"
+    assert raw["inputs"][0]["market_slug"] == "btc-updown-5m-1780264500"
+    assert raw["inputs"][0]["volatility_regime"] == "normal"
     assert payload.schema_version == HOT_PROBABILITY_INPUTS_SCHEMA_VERSION
     assert payload.generated_at == datetime(2026, 6, 1, 1, 3, 30, tzinfo=timezone.utc)
     assert payload.skipped == 0
@@ -116,6 +118,8 @@ def test_hot_probability_inputs_round_trips_one_ready_state(tmp_path: Path) -> N
     assert runtime_input.start_ts == datetime(2026, 5, 31, 20, 0, tzinfo=timezone.utc)
     assert runtime_input.expiry_ts == datetime(2026, 5, 31, 20, 5, tzinfo=timezone.utc)
     assert runtime_input.flags == ("OK",)
+    assert runtime_input.market_slug == "btc-updown-5m-1780264500"
+    assert runtime_input.volatility_regime == "normal"
 
 
 def test_cuda_worker_loads_hot_probability_inputs_snapshot(tmp_path: Path) -> None:
@@ -138,7 +142,32 @@ def test_cuda_worker_loads_hot_probability_inputs_snapshot(tmp_path: Path) -> No
     assert skipped == 0
     assert [row.contract_id for row in inputs] == ["btc-market:UP", "btc-market:DOWN"]
     assert [row.probability_input.side for row in inputs] == ["UP", "DOWN"]
-    assert [row.market_slug for row in inputs] == ["", ""]
+    assert [row.market_slug for row in inputs] == [
+        "btc-updown-5m-1780264500",
+        "btc-updown-5m-1780264500",
+    ]
+
+
+def test_cuda_worker_derives_market_slug_from_legacy_hot_snapshot(tmp_path: Path) -> None:
+    out_path = tmp_path / "hot" / "inputs.json"
+    write_hot_probability_inputs(
+        out_path=out_path,
+        states=(_state("UP"),),
+        generated_at=datetime.now(timezone.utc),
+    )
+    raw = json.loads(out_path.read_text())
+    del raw["inputs"][0]["market_slug"]
+    out_path.write_text(json.dumps(raw))
+
+    inputs, skipped = _latest_probability_inputs_from_snapshot(
+        path=out_path,
+        limit=10,
+        max_state_age_seconds=60 * 60 * 24 * 365,
+        max_snapshot_age_seconds=60,
+    )
+
+    assert skipped == 0
+    assert [row.market_slug for row in inputs] == ["btc-market"]
 
 
 def test_hot_probability_inputs_skip_quality_blocked_states(tmp_path: Path) -> None:

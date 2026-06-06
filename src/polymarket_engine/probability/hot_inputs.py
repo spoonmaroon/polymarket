@@ -52,6 +52,8 @@ def write_hot_probability_inputs(
             start_ts=state.contract.start_ts,
             expiry_ts=state.contract.expiry_ts,
             flags=("OK",),
+            market_slug=state.contract.slug,
+            volatility_regime=state.volatility_regime,
         )
         rows.append(_runtime_input_to_json_dict(runtime_input))
 
@@ -139,7 +141,7 @@ def read_hot_probability_inputs(
 
 
 def _runtime_input_to_json_dict(runtime_input: ProbabilityRuntimeInput) -> dict[str, Any]:
-    return {
+    row = {
         "contract": runtime_input.contract,
         "contract_id": runtime_input.contract_id,
         "expiry_ts": runtime_input.expiry_ts.isoformat(),
@@ -147,6 +149,11 @@ def _runtime_input_to_json_dict(runtime_input: ProbabilityRuntimeInput) -> dict[
         "probability_input": runtime_input.probability_input.to_json_dict(),
         "start_ts": runtime_input.start_ts.isoformat(),
     }
+    if runtime_input.market_slug:
+        row["market_slug"] = runtime_input.market_slug
+    if runtime_input.volatility_regime:
+        row["volatility_regime"] = runtime_input.volatility_regime
+    return row
 
 
 def _runtime_input_from_json_dict(value: object) -> ProbabilityRuntimeInput:
@@ -159,6 +166,11 @@ def _runtime_input_from_json_dict(value: object) -> ProbabilityRuntimeInput:
         start_ts = _parse_datetime(value.get("start_ts"), "start_ts")
         expiry_ts = _parse_datetime(value.get("expiry_ts"), "expiry_ts")
         flags = _flags(value.get("flags"))
+        market_slug = _optional_str(value.get("market_slug"), "market_slug") or ""
+        volatility_regime = _optional_str(
+            value.get("volatility_regime"),
+            "volatility_regime",
+        )
     except (TypeError, ValueError) as exc:
         raise ValueError(f"invalid input row: {exc}") from exc
     return ProbabilityRuntimeInput(
@@ -168,6 +180,8 @@ def _runtime_input_from_json_dict(value: object) -> ProbabilityRuntimeInput:
         start_ts=start_ts,
         expiry_ts=expiry_ts,
         flags=flags,
+        market_slug=market_slug,
+        volatility_regime=volatility_regime,
     )
 
 
@@ -220,6 +234,14 @@ def _required_str(value: dict[str, Any], field_name: str) -> str:
     if not isinstance(item, str) or not item:
         raise ValueError(f"{field_name} must be a non-empty string")
     return item
+
+
+def _optional_str(value: object, field_name: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{field_name} must be a non-empty string when set")
+    return value
 
 
 def _required_float(value: dict[str, Any], field_name: str) -> float:

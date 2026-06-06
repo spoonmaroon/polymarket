@@ -913,7 +913,15 @@ def _latest_probability_inputs_from_snapshot(
 def _snapshot_market_slug(row: Mapping[str, Any], *, required: bool) -> str:
     if required:
         return _nonempty_str(row.get("market_slug"), "market_slug")
-    return _optional_str(row.get("market_slug"), "market_slug") or ""
+    explicit = _optional_str(row.get("market_slug"), "market_slug")
+    if explicit:
+        return explicit
+    contract_id = _nonempty_str(row.get("contract_id"), "contract_id")
+    if ":" in contract_id:
+        market_slug = contract_id.split(":", 1)[0]
+        if market_slug:
+            return market_slug
+    return contract_id
 
 
 def _probability_input_from_snapshot_row(row: Mapping[str, Any]) -> ProbabilityInput:
