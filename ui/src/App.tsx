@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   filterGraphableProbabilityRows,
+  mergeGraphableProbabilityPayloadRows,
   mergeProbabilityEventsIntoPayload,
   probabilityDisplayValue,
   probabilityMetadata,
@@ -1377,12 +1378,14 @@ function toProbabilityApiState(
   previous: ApiState<ProbabilityPayload>,
 ): ApiState<ProbabilityPayload> {
   const next = toApiState(result);
-  const previousRows = safeRows(previous.payload);
-  const nextRows = safeRows(next.payload);
-  if (!result.error && next.payload && previousRows.length > 0 && nextRows.length > 0) {
+  if (!result.error && next.payload) {
+    const retainedPayload = mergeGraphableProbabilityPayloadRows(
+      previous.payload,
+      next.payload,
+    );
     return {
       ...next,
-      payload: mergeProbabilityPreviews(previous.payload, next.payload),
+      payload: mergeProbabilityPreviews(previous.payload, retainedPayload),
     };
   }
   return next;

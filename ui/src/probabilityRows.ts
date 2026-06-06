@@ -33,6 +33,7 @@ export type ProbabilityValueRow = ProbabilityRowForGraph & {
   path_count?: number;
   paths_per_seed?: number;
   seed_count?: number;
+  cache_status?: string;
   generated_at?: string;
   simulation_preview?: unknown;
 };
@@ -162,7 +163,9 @@ export function probabilityRowsWithRolloverHold<Row extends ProbabilityValueRow>
   if (heldRows.length === 0 || heldAtMs <= 0) {
     return liveRows;
   }
-  return nowMs - heldAtMs <= holdMs ? heldRows : liveRows;
+  return nowMs - heldAtMs <= holdMs
+    ? heldRows.filter((row) => isGraphableProbabilityRow(row, nowMs, true))
+    : liveRows;
 }
 
 export function probabilityRuntimeStateLabel(value?: string | null) {
@@ -204,10 +207,73 @@ export function mergeProbabilityEventsIntoPayload<Row extends ProbabilityValueRo
   return {
     ...(payload ?? { ok: true, state: "OK" }),
     cached: false,
-    generated_at: newestGeneratedAt(events) ?? payload?.generated_at,
+    generated_at: newestPayloadGeneratedAt(payload?.generated_at, events),
     rows: mergeProbabilityLaneRows(payload?.rows, mcEvents),
     nowcast_rows: mergeProbabilityLaneRows(payload?.nowcast_rows, nowcastEvents),
   };
+}
+
+export function mergeGraphableProbabilityPayloadRows<Row extends ProbabilityValueRow>(
+  previous: ProbabilityPayloadForEvents<Row> | null,
+  next: ProbabilityPayloadForEvents<Row>,
+  nowMs = Date.now(),
+): ProbabilityPayloadForEvents<Row> {
+  if (next.state === "DISABLED") {
+    return next;
+  }
+  if (!shouldRetainPreviousProbabilityRows(next)) {
+    return next;
+  }
+  const previousRows = Array.isArray(previous?.rows)
+    ? previous.rows
+        .filter((row): row is Row => isRecord(row))
+        .filter((row) => isGraphableProbabilityRow(row, nowMs, true))
+    : [];
+  if (previousRows.length === 0) {
+    return next;
+  }
+  const nextRows = Array.isArray(next.rows)
+    ? next.rows.filter((row): row is Row => isRecord(row))
+    : [];
+  const previousKeys = new Set(previousRows.map(stableProbabilityMergeKey));
+  const nextKeys = new Set(nextRows.map(stableProbabilityMergeKey));
+  const rows = mergeProbabilityLaneRows(previousRows, nextRows);
+  const retainedRows = previousRows.filter(
+    (row) => !nextKeys.has(stableProbabilityMergeKey(row)),
+  );
+  const sameKeyRetainedRows = rows.filter((row) => {
+    const key = stableProbabilityMergeKey(row);
+    return (
+      previousKeys.has(key) &&
+      nextKeys.has(key) &&
+      !isGraphableProbabilityRow(row, nowMs) &&
+      isGraphableProbabilityRow(row, nowMs, true)
+    );
+  });
+  const retainedRowCount = retainedRows.length + sameKeyRetainedRows.length;
+  if (retainedRowCount === 0) {
+    return {
+      ...next,
+      rows,
+    };
+  }
+  return {
+    ...next,
+    previous_mc_retained: true,
+    retained_mc_rows: retainedRowCount,
+    rows,
+  };
+}
+
+function shouldRetainPreviousProbabilityRows<Row extends ProbabilityValueRow>(
+  payload: ProbabilityPayloadForEvents<Row>,
+) {
+  const rowCount = Array.isArray(payload.rows) ? payload.rows.length : 0;
+  if (rowCount === 0) {
+    return true;
+  }
+  const state = payload.state?.trim().toUpperCase();
+  return state === "PARTIAL" || state === "STALE_INPUTS";
 }
 
 function mergeProbabilityLaneRows<Row extends ProbabilityValueRow>(
@@ -224,9 +290,30 @@ function mergeProbabilityLaneRows<Row extends ProbabilityValueRow>(
   for (const event of events) {
     const key = stableProbabilityMergeKey(event);
     const previous = byKey.get(key);
+    if (previous && isOlderProbabilityRow(event, previous)) {
+      continue;
+    }
     byKey.set(key, { ...previous, ...event });
   }
   return [...byKey.values()];
+}
+
+function isOlderProbabilityRow(candidate: ProbabilityValueRow, existing: ProbabilityValueRow) {
+  const candidateMs = rowFreshnessMs(candidate);
+  const existingMs = rowFreshnessMs(existing);
+  return Number.isFinite(candidateMs) && Number.isFinite(existingMs) && candidateMs < existingMs;
+}
+
+function rowFreshnessMs(row: ProbabilityValueRow) {
+  const generatedAtMs = timestampMs(row.generated_at);
+  const asofMs = timestampMs(row.asof_ts);
+  if (Number.isFinite(generatedAtMs) && Number.isFinite(asofMs)) {
+    return Math.max(generatedAtMs, asofMs);
+  }
+  if (Number.isFinite(generatedAtMs)) {
+    return generatedAtMs;
+  }
+  return asofMs;
 }
 
 function stableProbabilityMergeKey(row: ProbabilityValueRow) {
@@ -255,6 +342,19 @@ function newestGeneratedAt(rows: ProbabilityValueRow[]) {
     }
   }
   return newest;
+}
+
+function newestPayloadGeneratedAt(
+  payloadGeneratedAt: string | undefined,
+  rows: ProbabilityValueRow[],
+) {
+  const eventGeneratedAt = newestGeneratedAt(rows);
+  const payloadMs = timestampMs(payloadGeneratedAt);
+  const eventMs = timestampMs(eventGeneratedAt);
+  if (Number.isFinite(payloadMs) && Number.isFinite(eventMs)) {
+    return eventMs >= payloadMs ? eventGeneratedAt : payloadGeneratedAt;
+  }
+  return eventGeneratedAt ?? payloadGeneratedAt;
 }
 
 function parsePreview(value: unknown): { sampled_paths?: unknown[] } | null {
@@ -468,7 +568,7 @@ function keyParts(parts: Array<[string, unknown]>) {
 }
 
 function timestampMs(value?: string | number | null) {
-  if (!value) {
+  if (value === undefined || value === null || value === "") {
     return Number.POSITIVE_INFINITY;
   }
   if (typeof value === "number") {

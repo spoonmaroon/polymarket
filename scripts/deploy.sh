@@ -19,6 +19,7 @@ ALLOW_SPOON_BUILD="${POLYMARKET_DEPLOY_ALLOW_SPOON_BUILD:-0}"
 EXPECTED_DEPLOY_SHA="${POLYMARKET_EXPECTED_DEPLOY_SHA:-}"
 COLLECTOR_IMAGE="${POLYMARKET_COLLECTOR_IMAGE:-polymarket-rust-collector:latest}"
 NORMALIZER_IMAGE="${POLYMARKET_NORMALIZER_IMAGE:-polymarket-normalizer:latest}"
+CUDA_PROBABILITY_IMAGE="${POLYMARKET_CUDA_PROBABILITY_IMAGE:-polymarket-cuda-probability:latest}"
 LOG() { echo "[$(date -Iseconds)] $*" | tee -a "$LOG_FILE"; }
 
 mkdir -p "$REPO/logs" "$DATA_DIR/raw" "$DATA_DIR/db" "$DATA_DIR/live" "$DATA_DIR/logs" "$(dirname "$DEPLOYED_MARKER")"
@@ -120,12 +121,17 @@ if [ "$USE_PREBUILT" = "1" ]; then
   EXPECTED_SHORT_SHA="${EXPECTED_FULL_SHA:0:12}"
   EXPECTED_COLLECTOR_IMAGE="polymarket-rust-collector:$EXPECTED_SHORT_SHA"
   EXPECTED_NORMALIZER_IMAGE="polymarket-normalizer:$EXPECTED_SHORT_SHA"
+  EXPECTED_CUDA_PROBABILITY_IMAGE="polymarket-cuda-probability:$EXPECTED_SHORT_SHA"
   if [ "$COLLECTOR_IMAGE" != "$EXPECTED_COLLECTOR_IMAGE" ]; then
     LOG "collector image $COLLECTOR_IMAGE does not match expected $EXPECTED_COLLECTOR_IMAGE"
     exit 1
   fi
   if [ "$NORMALIZER_IMAGE" != "$EXPECTED_NORMALIZER_IMAGE" ]; then
     LOG "normalizer image $NORMALIZER_IMAGE does not match expected $EXPECTED_NORMALIZER_IMAGE"
+    exit 1
+  fi
+  if [ "$CUDA_PROBABILITY_IMAGE" != "$EXPECTED_CUDA_PROBABILITY_IMAGE" ]; then
+    LOG "CUDA probability image $CUDA_PROBABILITY_IMAGE does not match expected $EXPECTED_CUDA_PROBABILITY_IMAGE"
     exit 1
   fi
 fi
@@ -178,11 +184,16 @@ if [ "$USE_PREBUILT" = "1" ]; then
     LOG "POLYMARKET_DEPLOY_USE_PREBUILT=1 but required normalizer image is missing: $NORMALIZER_IMAGE"
     exit 1
   fi
-  LOG "starting prebuilt images collector=$COLLECTOR_IMAGE normalizer=$NORMALIZER_IMAGE"
+  if ! required_image_available "$CUDA_PROBABILITY_IMAGE"; then
+    LOG "POLYMARKET_DEPLOY_USE_PREBUILT=1 but required CUDA probability image is missing: $CUDA_PROBABILITY_IMAGE"
+    exit 1
+  fi
+  LOG "starting prebuilt images collector=$COLLECTOR_IMAGE normalizer=$NORMALIZER_IMAGE cuda_probability=$CUDA_PROBABILITY_IMAGE"
   if ! (
     export POLYMARKET_COLLECTOR_IMAGE="$COLLECTOR_IMAGE"
     export POLYMARKET_NORMALIZER_IMAGE="$NORMALIZER_IMAGE"
-    compose -f "$COMPOSE_FILE" up -d collector normalizer outcome-refresh api
+    export POLYMARKET_CUDA_PROBABILITY_IMAGE="$CUDA_PROBABILITY_IMAGE"
+    compose -f "$COMPOSE_FILE" up -d collector normalizer outcome-refresh api gpu-probability-worker
   ) >> "$LOG_FILE" 2>&1; then
     LOG "docker compose failed"
     exit 1
@@ -193,7 +204,7 @@ else
     exit 1
   fi
   export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-1}"
-  if ! compose -f "$COMPOSE_FILE" up -d --build collector normalizer outcome-refresh api >> "$LOG_FILE" 2>&1; then
+  if ! compose -f "$COMPOSE_FILE" up -d --build collector normalizer outcome-refresh api gpu-probability-worker >> "$LOG_FILE" 2>&1; then
     LOG "docker compose failed"
     exit 1
   fi
@@ -223,5 +234,5 @@ for _ in $(seq 1 "$DEPLOY_SMOKE_ATTEMPTS"); do
 done
 
 LOG "collector smoke failed; leaving container logs in docker compose"
-compose -f "$COMPOSE_FILE" logs --tail=80 collector normalizer outcome-refresh api >> "$LOG_FILE" 2>&1 || true
+compose -f "$COMPOSE_FILE" logs --tail=80 collector normalizer outcome-refresh api gpu-probability-worker >> "$LOG_FILE" 2>&1 || true
 exit 1

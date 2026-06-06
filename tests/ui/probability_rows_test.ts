@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   filterGraphableProbabilityRows,
+  mergeGraphableProbabilityPayloadRows,
   mergeProbabilityEventsIntoPayload,
   probabilityRuntimeStateLabel,
   probabilityRowsWithRolloverHold,
@@ -92,6 +93,291 @@ assert.deepEqual(
   ["eth-up"],
 );
 
+const cudaGraphableRows = [
+  {
+    contract_id: "btc-cuda-preview",
+    asset: "BTC",
+    side: "UP",
+    expiry_ts: "2026-06-05T13:25:00Z",
+    simulation_preview: { sampled_paths: [] },
+  },
+  {
+    contract_id: "btc-cuda-path-count",
+    asset: "BTC",
+    side: "DOWN",
+    expiry_ts: "2026-06-05T13:25:00Z",
+    path_count: 120000,
+  },
+  {
+    contract_id: "eth-cuda-cache",
+    asset: "ETH",
+    side: "UP",
+    expiry_ts: "2026-06-05T13:25:00Z",
+    cache_status: "HIT",
+  },
+  {
+    contract_id: "eth-cuda-phat",
+    asset: "ETH",
+    side: "DOWN",
+    expiry_ts: "2026-06-05T13:25:00Z",
+    p_hat: 0.42,
+  },
+  {
+    contract_id: "btc-cuda-pfinish",
+    asset: "BTC",
+    side: "UP",
+    expiry_ts: "2026-06-05T13:25:00Z",
+    p_finish: 0.58,
+  },
+];
+
+assert.deepEqual(
+  filterGraphableProbabilityRows(
+    {
+      ok: true,
+      state: "OK",
+      rows: cudaGraphableRows,
+    },
+    nowMs,
+  ).map((row) => row.contract_id),
+  [
+    "btc-cuda-preview",
+    "btc-cuda-path-count",
+    "eth-cuda-cache",
+    "eth-cuda-phat",
+    "btc-cuda-pfinish",
+  ],
+);
+
+const retainedFromEmptyRefresh = mergeGraphableProbabilityPayloadRows(
+  {
+    ok: true,
+    state: "OK",
+    generated_at: "2026-06-05T13:20:00Z",
+    rows: [
+      {
+        contract_id: "btc-retained-up",
+        asset: "BTC",
+        side: "UP",
+        expiry_ts: "2026-06-05T13:25:00Z",
+        p_finish: 0.63,
+        path_count: 120000,
+      },
+      {
+        contract_id: "btc-retained-down",
+        asset: "BTC",
+        side: "DOWN",
+        expiry_ts: "2026-06-05T13:25:00Z",
+        p_finish: 0.37,
+        path_count: 120000,
+      },
+    ],
+  },
+  {
+    ok: true,
+    state: "PARTIAL",
+    generated_at: "2026-06-05T13:20:01Z",
+    rows: [],
+  },
+  nowMs,
+);
+
+assert.deepEqual(
+  retainedFromEmptyRefresh.rows?.map((row) => row.contract_id),
+  ["btc-retained-up", "btc-retained-down"],
+);
+assert.equal(retainedFromEmptyRefresh.previous_mc_retained, true);
+assert.equal(retainedFromEmptyRefresh.retained_mc_rows, 2);
+
+const retainedFromPartialRefresh = mergeGraphableProbabilityPayloadRows(
+  retainedFromEmptyRefresh,
+  {
+    ok: true,
+    state: "PARTIAL",
+    generated_at: "2026-06-05T13:20:02Z",
+    rows: [
+      {
+        contract_id: "btc-retained-up",
+        asset: "BTC",
+        side: "UP",
+        expiry_ts: "2026-06-05T13:25:00Z",
+        p_finish: 0.66,
+        path_count: 240000,
+      },
+    ],
+  },
+  nowMs,
+);
+
+assert.deepEqual(
+  retainedFromPartialRefresh.rows?.map((row) => row.contract_id),
+  ["btc-retained-up", "btc-retained-down"],
+);
+assert.equal(retainedFromPartialRefresh.rows?.[0]?.p_finish, 0.66);
+assert.equal(retainedFromPartialRefresh.rows?.[0]?.path_count, 240000);
+assert.equal(retainedFromPartialRefresh.rows?.[1]?.p_finish, 0.37);
+assert.equal(retainedFromPartialRefresh.previous_mc_retained, true);
+assert.equal(retainedFromPartialRefresh.retained_mc_rows, 1);
+
+const notRetainedFromFreshOkRefresh = mergeGraphableProbabilityPayloadRows(
+  {
+    ok: true,
+    state: "OK",
+    rows: [
+      {
+        contract_id: "btc-old-ok-up",
+        asset: "BTC",
+        side: "UP",
+        expiry_ts: "2026-06-05T13:25:00Z",
+        p_finish: 0.62,
+        path_count: 120000,
+      },
+      {
+        contract_id: "btc-old-ok-down",
+        asset: "BTC",
+        side: "DOWN",
+        expiry_ts: "2026-06-05T13:25:00Z",
+        p_finish: 0.38,
+        path_count: 120000,
+      },
+    ],
+  },
+  {
+    ok: true,
+    state: "OK",
+    rows: [
+      {
+        contract_id: "btc-new-ok-up",
+        asset: "BTC",
+        side: "UP",
+        expiry_ts: "2026-06-05T13:25:00Z",
+        p_finish: 0.64,
+        path_count: 120000,
+      },
+    ],
+  },
+  nowMs,
+);
+
+assert.deepEqual(
+  notRetainedFromFreshOkRefresh.rows?.map((row) => row.contract_id),
+  ["btc-new-ok-up"],
+);
+assert.equal(notRetainedFromFreshOkRefresh.previous_mc_retained, undefined);
+assert.equal(notRetainedFromFreshOkRefresh.retained_mc_rows, undefined);
+
+const retainedAfterStaleHotInput = mergeGraphableProbabilityPayloadRows(
+  {
+    ok: true,
+    state: "OK",
+    generated_at: "2026-06-05T13:19:45Z",
+    rows: [
+      {
+        contract_id: "btc-stale-hot-input-up",
+        asset: "BTC",
+        side: "UP",
+        expiry_ts: "2026-06-05T13:25:00Z",
+        valid_until: "2026-06-05T13:19:59Z",
+        p_finish: 0.71,
+        path_count: 120000,
+        simulation_preview: {
+          sampled_paths: [{ index: 0, terminal_win: true, no_touch_win: true, points: [1, 2] }],
+        },
+      },
+    ],
+  },
+  {
+    ok: true,
+    state: "PARTIAL",
+    generated_at: "2026-06-05T13:20:01Z",
+    rows: [],
+  },
+  nowMs,
+);
+
+assert.deepEqual(
+  retainedAfterStaleHotInput.rows?.map((row) => row.contract_id),
+  ["btc-stale-hot-input-up"],
+);
+assert.equal(retainedAfterStaleHotInput.previous_mc_retained, true);
+assert.equal(retainedAfterStaleHotInput.retained_mc_rows, 1);
+
+const sameKeyStaleValidityPartial = mergeGraphableProbabilityPayloadRows(
+  {
+    ok: true,
+    state: "OK",
+    rows: [
+      {
+        contract_id: "btc-same-key-stale-up",
+        asset: "BTC",
+        side: "UP",
+        expiry_ts: "2026-06-05T13:25:00Z",
+        valid_until: "2026-06-05T13:19:59Z",
+        p_finish: 0.71,
+        path_count: 120000,
+        simulation_preview: {
+          sampled_paths: [{ index: 0, terminal_win: true, no_touch_win: true, points: [1, 2] }],
+        },
+      },
+    ],
+  },
+  {
+    ok: true,
+    state: "PARTIAL",
+    rows: [
+      {
+        contract_id: "btc-same-key-stale-up",
+        asset: "BTC",
+        side: "UP",
+        expiry_ts: "2026-06-05T13:25:00Z",
+        p_finish: 0.73,
+        path_count: 240000,
+      },
+    ],
+  },
+  nowMs,
+);
+
+assert.deepEqual(
+  filterGraphableProbabilityRows(sameKeyStaleValidityPartial, nowMs).map(
+    (row) => row.contract_id,
+  ),
+  ["btc-same-key-stale-up"],
+);
+assert.equal(sameKeyStaleValidityPartial.rows?.[0]?.p_finish, 0.73);
+assert.equal(sameKeyStaleValidityPartial.rows?.[0]?.path_count, 240000);
+assert.equal(sameKeyStaleValidityPartial.previous_mc_retained, true);
+assert.equal(sameKeyStaleValidityPartial.retained_mc_rows, 1);
+
+const notRetainedAfterContractExpiry = mergeGraphableProbabilityPayloadRows(
+  {
+    ok: true,
+    state: "OK",
+    rows: [
+      {
+        contract_id: "btc-expired-contract-up",
+        asset: "BTC",
+        side: "UP",
+        expiry_ts: "2026-06-05T13:19:59Z",
+        valid_until: "2026-06-05T13:19:30Z",
+        p_finish: 0.71,
+        path_count: 120000,
+        simulation_preview: {
+          sampled_paths: [{ index: 0, terminal_win: true, no_touch_win: true, points: [1, 2] }],
+        },
+      },
+    ],
+  },
+  {
+    ok: true,
+    state: "PARTIAL",
+    rows: [],
+  },
+  nowMs,
+);
+
+assert.deepEqual(notRetainedAfterContractExpiry.rows, []);
+
 const preview = {
   sampled_paths: [{ index: 0, terminal_win: true, no_touch_win: true, points: [1, 2] }],
 };
@@ -162,6 +448,92 @@ assert.deepEqual(merged.rows?.[0]?.simulation_preview, preview);
 assert.equal(merged.nowcast_rows?.length, 1);
 assert.equal(merged.nowcast_rows?.[0]?.p_finish, 0.72);
 assert.equal(merged.generated_at, "2026-06-05T13:20:02Z");
+
+const sideMerged = mergeProbabilityEventsIntoPayload(
+  {
+    ok: true,
+    state: "OK",
+    rows: [
+      {
+        market_slug: "btc-updown-5m-1780723500",
+        asset: "BTC",
+        side: "UP",
+        start_ts: "2026-06-05T13:20:00Z",
+        expiry_ts: "2026-06-05T13:25:00Z",
+        probability_kind: "MC",
+        p_finish: 0.60,
+      },
+      {
+        market_slug: "btc-updown-5m-1780723500",
+        asset: "BTC",
+        side: "DOWN",
+        start_ts: "2026-06-05T13:20:00Z",
+        expiry_ts: "2026-06-05T13:25:00Z",
+        probability_kind: "MC",
+        p_finish: 0.40,
+      },
+    ],
+  },
+  [
+    {
+      event_id: "btc-up-event",
+      market_slug: "btc-updown-5m-1780723500",
+      asset: "BTC",
+      side: "UP",
+      start_ts: "2026-06-05T13:20:00Z",
+      expiry_ts: "2026-06-05T13:25:00Z",
+      probability_kind: "MC",
+      p_finish: 0.67,
+    },
+  ],
+);
+
+assert.deepEqual(
+  sideMerged.rows?.map((row) => `${row.side}:${row.p_finish}`),
+  ["UP:0.67", "DOWN:0.4"],
+);
+
+const olderEventSkipped = mergeProbabilityEventsIntoPayload(
+  {
+    ok: true,
+    state: "OK",
+    generated_at: "2026-06-05T13:20:03Z",
+    rows: [
+      {
+        contract_id: "btc-newer-polled-up",
+        asset: "BTC",
+        side: "UP",
+        start_ts: "2026-06-05T13:20:00Z",
+        expiry_ts: "2026-06-05T13:25:00Z",
+        asof_ts: "2026-06-05T13:20:03Z",
+        generated_at: "2026-06-05T13:20:03Z",
+        probability_kind: "MC",
+        p_finish: 0.75,
+        path_count: 120000,
+      },
+    ],
+  },
+  [
+    {
+      event_id: "btc-older-event",
+      contract_id: "btc-newer-polled-up",
+      asset: "BTC",
+      side: "UP",
+      start_ts: "2026-06-05T13:20:00Z",
+      expiry_ts: "2026-06-05T13:25:00Z",
+      asof_ts: "2026-06-05T13:20:01Z",
+      generated_at: "2026-06-05T13:20:01Z",
+      probability_kind: "MC",
+      p_finish: 0.61,
+      path_count: 30000,
+    },
+  ],
+);
+
+assert.equal(olderEventSkipped.rows?.[0]?.p_finish, 0.75);
+assert.equal(olderEventSkipped.rows?.[0]?.path_count, 120000);
+assert.equal(olderEventSkipped.rows?.[0]?.generated_at, "2026-06-05T13:20:03Z");
+assert.equal(olderEventSkipped.generated_at, "2026-06-05T13:20:03Z");
 
 const currentBtcUp = {
   contract_id: "btc-current-up",
@@ -325,6 +697,24 @@ assert.deepEqual(
     holdMs: 30_000,
   }).map((row) => row.contract_id),
   ["btc-current-up", "btc-current-down"],
+);
+
+assert.deepEqual(
+  probabilityRowsWithRolloverHold([], [stale], {
+    nowMs,
+    heldAtMs: nowMs - 1_000,
+    holdMs: 30_000,
+  }).map((row) => row.contract_id),
+  ["eth-up"],
+);
+
+assert.deepEqual(
+  probabilityRowsWithRolloverHold([], [expired], {
+    nowMs,
+    heldAtMs: nowMs - 1_000,
+    holdMs: 30_000,
+  }),
+  [],
 );
 
 assert.deepEqual(

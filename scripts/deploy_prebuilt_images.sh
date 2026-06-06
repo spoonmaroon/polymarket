@@ -35,10 +35,13 @@ SHORT_SHA="${FULL_SHA:0:12}"
 
 COLLECTOR_IMAGE="polymarket-rust-collector:${SHORT_SHA}"
 NORMALIZER_IMAGE="polymarket-normalizer:${SHORT_SHA}"
+CUDA_PROBABILITY_IMAGE="polymarket-cuda-probability:${SHORT_SHA}"
 COLLECTOR_TAR="$DIST_DIR/polymarket-rust-collector-${SHORT_SHA}.tar"
 NORMALIZER_TAR="$DIST_DIR/polymarket-normalizer-${SHORT_SHA}.tar"
+CUDA_PROBABILITY_TAR="$DIST_DIR/polymarket-cuda-probability-${SHORT_SHA}.tar"
 REMOTE_COLLECTOR_TAR="$REMOTE_DIST_DIR/$(basename "$COLLECTOR_TAR")"
 REMOTE_NORMALIZER_TAR="$REMOTE_DIST_DIR/$(basename "$NORMALIZER_TAR")"
+REMOTE_CUDA_PROBABILITY_TAR="$REMOTE_DIST_DIR/$(basename "$CUDA_PROBABILITY_TAR")"
 
 if [ ! -f "$COLLECTOR_TAR" ]; then
   echo "missing collector image tarball: $COLLECTOR_TAR" >&2
@@ -50,11 +53,16 @@ if [ ! -f "$NORMALIZER_TAR" ]; then
   exit 1
 fi
 
+if [ ! -f "$CUDA_PROBABILITY_TAR" ]; then
+  echo "missing CUDA probability image tarball: $CUDA_PROBABILITY_TAR" >&2
+  exit 1
+fi
+
 ssh "$REMOTE_HOST" "mkdir -p '$REMOTE_DIST_DIR'"
-scp "$COLLECTOR_TAR" "$NORMALIZER_TAR" "$REMOTE_HOST:$REMOTE_DIST_DIR/"
+scp "$COLLECTOR_TAR" "$NORMALIZER_TAR" "$CUDA_PROBABILITY_TAR" "$REMOTE_HOST:$REMOTE_DIST_DIR/"
 
-ssh "$REMOTE_HOST" "docker load -i '$REMOTE_COLLECTOR_TAR' && docker load -i '$REMOTE_NORMALIZER_TAR'"
+ssh "$REMOTE_HOST" "docker load -i '$REMOTE_COLLECTOR_TAR' && docker load -i '$REMOTE_NORMALIZER_TAR' && docker load -i '$REMOTE_CUDA_PROBABILITY_TAR'"
 
-ssh "$REMOTE_HOST" "cd '$REMOTE_REPO' && POLYMARKET_DEPLOY_USE_PREBUILT=1 POLYMARKET_DEPLOY_REF='$FULL_SHA' POLYMARKET_EXPECTED_DEPLOY_SHA='$FULL_SHA' POLYMARKET_COLLECTOR_IMAGE='$COLLECTOR_IMAGE' POLYMARKET_NORMALIZER_IMAGE='$NORMALIZER_IMAGE' POLYMARKET_DATA_DIR='$POLYMARKET_DATA_DIR' DEPLOY_FORCE=1 ./scripts/deploy.sh"
+ssh "$REMOTE_HOST" "cd '$REMOTE_REPO' && POLYMARKET_DEPLOY_USE_PREBUILT=1 POLYMARKET_DEPLOY_REF='$FULL_SHA' POLYMARKET_EXPECTED_DEPLOY_SHA='$FULL_SHA' POLYMARKET_COLLECTOR_IMAGE='$COLLECTOR_IMAGE' POLYMARKET_NORMALIZER_IMAGE='$NORMALIZER_IMAGE' POLYMARKET_CUDA_PROBABILITY_IMAGE='$CUDA_PROBABILITY_IMAGE' POLYMARKET_DATA_DIR='$POLYMARKET_DATA_DIR' DEPLOY_FORCE=1 ./scripts/deploy.sh"
 
 ssh "$REMOTE_HOST" "cd '$REMOTE_REPO' && python3 scripts/check_collector_status.py --status-path '$POLYMARKET_DATA_DIR/live/status.json' --max-status-age-seconds 30 --max-price-age-ms 30000 --max-orderbook-age-ms 30000 --max-websocket-event-age-ms 30000 --raw-root '$POLYMARKET_DATA_DIR/raw' --max-raw-event-age-ms 30000 --normalized-health-path '$POLYMARKET_DATA_DIR/live/normalized_health.json' --max-normalized-health-age-ms 30000 --expected-prewarm-windows 2"

@@ -259,6 +259,26 @@ def test_parse_run_rust_normalizer_sidecar_probability_inputs_path_arg() -> None
     assert args.probability_inputs_path == Path("tmp/probability_inputs.json")
 
 
+def test_parse_run_cuda_probability_worker_defaults() -> None:
+    args = parse_args(
+        [
+            "run-cuda-probability-worker",
+            "--duckdb-path",
+            "data/db/polymarket.duckdb",
+        ]
+    )
+
+    assert args.command == "run-cuda-probability-worker"
+    assert args.duckdb_path == Path("data/db/polymarket.duckdb")
+    assert args.probability_status_path == Path("data/live/probabilities.json")
+    assert args.probability_inputs_path is None
+    assert args.interval_seconds == 1.0
+    assert args.limit == 24
+    assert args.valid_seconds == 30
+    assert args.max_input_snapshot_age_seconds == 10.0
+    assert args.once is False
+
+
 def test_run_rust_normalizer_sidecar_defaults_to_quarter_second_cadence() -> None:
     args = parse_args(
         [

@@ -49,8 +49,10 @@ SHORT_SHA="${FULL_SHA:0:12}"
 
 COLLECTOR_IMAGE="polymarket-rust-collector:${SHORT_SHA}"
 NORMALIZER_IMAGE="polymarket-normalizer:${SHORT_SHA}"
+CUDA_PROBABILITY_IMAGE="polymarket-cuda-probability:${SHORT_SHA}"
 COLLECTOR_TAR="$DIST_DIR/polymarket-rust-collector-${SHORT_SHA}.tar"
 NORMALIZER_TAR="$DIST_DIR/polymarket-normalizer-${SHORT_SHA}.tar"
+CUDA_PROBABILITY_TAR="$DIST_DIR/polymarket-cuda-probability-${SHORT_SHA}.tar"
 TUI_BIN="$DIST_DIR/polymarket-cockpit-tui-${SHORT_SHA}"
 LOCAL_BUNDLE="$DIST_DIR/polymarket-${SHORT_SHA}.bundle"
 
@@ -65,6 +67,11 @@ fi
 
 if [ ! -f "$NORMALIZER_TAR" ]; then
   echo "missing normalizer image tarball: $NORMALIZER_TAR" >&2
+  exit 1
+fi
+
+if [ ! -f "$CUDA_PROBABILITY_TAR" ]; then
+  echo "missing CUDA probability image tarball: $CUDA_PROBABILITY_TAR" >&2
   exit 1
 fi
 
@@ -99,6 +106,7 @@ echo "copying git bundle and image tarballs to THEPC WSL"
 wsl_put_file "$LOCAL_BUNDLE" "$PC_BUNDLE"
 wsl_put_file "$COLLECTOR_TAR" "$PC_DIST_DIR/$(basename "$COLLECTOR_TAR")"
 wsl_put_file "$NORMALIZER_TAR" "$PC_DIST_DIR/$(basename "$NORMALIZER_TAR")"
+wsl_put_file "$CUDA_PROBABILITY_TAR" "$PC_DIST_DIR/$(basename "$CUDA_PROBABILITY_TAR")"
 wsl_put_file "$TUI_BIN" "$PC_DIST_DIR/$(basename "$TUI_BIN")"
 
 ssh "$PC_HOST" "wsl.exe -d $PC_WSL_DISTRO -- bash -s" <<EOF
@@ -118,8 +126,10 @@ PC_REST_BACKUP_INTERVAL_MS=$(shell_quote "$PC_REST_BACKUP_INTERVAL_MS")
 PC_API_PORT=$(shell_quote "$PC_API_PORT")
 COLLECTOR_IMAGE=$(shell_quote "$COLLECTOR_IMAGE")
 NORMALIZER_IMAGE=$(shell_quote "$NORMALIZER_IMAGE")
+CUDA_PROBABILITY_IMAGE=$(shell_quote "$CUDA_PROBABILITY_IMAGE")
 COLLECTOR_TAR=$(shell_quote "$PC_DIST_DIR/$(basename "$COLLECTOR_TAR")")
 NORMALIZER_TAR=$(shell_quote "$PC_DIST_DIR/$(basename "$NORMALIZER_TAR")")
+CUDA_PROBABILITY_TAR=$(shell_quote "$PC_DIST_DIR/$(basename "$CUDA_PROBABILITY_TAR")")
 TUI_BIN=$(shell_quote "$PC_DIST_DIR/$(basename "$TUI_BIN")")
 
 set_env() {
@@ -177,9 +187,11 @@ set_env POLYMARKET_ENABLE_RUNTIME_PROBABILITIES 1 deploy/collector/.env
 set_env POLYMARKET_ALLOW_RUNTIME_PROBABILITY_COMPUTE 0 deploy/collector/.env
 set_env POLYMARKET_COLLECTOR_IMAGE "\$COLLECTOR_IMAGE" deploy/collector/.env
 set_env POLYMARKET_NORMALIZER_IMAGE "\$NORMALIZER_IMAGE" deploy/collector/.env
+set_env POLYMARKET_CUDA_PROBABILITY_IMAGE "\$CUDA_PROBABILITY_IMAGE" deploy/collector/.env
 
 docker load -i "\$COLLECTOR_TAR"
 docker load -i "\$NORMALIZER_TAR"
+docker load -i "\$CUDA_PROBABILITY_TAR"
 install -m 755 "\$TUI_BIN" "\$PC_BIN_DIR/polymarket-cockpit-tui"
 
 {
@@ -191,7 +203,7 @@ install -m 755 "\$TUI_BIN" "\$PC_BIN_DIR/polymarket-cockpit-tui"
   printf '%s\n' "  echo 'Runtime already live.'"
   printf '%s\n' 'else'
   printf '%s\n' "  echo 'Runtime not live; starting containers...'"
-  printf '%s\n' '  docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml up -d --no-recreate collector normalizer outcome-refresh api >/dev/null 2>&1 || true'
+  printf '%s\n' '  docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml up -d --no-recreate collector normalizer outcome-refresh api gpu-probability-worker >/dev/null 2>&1 || true'
   printf '%s\n' 'fi'
   printf '%s\n' "echo 'Waiting for runtime API and live market rows...'"
   printf '%s\n' 'for _ in \$(seq 1 45); do'
@@ -277,6 +289,7 @@ export POLYMARKET_DEPLOY_REF="\$FULL_SHA"
 export POLYMARKET_EXPECTED_DEPLOY_SHA="\$FULL_SHA"
 export POLYMARKET_COLLECTOR_IMAGE="\$COLLECTOR_IMAGE"
 export POLYMARKET_NORMALIZER_IMAGE="\$NORMALIZER_IMAGE"
+export POLYMARKET_CUDA_PROBABILITY_IMAGE="\$CUDA_PROBABILITY_IMAGE"
 export POLYMARKET_DATA_DIR="\$PC_DATA_DIR"
 export POLYMARKET_NORMALIZER_INTERVAL_SECONDS="\$PC_NORMALIZER_INTERVAL_SECONDS"
 export POLYMARKET_REST_BACKUP_INTERVAL_MS="\$PC_REST_BACKUP_INTERVAL_MS"
@@ -323,7 +336,6 @@ for _ in range(30):
     if (
         probabilities.get("ok") is True
         and probabilities.get("state") == "OK"
-        and probabilities.get("source") == "hot_inputs"
         and probabilities.get("rows")
     ):
         break

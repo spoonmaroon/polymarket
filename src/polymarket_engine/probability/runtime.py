@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import time
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, cast
@@ -20,6 +21,7 @@ from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
 DEFAULT_PROBABILITY_CACHE_SECONDS = 1.0
 DEFAULT_PROBABILITY_PATH_COUNT = 1024
 DEFAULT_PROBABILITY_MAX_STATE_AGE_SECONDS = 600.0
+DEFAULT_PROBABILITY_GRID_VALID_SECONDS = 30.0
 
 _contract_label = contract_label
 
@@ -276,7 +278,9 @@ def latest_probability_inputs_from_connection(
             book_age_ms,
             data_quality_flags_json,
             contracts.start_ts::varchar as start_ts,
-            contracts.expiry_ts::varchar as expiry_ts
+            contracts.expiry_ts::varchar as expiry_ts,
+            contracts.slug as market_slug,
+            state.volatility_regime
         from (
             select
                 state_inputs.*,
@@ -322,6 +326,8 @@ def latest_probability_inputs_from_connection(
                 start_ts=start_ts,
                 expiry_ts=expiry_ts,
                 flags=("OK",),
+                market_slug=str(row[16]),
+                volatility_regime=None if row[17] is None else str(row[17]),
             )
         )
 
@@ -664,6 +670,65 @@ def _empty_payload(*, state: str, error: str, generated_at: datetime) -> dict[st
         "rows": [],
         "skipped": 0,
         "errors": [error],
+    }
+
+
+def _merge_grid_diagnostics(
+    *,
+    row: dict[str, Any],
+    diagnostics: Mapping[str, Any],
+    preview_is_current: bool,
+) -> None:
+    if row.get("p_hat") is None and row.get("p_finish") is not None:
+        row["p_hat"] = row["p_finish"]
+    for key in (
+        "p_hat",
+        "p_hat_std",
+        "p_hat_ci_low",
+        "p_hat_ci_high",
+        "paths_per_seed",
+        "seed_count",
+        "prior_sensitivity",
+        "decision_hint",
+        "edge_after_costs",
+        "required_edge",
+        "path_risk_buffer",
+    ):
+        if key in diagnostics and row.get(key) is None:
+            row[key] = diagnostics[key]
+    if preview_is_current and isinstance(diagnostics.get("simulation_preview"), Mapping):
+        row["simulation_preview"] = dict(cast(Mapping[str, Any], diagnostics["simulation_preview"]))
+    generator_metadata = dict(row.get("generator_metadata", {}))
+    for metadata_key in ("cache", "generator", "generator_metadata"):
+        metadata = diagnostics.get(metadata_key)
+        if isinstance(metadata, Mapping):
+            generator_metadata.update(dict(cast(Mapping[str, Any], metadata)))
+    if generator_metadata:
+        row["generator_metadata"] = generator_metadata
+
+
+def probability_gate_diagnostics(
+    *,
+    probability_input: ProbabilityInput,
+    output: ProbabilityOutput,
+    latency_ms: float | None = None,
+) -> dict[str, Any]:
+    del latency_ms
+    edge_after_costs = output.p_finish - probability_input.executable_price
+    required_edge = 0.02
+    reasons: list[str] = []
+    if probability_input.book_age_ms > 5_000:
+        reasons.append("stale_book")
+    if probability_input.source_age_ms > 5_000:
+        reasons.append("stale_source")
+    if abs(output.z_path) > 2:
+        reasons.append("path_risk")
+    return {
+        "decision_hint": "SKIP" if reasons or edge_after_costs < required_edge else "PAPER_TRADE",
+        "edge_after_costs": edge_after_costs,
+        "required_edge": required_edge,
+        "path_risk_buffer": 0.0,
+        "reasons": reasons,
     }
 
 

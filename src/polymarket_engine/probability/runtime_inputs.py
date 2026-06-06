@@ -14,6 +14,8 @@ class ProbabilityRuntimeInput:
     start_ts: datetime
     expiry_ts: datetime
     flags: tuple[str, ...]
+    market_slug: str = ""
+    volatility_regime: str | None = None
 
 
 def contract_label(*, asset: str, side: str, start_ts: datetime, expiry_ts: datetime) -> str:

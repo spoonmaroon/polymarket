@@ -103,6 +103,29 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Also build states for the next warmed contract window.",
     )
 
+    cuda_probability_worker = subparsers.add_parser("run-cuda-probability-worker")
+    cuda_probability_worker.add_argument("--duckdb-path", type=Path, required=True)
+    cuda_probability_worker.add_argument(
+        "--probability-status-path",
+        type=Path,
+        default=Path("data/live/probabilities.json"),
+    )
+    cuda_probability_worker.add_argument("--probability-inputs-path", type=Path, default=None)
+    cuda_probability_worker.add_argument("--interval-seconds", type=float, default=1.0)
+    cuda_probability_worker.add_argument("--limit", type=int, default=24)
+    cuda_probability_worker.add_argument("--valid-seconds", type=int, default=30)
+    cuda_probability_worker.add_argument("--max-state-age-seconds", type=float, default=600.0)
+    cuda_probability_worker.add_argument(
+        "--max-input-snapshot-age-seconds",
+        type=float,
+        default=10.0,
+    )
+    cuda_probability_worker.add_argument(
+        "--once",
+        action="store_true",
+        help="Run one CUDA probability worker cycle and exit.",
+    )
+
     sidecar = subparsers.add_parser("run-rust-normalizer-sidecar")
     sidecar.add_argument("--raw-root", type=Path, required=True)
     sidecar.add_argument("--duckdb-path", type=Path, required=True)
@@ -193,6 +216,8 @@ async def run_collect_command(argv: list[str] | None = None) -> int:
         return _run_write_normalized_health(args)
     if args.command == "build-current-decision-states":
         return _run_build_current_decision_states(args)
+    if args.command == "run-cuda-probability-worker":
+        return _run_cuda_probability_worker(args)
     if args.command == "run-rust-normalizer-sidecar":
         return _run_rust_normalizer_sidecar(args)
     if args.command == "run-outcome-refresh-sidecar":
@@ -286,6 +311,35 @@ def _run_build_current_decision_states(args: argparse.Namespace) -> int:
             },
             sort_keys=True,
         )
+    )
+    return 0
+
+
+def _run_cuda_probability_worker(args: argparse.Namespace) -> int:
+    from polymarket_engine.probability.gpu_worker import run_cuda_probability_worker_cycle
+    from polymarket_engine.probability.gpu_worker import run_cuda_probability_worker_loop
+
+    if args.once:
+        payload = run_cuda_probability_worker_cycle(
+            duckdb_path=args.duckdb_path,
+            probability_status_path=args.probability_status_path,
+            probability_inputs_path=args.probability_inputs_path,
+            limit=args.limit,
+            valid_seconds=args.valid_seconds,
+            max_state_age_seconds=args.max_state_age_seconds,
+            max_input_snapshot_age_seconds=args.max_input_snapshot_age_seconds,
+        )
+        print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+        return 0 if payload.get("ok") else 1
+    run_cuda_probability_worker_loop(
+        duckdb_path=args.duckdb_path,
+        probability_status_path=args.probability_status_path,
+        probability_inputs_path=args.probability_inputs_path,
+        interval_seconds=args.interval_seconds,
+        limit=args.limit,
+        valid_seconds=args.valid_seconds,
+        max_state_age_seconds=args.max_state_age_seconds,
+        max_input_snapshot_age_seconds=args.max_input_snapshot_age_seconds,
     )
     return 0
 

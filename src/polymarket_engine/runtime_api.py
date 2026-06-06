@@ -392,8 +392,12 @@ def _probability_status_payload(
             "skipped": 0,
             "errors": ["probability status shape invalid: rows must be a list"],
         }
+    display_rows = rows
+    last_good_rows = status_payload.get("last_good_rows")
+    if not display_rows and isinstance(last_good_rows, list):
+        display_rows = [row for row in last_good_rows if isinstance(row, dict)]
     limited = dict(status_payload)
-    limited["rows"] = rows[:limit]
+    limited["rows"] = display_rows[:limit]
     limited["cached"] = False
     return limited
 

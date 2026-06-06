@@ -1142,6 +1142,50 @@ def test_runtime_probabilities_reads_live_probability_status_file(tmp_path: Path
     assert payload["rows"] == [{"contract": "BTC 5m UP", "output_id": "btc-up"}]
 
 
+def test_runtime_probabilities_uses_last_good_rows_when_status_rows_empty(
+    tmp_path: Path,
+) -> None:
+    probability_status_path = tmp_path / "live" / "probabilities.json"
+    probability_status_path.parent.mkdir()
+    probability_status_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "polymarket-probability-runtime-v1",
+                "ok": False,
+                "state": "PARTIAL",
+                "generated_at": datetime.now(UTC).isoformat(),
+                "cached": False,
+                "model_version": None,
+                "rows": [],
+                "last_good_rows": [
+                    {"contract": "BTC 5m UP", "output_id": "retained-up"},
+                    {"contract": "BTC 5m DOWN", "output_id": "retained-down"},
+                ],
+                "skipped": 4,
+                "errors": ["probability input unavailable"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    app = create_app(
+        status_path=tmp_path / "missing-status.json",
+        duckdb_path=tmp_path / "missing.duckdb",
+        probability_status_path=probability_status_path,
+        enable_runtime_probabilities=True,
+    )
+
+    response = TestClient(app).get("/api/runtime/probabilities?limit=1")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["state"] == "PARTIAL"
+    assert payload["rows"] == [{"contract": "BTC 5m UP", "output_id": "retained-up"}]
+    assert payload["last_good_rows"] == [
+        {"contract": "BTC 5m UP", "output_id": "retained-up"},
+        {"contract": "BTC 5m DOWN", "output_id": "retained-down"},
+    ]
+
+
 def test_runtime_probabilities_prefers_non_empty_status_file_over_empty_hot_inputs(
     tmp_path: Path,
 ) -> None:
