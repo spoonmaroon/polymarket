@@ -181,12 +181,18 @@ def test_runtime_api_service_is_deployed_with_engine_compose() -> None:
     assert "${POLYMARKET_API_PORT:-8000}:8000" in compose
     assert "POLYMARKET_API_PORT=8000" in env_example
     assert "POLYMARKET_ENABLE_CONTAINER_STATUS=1" in env_example
+    assert "POLYMARKET_ENABLE_RUNTIME_PROBABILITIES=1" in env_example
+    assert "POLYMARKET_ALLOW_RUNTIME_PROBABILITY_COMPUTE=0" in env_example
     assert "up -d collector normalizer outcome-refresh api" in script
     assert "up -d --build collector normalizer outcome-refresh api" in script
     assert "logs --tail=80 collector normalizer outcome-refresh api" in script
     assert "docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml ps" in pc_script
     assert 'get_json("/health")' in pc_script
     assert 'get_json("/api/runtime/live?limit=8")' in pc_script
+    assert 'get_json("/api/runtime/probabilities?limit=8")' in pc_script
+    assert "for _ in range(30):" in pc_script
+    assert 'probabilities.get("source") == "hot_inputs"' in pc_script
+    assert "runtime probabilities smoke failed" in pc_script
     assert 'get_json("/api/runtime/outcomes?limit=8")' in pc_script
     assert "/api/runtime/live/stream?limit=8&interval_ms=250&max_events=1" in pc_script
 
@@ -299,6 +305,8 @@ def test_pc_deploy_script_runs_prebuilt_deploy_gate_with_pc_cadence() -> None:
         in script
     )
     assert 'set_env POLYMARKET_REST_BACKUP_INTERVAL_MS "\\$PC_REST_BACKUP_INTERVAL_MS"' in script
+    assert "set_env POLYMARKET_ENABLE_RUNTIME_PROBABILITIES 1 deploy/collector/.env" in script
+    assert "set_env POLYMARKET_ALLOW_RUNTIME_PROBABILITY_COMPUTE 0 deploy/collector/.env" in script
     assert 'POLYMARKET_REST_BACKUP_INTERVAL_MS="\\$PC_REST_BACKUP_INTERVAL_MS"' in script
     assert "scripts/check_collector_status.py" in script
     assert "--expected-prewarm-windows 2" in script
@@ -335,6 +343,7 @@ def test_pc_tui_desktop_launcher_logs_failures_and_forces_new_terminal_window() 
     assert "open-polymarket-tui-window.sh" in script
     assert "polymarket-tui-launch.log" in script
     assert "Start-Transcript" in script
+    assert "Add-Content -Path \\$logPath" not in script
     assert "Start-Process -FilePath 'wt.exe'" in script
     assert "'-w', 'new'" in script
     assert "Read-Host 'Press Enter to close'" in script

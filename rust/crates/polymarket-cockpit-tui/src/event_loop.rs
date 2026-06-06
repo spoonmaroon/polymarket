@@ -584,6 +584,8 @@ mod tests {
 
     fn probabilities() -> RuntimeProbabilities {
         RuntimeProbabilities {
+            ok: true,
+            state: "OK".to_string(),
             generated_at: "2026-06-03T21:06:00Z".to_string(),
             cached: true,
             rows: vec![RuntimeProbabilityRow {
@@ -594,7 +596,13 @@ mod tests {
                 sigma_tau: 0.0123,
                 age_ms: 850,
                 flags: vec!["OK".to_string()],
+                decision_hint: None,
+                edge_after_costs: None,
+                required_edge: None,
+                skip_reasons: Vec::new(),
             }],
+            error: None,
+            errors: Vec::new(),
         }
     }
 

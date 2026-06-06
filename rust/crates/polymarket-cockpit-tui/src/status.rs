@@ -106,11 +106,19 @@ pub struct RuntimeDisplayLag {
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct RuntimeProbabilities {
+    #[serde(default = "default_true")]
+    pub ok: bool,
+    #[serde(default)]
+    pub state: String,
     pub generated_at: String,
     #[serde(default)]
     pub cached: bool,
     #[serde(default)]
     pub rows: Vec<RuntimeProbabilityRow>,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub error: Option<String>,
+    #[serde(default)]
+    pub errors: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -161,6 +169,14 @@ pub struct RuntimeProbabilityRow {
     pub age_ms: u64,
     #[serde(default)]
     pub flags: Vec<String>,
+    #[serde(default)]
+    pub decision_hint: Option<String>,
+    #[serde(default)]
+    pub edge_after_costs: Option<f64>,
+    #[serde(default)]
+    pub required_edge: Option<f64>,
+    #[serde(default)]
+    pub skip_reasons: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -247,6 +263,10 @@ where
             "expected scalar string/number/null, got {other}"
         ))),
     }
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl RuntimeStatus {

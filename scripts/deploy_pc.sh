@@ -173,6 +173,8 @@ set_env POLYMARKET_DATA_DIR "\$PC_DATA_DIR" deploy/collector/.env
 set_env POLYMARKET_NORMALIZER_INTERVAL_SECONDS "\$PC_NORMALIZER_INTERVAL_SECONDS" deploy/collector/.env
 set_env POLYMARKET_REST_BACKUP_INTERVAL_MS "\$PC_REST_BACKUP_INTERVAL_MS" deploy/collector/.env
 set_env POLYMARKET_API_PORT "\$PC_API_PORT" deploy/collector/.env
+set_env POLYMARKET_ENABLE_RUNTIME_PROBABILITIES 1 deploy/collector/.env
+set_env POLYMARKET_ALLOW_RUNTIME_PROBABILITY_COMPUTE 0 deploy/collector/.env
 set_env POLYMARKET_COLLECTOR_IMAGE "\$COLLECTOR_IMAGE" deploy/collector/.env
 set_env POLYMARKET_NORMALIZER_IMAGE "\$NORMALIZER_IMAGE" deploy/collector/.env
 
@@ -230,7 +232,6 @@ try {
 }
 
 try {
-  Add-Content -Path \$logPath -Value ("launch " + (Get-Date).ToString("o"))
   Start-Process -FilePath 'wt.exe' -ArgumentList \$arguments -WindowStyle Normal
 } catch {
   Write-Host 'Failed to launch Windows Terminal for Polymarket TUI.'
@@ -297,6 +298,7 @@ python3 scripts/check_collector_status.py \\
 POLYMARKET_API_PORT="\$PC_API_PORT" python3 - <<'PY'
 import json
 import os
+import time
 import urllib.request
 
 base = f"http://127.0.0.1:{os.environ['POLYMARKET_API_PORT']}"
@@ -314,6 +316,20 @@ if health.get("status") != "ok":
 live = get_json("/api/runtime/live?limit=8")
 if live.get("ok") is not True or not live.get("monitor", {}).get("orderbooks"):
     raise SystemExit(f"runtime live smoke failed: {live}")
+
+probabilities = {}
+for _ in range(30):
+    probabilities = get_json("/api/runtime/probabilities?limit=8")
+    if (
+        probabilities.get("ok") is True
+        and probabilities.get("state") == "OK"
+        and probabilities.get("source") == "hot_inputs"
+        and probabilities.get("rows")
+    ):
+        break
+    time.sleep(1)
+else:
+    raise SystemExit(f"runtime probabilities smoke failed: {probabilities}")
 
 outcomes = get_json("/api/runtime/outcomes?limit=8")
 if outcomes.get("ok") is not True or not isinstance(outcomes.get("rows"), list):

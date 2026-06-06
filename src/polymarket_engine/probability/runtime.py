@@ -357,8 +357,55 @@ def latest_probability_output_rows_from_connection(
         raise ValueError("limit must be positive")
     cutoff = _cutoff_timestamp(max_state_age_seconds)
     active_now = datetime.now(timezone.utc) if active_only else None
+    has_decision_table = _table_exists(
+        conn=conn,
+        schema_name="features",
+        table_name="ensemble_decisions",
+    )
     rows = conn.execute(
-        """
+        _latest_probability_output_rows_sql(include_decisions=has_decision_table),
+        [cutoff, cutoff, active_now, active_now, limit],
+    ).fetchall()
+    return [_persisted_runtime_row(row) for row in rows]
+
+
+def _latest_probability_output_rows_sql(*, include_decisions: bool) -> str:
+    decision_columns = ""
+    decision_join = ""
+    if include_decisions:
+        decision_columns = """
+            ,
+            decisions.decision_hint,
+            decisions.edge_after_costs,
+            decisions.required_edge,
+            decisions.skip_reasons_json,
+            decisions.generator_summary_json,
+            decisions.execution_summary_json,
+            decisions.supervised_live_json"""
+        decision_join = """
+        left join (
+            select
+                state_id,
+                decision_hint,
+                edge_after_costs,
+                required_edge,
+                skip_reasons_json,
+                generator_summary_json,
+                execution_summary_json,
+                supervised_live_json
+            from (
+                select
+                    decisions.*,
+                    row_number() over (
+                        partition by state_id
+                        order by asof_ts desc, created_at desc
+                    ) as row_number
+                from features.ensemble_decisions as decisions
+            )
+            where row_number = 1
+        ) as decisions using (state_id)"""
+
+    return f"""
         select
             output_id,
             state_id,
@@ -377,6 +424,7 @@ def latest_probability_output_rows_from_connection(
             cast(start_ts as varchar) as start_ts,
             cast(expiry_ts as varchar) as expiry_ts,
             data_quality_flags_json
+            {decision_columns}
         from (
             select
                 outputs.*,
@@ -394,7 +442,8 @@ def latest_probability_output_rows_from_connection(
             from features.probability_outputs as outputs
             join features.asof_state_inputs as state using (state_id)
             join core.contracts as contracts using (contract_id)
-        )
+        ) as outputs
+        {decision_join}
         where row_number = 1
           and (? is null or asof_ts >= ?)
           and (? is null or expiry_ts > ?)
@@ -403,10 +452,25 @@ def latest_probability_output_rows_from_connection(
             start_ts,
             case side when 'UP' then 0 when 'DOWN' then 1 else 2 end
         limit ?
+        """
+
+
+def _table_exists(
+    *,
+    conn: duckdb.DuckDBPyConnection,
+    schema_name: str,
+    table_name: str,
+) -> bool:
+    row = conn.execute(
+        """
+        select count(*)
+        from information_schema.tables
+        where table_schema = ?
+          and table_name = ?
         """,
-        [cutoff, cutoff, active_now, active_now, limit],
-    ).fetchall()
-    return [_persisted_runtime_row(row) for row in rows]
+        [schema_name, table_name],
+    ).fetchone()
+    return bool(row is not None and row[0] == 1)
 
 
 def compute_and_persist_probability_outputs(
@@ -552,7 +616,7 @@ def _persisted_runtime_row(row: tuple[Any, ...]) -> dict[str, Any]:
     expiry_ts = _parse_datetime(row[15])
     flags = tuple(str(flag) for flag in json.loads(row[16]))
     age_ms = max(0, int((datetime.now(timezone.utc) - asof_ts).total_seconds() * 1000))
-    return {
+    runtime_row: dict[str, Any] = {
         "contract": _contract_label(
             asset=str(row[11]),
             side=str(row[12]),
@@ -574,6 +638,19 @@ def _persisted_runtime_row(row: tuple[Any, ...]) -> dict[str, Any]:
         "seed": _optional_int(row[7]),
         "output_id": str(row[0]),
     }
+    if len(row) > 17 and row[17] is not None:
+        runtime_row.update(
+            {
+                "decision_hint": str(row[17]),
+                "edge_after_costs": float(row[18]),
+                "required_edge": float(row[19]),
+                "skip_reasons": _json_list(row[20], default=[]),
+                "generator_summary": _json_dict(row[21], default={}),
+                "execution_summary": _json_dict(row[22], default={}),
+                "supervised_live": _json_dict(row[23], default={"action": "DISABLED"}),
+            }
+        )
+    return runtime_row
 
 
 def _empty_payload(*, state: str, error: str, generated_at: datetime) -> dict[str, Any]:
@@ -639,6 +716,26 @@ def _optional_int(value: object) -> int | None:
     if value is None:
         return None
     return _int(value, "seed")
+
+
+def _json_list(value: object, *, default: list[Any]) -> list[Any]:
+    if value is None:
+        return list(default)
+    try:
+        parsed = json.loads(str(value))
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return list(default)
+    return parsed if isinstance(parsed, list) else list(default)
+
+
+def _json_dict(value: object, *, default: dict[str, Any]) -> dict[str, Any]:
+    if value is None:
+        return dict(default)
+    try:
+        parsed = json.loads(str(value))
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return dict(default)
+    return parsed if isinstance(parsed, dict) else dict(default)
 
 
 def _parse_datetime(value: object) -> datetime:

@@ -38,6 +38,28 @@ def test_schema_applies_to_empty_database(tmp_path: Path) -> None:
     }.issubset(tables)
 
 
+def test_schema_creates_ensemble_decision_tables(tmp_path: Path) -> None:
+    db_path = tmp_path / "polymarket.duckdb"
+    schema_path = Path("src/polymarket_engine/storage/schema.sql")
+
+    with duckdb.connect(str(db_path)) as conn:
+        conn.sql(schema_path.read_text())
+        tables = {
+            row[0]
+            for row in conn.execute(
+                """
+                select table_schema || '.' || table_name
+                from information_schema.tables
+                where table_schema in ('features', 'research')
+                """
+            ).fetchall()
+        }
+
+    assert "features.generator_runs" in tables
+    assert "features.ensemble_decisions" in tables
+    assert "research.generator_weight_candidates" in tables
+
+
 def test_market_outcome_history_schema_has_expected_columns(tmp_path: Path) -> None:
     db_path = tmp_path / "test.duckdb"
     schema_path = Path("src/polymarket_engine/storage/schema.sql")

@@ -238,7 +238,9 @@ Cached probability outputs are display-only. The deployed normalizer sidecar
 does not pass `--enable-probabilities`, so live runtime on THEPC remains
 pre-probability unless an operator explicitly starts a separate opt-in run. The
 FastAPI probability endpoint also stays disabled unless
-`POLYMARKET_ENABLE_RUNTIME_PROBABILITIES=1` is set.
+`POLYMARKET_ENABLE_RUNTIME_PROBABILITIES=1` is set. Even when display is
+enabled, CPU probability computation from the API remains disabled unless
+`POLYMARKET_ALLOW_RUNTIME_PROBABILITY_COMPUTE=1` is also set.
 
 Live data changes should appear through the runtime API polling path. TUI code,
 layout, or parser changes require a fresh THEPC deploy and reopening the

@@ -1,6 +1,7 @@
 CREATE SCHEMA IF NOT EXISTS ops;
 CREATE SCHEMA IF NOT EXISTS core;
 CREATE SCHEMA IF NOT EXISTS features;
+CREATE SCHEMA IF NOT EXISTS research;
 CREATE SCHEMA IF NOT EXISTS validation;
 
 CREATE TABLE IF NOT EXISTS ops.ingest_files (
@@ -200,6 +201,52 @@ CREATE TABLE IF NOT EXISTS features.probability_outputs (
     seed BIGINT,
     input_json VARCHAR NOT NULL,
     output_json VARCHAR NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS features.generator_runs (
+    generator_run_id VARCHAR PRIMARY KEY,
+    state_id VARCHAR NOT NULL,
+    asof_ts TIMESTAMPTZ NOT NULL,
+    generator_id VARCHAR NOT NULL,
+    p_finish DOUBLE NOT NULL,
+    p_no_touch DOUBLE NOT NULL,
+    path_count BIGINT NOT NULL,
+    effective_path_count BIGINT NOT NULL,
+    seed BIGINT,
+    runtime_ms DOUBLE NOT NULL,
+    sparse BOOLEAN NOT NULL,
+    diagnostics_json VARCHAR NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS features.ensemble_decisions (
+    decision_id VARCHAR PRIMARY KEY,
+    state_id VARCHAR NOT NULL,
+    contract_id VARCHAR NOT NULL,
+    asof_ts TIMESTAMPTZ NOT NULL,
+    execution_mode VARCHAR NOT NULL,
+    decision_hint VARCHAR NOT NULL,
+    p_finish DOUBLE NOT NULL,
+    p_no_touch DOUBLE NOT NULL,
+    z_path DOUBLE NOT NULL,
+    edge_after_costs DOUBLE NOT NULL,
+    required_edge DOUBLE NOT NULL,
+    skip_reasons_json VARCHAR NOT NULL,
+    edge_components_json VARCHAR NOT NULL,
+    generator_summary_json VARCHAR NOT NULL,
+    execution_summary_json VARCHAR NOT NULL,
+    supervised_live_json VARCHAR NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS research.generator_weight_candidates (
+    weight_candidate_id VARCHAR PRIMARY KEY,
+    scope_json VARCHAR NOT NULL,
+    trained_through_ts TIMESTAMPTZ NOT NULL,
+    generator_weights_json VARCHAR NOT NULL,
+    label_count BIGINT NOT NULL,
+    scoring_rule VARCHAR NOT NULL,
     created_at TIMESTAMPTZ NOT NULL
 );
 

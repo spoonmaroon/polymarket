@@ -945,6 +945,50 @@ class DuckDbIngestStore:
                 """,
             )
 
+    def insert_generator_runs(self, rows: Sequence[dict[str, Any]]) -> None:
+        if not rows:
+            return
+        frame = pl.DataFrame(list(rows))
+        with self._connection() as conn:
+            conn.register("generator_run_rows", frame)
+            conn.execute(
+                """
+                insert or replace into features.generator_runs
+                (generator_run_id, state_id, asof_ts, generator_id, p_finish,
+                 p_no_touch, path_count, effective_path_count, seed, runtime_ms,
+                 sparse, diagnostics_json, created_at)
+                select generator_run_id, state_id, asof_ts::TIMESTAMPTZ,
+                       generator_id, p_finish, p_no_touch, path_count,
+                       effective_path_count, seed, runtime_ms, sparse,
+                       diagnostics_json, created_at::TIMESTAMPTZ
+                from generator_run_rows
+                """,
+            )
+
+    def insert_ensemble_decisions(self, rows: Sequence[dict[str, Any]]) -> None:
+        if not rows:
+            return
+        frame = pl.DataFrame(list(rows))
+        with self._connection() as conn:
+            conn.register("ensemble_decision_rows", frame)
+            conn.execute(
+                """
+                insert or replace into features.ensemble_decisions
+                (decision_id, state_id, contract_id, asof_ts, execution_mode,
+                 decision_hint, p_finish, p_no_touch, z_path, edge_after_costs,
+                 required_edge, skip_reasons_json, edge_components_json,
+                 generator_summary_json, execution_summary_json,
+                 supervised_live_json, created_at)
+                select decision_id, state_id, contract_id, asof_ts::TIMESTAMPTZ,
+                       execution_mode, decision_hint, p_finish, p_no_touch,
+                       z_path, edge_after_costs, required_edge, skip_reasons_json,
+                       edge_components_json, generator_summary_json,
+                       execution_summary_json, supervised_live_json,
+                       created_at::TIMESTAMPTZ
+                from ensemble_decision_rows
+                """,
+            )
+
     def normalized_table_health(self) -> tuple[dict[str, object], ...]:
         with self._connection() as conn:
             rows = conn.execute(

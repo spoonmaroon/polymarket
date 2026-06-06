@@ -252,6 +252,78 @@ def test_store_inserts_probability_output_with_json_artifacts(tmp_path: Path) ->
     assert json.loads(output_json)["diagnostics"]["paths"] == 1000
 
 
+def test_insert_ensemble_decision_rows_batches_json_payloads(tmp_path: Path) -> None:
+    db_path = tmp_path / "polymarket.duckdb"
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    now = datetime.now(timezone.utc)
+
+    store.insert_ensemble_decisions(
+        (
+            {
+                "decision_id": "decision-1",
+                "state_id": "state-1",
+                "contract_id": "contract-1",
+                "asof_ts": now,
+                "execution_mode": "paper",
+                "decision_hint": "PAPER_TRADE",
+                "p_finish": 0.72,
+                "p_no_touch": 0.68,
+                "z_path": 1.2,
+                "edge_after_costs": 0.10,
+                "required_edge": 0.06,
+                "skip_reasons_json": "[]",
+                "edge_components_json": '{"base_edge":0.02}',
+                "generator_summary_json": "{}",
+                "execution_summary_json": "{}",
+                "supervised_live_json": '{"action":"DISABLED"}',
+                "created_at": now,
+            },
+        )
+    )
+
+    with duckdb.connect(str(db_path), read_only=True) as conn:
+        row = conn.execute(
+            "select decision_hint, supervised_live_json from features.ensemble_decisions"
+        ).fetchone()
+
+    assert row == ("PAPER_TRADE", '{"action":"DISABLED"}')
+
+
+def test_insert_generator_run_rows_batches_json_payloads(tmp_path: Path) -> None:
+    db_path = tmp_path / "polymarket.duckdb"
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    now = datetime.now(timezone.utc)
+
+    store.insert_generator_runs(
+        (
+            {
+                "generator_run_id": "generator-run-1",
+                "state_id": "state-1",
+                "asof_ts": now,
+                "generator_id": "bootstrap",
+                "p_finish": 0.71,
+                "p_no_touch": 0.69,
+                "path_count": 1000,
+                "effective_path_count": 900,
+                "seed": 123,
+                "runtime_ms": 14.5,
+                "sparse": False,
+                "diagnostics_json": '{"paths":1000}',
+                "created_at": now,
+            },
+        )
+    )
+
+    with duckdb.connect(str(db_path), read_only=True) as conn:
+        row = conn.execute(
+            "select generator_id, diagnostics_json from features.generator_runs"
+        ).fetchone()
+
+    assert row == ("bootstrap", '{"paths":1000}')
+
+
 def test_store_upserts_and_reads_market_outcome_history(tmp_path: Path) -> None:
     db_path = tmp_path / "state.duckdb"
     store = DuckDbIngestStore(db_path)

@@ -12,9 +12,9 @@ pub struct ProbabilityDisplayRow {
     pub contract: String,
     pub p_finish: String,
     pub p_no_touch: String,
-    pub z_path: String,
-    pub sigma_tau: String,
-    pub age_flags: String,
+    pub edge: String,
+    pub required_edge: String,
+    pub hint_reasons: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,30 +28,49 @@ pub fn probability_header_labels() -> [&'static str; 6] {
         "Contract",
         "p_finish",
         "p_no_touch",
-        "z_path",
-        "sigma_tau",
-        "Age/Flags",
+        "Edge",
+        "Req",
+        "Hint/Reasons",
     ]
 }
 
 pub fn probability_table(app: &AppState) -> ProbabilityTableModel {
     let probability_rows = probability_rows(app);
     if !probability_rows.is_empty() {
+        let mut rows = probability_rows
+            .into_iter()
+            .map(|row| {
+                vec![
+                    row.contract,
+                    row.p_finish,
+                    row.p_no_touch,
+                    row.edge,
+                    row.required_edge,
+                    row.hint_reasons,
+                ]
+            })
+            .collect::<Vec<_>>();
+        if let Some(probabilities) = app
+            .runtime_probabilities
+            .as_ref()
+            .filter(|probabilities| has_probability_status_problem(probabilities))
+        {
+            rows.insert(0, probability_status_row(probabilities));
+        }
         return ProbabilityTableModel {
             headers: probability_header_labels().to_vec(),
-            rows: probability_rows
-                .into_iter()
-                .map(|row| {
-                    vec![
-                        row.contract,
-                        row.p_finish,
-                        row.p_no_touch,
-                        row.z_path,
-                        row.sigma_tau,
-                        row.age_flags,
-                    ]
-                })
-                .collect(),
+            rows,
+        };
+    }
+
+    if let Some(probabilities) = app
+        .runtime_probabilities
+        .as_ref()
+        .filter(|probabilities| has_probability_status_problem(probabilities))
+    {
+        return ProbabilityTableModel {
+            headers: probability_header_labels().to_vec(),
+            rows: vec![probability_status_row(probabilities)],
         };
     }
 
@@ -66,6 +85,53 @@ pub fn probability_table(app: &AppState) -> ProbabilityTableModel {
             "-".to_string(),
         ]],
     }
+}
+
+fn has_probability_status_problem(probabilities: &crate::status::RuntimeProbabilities) -> bool {
+    let state = probabilities.state.trim();
+    !probabilities.ok
+        || (!state.is_empty() && state != "OK")
+        || probabilities
+            .error
+            .as_ref()
+            .is_some_and(|error| !error.is_empty())
+        || !probabilities.errors.is_empty()
+}
+
+fn probability_status_row(probabilities: &crate::status::RuntimeProbabilities) -> Vec<String> {
+    vec![
+        format!("probability {}", probability_status_label(probabilities)),
+        "-".to_string(),
+        "-".to_string(),
+        "-".to_string(),
+        "-".to_string(),
+        probability_status_detail(probabilities),
+    ]
+}
+
+fn probability_status_label(probabilities: &crate::status::RuntimeProbabilities) -> String {
+    let state = probabilities.state.trim();
+    if !state.is_empty() && state != "OK" {
+        return state.to_string();
+    }
+    if !probabilities.ok {
+        return "ERROR".to_string();
+    }
+    "WARNING".to_string()
+}
+
+fn probability_status_detail(probabilities: &crate::status::RuntimeProbabilities) -> String {
+    if let Some(error) = probabilities
+        .error
+        .as_ref()
+        .filter(|error| !error.is_empty())
+    {
+        return error.clone();
+    }
+    if !probabilities.errors.is_empty() {
+        return probabilities.errors.join(",");
+    }
+    "-".to_string()
 }
 
 pub fn probability_rows(app: &AppState) -> Vec<ProbabilityDisplayRow> {
@@ -86,9 +152,9 @@ fn probability_row(row: &RuntimeProbabilityRow) -> ProbabilityDisplayRow {
         contract: row.contract.clone(),
         p_finish: format_probability(row.p_finish),
         p_no_touch: format_probability(row.p_no_touch),
-        z_path: format!("{:.3}", row.z_path),
-        sigma_tau: format!("{:.5}", row.sigma_tau),
-        age_flags: age_flags(row),
+        edge: format_optional_probability(row.edge_after_costs),
+        required_edge: format_optional_probability(row.required_edge),
+        hint_reasons: hint_reasons(row),
     }
 }
 
@@ -96,13 +162,22 @@ fn format_probability(value: f64) -> String {
     format!("{:.3}", value)
 }
 
-fn age_flags(row: &RuntimeProbabilityRow) -> String {
-    let flags = if row.flags.is_empty() {
-        "OK".to_string()
-    } else {
-        row.flags.join(",")
-    };
-    format!("{}ms {flags}", row.age_ms)
+fn format_optional_probability(value: Option<f64>) -> String {
+    value
+        .map(format_probability)
+        .unwrap_or_else(|| "-".to_string())
+}
+
+fn hint_reasons(row: &RuntimeProbabilityRow) -> String {
+    let hint = row
+        .decision_hint
+        .clone()
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "READ_ONLY".to_string());
+    if row.skip_reasons.is_empty() {
+        return hint;
+    }
+    format!("{hint} {}", row.skip_reasons.join(","))
 }
 
 pub fn render(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
@@ -146,6 +221,8 @@ mod tests {
     fn probability_rows_render_read_only_probability_outputs() {
         let app = AppState {
             runtime_probabilities: Some(RuntimeProbabilities {
+                ok: true,
+                state: "OK".to_string(),
                 generated_at: "2026-06-03T21:06:00Z".to_string(),
                 cached: true,
                 rows: vec![RuntimeProbabilityRow {
@@ -156,7 +233,13 @@ mod tests {
                     sigma_tau: 0.01234,
                     age_ms: 850,
                     flags: vec!["OK".to_string()],
+                    decision_hint: Some("PAPER_TRADE".to_string()),
+                    edge_after_costs: Some(0.10),
+                    required_edge: Some(0.06),
+                    skip_reasons: vec![],
                 }],
+                error: None,
+                errors: Vec::new(),
             }),
             ..Default::default()
         };
@@ -169,17 +252,96 @@ mod tests {
                 "Contract",
                 "p_finish",
                 "p_no_touch",
-                "z_path",
-                "sigma_tau",
-                "Age/Flags"
+                "Edge",
+                "Req",
+                "Hint/Reasons"
             ]
         );
         assert_eq!(rows[0].contract, "BTC 5m UP");
         assert_eq!(rows[0].p_finish, "0.575");
         assert_eq!(rows[0].p_no_touch, "0.315");
-        assert_eq!(rows[0].z_path, "0.422");
-        assert_eq!(rows[0].sigma_tau, "0.01234");
-        assert_eq!(rows[0].age_flags, "850ms OK");
+        assert_eq!(rows[0].edge, "0.100");
+        assert_eq!(rows[0].required_edge, "0.060");
+        assert_eq!(rows[0].hint_reasons, "PAPER_TRADE");
+    }
+
+    #[test]
+    fn probability_rows_default_missing_decision_fields_to_read_only() {
+        let probabilities: RuntimeProbabilities = serde_json::from_str(
+            r#"{
+                "ok": true,
+                "state": "OK",
+                "generated_at": "2026-06-03T21:06:00Z",
+                "cached": true,
+                "rows": [{
+                    "contract": "BTC 5m DOWN",
+                    "p_finish": 0.4251,
+                    "p_no_touch": 0.2149,
+                    "z_path": 0.2219,
+                    "sigma_tau": 0.01234,
+                    "age_ms": 750,
+                    "flags": ["OK"]
+                }],
+                "error": null,
+                "errors": []
+            }"#,
+        )
+        .unwrap();
+        let app = AppState {
+            runtime_probabilities: Some(probabilities),
+            ..Default::default()
+        };
+
+        let rows = probability_rows(&app);
+
+        assert_eq!(rows[0].contract, "BTC 5m DOWN");
+        assert_eq!(rows[0].edge, "-");
+        assert_eq!(rows[0].required_edge, "-");
+        assert_eq!(rows[0].hint_reasons, "READ_ONLY");
+    }
+
+    #[test]
+    fn probability_table_shows_status_problem_before_stale_rows() {
+        let app = AppState {
+            runtime_probabilities: Some(RuntimeProbabilities {
+                ok: false,
+                state: "COMPUTE_DISABLED".to_string(),
+                generated_at: "2026-06-03T21:06:00Z".to_string(),
+                cached: true,
+                rows: vec![RuntimeProbabilityRow {
+                    contract: "BTC 5m UP".to_string(),
+                    p_finish: 0.5749,
+                    p_no_touch: 0.3149,
+                    z_path: 0.4219,
+                    sigma_tau: 0.01234,
+                    age_ms: 850,
+                    flags: vec!["STALE".to_string()],
+                    decision_hint: Some("WAIT".to_string()),
+                    edge_after_costs: Some(0.10),
+                    required_edge: Some(0.06),
+                    skip_reasons: vec!["stale_probability_status".to_string()],
+                }],
+                error: Some("runtime probability compute fallback disabled".to_string()),
+                errors: Vec::new(),
+            }),
+            ..Default::default()
+        };
+
+        let table = probability_table(&app);
+
+        assert_eq!(
+            table.rows[0],
+            vec![
+                "probability COMPUTE_DISABLED".to_string(),
+                "-".to_string(),
+                "-".to_string(),
+                "-".to_string(),
+                "-".to_string(),
+                "runtime probability compute fallback disabled".to_string(),
+            ]
+        );
+        assert_eq!(table.rows[1][0], "BTC 5m UP");
+        assert_eq!(table.rows[1][5], "WAIT stale_probability_status");
     }
 
     #[test]
@@ -211,6 +373,70 @@ mod tests {
             table.rows[0],
             vec![
                 "probability pending".to_string(),
+                "-".to_string(),
+                "-".to_string(),
+                "-".to_string(),
+                "-".to_string(),
+                "-".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn probability_table_shows_empty_runtime_state() {
+        let app = AppState {
+            runtime_probabilities: Some(RuntimeProbabilities {
+                ok: false,
+                state: "COMPUTE_DISABLED".to_string(),
+                generated_at: "2026-06-04T20:00:00Z".to_string(),
+                cached: false,
+                rows: Vec::new(),
+                error: Some(
+                    "probability status missing and runtime probability compute fallback disabled"
+                        .to_string(),
+                ),
+                errors: Vec::new(),
+            }),
+            ..Default::default()
+        };
+
+        let table = probability_table(&app);
+
+        assert_eq!(
+            table.rows[0],
+            vec![
+                "probability COMPUTE_DISABLED".to_string(),
+                "-".to_string(),
+                "-".to_string(),
+                "-".to_string(),
+                "-".to_string(),
+                "probability status missing and runtime probability compute fallback disabled"
+                    .to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn probability_table_shows_disabled_without_ok_detail() {
+        let app = AppState {
+            runtime_probabilities: Some(RuntimeProbabilities {
+                ok: true,
+                state: "DISABLED".to_string(),
+                generated_at: "2026-06-04T20:00:00Z".to_string(),
+                cached: false,
+                rows: Vec::new(),
+                error: None,
+                errors: Vec::new(),
+            }),
+            ..Default::default()
+        };
+
+        let table = probability_table(&app);
+
+        assert_eq!(
+            table.rows[0],
+            vec![
+                "probability DISABLED".to_string(),
                 "-".to_string(),
                 "-".to_string(),
                 "-".to_string(),
