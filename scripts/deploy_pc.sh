@@ -464,7 +464,10 @@ else:
     raise SystemExit(f"runtime probabilities smoke failed: {probabilities}")
 
 outcomes = get_json("/api/runtime/outcomes?limit=8")
-if outcomes.get("ok") is not True or not isinstance(outcomes.get("rows"), list):
+if (
+    not isinstance(outcomes.get("rows"), list)
+    or (outcomes.get("ok") is not True and outcomes.get("state") != "LOCKED")
+):
     raise SystemExit(f"runtime outcomes smoke failed: {outcomes}")
 
 with urllib.request.urlopen(

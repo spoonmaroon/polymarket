@@ -194,6 +194,7 @@ def test_runtime_api_service_is_deployed_with_engine_compose() -> None:
     assert 'probabilities.get("rows")' in pc_script
     assert "runtime probabilities smoke failed" in pc_script
     assert 'get_json("/api/runtime/outcomes?limit=8")' in pc_script
+    assert 'outcomes.get("state") != "LOCKED"' in pc_script
     assert "/api/runtime/live/stream?limit=8&interval_ms=250&max_events=1" in pc_script
 
 
