@@ -45,6 +45,7 @@ def build_runtime_router(
 ) -> APIRouter:
     router = APIRouter(prefix="/api/runtime")
     probability_cache = ProbabilityRuntimeCache()
+    probability_event_path = probability_status_path.with_name("probability-events.jsonl")
 
     @router.get("/status")
     def runtime_status() -> dict[str, Any]:
@@ -185,8 +186,21 @@ def build_runtime_router(
     @router.get("/probabilities")
     def runtime_probabilities(limit: int = 8) -> dict[str, Any]:
         if not enable_runtime_probabilities:
+            if probability_status_path.exists():
+                return _probability_status_payload(
+                    probability_status_path=probability_status_path,
+                    limit=limit,
+                )
             return _probabilities_disabled_payload()
         hot_or_fallback_payload: dict[str, Any] | None = None
+        if probability_status_path.exists():
+            status_payload = _probability_status_payload(
+                probability_status_path=probability_status_path,
+                limit=limit,
+            )
+            rows = status_payload.get("rows")
+            if isinstance(rows, list) and rows:
+                return status_payload
         try:
             if probability_inputs_path is not None and probability_inputs_path.exists():
                 hot_or_fallback_payload = probability_cache.payload(
@@ -195,7 +209,12 @@ def build_runtime_router(
                     allow_compute=allow_probability_compute_fallback,
                     probability_inputs_path=probability_inputs_path,
                 )
-                if hot_or_fallback_payload.get("source") == "hot_inputs":
+                hot_rows = hot_or_fallback_payload.get("rows")
+                if (
+                    hot_or_fallback_payload.get("source") == "hot_inputs"
+                    and isinstance(hot_rows, list)
+                    and hot_rows
+                ):
                     return hot_or_fallback_payload
         except ValueError as exc:
             return {
@@ -210,36 +229,10 @@ def build_runtime_router(
                 "errors": [str(exc)],
             }
         if probability_status_path.exists():
-            payload, read_error = _read_json_or_error(probability_status_path)
-            if payload is None:
-                return {
-                    "ok": False,
-                    "state": read_error["state"],
-                    "error": read_error["error"],
-                    "generated_at": datetime.now(timezone.utc).isoformat(),
-                    "cached": False,
-                    "model_version": None,
-                    "rows": [],
-                    "skipped": 0,
-                    "errors": [read_error["error"]],
-                }
-            rows = payload.get("rows")
-            if not isinstance(rows, list):
-                return {
-                    "ok": False,
-                    "state": "INVALID",
-                    "error": "probability status shape invalid: rows must be a list",
-                    "generated_at": datetime.now(timezone.utc).isoformat(),
-                    "cached": False,
-                    "model_version": None,
-                    "rows": [],
-                    "skipped": 0,
-                    "errors": ["probability status shape invalid: rows must be a list"],
-                }
-            limited = dict(payload)
-            limited["rows"] = rows[:limit]
-            limited["cached"] = False
-            return limited
+            return _probability_status_payload(
+                probability_status_path=probability_status_path,
+                limit=limit,
+            )
         if hot_or_fallback_payload is not None:
             return hot_or_fallback_payload
         try:
@@ -261,6 +254,48 @@ def build_runtime_router(
                 "skipped": 0,
                 "errors": [str(exc)],
             }
+
+    @router.get("/probability-events/stream")
+    def runtime_probability_events_stream(
+        limit: int = 24,
+        interval_ms: int = 250,
+        max_events: int | None = None,
+        after_event_id: str | None = None,
+    ) -> StreamingResponse:
+        interval_seconds = max(interval_ms, 50) / 1000
+
+        async def events() -> Any:
+            emitted = 0
+            last_event_id = after_event_id
+            while max_events is None or emitted < max_events:
+                payload = _probability_events_payload(
+                    probability_event_path=probability_event_path,
+                    limit=limit,
+                    after_event_id=last_event_id,
+                )
+                rows = payload.get("events", [])
+                if isinstance(rows, list) and rows:
+                    last_event_id = _last_probability_event_id(rows) or last_event_id
+                    yield (
+                        "event: probability\n"
+                        f"data: {json.dumps(payload, separators=(',', ':'))}\n\n"
+                    )
+                    emitted += 1
+                elif max_events is not None:
+                    yield (
+                        "event: probability\n"
+                        f"data: {json.dumps(payload, separators=(',', ':'))}\n\n"
+                    )
+                    emitted += 1
+                if max_events is not None and emitted >= max_events:
+                    break
+                await asyncio.sleep(interval_seconds)
+
+        return StreamingResponse(
+            events(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     @router.get("/outcomes")
     def runtime_outcomes(limit: int = 20) -> dict[str, Any]:
@@ -324,6 +359,128 @@ def _probabilities_disabled_payload() -> dict[str, Any]:
         "skipped": 0,
         "errors": [],
     }
+
+
+def _probability_status_payload(
+    *,
+    probability_status_path: Path,
+    limit: int,
+) -> dict[str, Any]:
+    status_payload, read_error = _read_json_or_error(probability_status_path)
+    if status_payload is None:
+        return {
+            "ok": False,
+            "state": read_error["state"],
+            "error": read_error["error"],
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "cached": False,
+            "model_version": None,
+            "rows": [],
+            "skipped": 0,
+            "errors": [read_error["error"]],
+        }
+    rows = status_payload.get("rows")
+    if not isinstance(rows, list):
+        return {
+            "ok": False,
+            "state": "INVALID",
+            "error": "probability status shape invalid: rows must be a list",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "cached": False,
+            "model_version": None,
+            "rows": [],
+            "skipped": 0,
+            "errors": ["probability status shape invalid: rows must be a list"],
+        }
+    limited = dict(status_payload)
+    limited["rows"] = rows[:limit]
+    limited["cached"] = False
+    return limited
+
+
+def _probability_events_payload(
+    *,
+    probability_event_path: Path,
+    limit: int,
+    after_event_id: str | None,
+) -> dict[str, Any]:
+    rows, errors = _read_probability_event_rows(
+        probability_event_path,
+        limit=max(limit, 1),
+    )
+    if after_event_id:
+        rows = _probability_events_after(rows, after_event_id)
+    return {
+        "schema_version": "polymarket-probability-events-v1",
+        "ok": not errors,
+        "state": "OK" if not errors else "PARTIAL",
+        "error": None if not errors else errors[0],
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "path": str(probability_event_path),
+        "events": rows[-limit:] if limit > 0 else [],
+        "errors": errors,
+    }
+
+
+def _read_probability_event_rows(
+    path: Path,
+    *,
+    limit: int,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    read_path = path if path.exists() else _newest_probability_event_drain(path)
+    if read_path is None:
+        return [], [f"{path} missing"]
+    try:
+        lines = read_path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        return [], [f"file read failed: {_format_error(exc)}"]
+
+    rows: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for line in lines[-max(limit * 2, limit) :]:
+        if not line.strip():
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError as exc:
+            errors.append(f"JSONL parse failed: {_format_error(exc)}")
+            continue
+        if not isinstance(payload, dict):
+            errors.append("probability event line must be an object")
+            continue
+        rows.append(payload)
+    return rows[-limit:], errors
+
+
+def _newest_probability_event_drain(path: Path) -> Path | None:
+    newest: tuple[int, Path] | None = None
+    for candidate in path.parent.glob(f"{path.name}.*.drain"):
+        try:
+            mtime_ns = candidate.stat().st_mtime_ns
+        except OSError:
+            continue
+        if newest is None or mtime_ns > newest[0]:
+            newest = (mtime_ns, candidate)
+    return None if newest is None else newest[1]
+
+
+def _probability_events_after(
+    rows: Sequence[dict[str, Any]],
+    after_event_id: str,
+) -> list[dict[str, Any]]:
+    for index, row in enumerate(rows):
+        if row.get("event_id") == after_event_id:
+            return list(rows[index + 1 :])
+    return list(rows)
+
+
+def _last_probability_event_id(rows: Sequence[object]) -> str | None:
+    for row in reversed(rows):
+        if isinstance(row, dict):
+            event_id = row.get("event_id")
+            if isinstance(event_id, str) and event_id:
+                return event_id
+    return None
 
 
 def _runtime_live_payload(
