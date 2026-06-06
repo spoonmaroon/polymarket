@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 import os
 import sys
@@ -9,7 +10,9 @@ from pathlib import Path
 
 import duckdb
 
+from polymarket_engine.storage.atomic import durable_replace
 from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
+from polymarket_engine.validation.outcomes import OUTCOME_HISTORY_SCHEMA_VERSION
 from polymarket_engine.validation.outcomes import PolymarketClobMarketPayloadSource
 from polymarket_engine.validation.outcomes import latest_market_outcome_rows_from_connection
 from polymarket_engine.validation.outcomes import upsert_official_market_outcomes
@@ -49,6 +52,7 @@ def run_outcome_refresh_loop(
                     file=sys.stderr,
                     flush=True,
                 )
+                _write_locked_outcome_status(out_path=outcome_status_path, exc=exc)
             cycles += 1
             if max_cycles is not None and cycles >= max_cycles:
                 return
@@ -86,6 +90,38 @@ def _validate_loop_cadence(
 def _is_transient_duckdb_lock_error(exc: duckdb.Error) -> bool:
     message = str(exc).lower()
     return "conflicting lock" in message or "could not set lock" in message
+
+
+def _write_locked_outcome_status(*, out_path: Path, exc: duckdb.Error) -> None:
+    rows = _existing_outcome_status_rows(out_path)
+    payload = {
+        "schema_version": OUTCOME_HISTORY_SCHEMA_VERSION,
+        "ok": False,
+        "state": "LOCKED",
+        "error": f"DuckDB lock unavailable: {exc}",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "rows": rows,
+    }
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = out_path.with_suffix(f"{out_path.suffix}.tmp")
+    tmp_path.write_text(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    durable_replace(tmp_path, out_path)
+
+
+def _existing_outcome_status_rows(out_path: Path) -> list[object]:
+    try:
+        payload = json.loads(out_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    if not isinstance(payload, dict):
+        return []
+    if payload.get("schema_version") != OUTCOME_HISTORY_SCHEMA_VERSION:
+        return []
+    rows = payload.get("rows")
+    return rows if isinstance(rows, list) else []
 
 
 def _upsert_market_outcomes(*, store: DuckDbIngestStore, out_path: Path) -> int:

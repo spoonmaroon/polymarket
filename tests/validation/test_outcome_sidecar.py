@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -96,3 +97,32 @@ def test_outcome_sidecar_continues_after_transient_duckdb_lock(
 
     assert calls == 2
     assert sleeps == [30.0]
+
+
+def test_outcome_sidecar_writes_locked_status_after_transient_duckdb_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    outcome_status_path = tmp_path / "live" / "outcomes.json"
+
+    def fake_refresh(*args: Any, **kwargs: Any) -> int:
+        raise duckdb.IOException("Conflicting lock is held")
+
+    monkeypatch.setattr(
+        "polymarket_engine.validation.outcome_sidecar.refresh_market_outcomes",
+        fake_refresh,
+    )
+
+    run_outcome_refresh_loop(
+        duckdb_path=tmp_path / "db.duckdb",
+        outcome_status_path=outcome_status_path,
+        interval_seconds=30.0,
+        max_cycles=1,
+    )
+
+    payload = json.loads(outcome_status_path.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == "polymarket-outcome-runtime-v1"
+    assert payload["ok"] is False
+    assert payload["state"] == "LOCKED"
+    assert "Conflicting lock is held" in payload["error"]
+    assert payload["rows"] == []
