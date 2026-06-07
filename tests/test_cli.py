@@ -308,7 +308,7 @@ def test_parse_run_cuda_probability_worker_defaults() -> None:
     assert args.cpu_target_percent == 20.0
     assert args.max_rss_mb == 512
     assert args.max_cycle_runtime_ms == 750
-    assert args.max_total_paths == 320_000
+    assert args.max_total_paths == 80_000
     assert args.sustained_breach_cycles == 3
     assert args.fragment_max_rows == 250_000
     assert args.cpu_threads == 1

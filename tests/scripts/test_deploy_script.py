@@ -238,7 +238,7 @@ def test_compose_and_env_support_prebuilt_image_overrides() -> None:
     assert "POLYMARKET_PROBABILITY_CPU_TARGET_PERCENT=20.0" in env_example
     assert "POLYMARKET_PROBABILITY_MAX_RSS_MB=512" in env_example
     assert "POLYMARKET_PROBABILITY_MAX_CYCLE_RUNTIME_MS=750" in env_example
-    assert "POLYMARKET_PROBABILITY_MAX_TOTAL_PATHS=320000" in env_example
+    assert "POLYMARKET_PROBABILITY_MAX_TOTAL_PATHS=80000" in env_example
     assert "POLYMARKET_PROBABILITY_SUSTAINED_BREACH_CYCLES=3" in env_example
     assert "POLYMARKET_CUDA_PROBABILITY_MAX_INPUT_SNAPSHOT_AGE_SECONDS=30.0" in env_example
     assert (
