@@ -199,6 +199,8 @@ def test_runtime_api_service_is_deployed_with_engine_compose() -> None:
     assert "docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml ps" in pc_script
     assert 'get_json("/health")' in pc_script
     assert 'get_json("/api/runtime/live?limit=8")' in pc_script
+    assert "has_orderbooks" in pc_script
+    assert 'live = {"error": repr(exc)}' in pc_script
     assert 'get_json("/api/runtime/probabilities?limit=8")' in pc_script
     assert "for _ in range(30):" in pc_script
     assert "except Exception as exc:" in pc_script

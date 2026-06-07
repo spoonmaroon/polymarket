@@ -758,8 +758,24 @@ health = get_json("/health")
 if health.get("status") != "ok":
     raise SystemExit(f"health smoke failed: {health}")
 
-live = get_json("/api/runtime/live?limit=8")
-if live.get("ok") is not True or not live.get("monitor", {}).get("orderbooks"):
+live = {}
+for _ in range(30):
+    try:
+        live = get_json("/api/runtime/live?limit=8")
+    except Exception as exc:
+        live = {"error": repr(exc)}
+        time.sleep(1)
+        continue
+    monitor = live.get("monitor")
+    has_orderbooks = (
+        isinstance(monitor, dict)
+        and isinstance(monitor.get("orderbooks"), list)
+        and bool(monitor.get("orderbooks"))
+    )
+    if live.get("ok") is True and has_orderbooks:
+        break
+    time.sleep(1)
+else:
     raise SystemExit(f"runtime live smoke failed: {live}")
 
 probabilities = {}
