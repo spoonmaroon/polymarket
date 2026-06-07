@@ -146,12 +146,18 @@ fn current_target_label(app: &AppState, asset: &str) -> String {
 }
 
 fn selected_target_value(app: &AppState, asset: &str) -> Option<f64> {
-    let group = app.selected_market_group()?;
-    group
-        .asset
-        .eq_ignore_ascii_case(asset)
-        .then(|| threshold_price(&group))
-        .flatten()
+    let selected = app.selected_market_group()?;
+    if selected.asset.eq_ignore_ascii_case(asset) {
+        return threshold_price(&selected);
+    }
+
+    let selected_expiry = selected.expiry_ts?;
+    app.visible_market_groups()
+        .into_iter()
+        .find(|group| {
+            group.asset.eq_ignore_ascii_case(asset) && group.expiry_ts == Some(selected_expiry)
+        })
+        .and_then(|group| threshold_price(&group))
 }
 
 fn threshold_price(group: &market_view::MarketGroup<'_>) -> Option<f64> {
@@ -512,6 +518,71 @@ mod tests {
             ask_size_top: None,
             bids: Vec::new(),
             asks: Vec::new(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod cross_asset_target_tests {
+    use crate::{
+        render::price_path::price_path_charts,
+        state::AppState,
+        status::{RuntimeBookLevel, RuntimeMonitor, RuntimeOrderbookRow},
+    };
+
+    #[test]
+    fn price_path_charts_show_matching_expiry_targets_for_btc_and_eth() {
+        let mut app = AppState {
+            runtime_monitor: Some(RuntimeMonitor {
+                generated_at: "2026-06-07T16:20:10Z".to_string(),
+                price_rows: vec![],
+                orderbooks: vec![
+                    orderbook("BTC", "UP", "btc-updown-5m-1780849200", "62171.42"),
+                    orderbook("ETH", "UP", "eth-updown-5m-1780849200", "1629.69"),
+                ],
+            }),
+            ..Default::default()
+        };
+        app.sync_market_selection();
+
+        let charts = price_path_charts(&app);
+
+        assert_eq!(charts[0].asset, "BTC");
+        assert_eq!(charts[0].target, "K 62,171.42");
+        assert_eq!(charts[1].asset, "ETH");
+        assert_eq!(charts[1].target, "K 1,629.69");
+    }
+
+    fn orderbook(
+        asset: &str,
+        side: &str,
+        market_slug: &str,
+        threshold_price: &str,
+    ) -> RuntimeOrderbookRow {
+        RuntimeOrderbookRow {
+            venue: Some("polymarket".to_string()),
+            source_key: Some("polymarket_clob".to_string()),
+            market_slug: Some(market_slug.to_string()),
+            contract_id: format!("{market_slug}-{side}"),
+            token_id: Some(format!("{market_slug}-{side}-token")),
+            asset: Some(asset.to_string()),
+            side: Some(side.to_string()),
+            event_ts: Some("2026-06-07T16:20:01Z".to_string()),
+            observed_ts: Some("2026-06-07T16:20:01Z".to_string()),
+            start_ts: Some("2026-06-07T16:20:00Z".to_string()),
+            expiry_ts: Some("2026-06-07T16:25:00Z".to_string()),
+            threshold_price: Some(threshold_price.to_string()),
+            threshold_event_ts: Some("2026-06-07T16:20:00Z".to_string()),
+            threshold_observed_ts: Some("2026-06-07T16:20:01Z".to_string()),
+            settlement_price: None,
+            settlement_event_ts: None,
+            best_bid: Some("0.49".to_string()),
+            best_ask: Some("0.51".to_string()),
+            spread: Some("0.02".to_string()),
+            bid_size_top: Some("10".to_string()),
+            ask_size_top: Some("11".to_string()),
+            bids: Vec::<RuntimeBookLevel>::new(),
+            asks: Vec::<RuntimeBookLevel>::new(),
         }
     }
 }

@@ -18,8 +18,11 @@ from polymarket_engine.app import create_app_from_env
 from polymarket_engine.domain.contracts import ContractSpec
 from polymarket_engine.domain.market_state import DataQualityFlag
 from polymarket_engine.domain.market_state import DecisionState
+from polymarket_engine.probability.generator_fragments import GeneratorFragment
+from polymarket_engine.probability.generator_fragments import write_probability_fragments
 from polymarket_engine.probability.hot_inputs import write_hot_probability_inputs
 from polymarket_engine.probability.schema import ProbabilityInput, ProbabilityOutput
+from polymarket_engine import runtime_api as runtime_api_module
 from polymarket_engine.runtime_api import _probability_events_payload
 from polymarket_engine.runtime_api import build_runtime_router
 from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
@@ -108,15 +111,45 @@ def test_create_app_from_env_uses_probability_inputs_path_for_runtime_probabilit
     status_path.parent.mkdir()
     _write_status(status_path)
     probability_inputs_path = tmp_path / "live" / "probability_inputs.json"
+    probability_fragments_path = tmp_path / "live" / "probability_fragments.json"
+    state = _decision_state()
     write_hot_probability_inputs(
         out_path=probability_inputs_path,
-        states=(_decision_state(),),
+        states=(state,),
+        generated_at=datetime.now(UTC),
+    )
+    write_probability_fragments(
+        out_path=probability_fragments_path,
+        fragments=(
+            GeneratorFragment(
+                fragment_id="btc-prior-one",
+                asset="BTC",
+                asof_ts=state.asof_ts,
+                prices=(70_000.0, 70_050.0, 70_100.0),
+                horizon_seconds=300,
+                z_path_bucket="near",
+                quality_bucket="OK",
+            ),
+            GeneratorFragment(
+                fragment_id="btc-prior-two",
+                asset="BTC",
+                asof_ts=state.asof_ts,
+                prices=(70_000.0, 70_020.0, 70_080.0),
+                horizon_seconds=300,
+                z_path_bucket="near",
+                quality_bucket="OK",
+            ),
+        ),
         generated_at=datetime.now(UTC),
     )
     monkeypatch.setenv("POLYMARKET_STATUS_PATH", str(status_path))
     monkeypatch.setenv("POLYMARKET_DUCKDB_PATH", str(tmp_path / "missing.duckdb"))
     monkeypatch.setenv("POLYMARKET_ENABLE_RUNTIME_PROBABILITIES", "1")
     monkeypatch.setenv("POLYMARKET_PROBABILITY_INPUTS_PATH", str(probability_inputs_path))
+    monkeypatch.setenv(
+        "POLYMARKET_PROBABILITY_FRAGMENTS_PATH",
+        str(probability_fragments_path),
+    )
 
     response = TestClient(create_app_from_env()).get("/api/runtime/probabilities?limit=4")
 
@@ -126,6 +159,8 @@ def test_create_app_from_env_uses_probability_inputs_path_for_runtime_probabilit
     assert payload["state"] == "OK"
     assert payload["errors"] == []
     assert payload["rows"][0]["contract"] == "BTC 5m UP"
+    assert payload["rows"][0]["prior_fragment_count"] == 2
+    assert payload["rows"][0]["prior_fragment_reason"] == "exact"
 
 
 def test_runtime_router_defaults_to_live_probability_inputs_path(
@@ -1258,7 +1293,13 @@ def test_runtime_probabilities_uses_hot_inputs_when_rows_exist_and_no_status_fil
     assert response.status_code == 200
     payload = response.json()
     assert payload["source"] == "hot_inputs"
-    assert payload["rows"][0]["contract"] == "BTC 5m UP"
+    row = payload["rows"][0]
+    assert row["contract"] == "BTC 5m UP"
+    assert row["model_version"] == "ensemble-v1"
+    assert row["backend"] == "ensemble"
+    assert row["generator_version"] == "four-generator-ensemble-v1"
+    assert row["generator_summary"]
+    assert row["effective_weights"]
 
 
 def test_probability_events_stream_reads_newest_drain_when_jsonl_missing(
@@ -1307,15 +1348,24 @@ def test_probability_events_payload_reuses_unchanged_event_file(
         encoding="utf-8",
     )
     read_count = 0
-    real_read_text = Path.read_text
+    real_tail_text_lines = runtime_api_module._tail_text_lines
 
-    def counting_read_text(path: Path, *args: Any, **kwargs: Any) -> str:
+    def counting_tail_text_lines(
+        path: Path,
+        *,
+        max_lines: int,
+        block_size: int = 64 * 1024,
+    ) -> list[str]:
         nonlocal read_count
         if path == probability_event_path:
             read_count += 1
-        return real_read_text(path, *args, **kwargs)
+        return real_tail_text_lines(
+            path,
+            max_lines=max_lines,
+            block_size=block_size,
+        )
 
-    monkeypatch.setattr(Path, "read_text", counting_read_text)
+    monkeypatch.setattr(runtime_api_module, "_tail_text_lines", counting_tail_text_lines)
 
     first = _probability_events_payload(
         probability_event_path=probability_event_path,
@@ -1332,6 +1382,42 @@ def test_probability_events_payload_reuses_unchanged_event_file(
     assert read_count == 1
 
 
+def test_probability_events_payload_tails_large_event_file_without_full_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    probability_event_path = tmp_path / "live" / "probability-events.jsonl"
+    probability_event_path.parent.mkdir()
+    with probability_event_path.open("w", encoding="utf-8") as handle:
+        for index in range(10_000):
+            handle.write(
+                json.dumps({"event_id": f"event-{index}", "state_id": f"state-{index}"})
+                + "\n"
+            )
+
+    real_read_text = Path.read_text
+
+    def fail_full_read(path: Path, *args: Any, **kwargs: Any) -> str:
+        if path == probability_event_path:
+            raise AssertionError("probability event reader must not read the full JSONL file")
+        return real_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", fail_full_read)
+
+    payload = _probability_events_payload(
+        probability_event_path=probability_event_path,
+        limit=4,
+        after_event_id=None,
+    )
+
+    assert [event["event_id"] for event in payload["events"]] == [
+        "event-9996",
+        "event-9997",
+        "event-9998",
+        "event-9999",
+    ]
+
+
 def test_runtime_probabilities_prefers_persisted_outputs_without_recomputing(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1345,9 +1431,23 @@ def test_runtime_probabilities_prefers_persisted_outputs_without_recomputing(
         p_finish=0.62,
         p_no_touch=0.58,
         z_path=probability_input.z_path,
-        model_version="fixture-mc-v1",
+        model_version="ensemble-v1",
         seed=123,
-        diagnostics={"path_count": 1, "steps": 1},
+        diagnostics={
+            "backend": "ensemble",
+            "generator_version": "four-generator-ensemble-v1",
+            "path_count": 1,
+            "steps": 1,
+            "effective_weights": {"empirical_conditional": 0.4},
+            "generator_summary": {
+                "empirical_conditional": {
+                    "p_finish": 0.62,
+                    "p_no_touch": 0.58,
+                    "weight": 0.4,
+                    "sparse": False,
+                }
+            },
+        },
     )
     store = DuckDbIngestStore(db_path)
     store.apply_schema()
@@ -1394,9 +1494,23 @@ def test_runtime_probabilities_reads_persisted_outputs_without_decision_table(
         p_finish=0.62,
         p_no_touch=0.58,
         z_path=probability_input.z_path,
-        model_version="fixture-mc-v1",
+        model_version="ensemble-v1",
         seed=123,
-        diagnostics={"path_count": 1, "steps": 1},
+        diagnostics={
+            "backend": "ensemble",
+            "generator_version": "four-generator-ensemble-v1",
+            "path_count": 1,
+            "steps": 1,
+            "effective_weights": {"empirical_conditional": 0.4},
+            "generator_summary": {
+                "empirical_conditional": {
+                    "p_finish": 0.62,
+                    "p_no_touch": 0.58,
+                    "weight": 0.4,
+                    "sparse": False,
+                }
+            },
+        },
     )
     store = DuckDbIngestStore(db_path)
     store.apply_schema()
@@ -1432,6 +1546,13 @@ def test_runtime_probabilities_reads_persisted_outputs_without_decision_table(
     row = payload["rows"][0]
     assert row["output_id"] == "prob-fixture"
     assert row["p_finish"] == pytest.approx(0.62)
+    assert row["model_version"] == "ensemble-v1"
+    assert row["backend"] == "ensemble"
+    assert row["generator_version"] == "four-generator-ensemble-v1"
+    assert row["path_count"] == 1
+    assert row["steps"] == 1
+    assert row["effective_weights"] == {"empirical_conditional": 0.4}
+    assert row["generator_summary"]["empirical_conditional"]["weight"] == 0.4
     assert "decision_hint" not in row
     assert "skip_reasons" not in row
 

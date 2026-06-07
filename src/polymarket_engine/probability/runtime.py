@@ -11,8 +11,12 @@ from typing import Any, cast
 
 import duckdb
 
+from polymarket_engine.probability.ensemble_runtime import run_four_generator_ensemble
+from polymarket_engine.probability.generator_fragments import FragmentSelection
+from polymarket_engine.probability.generator_fragments import GeneratorFragment
+from polymarket_engine.probability.generator_fragments import read_probability_fragments
+from polymarket_engine.probability.generator_fragments import select_fragments_for_input
 from polymarket_engine.probability.hot_inputs import read_hot_probability_inputs
-from polymarket_engine.probability.monte_carlo import run_seeded_monte_carlo
 from polymarket_engine.probability.runtime_inputs import ProbabilityRuntimeInput, contract_label
 from polymarket_engine.probability.schema import ProbabilityInput, ProbabilityOutput
 from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
@@ -22,6 +26,7 @@ DEFAULT_PROBABILITY_CACHE_SECONDS = 1.0
 DEFAULT_PROBABILITY_PATH_COUNT = 1024
 DEFAULT_PROBABILITY_MAX_STATE_AGE_SECONDS = 600.0
 DEFAULT_PROBABILITY_GRID_VALID_SECONDS = 30.0
+DEFAULT_MIN_FRAGMENT_COUNT = 2
 
 _contract_label = contract_label
 
@@ -40,6 +45,7 @@ class ProbabilityRuntimeCache:
         limit: int,
         allow_compute: bool = False,
         probability_inputs_path: Path | None = None,
+        probability_fragments_path: Path | None = None,
     ) -> dict[str, Any]:
         now_monotonic = time.monotonic()
         cache_key = _probability_cache_key(
@@ -47,6 +53,7 @@ class ProbabilityRuntimeCache:
             limit=limit,
             allow_compute=allow_compute,
             probability_inputs_path=probability_inputs_path,
+            probability_fragments_path=probability_fragments_path,
         )
         if (
             self._cached_payload is not None
@@ -63,6 +70,7 @@ class ProbabilityRuntimeCache:
             limit=limit,
             allow_compute=allow_compute,
             probability_inputs_path=probability_inputs_path,
+            probability_fragments_path=probability_fragments_path,
         )
         self._cached_payload = dict(payload)
         self._cached_key = cache_key
@@ -76,6 +84,7 @@ def build_probability_payload(
     limit: int,
     allow_compute: bool = False,
     probability_inputs_path: Path | None = None,
+    probability_fragments_path: Path | None = None,
 ) -> dict[str, Any]:
     generated_at = datetime.now(timezone.utc)
     hot_input_error: str | None = None
@@ -95,7 +104,8 @@ def build_probability_payload(
             hot_payload = None
         if hot_payload is not None:
             hot_rows, hot_errors = _compute_rows_without_persistence(
-                inputs=hot_payload.inputs
+                inputs=hot_payload.inputs,
+                probability_fragments_path=probability_fragments_path,
             )
             return {
                 "ok": not hot_errors,
@@ -169,7 +179,11 @@ def build_probability_payload(
         )
 
     store = DuckDbIngestStore(duckdb_path)
-    rows, errors = _compute_and_persist_rows(store=store, inputs=inputs)
+    rows, errors = _compute_and_persist_rows(
+        store=store,
+        inputs=inputs,
+        probability_fragments_path=probability_fragments_path,
+    )
 
     return _with_hot_input_warning(
         {
@@ -193,12 +207,14 @@ def _probability_cache_key(
     limit: int,
     allow_compute: bool,
     probability_inputs_path: Path | None,
+    probability_fragments_path: Path | None,
 ) -> tuple[Any, ...]:
     return (
         str(duckdb_path),
         limit,
         allow_compute,
         _hot_inputs_cache_fingerprint(probability_inputs_path),
+        _hot_inputs_cache_fingerprint(probability_fragments_path),
     )
 
 
@@ -500,19 +516,37 @@ def compute_and_persist_probability_outputs(
 def _compute_rows_without_persistence(
     *,
     inputs: tuple[ProbabilityRuntimeInput, ...],
+    probability_fragments_path: Path | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     rows: list[dict[str, Any]] = []
     errors: list[str] = []
+    prior_fragments, prior_fragment_error = _load_probability_fragments(
+        path=probability_fragments_path,
+    )
     for runtime_input in inputs:
         probability_input = runtime_input.probability_input
         seed = _seed_for_input(probability_input)
         steps = _steps_for_input(probability_input)
         try:
-            output = run_seeded_monte_carlo(
+            fragment_selection = _select_prior_fragments(
+                fragments=prior_fragments,
+                probability_input=probability_input,
+                fragment_error=prior_fragment_error,
+            )
+            output = run_four_generator_ensemble(
                 probability_input,
                 path_count=DEFAULT_PROBABILITY_PATH_COUNT,
                 steps=steps,
                 seed=seed,
+                history_fragments=tuple(
+                    fragment.prices for fragment in fragment_selection.fragments
+                )
+                or None,
+            )
+            output = _output_with_prior_diagnostics(
+                output,
+                fragment_selection=fragment_selection,
+                fragment_error=prior_fragment_error,
             )
             output_id = _output_id(probability_input, output)
         except Exception as exc:
@@ -526,20 +560,38 @@ def _compute_and_persist_rows(
     *,
     store: DuckDbIngestStore,
     inputs: tuple[ProbabilityRuntimeInput, ...],
+    probability_fragments_path: Path | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     rows: list[dict[str, Any]] = []
     errors: list[str] = []
     output_rows: list[tuple[str, ProbabilityInput, ProbabilityOutput]] = []
+    prior_fragments, prior_fragment_error = _load_probability_fragments(
+        path=probability_fragments_path,
+    )
     for runtime_input in inputs:
         probability_input = runtime_input.probability_input
         seed = _seed_for_input(probability_input)
         steps = _steps_for_input(probability_input)
         try:
-            output = run_seeded_monte_carlo(
+            fragment_selection = _select_prior_fragments(
+                fragments=prior_fragments,
+                probability_input=probability_input,
+                fragment_error=prior_fragment_error,
+            )
+            output = run_four_generator_ensemble(
                 probability_input,
                 path_count=DEFAULT_PROBABILITY_PATH_COUNT,
                 steps=steps,
                 seed=seed,
+                history_fragments=tuple(
+                    fragment.prices for fragment in fragment_selection.fragments
+                )
+                or None,
+            )
+            output = _output_with_prior_diagnostics(
+                output,
+                fragment_selection=fragment_selection,
+                fragment_error=prior_fragment_error,
             )
             output_id = _output_id(probability_input, output)
         except Exception as exc:
@@ -558,6 +610,72 @@ def _compute_and_persist_rows(
             )
             rows = []
     return rows, errors
+
+
+def _load_probability_fragments(
+    *,
+    path: Path | None,
+) -> tuple[tuple[GeneratorFragment, ...], str | None]:
+    if path is None:
+        return (), None
+    try:
+        payload = read_probability_fragments(
+            out_path=path,
+            max_age_seconds=DEFAULT_PROBABILITY_MAX_STATE_AGE_SECONDS,
+        )
+    except (FileNotFoundError, json.JSONDecodeError, OSError, TypeError, ValueError) as exc:
+        return (), f"{type(exc).__name__}: {exc}"
+    return payload.fragments, None
+
+
+def _select_prior_fragments(
+    *,
+    fragments: tuple[GeneratorFragment, ...],
+    probability_input: ProbabilityInput,
+    fragment_error: str | None,
+) -> FragmentSelection:
+    if fragment_error is not None:
+        return FragmentSelection(fragments=(), sparse=True, reason="unavailable")
+    return select_fragments_for_input(
+        fragments,
+        probability_input=probability_input,
+        min_fragment_count=DEFAULT_MIN_FRAGMENT_COUNT,
+        max_fragment_count=DEFAULT_PROBABILITY_PATH_COUNT,
+    )
+
+
+def _output_with_prior_diagnostics(
+    output: ProbabilityOutput,
+    *,
+    fragment_selection: FragmentSelection,
+    fragment_error: str | None,
+) -> ProbabilityOutput:
+    diagnostics = dict(output.diagnostics)
+    diagnostics.update(
+        {
+            "prior_fragment_count": len(fragment_selection.fragments),
+            "prior_fragment_reason": fragment_selection.reason,
+            "prior_fragment_sparse": fragment_selection.sparse,
+            "prior_fragment_ids": [
+                fragment.fragment_id for fragment in fragment_selection.fragments
+            ],
+        }
+    )
+    if fragment_selection.sparse:
+        diagnostics["sparse_scope"] = True
+        diagnostics["path_diagnosis"] = "SPARSE"
+    if fragment_error is not None:
+        diagnostics["prior_fragment_error"] = fragment_error
+    return ProbabilityOutput(
+        state_id=output.state_id,
+        asof_ts=output.asof_ts,
+        p_finish=output.p_finish,
+        p_no_touch=output.p_no_touch,
+        z_path=output.z_path,
+        model_version=output.model_version,
+        seed=output.seed,
+        diagnostics=diagnostics,
+    )
 
 
 def _probability_input_from_row(row: tuple[Any, ...]) -> ProbabilityInput:
@@ -597,7 +715,7 @@ def _runtime_row(
         0,
         int((datetime.now(timezone.utc) - probability_input.asof_ts).total_seconds() * 1000),
     )
-    return {
+    row = {
         "contract": runtime_input.contract,
         "contract_id": runtime_input.contract_id,
         "asset": probability_input.asset,
@@ -614,6 +732,8 @@ def _runtime_row(
         "seed": output.seed,
         "output_id": output_id,
     }
+    _merge_grid_diagnostics(row=row, diagnostics=output.diagnostics, preview_is_current=True)
+    return row
 
 
 def _persisted_runtime_row(row: tuple[Any, ...]) -> dict[str, Any]:
@@ -644,6 +764,14 @@ def _persisted_runtime_row(row: tuple[Any, ...]) -> dict[str, Any]:
         "seed": _optional_int(row[7]),
         "output_id": str(row[0]),
     }
+    output_json = _json_dict(row[9], default={})
+    diagnostics = output_json.get("diagnostics")
+    if isinstance(diagnostics, Mapping):
+        _merge_grid_diagnostics(
+            row=runtime_row,
+            diagnostics=cast(Mapping[str, Any], diagnostics),
+            preview_is_current=True,
+        )
     if len(row) > 17 and row[17] is not None:
         runtime_row.update(
             {
@@ -693,6 +821,25 @@ def _merge_grid_diagnostics(
         "edge_after_costs",
         "required_edge",
         "path_risk_buffer",
+        "backend",
+        "generator_version",
+        "path_count",
+        "steps",
+        "effective_weights",
+        "effective_generator_values",
+        "generator_runs",
+        "generator_summary",
+        "u_gen",
+        "mc_dispersion",
+        "uncertainty_buffer",
+        "path_diagnosis",
+        "sparse_scope",
+        "prior_fragment_count",
+        "prior_fragment_reason",
+        "prior_fragment_sparse",
+        "prior_fragment_ids",
+        "prior_fragment_error",
+        "prior_fragment_generators",
     ):
         if key in diagnostics and row.get(key) is None:
             row[key] = diagnostics[key]

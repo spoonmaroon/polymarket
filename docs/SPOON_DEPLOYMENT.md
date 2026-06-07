@@ -81,17 +81,17 @@ Set `PC_DEPLOY_BUILD_IMAGES=0` only when matching
 `dist/docker/polymarket-cockpit-tui-<sha>` already exist for the checked-out
 commit.
 
-### THEPC DuckDB UI
+### THEPC DuckDB Viewer
 
-THEPC can expose the live Polymarket DuckDB data through DuckDB's official
-browser UI at `http://127.0.0.1:4213`.
+THEPC can expose the live Polymarket DuckDB data through a local read-only
+browser viewer at `http://127.0.0.1:4213`.
 
 The launcher does not open the live DuckDB file directly. It briefly pauses
 `normalizer` and `outcome-refresh`, creates
 `/home/ender/polymarket-data/duckdb-ui/current-polymarket.duckdb` by attaching
 the source database read-only and running `COPY FROM DATABASE`, restarts the
-paused services, then starts the UI with a writable catalog that attaches the
-snapshot as read-only.
+paused services, then starts a localhost-only table browser backed by DuckDB CLI
+read-only JSON queries against the snapshot.
 
 On THEPC, open the desktop shortcut:
 
@@ -364,3 +364,83 @@ ssh spoon 'python3 /home/spoon/polymarket/scripts/check_collector_status.py --st
 ```
 
 After spoon is fresh, keep the Mac collector stopped. The Mac can still run the read-only monitor against copied files, but it should not write to the same logical data stream while spoon is the active collector.
+
+## CPU Authority / THEPC GPU Active-Active Split
+
+The active-active layout keeps one writer per artifact. Spoon is the CPU
+authority for collector, normalizer, DuckDB-derived hot inputs, generator
+fragments, outcomes, and volatility. THEPC is the GPU/API authority for CUDA
+probability outputs, probability events, and the browser/TUI API surface. This
+is active-active because both hosts run useful services at the same time; it is
+not multi-writer.
+
+The manifest in `deploy/cluster/cluster.local.example.json` is the source of
+truth for ownership and mirrors:
+
+- Spoon-owned inputs: `status.json`, `normalized_health.json`,
+  `probability_inputs.json`, `probability_fragments.json`, `outcomes.json`, and
+  `volatility.json`.
+- THEPC-owned outputs: `probabilities.json`, `probability-events.jsonl`, and
+  `cluster_status.thepc.json`.
+- Mirror freshness target: `5` seconds.
+
+Use the compose overrides to keep each host in its lane:
+
+```bash
+# Spoon CPU authority: no local GPU probability worker or API.
+docker compose --env-file deploy/collector/.env \
+  -f deploy/collector/docker-compose.yml \
+  -f deploy/collector/docker-compose.spoon-cpu-authority.yml up -d
+
+# THEPC GPU/API authority: no local collector, normalizer, or outcome sidecar.
+docker compose --env-file deploy/collector/.env \
+  -f deploy/collector/docker-compose.yml \
+  -f deploy/collector/docker-compose.thepc-gpu-api.yml up -d
+```
+
+Dry-run the mirror before enabling it:
+
+```bash
+polymarket-engine sync-cluster-artifacts \
+  --manifest-path deploy/cluster/cluster.local.example.json
+```
+
+Run with `--execute` only from the declared source node. Do not run two
+normalizers, two collectors, or two probability writers against the same
+canonical path. That single-writer rule is the split-brain guard.
+
+## Runtime keeper
+
+THEPC can run the repo-owned runtime keeper after Windows logon. The keeper runs
+inside WSL, starts the Compose services, starts configured optional containers
+such as the existing GPU probability worker container, verifies the API/UI/live
+probability endpoints, and writes
+`/home/ender/polymarket-data/live/runtime_keeper.json`.
+
+Install on THEPC from WSL:
+
+```bash
+cd /home/ender/polymarket
+./scripts/install_thepc_runtime_keeper.sh
+```
+
+Run one manual check:
+
+```bash
+polymarket-engine runtime-keeper \
+  --repo /home/ender/polymarket \
+  --data-dir /home/ender/polymarket-data \
+  --api-base-url http://127.0.0.1:8000
+```
+
+Run the Mac tunnel check on the Mac:
+
+```bash
+cd /Users/goon/polymarket
+./scripts/check_mac_polymarket_tunnel.sh
+```
+
+The keeper is not a BIOS or Windows boot configurator. If THEPC does not power
+back on, Windows does not log in, Tailscale is unavailable, Docker Desktop does
+not start, or WSL is disabled, the keeper cannot run. Those host-level
+requirements must be configured and tested separately.

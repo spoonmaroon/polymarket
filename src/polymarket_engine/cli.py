@@ -3,7 +3,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import shlex
 import signal
+import subprocess as subprocess
+import sys
 from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
@@ -110,7 +113,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         default=Path("data/live/probabilities.json"),
     )
-    cuda_probability_worker.add_argument("--probability-inputs-path", type=Path, default=None)
+    cuda_probability_worker.add_argument(
+        "--probability-inputs-path",
+        type=Path,
+        default=Path("data/live/probability_inputs.json"),
+    )
+    cuda_probability_worker.add_argument(
+        "--probability-fragments-path",
+        type=Path,
+        default=Path("data/live/probability_fragments.json"),
+    )
     cuda_probability_worker.add_argument("--interval-seconds", type=float, default=1.0)
     cuda_probability_worker.add_argument("--limit", type=int, default=24)
     cuda_probability_worker.add_argument("--valid-seconds", type=int, default=30)
@@ -120,6 +132,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=float,
         default=10.0,
     )
+    cuda_probability_worker.add_argument("--worker-mode", default="ensemble")
+    cuda_probability_worker.add_argument(
+        "--generator-policy",
+        default="all_four_every_cycle",
+    )
+    cuda_probability_worker.add_argument("--cpu-target-percent", type=float, default=20.0)
+    cuda_probability_worker.add_argument("--max-rss-mb", type=int, default=512)
+    cuda_probability_worker.add_argument("--max-cycle-runtime-ms", type=int, default=750)
+    cuda_probability_worker.add_argument("--max-total-paths", type=int, default=320_000)
+    cuda_probability_worker.add_argument("--sustained-breach-cycles", type=int, default=3)
+    cuda_probability_worker.add_argument("--fragment-max-rows", type=int, default=250_000)
+    cuda_probability_worker.add_argument("--cpu-threads", type=int, default=1)
     cuda_probability_worker.add_argument(
         "--once",
         action="store_true",
@@ -141,6 +165,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         default=Path("data/live/probability_inputs.json"),
     )
+    sidecar.add_argument(
+        "--probability-fragments-path",
+        type=Path,
+        default=Path("data/live/probability_fragments.json"),
+    )
+    sidecar.add_argument("--fragment-max-rows", type=int, default=250_000)
     sidecar.add_argument(
         "--outcome-status-path",
         type=Path,
@@ -201,6 +231,37 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     backfill_outcomes.add_argument("--official-outcome-source", default="clob")
     backfill_outcomes.add_argument("--official-timeout-seconds", type=float, default=2.0)
 
+    runtime_keeper = subparsers.add_parser("runtime-keeper")
+    runtime_keeper.add_argument("--repo", type=Path, default=Path("/home/ender/polymarket"))
+    runtime_keeper.add_argument("--data-dir", type=Path, default=Path("/home/ender/polymarket-data"))
+    runtime_keeper.add_argument("--api-base-url", default="http://127.0.0.1:8000")
+    runtime_keeper.add_argument(
+        "--required-service",
+        action="append",
+        default=None,
+        help="Compose service required to be running. Repeatable.",
+    )
+    runtime_keeper.add_argument(
+        "--optional-container",
+        action="append",
+        default=None,
+        help="Existing Docker container to start and check when present. Repeatable.",
+    )
+    runtime_keeper.add_argument("--loop", action="store_true")
+    runtime_keeper.add_argument("--loop-interval-seconds", type=float, default=30.0)
+
+    cluster_sync = subparsers.add_parser("sync-cluster-artifacts")
+    cluster_sync.add_argument(
+        "--manifest-path",
+        type=Path,
+        default=Path("deploy/cluster/cluster.local.example.json"),
+    )
+    cluster_sync.add_argument(
+        "--execute",
+        action="store_true",
+        help="Run rsync commands. Omit for dry-run output only.",
+    )
+
     return parser.parse_args(argv)
 
 
@@ -226,6 +287,10 @@ async def run_collect_command(argv: list[str] | None = None) -> int:
         return _run_verify_hot_decision_replay(args)
     if args.command == "backfill-outcomes":
         return _run_backfill_outcomes(args)
+    if args.command == "runtime-keeper":
+        return _run_runtime_keeper(args)
+    if args.command == "sync-cluster-artifacts":
+        return _run_sync_cluster_artifacts(args)
     if args.command != "collect":
         return 2
     raise SystemExit(RETIRED_COLLECTOR_MESSAGE)
@@ -316,18 +381,32 @@ def _run_build_current_decision_states(args: argparse.Namespace) -> int:
 
 
 def _run_cuda_probability_worker(args: argparse.Namespace) -> int:
+    from polymarket_engine.probability.gpu_worker import ProbabilityWorkerBudget
     from polymarket_engine.probability.gpu_worker import run_cuda_probability_worker_cycle
     from polymarket_engine.probability.gpu_worker import run_cuda_probability_worker_loop
 
+    budget = ProbabilityWorkerBudget(
+        worker_mode=args.worker_mode,
+        generator_policy=args.generator_policy,
+        cpu_target_percent=args.cpu_target_percent,
+        max_rss_mb=args.max_rss_mb,
+        max_cycle_runtime_ms=args.max_cycle_runtime_ms,
+        max_total_paths=args.max_total_paths,
+        sustained_breach_cycles=args.sustained_breach_cycles,
+        fragment_max_rows=args.fragment_max_rows,
+        cpu_threads=args.cpu_threads,
+    )
     if args.once:
         payload = run_cuda_probability_worker_cycle(
             duckdb_path=args.duckdb_path,
             probability_status_path=args.probability_status_path,
             probability_inputs_path=args.probability_inputs_path,
+            probability_fragments_path=args.probability_fragments_path,
             limit=args.limit,
             valid_seconds=args.valid_seconds,
             max_state_age_seconds=args.max_state_age_seconds,
             max_input_snapshot_age_seconds=args.max_input_snapshot_age_seconds,
+            budget=budget,
         )
         print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
         return 0 if payload.get("ok") else 1
@@ -335,11 +414,13 @@ def _run_cuda_probability_worker(args: argparse.Namespace) -> int:
         duckdb_path=args.duckdb_path,
         probability_status_path=args.probability_status_path,
         probability_inputs_path=args.probability_inputs_path,
+        probability_fragments_path=args.probability_fragments_path,
         interval_seconds=args.interval_seconds,
         limit=args.limit,
         valid_seconds=args.valid_seconds,
         max_state_age_seconds=args.max_state_age_seconds,
         max_input_snapshot_age_seconds=args.max_input_snapshot_age_seconds,
+        budget=budget,
     )
     return 0
 
@@ -358,6 +439,8 @@ def _run_rust_normalizer_sidecar(args: argparse.Namespace) -> int:
             normalized_health_path=args.normalized_health_path,
             probability_status_path=args.probability_status_path,
             probability_inputs_path=args.probability_inputs_path,
+            probability_fragments_path=args.probability_fragments_path,
+            fragment_max_rows=args.fragment_max_rows,
             outcome_status_path=args.outcome_status_path,
             volatility_status_path=args.volatility_status_path,
             include_next=args.include_next,
@@ -375,6 +458,8 @@ def _run_rust_normalizer_sidecar(args: argparse.Namespace) -> int:
         normalized_health_path=args.normalized_health_path,
         probability_status_path=args.probability_status_path,
         probability_inputs_path=args.probability_inputs_path,
+        probability_fragments_path=args.probability_fragments_path,
+        fragment_max_rows=args.fragment_max_rows,
         outcome_status_path=args.outcome_status_path,
         volatility_status_path=args.volatility_status_path,
         interval_seconds=args.interval_seconds,
@@ -467,6 +552,75 @@ def _run_backfill_outcomes(args: argparse.Namespace) -> int:
     )
     print(json.dumps(report, sort_keys=True, separators=(",", ":")))
     return 0 if report.get("ok") is True else 1
+
+
+def _run_runtime_keeper(args: argparse.Namespace) -> int:
+    from polymarket_engine.ops.runtime_keeper import DEFAULT_OPTIONAL_CONTAINERS
+    from polymarket_engine.ops.runtime_keeper import DEFAULT_REQUIRED_SERVICES
+    from polymarket_engine.ops.runtime_keeper import RuntimeKeeper
+    from polymarket_engine.ops.runtime_keeper import RuntimeKeeperConfig
+
+    config = RuntimeKeeperConfig(
+        repo=args.repo,
+        data_dir=args.data_dir,
+        api_base_url=args.api_base_url,
+        required_services=tuple(args.required_service or DEFAULT_REQUIRED_SERVICES),
+        optional_containers=tuple(args.optional_container or DEFAULT_OPTIONAL_CONTAINERS),
+        loop_interval_seconds=args.loop_interval_seconds,
+    )
+    keeper = RuntimeKeeper(config=config)
+    if args.loop:
+        keeper.run_loop()
+        return 0
+    payload = keeper.run_once()
+    print(json.dumps(payload, sort_keys=True))
+    return 0 if payload.get("ok") is True else 1
+
+
+def _run_sync_cluster_artifacts(args: argparse.Namespace) -> int:
+    from polymarket_engine.cluster.artifact_sync import MirrorPlan
+    from polymarket_engine.cluster.artifact_sync import build_rsync_command
+    from polymarket_engine.cluster.manifest import load_cluster_manifest
+
+    manifest = load_cluster_manifest(args.manifest_path)
+    source_host = manifest.nodes[manifest.mirror.source_node].host
+
+    commands: list[list[str]] = []
+    for artifact in manifest.artifacts.values():
+        if artifact.owner != manifest.mirror.source_node:
+            continue
+        target_path = artifact.mirrors.get(manifest.mirror.target_node)
+        if target_path is None:
+            continue
+        command = build_rsync_command(
+            MirrorPlan(
+                source_host=source_host,
+                source_path=artifact.canonical_path,
+                target_path=target_path,
+                timeout_seconds=int(manifest.mirror.max_age_seconds),
+            )
+        )
+        print(" ".join(shlex.quote(token) for token in command))
+        commands.append(command)
+
+    if not args.execute:
+        return 0
+
+    last_code = 0
+    for command in commands:
+        result = subprocess.run(command, capture_output=True, text=True)
+        if result.returncode != 0:
+            print(
+                " ".join(shlex.quote(token) for token in command),
+                file=sys.stderr,
+            )
+            if result.stdout:
+                print(result.stdout, file=sys.stderr)
+            if result.stderr:
+                print(result.stderr, file=sys.stderr)
+            last_code = result.returncode
+            break
+    return last_code
 
 
 def _isoformat_optional(value: object) -> str | None:

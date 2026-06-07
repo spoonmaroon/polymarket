@@ -40,6 +40,7 @@ def build_runtime_router(
     normalized_health_path: Path = Path("data/live/normalized_health.json"),
     probability_status_path: Path = Path("data/live/probabilities.json"),
     probability_inputs_path: Path | None = Path("data/live/probability_inputs.json"),
+    probability_fragments_path: Path | None = Path("data/live/probability_fragments.json"),
     outcome_status_path: Path = Path("data/live/outcomes.json"),
     target_cache_path: Path = Path("data/live/targets.json"),
     volatility_status_path: Path = Path("data/live/volatility.json"),
@@ -152,6 +153,8 @@ def build_runtime_router(
             status_path=status_path,
             duckdb_path=duckdb_path,
             normalized_health_path=normalized_health_path,
+            probability_status_path=probability_status_path,
+            probability_inputs_path=probability_inputs_path,
             target_cache_path=target_cache_path,
             volatility_status_path=volatility_status_path,
             limit=limit,
@@ -172,6 +175,8 @@ def build_runtime_router(
                     status_path=status_path,
                     duckdb_path=duckdb_path,
                     normalized_health_path=normalized_health_path,
+                    probability_status_path=probability_status_path,
+                    probability_inputs_path=probability_inputs_path,
                     target_cache_path=target_cache_path,
                     volatility_status_path=volatility_status_path,
                     limit=limit,
@@ -213,6 +218,7 @@ def build_runtime_router(
                     limit=limit,
                     allow_compute=allow_probability_compute_fallback,
                     probability_inputs_path=probability_inputs_path,
+                    probability_fragments_path=probability_fragments_path,
                 )
                 hot_rows = hot_or_fallback_payload.get("rows")
                 if (
@@ -246,6 +252,7 @@ def build_runtime_router(
                 limit=limit,
                 allow_compute=allow_probability_compute_fallback,
                 probability_inputs_path=probability_inputs_path,
+                probability_fragments_path=probability_fragments_path,
             )
         except ValueError as exc:
             return {
@@ -449,7 +456,7 @@ def _read_probability_event_rows(
         cached_rows, cached_errors = cached
         return [dict(row) for row in cached_rows], list(cached_errors)
     try:
-        lines = read_path.read_text(encoding="utf-8").splitlines()
+        lines = _tail_text_lines(read_path, max_lines=max(limit * 2, limit))
     except OSError as exc:
         return [], [f"file read failed: {_format_error(exc)}"]
 
@@ -472,6 +479,25 @@ def _read_probability_event_rows(
         _PROBABILITY_EVENT_ROWS_CACHE.clear()
     _PROBABILITY_EVENT_ROWS_CACHE[cache_key] = ([dict(row) for row in result_rows], list(errors))
     return result_rows, errors
+
+
+def _tail_text_lines(path: Path, *, max_lines: int, block_size: int = 64 * 1024) -> list[str]:
+    if max_lines <= 0:
+        return []
+    with path.open("rb") as handle:
+        handle.seek(0, os.SEEK_END)
+        position = handle.tell()
+        chunks: list[bytes] = []
+        newline_count = 0
+        while position > 0 and newline_count <= max_lines:
+            read_size = min(block_size, position)
+            position -= read_size
+            handle.seek(position)
+            chunk = handle.read(read_size)
+            chunks.append(chunk)
+            newline_count += chunk.count(b"\n")
+    data = b"".join(reversed(chunks))
+    return [line.decode("utf-8") for line in data.splitlines()[-max_lines:]]
 
 
 def _newest_probability_event_drain(path: Path) -> Path | None:
@@ -510,6 +536,8 @@ def _runtime_live_payload(
     status_path: Path,
     duckdb_path: Path,
     normalized_health_path: Path,
+    probability_status_path: Path,
+    probability_inputs_path: Path | None,
     target_cache_path: Path,
     volatility_status_path: Path,
     limit: int,
@@ -564,6 +592,11 @@ def _runtime_live_payload(
                     state="INVALID",
                     error=f"runtime monitor unavailable: {_format_error(exc)}",
                 )
+    monitor = _enrich_monitor_thresholds_from_probability_inputs(
+        monitor,
+        probability_status_path=probability_status_path,
+        probability_inputs_path=probability_inputs_path,
+    )
 
     latency = _live_latency_payload(
         status=status,
@@ -587,6 +620,152 @@ def _runtime_live_payload(
         "volatility": volatility,
         "latency": latency,
     }
+
+
+def _enrich_monitor_thresholds_from_probability_inputs(
+    monitor: dict[str, Any],
+    *,
+    probability_status_path: Path,
+    probability_inputs_path: Path | None,
+) -> dict[str, Any]:
+    thresholds = _probability_status_thresholds_by_market(probability_status_path)
+    thresholds.update(_probability_input_thresholds_by_market(probability_inputs_path))
+    threshold_cache = getattr(
+        _enrich_monitor_thresholds_from_probability_inputs,
+        "_threshold_cache",
+        None,
+    )
+    if not isinstance(threshold_cache, dict):
+        threshold_cache = {}
+        setattr(
+            _enrich_monitor_thresholds_from_probability_inputs,
+            "_threshold_cache",
+            threshold_cache,
+        )
+    if thresholds:
+        threshold_cache.update({slug: dict(threshold) for slug, threshold in thresholds.items()})
+        thresholds = {**threshold_cache, **thresholds}
+    else:
+        thresholds = threshold_cache
+    if not thresholds:
+        return monitor
+    orderbooks = monitor.get("orderbooks")
+    if not isinstance(orderbooks, (list, tuple)):
+        return monitor
+    enriched_orderbooks: list[object] = []
+    for orderbook in orderbooks:
+        if not isinstance(orderbook, dict):
+            enriched_orderbooks.append(orderbook)
+            continue
+        enriched_orderbook = dict(orderbook)
+        market_slug = orderbook.get("market_slug")
+        if not isinstance(market_slug, str):
+            enriched_orderbooks.append(enriched_orderbook)
+            continue
+        threshold = thresholds.get(market_slug)
+        if threshold is None:
+            enriched_orderbooks.append(enriched_orderbook)
+            continue
+        enriched_orderbook["threshold_price"] = threshold["threshold_price"]
+        enriched_orderbook["threshold_event_ts"] = (
+            enriched_orderbook.get("threshold_event_ts") or threshold.get("threshold_event_ts")
+        )
+        enriched_orderbook["threshold_observed_ts"] = (
+            enriched_orderbook.get("threshold_observed_ts")
+            or threshold.get("threshold_observed_ts")
+        )
+        enriched_orderbooks.append(enriched_orderbook)
+    return {**monitor, "orderbooks": enriched_orderbooks}
+
+
+def _probability_status_thresholds_by_market(
+    probability_status_path: Path,
+) -> dict[str, dict[str, str]]:
+    payload, _read_error = _read_json_or_error(probability_status_path)
+    if payload is None:
+        return {}
+    raw_rows = payload.get("rows")
+    if not isinstance(raw_rows, list) or not raw_rows:
+        raw_rows = payload.get("last_good_rows")
+    if not isinstance(raw_rows, list):
+        return {}
+    thresholds: dict[str, dict[str, str]] = {}
+    for row in raw_rows:
+        if not isinstance(row, dict):
+            continue
+        market_slug = row.get("market_slug")
+        if not isinstance(market_slug, str):
+            continue
+        threshold = _threshold_from_probability_status_row(row)
+        if threshold is None:
+            continue
+        threshold_ts = str(row.get("asof_ts") or row.get("generated_at") or payload.get("generated_at") or "")
+        thresholds[market_slug] = {
+            "threshold_price": _format_scalar_string(threshold),
+            "threshold_event_ts": threshold_ts,
+            "threshold_observed_ts": threshold_ts,
+        }
+    return thresholds
+
+
+def _threshold_from_probability_status_row(row: dict[str, Any]) -> float | None:
+    for key in ("threshold_price", "threshold"):
+        threshold = _positive_float_or_none(row.get(key))
+        if threshold is not None:
+            return threshold
+    preview = row.get("simulation_preview")
+    if isinstance(preview, dict):
+        return _positive_float_or_none(preview.get("threshold"))
+    return None
+
+
+def _probability_input_thresholds_by_market(
+    probability_inputs_path: Path | None,
+) -> dict[str, dict[str, str]]:
+    if probability_inputs_path is None:
+        return {}
+    payload, _read_error = _read_json_or_error(probability_inputs_path)
+    if payload is None:
+        return {}
+    rows = payload.get("inputs")
+    if not isinstance(rows, list):
+        return {}
+    thresholds: dict[str, dict[str, str]] = {}
+    generated_at = payload.get("generated_at")
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        market_slug = row.get("market_slug")
+        probability_input = row.get("probability_input")
+        if not isinstance(market_slug, str) or not isinstance(probability_input, dict):
+            continue
+        threshold = _positive_float_or_none(probability_input.get("threshold"))
+        if threshold is None:
+            continue
+        asof_ts = probability_input.get("asof_ts")
+        threshold_ts = str(asof_ts or generated_at or "")
+        thresholds[market_slug] = {
+            "threshold_price": _format_scalar_string(threshold),
+            "threshold_event_ts": threshold_ts,
+            "threshold_observed_ts": threshold_ts,
+        }
+    return thresholds
+
+
+def _positive_float_or_none(value: object) -> float | None:
+    try:
+        number = float(cast(Any, value))
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
+def _has_positive_number(value: object) -> bool:
+    return _positive_float_or_none(value) is not None
+
+
+def _format_scalar_string(value: float) -> str:
+    return f"{value:.12g}"
 
 
 def _live_volatility_payload(

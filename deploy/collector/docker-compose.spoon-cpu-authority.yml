@@ -1,0 +1,5 @@
+services:
+  gpu-probability-worker:
+    profiles: ["disabled-on-spoon"]
+  api:
+    profiles: ["disabled-on-spoon"]

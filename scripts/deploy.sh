@@ -51,8 +51,8 @@ normalizer_uses_sidecar() {
     | grep "$NORMALIZER_SIDECAR_COMMAND" >> "$LOG_FILE" 2>&1
 }
 
-outcome_refresh_running() {
-  compose -f "$COMPOSE_FILE" ps --services --status running outcome-refresh 2>> "$LOG_FILE" \
+outcome_refresh_stopped() {
+  ! compose -f "$COMPOSE_FILE" ps --services --status running outcome-refresh 2>> "$LOG_FILE" \
     | grep -qx outcome-refresh
 }
 
@@ -139,7 +139,7 @@ DEPLOYED_SHA="$(cat "$DEPLOYED_MARKER" 2>/dev/null || true)"
 if [ "$USE_PREBUILT" != "1" ] && [ "$LOCAL" = "$REMOTE" ] && [ "$DEPLOYED_SHA" = "$REMOTE" ] && [ "${DEPLOY_FORCE:-0}" != "1" ]; then
   if normalizer_running \
     && normalizer_uses_sidecar \
-    && outcome_refresh_running \
+    && outcome_refresh_stopped \
     && outcome_status_fresh \
     && python3 "$REPO/scripts/check_collector_status.py" \
     --status-path "$STATUS_PATH" \
@@ -174,6 +174,8 @@ fi
 
 LOG "stopping legacy Python collector containers if present"
 docker rm -f polymarket-collector-collector-1 polymarket-python-collector-retired-retired-python-collector-1 >> "$LOG_FILE" 2>&1 || true
+LOG "stopping retired outcome-refresh sidecar if present"
+compose -f "$COMPOSE_FILE" stop outcome-refresh >> "$LOG_FILE" 2>&1 || true
 
 if [ "$USE_PREBUILT" = "1" ]; then
   if ! required_image_available "$COLLECTOR_IMAGE"; then
@@ -193,7 +195,7 @@ if [ "$USE_PREBUILT" = "1" ]; then
     export POLYMARKET_COLLECTOR_IMAGE="$COLLECTOR_IMAGE"
     export POLYMARKET_NORMALIZER_IMAGE="$NORMALIZER_IMAGE"
     export POLYMARKET_CUDA_PROBABILITY_IMAGE="$CUDA_PROBABILITY_IMAGE"
-    compose -f "$COMPOSE_FILE" up -d collector normalizer outcome-refresh api gpu-probability-worker
+    compose -f "$COMPOSE_FILE" up -d collector normalizer api gpu-probability-worker
   ) >> "$LOG_FILE" 2>&1; then
     LOG "docker compose failed"
     exit 1
@@ -204,7 +206,7 @@ else
     exit 1
   fi
   export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-1}"
-  if ! compose -f "$COMPOSE_FILE" up -d --build collector normalizer outcome-refresh api gpu-probability-worker >> "$LOG_FILE" 2>&1; then
+  if ! compose -f "$COMPOSE_FILE" up -d --build collector normalizer api gpu-probability-worker >> "$LOG_FILE" 2>&1; then
     LOG "docker compose failed"
     exit 1
   fi
@@ -213,7 +215,7 @@ fi
 for _ in $(seq 1 "$DEPLOY_SMOKE_ATTEMPTS"); do
   if normalizer_running \
     && normalizer_uses_sidecar \
-    && outcome_refresh_running \
+    && outcome_refresh_stopped \
     && outcome_status_fresh \
     && python3 "$REPO/scripts/check_collector_status.py" \
     --status-path "$STATUS_PATH" \
@@ -234,5 +236,5 @@ for _ in $(seq 1 "$DEPLOY_SMOKE_ATTEMPTS"); do
 done
 
 LOG "collector smoke failed; leaving container logs in docker compose"
-compose -f "$COMPOSE_FILE" logs --tail=80 collector normalizer outcome-refresh api gpu-probability-worker >> "$LOG_FILE" 2>&1 || true
+compose -f "$COMPOSE_FILE" logs --tail=80 collector normalizer api gpu-probability-worker >> "$LOG_FILE" 2>&1 || true
 exit 1

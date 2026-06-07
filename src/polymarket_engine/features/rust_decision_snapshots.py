@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -18,6 +19,8 @@ from polymarket_engine.domain.market_state import (
 from polymarket_engine.features import volatility as volatility_module
 from polymarket_engine.features.state_builder import DecisionStateUnavailable
 from polymarket_engine.features.state_replay import build_decision_state_from_store
+from polymarket_engine.probability.generator_fragments import GeneratorFragment
+from polymarket_engine.probability.generator_fragments import write_probability_fragments
 from polymarket_engine.probability.hot_inputs import write_hot_probability_inputs
 from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
 
@@ -25,6 +28,7 @@ from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
 SETTLEMENT_SOURCE_KEY = "polymarket_rtds_chainlink"
 LIVE_HEALTH_FRESHNESS_MS = 30_000
 VOLATILITY_LOOKBACK_LIMIT = 180
+DEFAULT_FRAGMENT_MAX_ROWS = 250_000
 
 
 @dataclass(frozen=True)
@@ -49,7 +53,7 @@ class CurrentDecisionStateReadCache:
         PriceObservation | None,
     ] = field(default_factory=dict)
     price_history: dict[
-        tuple[str, str, int],
+        tuple[str, str, datetime, int],
         tuple[PriceObservation, ...],
     ] = field(default_factory=dict)
 
@@ -102,6 +106,8 @@ def build_current_decision_state_snapshots(
     include_next: bool = False,
     read_cache: CurrentDecisionStateReadCache | None = None,
     probability_inputs_path: Path | None = None,
+    probability_fragments_path: Path | None = None,
+    fragment_max_rows: int = DEFAULT_FRAGMENT_MAX_ROWS,
 ) -> CurrentDecisionStateSnapshotResult:
     payload = _read_status(status_path)
     asof_ts = _parse_ts(payload["generated_at"])
@@ -181,6 +187,16 @@ def build_current_decision_state_snapshots(
             states=states,
             generated_at=asof_ts,
         )
+    if probability_fragments_path is not None:
+        write_probability_fragments(
+            out_path=probability_fragments_path,
+            fragments=_probability_fragments_for_states(
+                states,
+                read_store=read_store,
+                max_rows=fragment_max_rows,
+            ),
+            generated_at=asof_ts,
+        )
     return CurrentDecisionStateSnapshotResult(
         asof_ts=asof_ts,
         contracts_upserted=len(contracts),
@@ -217,6 +233,89 @@ def _volatility_snapshots_for_contracts(
             symbol=contract.settlement_symbol,
         )
     return snapshots
+
+
+def _probability_fragments_for_states(
+    states: Sequence[DecisionState],
+    *,
+    read_store: "_CachedStateReadStore",
+    max_rows: int,
+) -> tuple[GeneratorFragment, ...]:
+    if max_rows <= 0:
+        raise ValueError("fragment_max_rows must be positive")
+    fragments: list[GeneratorFragment] = []
+    for state in states:
+        if len(fragments) >= max_rows:
+            break
+        history = read_store.price_ticks_before(
+            source_key=SETTLEMENT_SOURCE_KEY,
+            symbol=state.contract.settlement_symbol,
+            asof_ts=state.asof_ts,
+            limit=VOLATILITY_LOOKBACK_LIMIT,
+        )
+        if len(history) < 2:
+            continue
+        first = history[0]
+        last = history[-1]
+        horizon_seconds = int((last.event_ts - first.event_ts).total_seconds())
+        if horizon_seconds <= 0:
+            continue
+        fragments.append(
+            GeneratorFragment(
+                fragment_id=_fragment_id(state=state, first=first, last=last),
+                asset=state.contract.asset,
+                asof_ts=max(last.event_ts, last.observed_ts),
+                prices=tuple(float(row.price) for row in history),
+                horizon_seconds=horizon_seconds,
+                source_key=SETTLEMENT_SOURCE_KEY,
+                z_path_bucket=_z_path_bucket(state),
+                quality_bucket="OK" if not state.data_quality_flags else "BLOCKED",
+                metadata={
+                    "state_id": state.state_id,
+                    "contract_id": state.contract.contract_id,
+                    "side": state.contract.side,
+                    "symbol": state.contract.settlement_symbol,
+                    "price_count": len(history),
+                },
+            )
+        )
+    return tuple(fragments)
+
+
+def _fragment_id(
+    *,
+    state: DecisionState,
+    first: PriceObservation,
+    last: PriceObservation,
+) -> str:
+    digest = hashlib.sha256(
+        "|".join(
+            (
+                state.state_id,
+                first.event_ts.isoformat(),
+                last.event_ts.isoformat(),
+                str(first.price),
+                str(last.price),
+            )
+        ).encode()
+    ).hexdigest()
+    return f"frag-{digest[:24]}"
+
+
+def _z_path_bucket(state: DecisionState) -> str:
+    if state.sigma_tau is None or state.sigma_tau <= 0:
+        return "near"
+    signed_log_distance = state.z_path if hasattr(state, "z_path") else None
+    if signed_log_distance is None:
+        signed_log_distance = math.log(state.settlement_price / state.threshold)
+        if state.contract.side == "DOWN":
+            signed_log_distance *= -1
+        signed_log_distance /= state.sigma_tau
+    if signed_log_distance < -1:
+        return "deep_down"
+    if signed_log_distance > 1:
+        return "deep_up"
+    return "near"
 
 
 def _read_status(path: Path) -> dict[str, Any]:
@@ -556,7 +655,7 @@ class _CachedStateReadStore:
         asof_ts: datetime,
         limit: int,
     ) -> tuple[PriceObservation, ...]:
-        key = (source_key, symbol, limit)
+        key = (source_key, symbol, asof_ts, limit)
         if key not in self._read_cache.price_history:
             self._read_cache.price_history[key] = self._store.price_ticks_before(
                 source_key=source_key,
@@ -578,7 +677,7 @@ class _CachedStateReadStore:
         missing_symbols = [
             symbol
             for symbol in unique_symbols
-            if (source_key, symbol, limit) not in self._read_cache.price_history
+            if (source_key, symbol, asof_ts, limit) not in self._read_cache.price_history
         ]
         if missing_symbols:
             histories = self._store.price_ticks_before_by_symbol(
@@ -588,7 +687,7 @@ class _CachedStateReadStore:
                 limit=limit,
             )
             for symbol in missing_symbols:
-                self._read_cache.price_history[(source_key, symbol, limit)] = (
+                self._read_cache.price_history[(source_key, symbol, asof_ts, limit)] = (
                     histories.get(symbol, ())
                 )
         return {
@@ -596,7 +695,7 @@ class _CachedStateReadStore:
             for symbol in unique_symbols
             if (
                 history := self._read_cache.price_history[
-                    (source_key, symbol, limit)
+                    (source_key, symbol, asof_ts, limit)
                 ]
             )
         }

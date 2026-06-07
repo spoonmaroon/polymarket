@@ -203,7 +203,8 @@ install -m 755 "\$TUI_BIN" "\$PC_BIN_DIR/polymarket-cockpit-tui"
   printf '%s\n' "  echo 'Runtime already live.'"
   printf '%s\n' 'else'
   printf '%s\n' "  echo 'Runtime not live; starting containers...'"
-  printf '%s\n' '  docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml up -d --no-recreate collector normalizer outcome-refresh api gpu-probability-worker >/dev/null 2>&1 || true'
+  printf '%s\n' '  docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml stop outcome-refresh >/dev/null 2>&1 || true'
+  printf '%s\n' '  docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml up -d --no-recreate collector normalizer api gpu-probability-worker >/dev/null 2>&1 || true'
   printf '%s\n' 'fi'
   printf '%s\n' "echo 'Waiting for runtime API and live market rows...'"
   printf '%s\n' 'for _ in \$(seq 1 45); do'
@@ -255,9 +256,9 @@ SOURCE_DB="\${POLYMARKET_DUCKDB_SOURCE_DB:-\$DATA_DIR/db/polymarket.duckdb}"
 SNAPSHOT_DIR="\${POLYMARKET_DUCKDB_UI_SNAPSHOT_DIR:-\$DATA_DIR/duckdb-ui}"
 SNAPSHOT_DB="\$SNAPSHOT_DIR/current-polymarket.duckdb"
 SNAPSHOT_TMP="\$SNAPSHOT_DIR/snapshot.duckdb"
-UI_CATALOG="\$SNAPSHOT_DIR/ui-catalog.duckdb"
 LOG_DIR="\$DATA_DIR/logs"
 LOG_FILE="\$LOG_DIR/duckdb-ui.log"
+VIEWER_SCRIPT="\$SNAPSHOT_DIR/polymarket_duckdb_viewer.py"
 DUCKDB_BIN="\${DUCKDB_BIN:-\$HOME/.duckdb/cli/latest/duckdb}"
 
 mkdir -p "\$SNAPSHOT_DIR" "\$LOG_DIR" "\$HOME/bin"
@@ -287,7 +288,7 @@ quote_sql_string() {
 restart_refresh_services() {
   (
     cd "\$PC_REPO" &&
-      docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml up -d --no-deps normalizer outcome-refresh >/dev/null
+      docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml up -d --no-deps normalizer >/dev/null
   ) || true
 }
 
@@ -300,20 +301,239 @@ mv "\$SNAPSHOT_TMP" "\$SNAPSHOT_DB"
 restart_refresh_services
 trap - EXIT
 
-pkill -f "duckdb.*\$UI_CATALOG" >/dev/null 2>&1 || true
-UI_SQL="SET ui_local_port=\${PORT}; ATTACH \$(quote_sql_string "\$SNAPSHOT_DB") AS polymarket (READ_ONLY); USE polymarket; CALL start_ui_server();"
-nohup bash -c 'tail -f /dev/null | "\$@"' duckdb-ui "\$DUCKDB_BIN" "\$UI_CATALOG" -cmd "\$UI_SQL" >/dev/null 2>> "\$LOG_FILE" &
+cat > "\$VIEWER_SCRIPT" <<'DUCKDB_VIEWER_PY'
+#!/usr/bin/env python3
+import argparse
+import html
+import json
+import os
+import subprocess
+import urllib.parse
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+
+def quote_ident(value: str) -> str:
+    return '"' + value.replace('"', '""') + '"'
+
+
+def quote_literal(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+class Viewer(BaseHTTPRequestHandler):
+    db_path = ""
+    duckdb_bin = "duckdb"
+
+    def log_message(self, fmt: str, *args: object) -> None:
+        return
+
+    def run_json(self, sql: str) -> list[dict[str, object]]:
+        completed = subprocess.run(
+            [self.duckdb_bin, "-readonly", self.db_path, "-json", "-c", sql],
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        output = completed.stdout.strip()
+        return json.loads(output) if output else []
+
+    def send_json(self, payload: object, status: int = 200) -> None:
+        body = json.dumps(payload, default=str).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def send_html(self) -> None:
+        db_name = html.escape(os.path.basename(self.db_path))
+        body = f"""<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Polymarket DuckDB</title>
+  <style>
+    :root {{ color-scheme: light dark; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }}
+    body {{ margin: 0; background: #f7f7f4; color: #1f2523; }}
+    header {{ padding: 14px 18px; border-bottom: 1px solid #d8ddd7; background: #ffffff; display: flex; justify-content: space-between; align-items: baseline; gap: 16px; }}
+    h1 {{ font-size: 16px; margin: 0; font-weight: 650; }}
+    .muted {{ color: #68716d; font-size: 12px; }}
+    main {{ display: grid; grid-template-columns: 280px minmax(0, 1fr); min-height: calc(100vh - 51px); }}
+    aside {{ border-right: 1px solid #d8ddd7; background: #fcfcfa; overflow: auto; padding: 10px; }}
+    button.table {{ display: block; width: 100%; text-align: left; border: 0; background: transparent; padding: 8px 10px; border-radius: 6px; cursor: pointer; color: inherit; }}
+    button.table:hover, button.table.active {{ background: #e9eee9; }}
+    .schema {{ font-size: 11px; color: #68716d; text-transform: uppercase; margin: 12px 10px 4px; }}
+    section {{ min-width: 0; overflow: hidden; }}
+    .toolbar {{ padding: 10px 12px; border-bottom: 1px solid #d8ddd7; display: flex; align-items: center; gap: 10px; background: #fff; }}
+    .toolbar strong {{ font-size: 14px; }}
+    .toolbar button {{ border: 1px solid #c8d0ca; background: #fff; border-radius: 6px; padding: 6px 9px; cursor: pointer; }}
+    .table-wrap {{ overflow: auto; height: calc(100vh - 101px); }}
+    table {{ border-collapse: collapse; width: max-content; min-width: 100%; font-size: 12px; }}
+    th, td {{ border-bottom: 1px solid #e1e5e0; padding: 6px 8px; max-width: 360px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+    th {{ position: sticky; top: 0; background: #f0f2ee; text-align: left; z-index: 1; }}
+    td.null {{ color: #9aa19d; font-style: italic; }}
+    .empty {{ padding: 28px; color: #68716d; }}
+    @media (prefers-color-scheme: dark) {{
+      body {{ background: #161917; color: #edf0ed; }}
+      header, .toolbar {{ background: #1d211f; border-color: #343b37; }}
+      aside {{ background: #191d1b; border-color: #343b37; }}
+      button.table:hover, button.table.active {{ background: #29302c; }}
+      th {{ background: #222723; }}
+      th, td {{ border-color: #303832; }}
+      .toolbar button {{ background: #202520; color: inherit; border-color: #465149; }}
+    }}
+  </style>
+</head>
+<body>
+  <header><h1>Polymarket DuckDB</h1><div class="muted">Snapshot: {db_name}</div></header>
+  <main>
+    <aside id="tables"><div class="empty">Loading tables...</div></aside>
+    <section>
+      <div class="toolbar">
+        <strong id="current">Select a table</strong>
+        <span class="muted" id="meta"></span>
+        <button id="prev">Prev</button>
+        <button id="next">Next</button>
+      </div>
+      <div class="table-wrap" id="rows"><div class="empty">Choose a table from the left.</div></div>
+    </section>
+  </main>
+  <script>
+    let selected = null;
+    let offset = 0;
+    const limit = 200;
+    const esc = (v) => String(v ?? '').replace(/[&<>"']/g, c => ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[c]));
+    async function getJson(url) {{
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    }}
+    function tableButton(t) {{
+      const b = document.createElement('button');
+      b.className = 'table';
+      b.textContent = t.name;
+      b.onclick = () => {{ selected = t; offset = 0; loadRows(); }};
+      return b;
+    }}
+    async function loadTables() {{
+      const tables = await getJson('/api/tables');
+      const root = document.getElementById('tables');
+      root.innerHTML = '';
+      let last = '';
+      for (const t of tables) {{
+        if (t.schema !== last) {{
+          const s = document.createElement('div');
+          s.className = 'schema';
+          s.textContent = t.schema;
+          root.appendChild(s);
+          last = t.schema;
+        }}
+        root.appendChild(tableButton(t));
+      }}
+      if (!tables.length) root.innerHTML = '<div class="empty">No tables found.</div>';
+    }}
+    async function loadRows() {{
+      document.querySelectorAll('button.table').forEach(b => b.classList.toggle('active', selected && b.textContent === selected.name));
+      document.getElementById('current').textContent = selected.schema + '.' + selected.name;
+      document.getElementById('meta').textContent = `rows ${{offset + 1}}-${{offset + limit}}`;
+      const url = `/api/table?schema=${{encodeURIComponent(selected.schema)}}&table=${{encodeURIComponent(selected.name)}}&limit=${{limit}}&offset=${{offset}}`;
+      const payload = await getJson(url);
+      const cols = payload.columns;
+      const rows = payload.rows;
+      if (!rows.length) {{
+        document.getElementById('rows').innerHTML = '<div class="empty">No rows at this offset.</div>';
+        return;
+      }}
+      let out = '<table><thead><tr>' + cols.map(c => `<th>${{esc(c)}}</th>`).join('') + '</tr></thead><tbody>';
+      for (const row of rows) {{
+        out += '<tr>' + cols.map(c => row[c] == null ? '<td class="null">NULL</td>' : `<td title="${{esc(row[c])}}">${{esc(row[c])}}</td>`).join('') + '</tr>';
+      }}
+      out += '</tbody></table>';
+      document.getElementById('rows').innerHTML = out;
+    }}
+    document.getElementById('prev').onclick = () => {{ if (selected) {{ offset = Math.max(0, offset - limit); loadRows(); }} }};
+    document.getElementById('next').onclick = () => {{ if (selected) {{ offset += limit; loadRows(); }} }};
+    loadTables().catch(e => document.getElementById('tables').innerHTML = `<div class="empty">${{esc(e.message)}}</div>`);
+  </script>
+</body>
+</html>"""
+        encoded = body.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.end_headers()
+        self.wfile.write(encoded)
+
+    def do_GET(self) -> None:
+        parsed = urllib.parse.urlparse(self.path)
+        params = urllib.parse.parse_qs(parsed.query)
+        try:
+            if parsed.path == "/":
+                self.send_html()
+            elif parsed.path == "/api/tables":
+                self.send_json(self.run_json(
+                    "SELECT table_schema AS schema, table_name AS name, table_type AS type "
+                    "FROM information_schema.tables "
+                    "WHERE table_schema NOT IN ('information_schema', 'pg_catalog') "
+                    "ORDER BY table_schema, table_name"
+                ))
+            elif parsed.path == "/api/table":
+                schema = params.get("schema", ["main"])[0]
+                table = params.get("table", [""])[0]
+                limit = min(max(int(params.get("limit", ["200"])[0]), 1), 1000)
+                offset = max(int(params.get("offset", ["0"])[0]), 0)
+                if not table:
+                    self.send_json({"error": "missing table"}, 400)
+                    return
+                relation = f"{quote_ident(schema)}.{quote_ident(table)}"
+                rows = self.run_json(f"SELECT * FROM {relation} LIMIT {limit} OFFSET {offset}")
+                columns = list(rows[0].keys()) if rows else [
+                    row["column_name"] for row in self.run_json(
+                        "SELECT column_name FROM information_schema.columns "
+                        f"WHERE table_schema = {quote_literal(schema)} "
+                        f"AND table_name = {quote_literal(table)} "
+                        "ORDER BY ordinal_position"
+                    )
+                ]
+                self.send_json({"columns": columns, "rows": rows})
+            else:
+                self.send_json({"error": "not found"}, 404)
+        except Exception as exc:
+            self.send_json({"error": str(exc)}, 500)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--db", required=True)
+    parser.add_argument("--duckdb-bin", required=True)
+    parser.add_argument("--port", type=int, required=True)
+    args = parser.parse_args()
+    Viewer.db_path = args.db
+    Viewer.duckdb_bin = args.duckdb_bin
+    ThreadingHTTPServer(("127.0.0.1", args.port), Viewer).serve_forever()
+
+
+if __name__ == "__main__":
+    main()
+DUCKDB_VIEWER_PY
+chmod 755 "\$VIEWER_SCRIPT"
+
+pkill -f "duckdb.*ui-catalog.duckdb" >/dev/null 2>&1 || true
+pkill -f "polymarket_duckdb_viewer.py.*--port \$PORT" >/dev/null 2>&1 || true
+nohup python3 "\$VIEWER_SCRIPT" --db "\$SNAPSHOT_DB" --duckdb-bin "\$DUCKDB_BIN" --port "\$PORT" >/dev/null 2>> "\$LOG_FILE" &
 
 for _ in \$(seq 1 30); do
-  if curl -fsS --max-time 2 "http://127.0.0.1:\${PORT}" >/dev/null 2>> "\$LOG_FILE"; then
-    echo "DuckDB UI ready at http://127.0.0.1:\${PORT}"
+  if curl -fsS --max-time 2 "http://127.0.0.1:\${PORT}/api/tables" >/dev/null 2>> "\$LOG_FILE"; then
+    echo "Polymarket DuckDB viewer ready at http://127.0.0.1:\${PORT}"
     echo "Snapshot: \$SNAPSHOT_DB"
     exit 0
   fi
   sleep 0.5
 done
 
-echo "DuckDB UI did not answer on http://127.0.0.1:\${PORT}" >&2
+echo "Polymarket DuckDB viewer did not answer on http://127.0.0.1:\${PORT}" >&2
 exit 1
 DUCKDB_UI_LAUNCHER
 chmod 755 "\$PC_BIN_DIR/open-polymarket-duckdb-ui.sh"
@@ -466,7 +686,8 @@ else:
 outcomes = get_json("/api/runtime/outcomes?limit=8")
 if (
     not isinstance(outcomes.get("rows"), list)
-    or (outcomes.get("ok") is not True and outcomes.get("state") != "LOCKED")
+    or outcomes.get("ok") is not True
+    or outcomes.get("state") == "LOCKED"
 ):
     raise SystemExit(f"runtime outcomes smoke failed: {outcomes}")
 

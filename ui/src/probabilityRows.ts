@@ -33,9 +33,26 @@ export type ProbabilityValueRow = ProbabilityRowForGraph & {
   path_count?: number;
   paths_per_seed?: number;
   seed_count?: number;
+  prior_fragment_count?: number;
+  prior_fragment_reason?: string;
+  prior_fragment_sparse?: boolean;
+  prior_fragment_ids?: string[];
+  prior_fragment_error?: string;
+  prior_fragment_generators?: string[];
   cache_status?: string;
   generated_at?: string;
+  effective_weights?: Record<string, number>;
+  generator_metadata?: unknown;
+  generator_summary?: unknown;
   simulation_preview?: unknown;
+};
+
+export type GeneratorBreakdownRow = {
+  id: string;
+  p_finish?: number;
+  p_no_touch?: number;
+  weight?: number;
+  sparse?: boolean;
 };
 
 export type ProbabilityPayloadForEvents<Row extends ProbabilityValueRow> =
@@ -125,6 +142,61 @@ export function probabilityMetadata(row: ProbabilityValueRow) {
       ? preview.sampled_paths.length
       : undefined,
   };
+}
+
+export function probabilityPriorSummary(row: ProbabilityValueRow) {
+  const count = isFiniteNumber(row.prior_fragment_count)
+    ? row.prior_fragment_count
+    : undefined;
+  const reason =
+    typeof row.prior_fragment_reason === "string" && row.prior_fragment_reason.trim()
+      ? row.prior_fragment_reason.trim()
+      : undefined;
+  const parts = [
+    count !== undefined
+      ? `${count} fragment${count === 1 ? "" : "s"}`
+      : undefined,
+    reason,
+    row.prior_fragment_sparse === true ? "sparse" : undefined,
+  ].filter((part): part is string => Boolean(part));
+  return parts.length > 0 ? parts.join(", ") : undefined;
+}
+
+export function generatorBreakdownRows(row: ProbabilityValueRow): GeneratorBreakdownRow[] {
+  const metadata = isRecord(row.generator_metadata) ? row.generator_metadata : {};
+  const summarySource = isRecord(row.generator_summary)
+    ? row.generator_summary
+    : isRecord(metadata.generator_summary)
+      ? metadata.generator_summary
+      : {};
+  const weightsSource = isRecord(row.effective_weights)
+    ? row.effective_weights
+    : isRecord(metadata.effective_weights)
+      ? metadata.effective_weights
+      : {};
+  const generatorIds = new Set([...Object.keys(summarySource), ...Object.keys(weightsSource)]);
+
+  return [...generatorIds].flatMap((id) => {
+    const summary = summarySource[id];
+    const summaryRow = isRecord(summary) ? summary : {};
+    const weight = isFiniteNumber(summaryRow.weight)
+      ? summaryRow.weight
+      : isFiniteNumber(weightsSource[id])
+        ? weightsSource[id]
+        : undefined;
+    if (!isRecord(summary) && !isFiniteNumber(weight)) {
+      return [];
+    }
+    return [
+      {
+        id,
+        p_finish: isFiniteNumber(summaryRow.p_finish) ? summaryRow.p_finish : undefined,
+        p_no_touch: isFiniteNumber(summaryRow.p_no_touch) ? summaryRow.p_no_touch : undefined,
+        weight,
+        sparse: typeof summaryRow.sparse === "boolean" ? summaryRow.sparse : undefined,
+      },
+    ];
+  });
 }
 
 export function visibleProbabilityDiagnosticRows<Row extends ProbabilityValueRow>(

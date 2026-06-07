@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import {
+  generatorBreakdownRows,
   probabilityDisplayValue,
   probabilityMetadata,
+  probabilityPriorSummary,
   probabilityRowKey,
   probabilitySelectionKey,
 } from "../../ui/src/probabilityRows";
@@ -43,6 +45,22 @@ assert.deepEqual(probabilityMetadata(upRow), {
   seedCount: 4,
   previewPathCount: 24,
 });
+assert.equal(
+  probabilityPriorSummary({
+    prior_fragment_count: 12,
+    prior_fragment_reason: "exact",
+    prior_fragment_sparse: false,
+  }),
+  "12 fragments, exact",
+);
+assert.equal(
+  probabilityPriorSummary({
+    prior_fragment_count: 1,
+    prior_fragment_reason: "coarse",
+    prior_fragment_sparse: true,
+  }),
+  "1 fragment, coarse, sparse",
+);
 
 assert.notEqual(
   probabilityRowKey({ ...upRow, output_id: undefined }),
@@ -92,3 +110,110 @@ assert.equal(
   }),
 );
 assert.notEqual(probabilitySelectionKey(upRow), probabilitySelectionKey(downRow));
+
+assert.deepEqual(
+  generatorBreakdownRows({
+    generator_summary: {
+      empirical_conditional: {
+        p_finish: 0.61,
+        p_no_touch: 0.7,
+        weight: 0.4,
+        sparse: false,
+      },
+      stress_overlay: {
+        p_finish: 0.52,
+        p_no_touch: 0.58,
+        weight: 0.1,
+        sparse: true,
+      },
+    },
+  }),
+  [
+    {
+      id: "empirical_conditional",
+      p_finish: 0.61,
+      p_no_touch: 0.7,
+      weight: 0.4,
+      sparse: false,
+    },
+    {
+      id: "stress_overlay",
+      p_finish: 0.52,
+      p_no_touch: 0.58,
+      weight: 0.1,
+      sparse: true,
+    },
+  ],
+);
+
+assert.deepEqual(
+  generatorBreakdownRows({
+    generator_metadata: {
+      generator_summary: {
+        block_bootstrap: {
+          p_finish: 0.57,
+          p_no_touch: 0.63,
+          sparse: true,
+        },
+      },
+      effective_weights: {
+        block_bootstrap: 0.25,
+      },
+    },
+  }),
+  [
+    {
+      id: "block_bootstrap",
+      p_finish: 0.57,
+      p_no_touch: 0.63,
+      weight: 0.25,
+      sparse: true,
+    },
+  ],
+);
+
+assert.deepEqual(
+  generatorBreakdownRows({
+    effective_weights: {
+      empirical_conditional: 0.4,
+      block_bootstrap: 0.25,
+    },
+  }),
+  [
+    {
+      id: "empirical_conditional",
+      p_finish: undefined,
+      p_no_touch: undefined,
+      weight: 0.4,
+      sparse: undefined,
+    },
+    {
+      id: "block_bootstrap",
+      p_finish: undefined,
+      p_no_touch: undefined,
+      weight: 0.25,
+      sparse: undefined,
+    },
+  ],
+);
+
+assert.deepEqual(
+  generatorBreakdownRows({
+    generator_metadata: {
+      effective_weights: {
+        filtered_historical: 0.25,
+      },
+    },
+  }),
+  [
+    {
+      id: "filtered_historical",
+      p_finish: undefined,
+      p_no_touch: undefined,
+      weight: 0.25,
+      sparse: undefined,
+    },
+  ],
+);
+
+assert.deepEqual(generatorBreakdownRows({ generator_summary: undefined }), []);

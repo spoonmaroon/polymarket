@@ -18,6 +18,7 @@ from polymarket_engine.features.rust_decision_snapshots import (
     build_current_decision_state_snapshots,
     hot_state_signature,
 )
+from polymarket_engine.probability.generator_fragments import read_probability_fragments
 from polymarket_engine.probability.hot_inputs import read_hot_probability_inputs
 from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
 
@@ -235,6 +236,74 @@ def test_build_writes_hot_probability_inputs_from_newly_built_states(
     ]
     with duckdb.connect(str(db_path), read_only=True) as conn:
         assert conn.execute("select count(*) from features.asof_state_inputs").fetchone() == (0,)
+
+
+def test_build_writes_probability_fragments_from_asof_price_history(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "state.duckdb"
+    store = _RecordingStateStore(db_path)
+    store.apply_schema()
+    status_path = tmp_path / "status.json"
+    probability_fragments_path = tmp_path / "live" / "probability_fragments.json"
+    start_ts = datetime(2026, 6, 2, 6, 0, tzinfo=timezone.utc)
+    asof_ts = datetime(2026, 6, 2, 6, 2, tzinfo=timezone.utc)
+    _write_status(status_path, start_ts=start_ts, asof_ts=asof_ts)
+    for offset_seconds, price in (
+        (-120, 69_950.0),
+        (-60, 69_980.0),
+        (0, 70_000.0),
+        (60, 70_080.0),
+        (120, 70_125.0),
+    ):
+        tick_ts = start_ts + timedelta(seconds=offset_seconds)
+        store.insert_price_tick(
+            PriceObservation(
+                "polymarket_rtds_chainlink",
+                "BTC/USD",
+                tick_ts,
+                tick_ts,
+                price,
+            )
+        )
+    for token_id, bid, ask in (("up-token", 0.61, 0.64), ("down-token", 0.36, 0.39)):
+        store.insert_orderbook_snapshot(
+            OrderBookObservation(
+                venue="polymarket",
+                contract_id="0xcondition",
+                token_id=token_id,
+                event_ts=asof_ts,
+                observed_ts=asof_ts,
+                best_bid=bid,
+                best_ask=ask,
+                bid_size_top=50.0,
+                ask_size_top=40.0,
+                spread=ask - bid,
+                depth_json="{}",
+            )
+        )
+
+    result = build_current_decision_state_snapshots(
+        status_path=status_path,
+        store=store,
+        probability_fragments_path=probability_fragments_path,
+        fragment_max_rows=10,
+    )
+
+    payload = read_probability_fragments(
+        out_path=probability_fragments_path,
+        max_age_seconds=10_000_000,
+    )
+
+    assert result.states_written == 2
+    assert payload.generated_at == asof_ts
+    assert payload.fragments
+    assert all(fragment.asset == "BTC" for fragment in payload.fragments)
+    assert all(fragment.asof_ts <= asof_ts for fragment in payload.fragments)
+    assert all(fragment.source_key == "polymarket_rtds_chainlink" for fragment in payload.fragments)
+    assert all(fragment.horizon_seconds >= 120 for fragment in payload.fragments)
+    assert all(min(fragment.prices) > 0 for fragment in payload.fragments)
+    assert len(payload.fragments) <= 10
 
 
 def test_reports_unavailable_current_state_when_threshold_tick_is_missing(
@@ -636,7 +705,7 @@ def test_current_decision_states_reuse_threshold_and_history_cache_across_status
     assert first.states_written == 4
     assert second.states_written == 4
     assert store.latest_price_ticks_before_calls == 1
-    assert store.price_ticks_before_by_symbol_calls == 1
+    assert store.price_ticks_before_by_symbol_calls == 2
 
 
 def _write_status(path: Path, *, start_ts: datetime, asof_ts: datetime) -> None:

@@ -1,0 +1,86 @@
+# 2026-06-06 CPU-Budgeted Active-Active Failsafe
+
+## Goal
+
+Keep the live Polymarket runtime useful when CPU pressure or host restart
+interruptions happen, without creating split-brain writers.
+
+## Architecture
+
+Spoon is the CPU authority. It owns collector, normalizer, DuckDB, hot
+probability inputs, probability fragments, outcomes, and volatility.
+
+THEPC is the GPU/API authority. It owns CUDA probability outputs, probability
+events, the runtime API, browser UI, and the TUI data surface.
+
+Artifact ownership is declared in `deploy/cluster/cluster.local.example.json`.
+Compose role overlays prevent each host from starting services that belong to
+the other host.
+
+## Acceptance checklist
+
+- [x] CPU budget defaults exist in `deploy/collector/.env.example`.
+- [x] GPU service exposes CPU budget env vars to the worker container.
+- [x] Worker CLI accepts explicit CPU budget arguments.
+- [x] Worker runtime clamps total MC paths per cycle to the configured
+      `max_total_paths`.
+- [x] Worker status payload reports budget diagnostics.
+- [x] Spoon/THEPC artifact ownership is modeled in a cluster manifest.
+- [x] `sync-cluster-artifacts` provides dry-run and execute rsync flows.
+- [x] Spoon CPU-authority and THEPC GPU/API compose overlays exist.
+- [x] THEPC runtime keeper can start required services and write
+      `runtime_keeper.json`.
+- [x] Mac tunnel checker can repair/check the local API tunnel.
+- [x] The deployment runbook documents the active-active split and the
+      single-writer split-brain guard.
+- [x] Runtime API probability-event streaming tails large event logs instead of
+      reading the entire file on every poll.
+
+## Verification targets
+
+Run the focused verification set for the plan lane:
+
+```bash
+uv run pytest \
+  tests/cluster \
+  tests/ops/test_runtime_keeper.py \
+  tests/probability/test_gpu_worker.py \
+  tests/scripts/test_runtime_keeper_scripts.py \
+  tests/scripts/test_deploy_script.py::test_compose_and_env_support_prebuilt_image_overrides \
+  tests/docs/test_active_runtime_docs.py \
+  tests/test_cli.py::test_parse_run_cuda_probability_worker_defaults \
+  tests/test_cli.py::test_parse_runtime_keeper_args \
+  tests/test_cli.py::test_parse_sync_cluster_artifacts_args \
+  tests/test_cli.py::test_sync_cluster_artifacts_dry_run_prints_rsync_commands \
+  tests/test_cli.py::test_sync_cluster_artifacts_execute_runs_rsync_commands \
+  tests/test_runtime_api.py::test_probability_events_payload_tails_large_event_file_without_full_read \
+  tests/test_runtime_api.py::test_probability_events_payload_reuses_unchanged_event_file \
+  tests/test_runtime_api.py::test_probability_events_stream_reads_newest_drain_when_jsonl_missing \
+  -q
+```
+
+Run a lint pass over the touched Python and script/doc tests:
+
+```bash
+uv run ruff check \
+  src/polymarket_engine/cluster \
+  src/polymarket_engine/ops \
+  src/polymarket_engine/probability/generator_fragments.py \
+  src/polymarket_engine/probability/gpu_worker.py \
+  src/polymarket_engine/runtime_api.py \
+  src/polymarket_engine/cli.py \
+  tests/cluster \
+  tests/ops \
+  tests/probability/test_gpu_worker.py \
+  tests/scripts/test_runtime_keeper_scripts.py \
+  tests/scripts/test_deploy_script.py \
+  tests/docs/test_active_runtime_docs.py \
+  tests/test_cli.py \
+  tests/test_runtime_api.py
+```
+
+## Operator notes
+
+The cluster is intentionally not a live trading authority. The probability
+worker and runtime API remain read-only surfaces. Do not add order placement,
+signing, or live decision gates to this failsafe lane.

@@ -4,6 +4,7 @@ import hashlib
 import json
 import time
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -14,8 +15,15 @@ from polymarket_engine.probability.cuda_monte_carlo import (
     run_cuda_monte_carlo_batch as _run_cuda_monte_carlo_batch_impl,
 )
 from polymarket_engine.probability.cuda_monte_carlo import run_cuda_monte_carlo_multi_seed
+from polymarket_engine.probability.ensemble_runtime import (
+    run_four_generator_ensemble,
+)
 from polymarket_engine.probability.fast_nowcast import FastNowcastInput
 from polymarket_engine.probability.fast_nowcast import compute_fast_nowcast
+from polymarket_engine.probability.generator_fragments import FragmentSelection
+from polymarket_engine.probability.generator_fragments import GeneratorFragment
+from polymarket_engine.probability.generator_fragments import read_probability_fragments
+from polymarket_engine.probability.generator_fragments import select_fragments_for_input
 from polymarket_engine.probability.grid_cache import ProbabilityGridHit
 from polymarket_engine.probability.grid_cache import grid_entry_from_probability_input
 from polymarket_engine.probability.grid_cache import grid_runtime_row
@@ -24,7 +32,6 @@ from polymarket_engine.probability.latency import ProbabilityLatencyTrace
 from polymarket_engine.probability.path_policy import runtime_path_count_for_state
 from polymarket_engine.probability.runtime import DEFAULT_PROBABILITY_GRID_VALID_SECONDS
 from polymarket_engine.probability.runtime import DEFAULT_PROBABILITY_MAX_STATE_AGE_SECONDS
-from polymarket_engine.probability.runtime import ProbabilityRuntimeInput
 from polymarket_engine.probability.runtime import _float
 from polymarket_engine.probability.runtime import _int
 from polymarket_engine.probability.runtime import _merge_grid_diagnostics
@@ -34,6 +41,7 @@ from polymarket_engine.probability.runtime import _seed_for_input
 from polymarket_engine.probability.runtime import _steps_for_input
 from polymarket_engine.probability.runtime import latest_probability_inputs
 from polymarket_engine.probability.runtime import probability_gate_diagnostics
+from polymarket_engine.probability.runtime_inputs import ProbabilityRuntimeInput
 from polymarket_engine.probability.schema import ProbabilityInput, ProbabilityOutput
 from polymarket_engine.storage.atomic import durable_replace
 
@@ -42,6 +50,49 @@ DEFAULT_GPU_PROBABILITY_LIMIT = 24
 DEFAULT_GPU_PROBABILITY_INTERVAL_SECONDS = 1.0
 DEFAULT_INPUT_SNAPSHOT_MAX_AGE_SECONDS = 10.0
 PROBABILITY_INPUTS_SCHEMA_VERSION = "polymarket-probability-inputs-v1"
+DEFAULT_WORKER_MODE = "ensemble"
+DEFAULT_GENERATOR_POLICY = "all_four_every_cycle"
+DEFAULT_CPU_TARGET_PERCENT = 20.0
+DEFAULT_MAX_RSS_MB = 512
+DEFAULT_MAX_CYCLE_RUNTIME_MS = 750
+DEFAULT_MAX_TOTAL_PATHS = 320_000
+DEFAULT_SUSTAINED_BREACH_CYCLES = 3
+DEFAULT_FRAGMENT_MAX_ROWS = 250_000
+DEFAULT_MIN_FRAGMENT_COUNT = 2
+DEFAULT_CPU_THREADS = 1
+
+
+@dataclass(frozen=True)
+class ProbabilityWorkerBudget:
+    worker_mode: str = DEFAULT_WORKER_MODE
+    generator_policy: str = DEFAULT_GENERATOR_POLICY
+    cpu_target_percent: float = DEFAULT_CPU_TARGET_PERCENT
+    max_rss_mb: int = DEFAULT_MAX_RSS_MB
+    max_cycle_runtime_ms: int = DEFAULT_MAX_CYCLE_RUNTIME_MS
+    max_total_paths: int = DEFAULT_MAX_TOTAL_PATHS
+    sustained_breach_cycles: int = DEFAULT_SUSTAINED_BREACH_CYCLES
+    fragment_max_rows: int = DEFAULT_FRAGMENT_MAX_ROWS
+    cpu_threads: int = DEFAULT_CPU_THREADS
+
+    def __post_init__(self) -> None:
+        if self.worker_mode == "":
+            raise ValueError("worker_mode must not be empty")
+        if self.generator_policy == "":
+            raise ValueError("generator_policy must not be empty")
+        if self.cpu_target_percent <= 0:
+            raise ValueError("cpu_target_percent must be positive")
+        if self.max_rss_mb <= 0:
+            raise ValueError("max_rss_mb must be positive")
+        if self.max_cycle_runtime_ms <= 0:
+            raise ValueError("max_cycle_runtime_ms must be positive")
+        if self.max_total_paths <= 0:
+            raise ValueError("max_total_paths must be positive")
+        if self.sustained_breach_cycles <= 0:
+            raise ValueError("sustained_breach_cycles must be positive")
+        if self.fragment_max_rows <= 0:
+            raise ValueError("fragment_max_rows must be positive")
+        if self.cpu_threads <= 0:
+            raise ValueError("cpu_threads must be positive")
 
 
 def run_cuda_monte_carlo_batch(
@@ -76,17 +127,26 @@ def run_cuda_probability_worker_cycle(
     duckdb_path: Path,
     probability_status_path: Path,
     probability_inputs_path: Path | None = None,
+    probability_fragments_path: Path | None = None,
     limit: int = DEFAULT_GPU_PROBABILITY_LIMIT,
     valid_seconds: int = int(DEFAULT_PROBABILITY_GRID_VALID_SECONDS),
     max_state_age_seconds: float | None = DEFAULT_PROBABILITY_MAX_STATE_AGE_SECONDS,
     max_input_snapshot_age_seconds: float | None = DEFAULT_INPUT_SNAPSHOT_MAX_AGE_SECONDS,
     probability_event_path: Path | None = None,
+    budget: ProbabilityWorkerBudget | None = None,
 ) -> dict[str, Any]:
     if limit <= 0:
         raise ValueError("limit must be positive")
     if valid_seconds <= 0:
         raise ValueError("valid_seconds must be positive")
 
+    cycle_started_monotonic = time.monotonic()
+    budget = budget or ProbabilityWorkerBudget()
+    requested_total_paths = 0
+    allocated_total_paths = 0
+    clamped_inputs = 0
+    mc_input_skipped = 0
+    path_budget_per_input = 0
     previous_rows = _read_status_rows(probability_status_path)
     probability_event_path = probability_event_path or probability_status_path.with_name(
         "probability-events.jsonl"
@@ -114,17 +174,69 @@ def run_cuda_probability_worker_cycle(
                 active_only=True,
             )
     except (duckdb.Error, json.JSONDecodeError, OSError, TypeError, ValueError) as exc:
+        input_error = f"probability input unavailable: {type(exc).__name__}: {exc}"
+        input_gap_rows = _retained_mc_rows(
+            previous_rows,
+            now=generated_at,
+            require_valid_until=False,
+        )
+        if input_gap_rows:
+            payload = _status_payload(
+                generated_at=generated_at,
+                rows=input_gap_rows,
+                skipped=0,
+                errors=[],
+                rows_seen=0,
+                rows_written=0,
+                last_good_rows=input_gap_rows,
+                state_override="STALE_INPUTS",
+                retained_mc_rows=len(input_gap_rows),
+                budget=_budget_diagnostics(
+                    budget=budget,
+                    cycle_started_monotonic=cycle_started_monotonic,
+                    requested_total_paths=requested_total_paths,
+                    allocated_total_paths=allocated_total_paths,
+                    clamped_inputs=clamped_inputs,
+                    mc_input_skipped=mc_input_skipped,
+                    path_budget_per_input=path_budget_per_input,
+                ),
+            )
+            payload["input_error"] = input_error
+            _write_status(probability_status_path, payload)
+            return payload
         payload = _status_payload(
             generated_at=generated_at,
             rows=[],
             skipped=0,
-            errors=[f"probability input unavailable: {type(exc).__name__}: {exc}"],
+            errors=[input_error],
             rows_seen=0,
             rows_written=0,
             last_good_rows=previous_rows,
+            budget=_budget_diagnostics(
+                budget=budget,
+                cycle_started_monotonic=cycle_started_monotonic,
+                requested_total_paths=requested_total_paths,
+                allocated_total_paths=allocated_total_paths,
+                clamped_inputs=clamped_inputs,
+                mc_input_skipped=mc_input_skipped,
+                path_budget_per_input=path_budget_per_input,
+            ),
         )
         _write_status(probability_status_path, payload)
         return payload
+
+    prior_fragments, prior_fragment_error = _load_probability_fragments(
+        path=probability_fragments_path,
+        max_age_seconds=max_input_snapshot_age_seconds,
+    )
+    mc_inputs = tuple(inputs)
+    if len(mc_inputs) > budget.max_total_paths:
+        mc_input_skipped = len(mc_inputs) - budget.max_total_paths
+        mc_inputs = mc_inputs[: budget.max_total_paths]
+    path_budget_per_input = _path_budget_per_input(
+        input_count=len(mc_inputs),
+        budget=budget,
+    )
 
     if not inputs:
         input_gap_rows = _retained_mc_rows(
@@ -143,6 +255,15 @@ def run_cuda_probability_worker_cycle(
                 last_good_rows=input_gap_rows,
                 state_override="STALE_INPUTS",
                 retained_mc_rows=len(input_gap_rows),
+                budget=_budget_diagnostics(
+                    budget=budget,
+                    cycle_started_monotonic=cycle_started_monotonic,
+                    requested_total_paths=requested_total_paths,
+                    allocated_total_paths=allocated_total_paths,
+                    clamped_inputs=clamped_inputs,
+                    mc_input_skipped=mc_input_skipped,
+                    path_budget_per_input=path_budget_per_input,
+                ),
             )
             _write_status(probability_status_path, payload)
             return payload
@@ -180,13 +301,22 @@ def run_cuda_probability_worker_cycle(
                 last_good_rows=nowcast_mc_rows or previous_rows or None,
                 state_override="NOWCAST",
                 retained_mc_rows=len(nowcast_mc_rows),
+                budget=_budget_diagnostics(
+                    budget=budget,
+                    cycle_started_monotonic=cycle_started_monotonic,
+                    requested_total_paths=requested_total_paths,
+                    allocated_total_paths=allocated_total_paths,
+                    clamped_inputs=clamped_inputs,
+                    mc_input_skipped=mc_input_skipped,
+                    path_budget_per_input=path_budget_per_input,
+                ),
             ),
         )
 
-    for group in _batch_runtime_inputs(inputs):
+    for group in _batch_runtime_inputs(mc_inputs):
         representative = group[0].probability_input
         steps = _steps_for_input(representative)
-        path_count = max(
+        requested_path_count = max(
             runtime_path_count_for_state(
                 seconds_left=runtime_input.probability_input.seconds_left,
                 z_path=runtime_input.probability_input.z_path,
@@ -197,18 +327,45 @@ def run_cuda_probability_worker_cycle(
             )
             for runtime_input in group
         )
-        seed_count = _gpu_seed_count_for_total_paths(path_count)
-        paths_per_seed = path_count // seed_count
+        requested_total_paths += requested_path_count * len(group)
+        path_count, was_clamped = _clamp_path_count(
+            requested_path_count,
+            path_budget_per_input=path_budget_per_input,
+        )
+        if was_clamped:
+            clamped_inputs += len(group)
+        seed_count = min(_gpu_seed_count_for_total_paths(path_count), path_count)
+        paths_per_seed = max(1, path_count // seed_count)
+        path_count = paths_per_seed * seed_count
+        allocated_total_paths += path_count * len(group)
         seed = min(_seed_for_input(runtime_input.probability_input) for runtime_input in group)
         mc_started_ts = datetime.now(timezone.utc)
         try:
-            outputs = run_cuda_monte_carlo_batch(
-                tuple(runtime_input.probability_input for runtime_input in group),
-                paths_per_seed=paths_per_seed,
-                steps=steps,
-                seed=seed,
-                seed_count=seed_count,
-            )
+            outputs: list[ProbabilityOutput] = []
+            for runtime_input in group:
+                fragment_selection = _select_prior_fragments(
+                    fragments=prior_fragments,
+                    probability_input=runtime_input.probability_input,
+                    max_fragment_count=min(budget.fragment_max_rows, path_count),
+                    fragment_error=prior_fragment_error,
+                )
+                output = run_four_generator_ensemble(
+                    runtime_input.probability_input,
+                    path_count=path_count,
+                    steps=steps,
+                    seed=seed,
+                    history_fragments=tuple(
+                        fragment.prices for fragment in fragment_selection.fragments
+                    )
+                    or None,
+                )
+                outputs.append(
+                    _output_with_prior_diagnostics(
+                        output,
+                        fragment_selection=fragment_selection,
+                        fragment_error=prior_fragment_error,
+                    )
+                )
             mc_finished_ts = datetime.now(timezone.utc)
         except (duckdb.Error, ValueError, RuntimeError) as exc:
             state_ids = ",".join(
@@ -257,6 +414,15 @@ def run_cuda_probability_worker_cycle(
         rows_written=len(rows) - partial_retained_mc_rows,
         last_good_rows=previous_rows if errors and not rows else None,
         retained_mc_rows=partial_retained_mc_rows,
+        budget=_budget_diagnostics(
+            budget=budget,
+            cycle_started_monotonic=cycle_started_monotonic,
+            requested_total_paths=requested_total_paths,
+            allocated_total_paths=allocated_total_paths,
+            clamped_inputs=clamped_inputs,
+            mc_input_skipped=mc_input_skipped,
+            path_budget_per_input=path_budget_per_input,
+        ),
     )
     _write_status(probability_status_path, payload)
     if event_rows:
@@ -264,11 +430,82 @@ def run_cuda_probability_worker_cycle(
     return payload
 
 
+def _load_probability_fragments(
+    *,
+    path: Path | None,
+    max_age_seconds: float | None,
+) -> tuple[tuple[GeneratorFragment, ...], str | None]:
+    if path is None:
+        return (), None
+    max_age = (
+        max_age_seconds
+        if max_age_seconds is not None
+        else 365.0 * 24.0 * 60.0 * 60.0
+    )
+    try:
+        payload = read_probability_fragments(out_path=path, max_age_seconds=max_age)
+    except (FileNotFoundError, json.JSONDecodeError, OSError, TypeError, ValueError) as exc:
+        return (), f"{type(exc).__name__}: {exc}"
+    return payload.fragments, None
+
+
+def _select_prior_fragments(
+    *,
+    fragments: Sequence[GeneratorFragment],
+    probability_input: ProbabilityInput,
+    max_fragment_count: int,
+    fragment_error: str | None,
+) -> FragmentSelection:
+    if fragment_error is not None:
+        return FragmentSelection(fragments=(), sparse=True, reason="unavailable")
+    return select_fragments_for_input(
+        fragments,
+        probability_input=probability_input,
+        min_fragment_count=DEFAULT_MIN_FRAGMENT_COUNT,
+        max_fragment_count=max(1, max_fragment_count),
+    )
+
+
+def _output_with_prior_diagnostics(
+    output: ProbabilityOutput,
+    *,
+    fragment_selection: FragmentSelection,
+    fragment_error: str | None,
+) -> ProbabilityOutput:
+    diagnostics = dict(output.diagnostics)
+    diagnostics.update(
+        {
+            "prior_fragment_count": len(fragment_selection.fragments),
+            "prior_fragment_reason": fragment_selection.reason,
+            "prior_fragment_sparse": fragment_selection.sparse,
+            "prior_fragment_ids": [
+                fragment.fragment_id for fragment in fragment_selection.fragments
+            ],
+        }
+    )
+    if fragment_selection.sparse:
+        diagnostics["sparse_scope"] = True
+        diagnostics["path_diagnosis"] = "SPARSE"
+    if fragment_error is not None:
+        diagnostics["prior_fragment_error"] = fragment_error
+    return ProbabilityOutput(
+        state_id=output.state_id,
+        asof_ts=output.asof_ts,
+        p_finish=output.p_finish,
+        p_no_touch=output.p_no_touch,
+        z_path=output.z_path,
+        model_version=output.model_version,
+        seed=output.seed,
+        diagnostics=diagnostics,
+    )
+
+
 def run_cuda_probability_worker_loop(
     *,
     duckdb_path: Path,
     probability_status_path: Path,
     probability_inputs_path: Path | None = None,
+    probability_fragments_path: Path | None = None,
     interval_seconds: float = DEFAULT_GPU_PROBABILITY_INTERVAL_SECONDS,
     limit: int = DEFAULT_GPU_PROBABILITY_LIMIT,
     valid_seconds: int = int(DEFAULT_PROBABILITY_GRID_VALID_SECONDS),
@@ -276,24 +513,29 @@ def run_cuda_probability_worker_loop(
     max_input_snapshot_age_seconds: float | None = DEFAULT_INPUT_SNAPSHOT_MAX_AGE_SECONDS,
     probability_event_path: Path | None = None,
     snapshot_poll_seconds: float = 0.1,
+    budget: ProbabilityWorkerBudget | None = None,
 ) -> None:
     if interval_seconds <= 0:
         raise ValueError("interval_seconds must be positive")
     if snapshot_poll_seconds <= 0:
         raise ValueError("snapshot_poll_seconds must be positive")
+    budget = budget or ProbabilityWorkerBudget()
     last_snapshot_fingerprint = _snapshot_fingerprint(probability_inputs_path)
     while True:
         generated_at = datetime.now(timezone.utc)
+        cycle_started_monotonic = time.monotonic()
         try:
             payload = run_cuda_probability_worker_cycle(
                 duckdb_path=duckdb_path,
                 probability_status_path=probability_status_path,
                 probability_inputs_path=probability_inputs_path,
+                probability_fragments_path=probability_fragments_path,
                 limit=limit,
                 valid_seconds=valid_seconds,
                 max_state_age_seconds=max_state_age_seconds,
                 max_input_snapshot_age_seconds=max_input_snapshot_age_seconds,
                 probability_event_path=probability_event_path,
+                budget=budget,
             )
         except duckdb.Error as exc:
             payload = _status_payload(
@@ -304,6 +546,15 @@ def run_cuda_probability_worker_loop(
                 rows_seen=0,
                 rows_written=0,
                 last_good_rows=_read_status_rows(probability_status_path),
+                budget=_budget_diagnostics(
+                    budget=budget,
+                    cycle_started_monotonic=cycle_started_monotonic,
+                    requested_total_paths=0,
+                    allocated_total_paths=0,
+                    clamped_inputs=0,
+                    mc_input_skipped=0,
+                    path_budget_per_input=0,
+                ),
             )
             _write_status(probability_status_path, payload)
         print(json.dumps(payload, sort_keys=True, separators=(",", ":")), flush=True)
@@ -363,6 +614,7 @@ def _status_payload(
     last_good_rows: list[dict[str, Any]] | None = None,
     state_override: str | None = None,
     retained_mc_rows: int = 0,
+    budget: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     payload = {
         "schema_version": "polymarket-probability-runtime-v1",
@@ -380,6 +632,7 @@ def _status_payload(
         "rows_written": rows_written,
         "retained_mc_rows": retained_mc_rows,
         "previous_mc_retained": retained_mc_rows > 0,
+        "budget": dict(budget or {}),
     }
     payload["lanes"] = _status_lanes(payload)
     payload["latency"] = _status_latency(payload)
@@ -428,6 +681,9 @@ def _nowcast_row(
         "start_ts": runtime_input.start_ts.isoformat(),
         "expiry_ts": runtime_input.expiry_ts.isoformat(),
         "asof_ts": probability_input.asof_ts.isoformat(),
+        "threshold": probability_input.threshold,
+        "threshold_price": f"{probability_input.threshold:.12g}",
+        "settlement_price": probability_input.settlement_price,
         "p_finish": nowcast.p_finish,
         "p_hat": nowcast.p_finish,
         "p_no_touch": nowcast.p_no_touch,
@@ -510,11 +766,14 @@ def _mc_row_from_output(
         expiry_ts=runtime_input.expiry_ts,
         p_finish=output.p_finish,
         p_no_touch=output.p_no_touch,
-        u_gen=0.0,
+        u_gen=_float(diagnostics.get("u_gen", 0.0), "u_gen"),
         path_count=path_count,
         seed=seed,
         volatility_regime=runtime_input.volatility_regime,
-        generator_version=output.model_version,
+        generator_version=str(
+            diagnostics.get("generator_version") or output.model_version
+        ),
+        model_version=output.model_version,
         training_cutoff_ts=probability_input.asof_ts,
         max_event_ts=probability_input.asof_ts,
         max_observed_ts=probability_input.asof_ts,
@@ -543,8 +802,11 @@ def _mc_row_from_output(
         {
             "state_id": probability_input.state_id,
             "probability_kind": "MC",
-            "backend": "cuda",
+            "backend": "ensemble",
             "seconds_left": probability_input.seconds_left,
+            "threshold": probability_input.threshold,
+            "threshold_price": f"{probability_input.threshold:.12g}",
+            "settlement_price": probability_input.settlement_price,
             "executable_price": probability_input.executable_price,
             "source_age_ms": probability_input.source_age_ms,
             "book_age_ms": probability_input.book_age_ms,
@@ -586,6 +848,60 @@ def _gpu_seed_count_for_total_paths(path_count: int) -> int:
     if path_count >= 80_000:
         return 4
     return 3
+
+
+def _path_budget_per_input(
+    *,
+    input_count: int,
+    budget: ProbabilityWorkerBudget,
+) -> int:
+    if input_count <= 0:
+        return 0
+    return max(1, budget.max_total_paths // input_count)
+
+
+def _clamp_path_count(
+    requested_path_count: int,
+    *,
+    path_budget_per_input: int,
+) -> tuple[int, bool]:
+    if requested_path_count <= 0:
+        raise ValueError("requested_path_count must be positive")
+    if path_budget_per_input <= 0:
+        return 1, True
+    path_count = min(requested_path_count, path_budget_per_input)
+    return path_count, path_count < requested_path_count
+
+
+def _budget_diagnostics(
+    *,
+    budget: ProbabilityWorkerBudget,
+    cycle_started_monotonic: float,
+    requested_total_paths: int,
+    allocated_total_paths: int,
+    clamped_inputs: int,
+    mc_input_skipped: int,
+    path_budget_per_input: int,
+) -> dict[str, Any]:
+    elapsed_ms = round((time.monotonic() - cycle_started_monotonic) * 1000.0, 3)
+    return {
+        "worker_mode": budget.worker_mode,
+        "generator_policy": budget.generator_policy,
+        "cpu_target_percent": budget.cpu_target_percent,
+        "max_rss_mb": budget.max_rss_mb,
+        "max_cycle_runtime_ms": budget.max_cycle_runtime_ms,
+        "max_total_paths": budget.max_total_paths,
+        "sustained_breach_cycles": budget.sustained_breach_cycles,
+        "fragment_max_rows": budget.fragment_max_rows,
+        "cpu_threads": budget.cpu_threads,
+        "path_budget_per_input": path_budget_per_input,
+        "requested_total_paths": requested_total_paths,
+        "allocated_total_paths": allocated_total_paths,
+        "clamped_inputs": clamped_inputs,
+        "mc_input_skipped": mc_input_skipped,
+        "elapsed_ms": elapsed_ms,
+        "cycle_runtime_breached": elapsed_ms > budget.max_cycle_runtime_ms,
+    }
 
 
 def _retained_mc_rows(
@@ -778,6 +1094,25 @@ def _event_payload_from_row(
             "latency": dict(cast(Mapping[str, Any], latency)),
         },
     }
+    for key in (
+        "effective_weights",
+        "generator_summary",
+        "generator_runs",
+        "effective_generator_values",
+        "u_gen",
+        "mc_dispersion",
+        "uncertainty_buffer",
+        "path_diagnosis",
+        "sparse_scope",
+        "prior_fragment_count",
+        "prior_fragment_reason",
+        "prior_fragment_sparse",
+        "prior_fragment_ids",
+        "prior_fragment_error",
+        "prior_fragment_generators",
+    ):
+        if key in row:
+            payload[key] = row[key]
     preview = row.get("simulation_preview")
     if isinstance(preview, Mapping):
         payload["simulation_preview"] = dict(cast(Mapping[str, Any], preview))

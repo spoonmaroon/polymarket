@@ -1,4 +1,8 @@
+import shutil
+import subprocess
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).parents[2]
 
@@ -154,8 +158,8 @@ def test_normalizer_sidecar_is_deployed_and_health_checked() -> None:
     assert "polymarket-engine" in compose
     assert "--normalized-health-path" in compose
     assert "/var/lib/polymarket/live/normalized_health.json" in compose
-    assert "up -d --build collector normalizer outcome-refresh api gpu-probability-worker" in script
-    assert "outcome_refresh_running()" in script
+    assert "up -d --build collector normalizer api gpu-probability-worker" in script
+    assert "outcome_refresh_stopped()" in script
     assert "outcome_status_fresh()" in script
     assert "--normalized-health-path" in script
     assert "$DATA_DIR/live/normalized_health.json" in script
@@ -178,14 +182,20 @@ def test_runtime_api_service_is_deployed_with_engine_compose() -> None:
     assert "POLYMARKET_DUCKDB_PATH: /var/lib/polymarket/db/polymarket.duckdb" in compose
     assert "POLYMARKET_OUTCOME_STATUS_PATH: /var/lib/polymarket/live/outcomes.json" in compose
     assert "POLYMARKET_VOLATILITY_STATUS_PATH: /var/lib/polymarket/live/volatility.json" in compose
+    assert "OPENBLAS_NUM_THREADS" in compose
+    assert "OMP_NUM_THREADS" in compose
+    assert "MKL_NUM_THREADS" in compose
+    assert "NUMEXPR_NUM_THREADS" in compose
+    assert "cpus: \"${POLYMARKET_GPU_WORKER_CPUS:-1.0}\"" in compose
+    assert "mem_limit: \"${POLYMARKET_GPU_WORKER_MEM_LIMIT:-768m}\"" in compose
     assert "${POLYMARKET_API_PORT:-8000}:8000" in compose
     assert "POLYMARKET_API_PORT=8000" in env_example
     assert "POLYMARKET_ENABLE_CONTAINER_STATUS=1" in env_example
     assert "POLYMARKET_ENABLE_RUNTIME_PROBABILITIES=1" in env_example
     assert "POLYMARKET_ALLOW_RUNTIME_PROBABILITY_COMPUTE=0" in env_example
-    assert "up -d collector normalizer outcome-refresh api gpu-probability-worker" in script
-    assert "up -d --build collector normalizer outcome-refresh api gpu-probability-worker" in script
-    assert "logs --tail=80 collector normalizer outcome-refresh api gpu-probability-worker" in script
+    assert "up -d collector normalizer api gpu-probability-worker" in script
+    assert "up -d --build collector normalizer api gpu-probability-worker" in script
+    assert "logs --tail=80 collector normalizer api gpu-probability-worker" in script
     assert "docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml ps" in pc_script
     assert 'get_json("/health")' in pc_script
     assert 'get_json("/api/runtime/live?limit=8")' in pc_script
@@ -194,7 +204,7 @@ def test_runtime_api_service_is_deployed_with_engine_compose() -> None:
     assert 'probabilities.get("rows")' in pc_script
     assert "runtime probabilities smoke failed" in pc_script
     assert 'get_json("/api/runtime/outcomes?limit=8")' in pc_script
-    assert 'outcomes.get("state") != "LOCKED"' in pc_script
+    assert 'outcomes.get("state") == "LOCKED"' in pc_script
     assert "/api/runtime/live/stream?limit=8&interval_ms=250&max_events=1" in pc_script
 
 
@@ -203,6 +213,9 @@ def test_compose_and_env_support_prebuilt_image_overrides() -> None:
         encoding="utf-8"
     )
     env_example = (ROOT / "deploy" / "collector" / ".env.example").read_text(
+        encoding="utf-8"
+    )
+    entrypoint = (ROOT / "deploy" / "gpu" / "gpu-probability-entrypoint.sh").read_text(
         encoding="utf-8"
     )
 
@@ -219,9 +232,59 @@ def test_compose_and_env_support_prebuilt_image_overrides() -> None:
         in compose
     )
     assert "POLYMARKET_NORMALIZER_INTERVAL_SECONDS=0.25" in env_example
+    assert "POLYMARKET_PROBABILITY_WORKER_MODE=ensemble" in env_example
+    assert "POLYMARKET_ENSEMBLE_GENERATOR_POLICY=all_four_every_cycle" in env_example
+    assert "POLYMARKET_PROBABILITY_CPU_TARGET_PERCENT=20.0" in env_example
+    assert "POLYMARKET_PROBABILITY_MAX_RSS_MB=512" in env_example
+    assert "POLYMARKET_PROBABILITY_MAX_CYCLE_RUNTIME_MS=750" in env_example
+    assert "POLYMARKET_PROBABILITY_MAX_TOTAL_PATHS=320000" in env_example
+    assert "POLYMARKET_PROBABILITY_SUSTAINED_BREACH_CYCLES=3" in env_example
+    assert (
+        "POLYMARKET_PROBABILITY_FRAGMENTS_PATH=/var/lib/polymarket/live/probability_fragments.json"
+        in env_example
+    )
+    assert "POLYMARKET_ENSEMBLE_FRAGMENT_MAX_ROWS=250000" in env_example
+    assert "POLYMARKET_ENSEMBLE_CPU_THREADS=1" in env_example
+    assert "POLYMARKET_GPU_WORKER_CPUS" in env_example
+    assert "POLYMARKET_GPU_WORKER_MEM_LIMIT" in env_example
+    assert "POLYMARKET_PROBABILITY_CPU_TARGET_PERCENT:" in compose
+    assert "POLYMARKET_PROBABILITY_MAX_TOTAL_PATHS:" in compose
+    assert "POLYMARKET_PROBABILITY_FRAGMENTS_PATH:" in compose
+    assert '--worker-mode "$WORKER_MODE"' in entrypoint
+    assert (
+        'PROBABILITY_FRAGMENTS_PATH="${POLYMARKET_PROBABILITY_FRAGMENTS_PATH:-/var/lib/polymarket/live/probability_fragments.json}"'
+        in entrypoint
+    )
+    assert '--probability-fragments-path "$PROBABILITY_FRAGMENTS_PATH"' in entrypoint
+    assert '--generator-policy "$GENERATOR_POLICY"' in entrypoint
+    assert '--cpu-target-percent "$CPU_TARGET_PERCENT"' in entrypoint
+    assert '--max-rss-mb "$MAX_RSS_MB"' in entrypoint
+    assert '--max-cycle-runtime-ms "$MAX_CYCLE_RUNTIME_MS"' in entrypoint
+    assert '--max-total-paths "$MAX_TOTAL_PATHS"' in entrypoint
+    assert '--sustained-breach-cycles "$SUSTAINED_BREACH_CYCLES"' in entrypoint
+    assert '--fragment-max-rows "$FRAGMENT_MAX_ROWS"' in entrypoint
+    assert '--cpu-threads "$CPU_THREADS"' in entrypoint
     assert "POLYMARKET_COLLECTOR_IMAGE=polymarket-rust-collector:latest" in env_example
     assert "POLYMARKET_NORMALIZER_IMAGE=polymarket-normalizer:latest" in env_example
     assert "POLYMARKET_CUDA_PROBABILITY_IMAGE=polymarket-cuda-probability:latest" in env_example
+
+
+def test_spoon_and_thepc_compose_overlays_render() -> None:
+    if shutil.which("docker") is None:
+        pytest.skip("docker CLI unavailable")
+    compose = ROOT / "deploy" / "collector" / "docker-compose.yml"
+    for overlay in (
+        ROOT / "deploy" / "collector" / "docker-compose.spoon-cpu-authority.yml",
+        ROOT / "deploy" / "collector" / "docker-compose.thepc-gpu-api.yml",
+    ):
+        subprocess.run(
+            ["docker", "compose", "-f", str(compose), "-f", str(overlay), "config"],
+            cwd=ROOT,
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
 
 
 def test_pc_image_build_script_exports_docker_tarballs_and_manifest() -> None:
@@ -266,18 +329,16 @@ def test_pc_deploy_installs_duckdb_ui_snapshot_launcher() -> None:
     assert "open-polymarket-duckdb-ui.cmd" in script
     assert "Polymarket DuckDB UI.lnk" in script
     assert "https://install.duckdb.org" in script
-    assert "CALL start_ui_server()" in script
-    assert "SET ui_local_port" in script
+    assert "polymarket_duckdb_viewer.py" in script
+    assert "ThreadingHTTPServer" in script
+    assert 'curl -fsS --max-time 2 "http://127.0.0.1:\\${PORT}/api/tables"' in script
     assert 'SNAPSHOT_TMP="\\$SNAPSHOT_DIR/snapshot.duckdb"' in script
-    assert 'tail -f /dev/null | "\\$@"' in script
     assert "ATTACH \\$(quote_sql_string \"\\$SOURCE_DB\") AS source_db (READ_ONLY)" in script
     assert "COPY FROM DATABASE source_db TO snapshot" in script
-    assert (
-        "ATTACH \\$(quote_sql_string \"\\$SNAPSHOT_DB\") AS polymarket (READ_ONLY)"
-        in script
-    )
+    assert 'subprocess.run(' in script
+    assert '"-readonly", self.db_path, "-json", "-c", sql' in script
     assert "stop normalizer outcome-refresh" in script
-    assert "up -d --no-deps normalizer outcome-refresh" in script
+    assert "up -d --no-deps normalizer" in script
 
 
 def test_prebuilt_image_deploy_script_loads_images_and_uses_deploy_fast_path() -> None:
@@ -361,7 +422,7 @@ def test_pc_deploy_script_refreshes_tui_desktop_launcher() -> None:
     assert "Runtime not live; starting containers..." in script
     assert (
         "docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml "
-        "up -d --no-recreate collector normalizer outcome-refresh api gpu-probability-worker"
+        "up -d --no-recreate collector normalizer api gpu-probability-worker"
     ) in script
     assert "python3 -c %q" in script
     assert 'm=p.get("monitor") or {}' in script
@@ -422,12 +483,12 @@ def test_deploy_script_supports_prebuilt_images_with_build_fallback() -> None:
     assert 'export POLYMARKET_NORMALIZER_IMAGE="$NORMALIZER_IMAGE"' in script
     assert 'export POLYMARKET_CUDA_PROBABILITY_IMAGE="$CUDA_PROBABILITY_IMAGE"' in script
     assert (
-        'compose -f "$COMPOSE_FILE" up -d collector normalizer outcome-refresh '
+        'compose -f "$COMPOSE_FILE" up -d collector normalizer '
         "api gpu-probability-worker"
     ) in script
     assert (
         'compose -f "$COMPOSE_FILE" up -d --build '
-        "collector normalizer outcome-refresh api gpu-probability-worker"
+        "collector normalizer api gpu-probability-worker"
     ) in script
     assert 'export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-1}"' in script
 
@@ -465,21 +526,31 @@ def test_normalizer_defaults_to_quarter_second_checkpointed_cadence() -> None:
         in entrypoint
     )
     assert (
+        "PROBABILITY_FRAGMENTS_PATH="
+        '"${POLYMARKET_PROBABILITY_FRAGMENTS_PATH:-$LIVE_DIR/probability_fragments.json}"'
+        in entrypoint
+    )
+    assert 'FRAGMENT_MAX_ROWS="${POLYMARKET_ENSEMBLE_FRAGMENT_MAX_ROWS:-250000}"' in entrypoint
+    assert (
         'VOLATILITY_STATUS_PATH="${POLYMARKET_VOLATILITY_STATUS_PATH:-$LIVE_DIR/volatility.json}"'
         in entrypoint
     )
     assert "run-rust-normalizer-sidecar" in entrypoint
-    assert "exec polymarket-engine" in entrypoint
+    assert "set -- polymarket-engine" in entrypoint
+    assert 'exec "$@"' in entrypoint
     assert "while true" not in entrypoint
     assert '--interval-seconds "$INTERVAL_SECONDS"' in entrypoint
     assert '--normalized-health-path "$NORMALIZED_HEALTH_PATH"' in entrypoint
     assert '--probability-inputs-path "$PROBABILITY_INPUTS_PATH"' in entrypoint
+    assert '--probability-fragments-path "$PROBABILITY_FRAGMENTS_PATH"' in entrypoint
+    assert '--fragment-max-rows "$FRAGMENT_MAX_ROWS"' in entrypoint
     assert '--outcome-status-path "$OUTCOME_STATUS_PATH"' in entrypoint
     assert '--volatility-status-path "$VOLATILITY_STATUS_PATH"' in entrypoint
-    assert "--enable-outcome-refresh" not in entrypoint
+    assert "--enable-outcome-refresh" in entrypoint
+    assert 'ENABLE_OUTCOME_REFRESH="${POLYMARKET_ENABLE_OUTCOME_REFRESH:-0}"' in entrypoint
 
 
-def test_outcome_refresh_sidecar_is_deployed_separately_from_hot_normalizer() -> None:
+def test_outcome_refresh_is_owned_by_hot_normalizer_with_sidecar_fallback() -> None:
     env_example = (ROOT / "deploy" / "collector" / ".env.example").read_text(
         encoding="utf-8"
     )
@@ -513,13 +584,13 @@ def test_deploy_script_requires_running_normalizer_before_success() -> None:
     script = (ROOT / "scripts" / "deploy.sh").read_text(encoding="utf-8")
 
     assert "normalizer_running()" in script
-    assert "outcome_refresh_running()" in script
+    assert "outcome_refresh_stopped()" in script
     assert "outcome_status_fresh()" in script
     assert "ps --services --status running normalizer" in script
     assert "ps --services --status running outcome-refresh" in script
     assert "normalizer_running \\" in script
     assert "&& normalizer_uses_sidecar \\" in script
-    assert "&& outcome_refresh_running \\" in script
+    assert "&& outcome_refresh_stopped \\" in script
     assert "&& outcome_status_fresh \\" in script
 
 
@@ -530,5 +601,5 @@ def test_deploy_script_rejects_old_normalize_rust_events_normalizer() -> None:
     assert "run-rust-normalizer-sidecar" in script
     assert 'compose -f "$COMPOSE_FILE" top normalizer' in script
     assert "ps -eo args" not in script
-    assert "&& outcome_refresh_running \\" in script
+    assert "&& outcome_refresh_stopped \\" in script
     assert "&& outcome_status_fresh \\" in script

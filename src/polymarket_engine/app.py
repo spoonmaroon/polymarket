@@ -22,6 +22,7 @@ def create_app(
     normalized_health_path: Path = Path("data/live/normalized_health.json"),
     probability_status_path: Optional[Path] = None,
     probability_inputs_path: Optional[Path] = None,
+    probability_fragments_path: Optional[Path] = None,
     outcome_status_path: Optional[Path] = None,
     target_cache_path: Optional[Path] = None,
     volatility_status_path: Optional[Path] = None,
@@ -36,6 +37,9 @@ def create_app(
     )
     probability_inputs_path = probability_inputs_path or status_path.with_name(
         "probability_inputs.json"
+    )
+    probability_fragments_path = probability_fragments_path or status_path.with_name(
+        "probability_fragments.json"
     )
     outcome_status_path = outcome_status_path or status_path.with_name("outcomes.json")
     target_cache_path = target_cache_path or status_path.with_name("targets.json")
@@ -55,6 +59,7 @@ def create_app(
             normalized_health_path=normalized_health_path,
             probability_status_path=probability_status_path,
             probability_inputs_path=probability_inputs_path,
+            probability_fragments_path=probability_fragments_path,
             outcome_status_path=outcome_status_path,
             target_cache_path=target_cache_path,
             volatility_status_path=volatility_status_path,
@@ -96,6 +101,10 @@ def create_app_from_env() -> FastAPI:
         probability_inputs_path=_env_path(
             "POLYMARKET_PROBABILITY_INPUTS_PATH",
             status_path.with_name("probability_inputs.json"),
+        ),
+        probability_fragments_path=_env_path(
+            "POLYMARKET_PROBABILITY_FRAGMENTS_PATH",
+            status_path.with_name("probability_fragments.json"),
         ),
         outcome_status_path=_env_path(
             "POLYMARKET_OUTCOME_STATUS_PATH",

@@ -37,6 +37,7 @@ FULL_RAW_TREE_SCAN_INTERVAL_CYCLES = 240
 IDLE_NORMALIZED_HEALTH_WRITE_INTERVAL_SECONDS = 5.0
 PROBABILITY_OUTPUT_LIMIT = 8
 PROBABILITY_MAX_STATE_AGE_SECONDS = 600.0
+DEFAULT_FRAGMENT_MAX_ROWS = 250_000
 OUTCOME_REFRESH_INTERVAL_SECONDS = 30.0
 OUTCOME_PENDING_REFRESH_INTERVAL_SECONDS = 5.0
 VOLATILITY_STATUS_SCHEMA_VERSION = "polymarket-volatility-runtime-v1"
@@ -132,6 +133,8 @@ def run_rust_normalizer_cycle(
     normalized_health_path: Path,
     probability_status_path: Path | None = None,
     probability_inputs_path: Path | None = None,
+    probability_fragments_path: Path | None = None,
+    fragment_max_rows: int = DEFAULT_FRAGMENT_MAX_ROWS,
     outcome_status_path: Path | None = None,
     target_status_path: Path | None = None,
     volatility_status_path: Path | None = None,
@@ -147,6 +150,9 @@ def run_rust_normalizer_cycle(
     probability_inputs_path = probability_inputs_path or normalized_health_path.with_name(
         "probability_inputs.json"
     )
+    probability_fragments_path = probability_fragments_path or normalized_health_path.with_name(
+        "probability_fragments.json"
+    )
     outcome_status_path = outcome_status_path or normalized_health_path.with_name(
         "outcomes.json"
     )
@@ -159,6 +165,8 @@ def run_rust_normalizer_cycle(
             normalized_health_path=normalized_health_path,
             probability_status_path=probability_status_path,
             probability_inputs_path=probability_inputs_path,
+            probability_fragments_path=probability_fragments_path,
+            fragment_max_rows=fragment_max_rows,
             outcome_status_path=outcome_status_path,
             target_status_path=target_status_path,
             volatility_status_path=volatility_status_path,
@@ -189,6 +197,8 @@ def _run_rust_normalizer_cycle_with_store(
     state_read_cache: CurrentDecisionStateReadCache | None = None,
     probability_status_path: Path | None = None,
     probability_inputs_path: Path | None = None,
+    probability_fragments_path: Path | None = None,
+    fragment_max_rows: int = DEFAULT_FRAGMENT_MAX_ROWS,
     outcome_status_path: Path | None = None,
     target_status_path: Path | None = None,
     volatility_status_path: Path | None = None,
@@ -199,6 +209,9 @@ def _run_rust_normalizer_cycle_with_store(
     )
     probability_inputs_path = probability_inputs_path or normalized_health_path.with_name(
         "probability_inputs.json"
+    )
+    probability_fragments_path = probability_fragments_path or normalized_health_path.with_name(
+        "probability_fragments.json"
     )
     outcome_status_path = outcome_status_path or normalized_health_path.with_name(
         "outcomes.json"
@@ -253,6 +266,8 @@ def _run_rust_normalizer_cycle_with_store(
                 include_next=include_next,
                 read_cache=state_read_cache,
                 probability_inputs_path=probability_inputs_path,
+                probability_fragments_path=probability_fragments_path,
+                fragment_max_rows=fragment_max_rows,
             )
         except ValueError as exc:
             unavailable = (_state_build_unavailable(exc),)
@@ -315,6 +330,8 @@ def run_rust_normalizer_loop(
     normalized_health_path: Path,
     probability_status_path: Path | None = None,
     probability_inputs_path: Path | None = None,
+    probability_fragments_path: Path | None = None,
+    fragment_max_rows: int = DEFAULT_FRAGMENT_MAX_ROWS,
     outcome_status_path: Path | None = None,
     target_status_path: Path | None = None,
     volatility_status_path: Path | None = None,
@@ -330,6 +347,9 @@ def run_rust_normalizer_loop(
     )
     probability_inputs_path = probability_inputs_path or normalized_health_path.with_name(
         "probability_inputs.json"
+    )
+    probability_fragments_path = probability_fragments_path or normalized_health_path.with_name(
+        "probability_fragments.json"
     )
     outcome_status_path = outcome_status_path or normalized_health_path.with_name(
         "outcomes.json"
@@ -403,6 +423,8 @@ def run_rust_normalizer_loop(
                     normalized_health_path=normalized_health_path,
                     probability_status_path=probability_status_path,
                     probability_inputs_path=probability_inputs_path,
+                    probability_fragments_path=probability_fragments_path,
+                    fragment_max_rows=fragment_max_rows,
                     outcome_status_path=outcome_status_path,
                     target_status_path=target_status_path,
                     volatility_status_path=volatility_status_path,
@@ -429,6 +451,8 @@ def run_rust_normalizer_loop(
                         normalized_health_path=normalized_health_path,
                         probability_status_path=probability_status_path,
                         probability_inputs_path=probability_inputs_path,
+                        probability_fragments_path=probability_fragments_path,
+                        fragment_max_rows=fragment_max_rows,
                         outcome_status_path=outcome_status_path,
                         target_status_path=target_status_path,
                         volatility_status_path=volatility_status_path,
@@ -454,6 +478,8 @@ def run_rust_normalizer_loop(
                         normalized_health_path=normalized_health_path,
                         probability_status_path=probability_status_path,
                         probability_inputs_path=probability_inputs_path,
+                        probability_fragments_path=probability_fragments_path,
+                        fragment_max_rows=fragment_max_rows,
                         outcome_status_path=outcome_status_path,
                         target_status_path=target_status_path,
                         volatility_status_path=volatility_status_path,
@@ -488,6 +514,8 @@ def run_rust_normalizer_loop(
                         normalized_health_path=normalized_health_path,
                         probability_status_path=probability_status_path,
                         probability_inputs_path=probability_inputs_path,
+                        probability_fragments_path=probability_fragments_path,
+                        fragment_max_rows=fragment_max_rows,
                         outcome_status_path=outcome_status_path,
                         target_status_path=target_status_path,
                         volatility_status_path=volatility_status_path,
@@ -520,6 +548,8 @@ def run_rust_normalizer_loop(
                         normalized_health_path=normalized_health_path,
                         probability_status_path=probability_status_path,
                         probability_inputs_path=probability_inputs_path,
+                        probability_fragments_path=probability_fragments_path,
+                        fragment_max_rows=fragment_max_rows,
                         outcome_status_path=outcome_status_path,
                         target_status_path=target_status_path,
                         volatility_status_path=volatility_status_path,
@@ -590,6 +620,8 @@ def _run_changed_rust_normalizer_cycle_with_store(
     state_read_cache: CurrentDecisionStateReadCache | None = None,
     probability_status_path: Path | None = None,
     probability_inputs_path: Path | None = None,
+    probability_fragments_path: Path | None = None,
+    fragment_max_rows: int = DEFAULT_FRAGMENT_MAX_ROWS,
     outcome_status_path: Path | None = None,
     target_status_path: Path | None = None,
     volatility_status_path: Path | None = None,
@@ -600,6 +632,9 @@ def _run_changed_rust_normalizer_cycle_with_store(
     )
     probability_inputs_path = probability_inputs_path or normalized_health_path.with_name(
         "probability_inputs.json"
+    )
+    probability_fragments_path = probability_fragments_path or normalized_health_path.with_name(
+        "probability_fragments.json"
     )
     outcome_status_path = outcome_status_path or normalized_health_path.with_name(
         "outcomes.json"
@@ -679,6 +714,8 @@ def _run_changed_rust_normalizer_cycle_with_store(
                 include_next=include_next,
                 read_cache=state_read_cache,
                 probability_inputs_path=probability_inputs_path,
+                probability_fragments_path=probability_fragments_path,
+                fragment_max_rows=fragment_max_rows,
             )
         except ValueError as exc:
             unavailable = (_state_build_unavailable(exc),)
@@ -755,6 +792,8 @@ def _run_idle_rust_normalizer_cycle_with_store(
     state_read_cache: CurrentDecisionStateReadCache | None = None,
     probability_status_path: Path | None = None,
     probability_inputs_path: Path | None = None,
+    probability_fragments_path: Path | None = None,
+    fragment_max_rows: int = DEFAULT_FRAGMENT_MAX_ROWS,
     outcome_status_path: Path | None = None,
     target_status_path: Path | None = None,
     volatility_status_path: Path | None = None,
@@ -765,6 +804,9 @@ def _run_idle_rust_normalizer_cycle_with_store(
     )
     probability_inputs_path = probability_inputs_path or normalized_health_path.with_name(
         "probability_inputs.json"
+    )
+    probability_fragments_path = probability_fragments_path or normalized_health_path.with_name(
+        "probability_fragments.json"
     )
     outcome_status_path = outcome_status_path or normalized_health_path.with_name(
         "outcomes.json"
@@ -806,6 +848,8 @@ def _run_idle_rust_normalizer_cycle_with_store(
                 include_next=include_next,
                 read_cache=state_read_cache,
                 probability_inputs_path=probability_inputs_path,
+                probability_fragments_path=probability_fragments_path,
+                fragment_max_rows=fragment_max_rows,
             )
         except ValueError as exc:
             unavailable = (_state_build_unavailable(exc),)

@@ -94,14 +94,29 @@ def _is_transient_duckdb_lock_error(exc: duckdb.Error) -> bool:
 
 def _write_locked_outcome_status(*, out_path: Path, exc: duckdb.Error) -> None:
     rows = _existing_outcome_status_rows(out_path)
-    payload = {
-        "schema_version": OUTCOME_HISTORY_SCHEMA_VERSION,
-        "ok": False,
-        "state": "LOCKED",
-        "error": f"DuckDB lock unavailable: {exc}",
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "rows": rows,
-    }
+    generated_at = datetime.now(timezone.utc).isoformat()
+    error = f"DuckDB lock unavailable: {exc}"
+    if rows:
+        payload = {
+            "schema_version": OUTCOME_HISTORY_SCHEMA_VERSION,
+            "ok": True,
+            "state": "OK",
+            "generated_at": generated_at,
+            "rows": rows,
+            "refresh_ok": False,
+            "refresh_state": "LOCKED",
+            "refresh_error": error,
+            "served_from": "last_good_rows",
+        }
+    else:
+        payload = {
+            "schema_version": OUTCOME_HISTORY_SCHEMA_VERSION,
+            "ok": False,
+            "state": "LOCKED",
+            "error": error,
+            "generated_at": generated_at,
+            "rows": [],
+        }
     out_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = out_path.with_suffix(f"{out_path.suffix}.tmp")
     tmp_path.write_text(

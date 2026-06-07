@@ -126,3 +126,48 @@ def test_outcome_sidecar_writes_locked_status_after_transient_duckdb_lock(
     assert payload["state"] == "LOCKED"
     assert "Conflicting lock is held" in payload["error"]
     assert payload["rows"] == []
+
+
+def test_outcome_sidecar_serves_last_good_rows_after_transient_duckdb_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    outcome_status_path = tmp_path / "live" / "outcomes.json"
+    outcome_status_path.parent.mkdir()
+    outcome_status_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "polymarket-outcome-runtime-v1",
+                "ok": True,
+                "state": "OK",
+                "generated_at": "2026-06-07T00:00:00+00:00",
+                "rows": [{"market_slug": "btc-updown-5m-1"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_refresh(*args: Any, **kwargs: Any) -> int:
+        raise duckdb.IOException("Conflicting lock is held")
+
+    monkeypatch.setattr(
+        "polymarket_engine.validation.outcome_sidecar.refresh_market_outcomes",
+        fake_refresh,
+    )
+
+    run_outcome_refresh_loop(
+        duckdb_path=tmp_path / "db.duckdb",
+        outcome_status_path=outcome_status_path,
+        interval_seconds=30.0,
+        max_cycles=1,
+    )
+
+    payload = json.loads(outcome_status_path.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == "polymarket-outcome-runtime-v1"
+    assert payload["ok"] is True
+    assert payload["state"] == "OK"
+    assert payload["refresh_ok"] is False
+    assert payload["refresh_state"] == "LOCKED"
+    assert "Conflicting lock is held" in payload["refresh_error"]
+    assert payload["served_from"] == "last_good_rows"
+    assert payload["rows"] == [{"market_slug": "btc-updown-5m-1"}]

@@ -10,6 +10,8 @@ import pytest
 
 from polymarket_engine.domain.contracts import ContractSpec
 from polymarket_engine.domain.market_state import DecisionState
+from polymarket_engine.probability.generator_fragments import GeneratorFragment
+from polymarket_engine.probability.generator_fragments import write_probability_fragments
 from polymarket_engine.probability.hot_inputs import write_hot_probability_inputs
 from polymarket_engine.probability.runtime import (
     ProbabilityRuntimeCache,
@@ -39,33 +41,53 @@ def test_compute_and_persist_rows_batches_valid_probability_outputs(
         def insert_probability_output(self, **_: object) -> None:
             raise AssertionError("runtime should use the batch persistence path")
 
-    def fake_monte_carlo(
+    def fake_ensemble(
         probability_input: ProbabilityInput,
         *,
         path_count: int,
         steps: int,
         seed: int,
+        history_fragments: tuple[tuple[float, ...], ...] | None = None,
     ) -> ProbabilityOutput:
+        del history_fragments
         return ProbabilityOutput(
             state_id=probability_input.state_id,
             asof_ts=probability_input.asof_ts,
             p_finish=0.58,
             p_no_touch=0.81,
             z_path=probability_input.z_path,
-            model_version="test-model",
+            model_version="ensemble-v1",
             seed=seed,
-            diagnostics={"path_count": path_count, "steps": steps},
+            diagnostics={
+                "backend": "ensemble",
+                "generator_version": "four-generator-ensemble-v1",
+                "path_count": path_count,
+                "steps": steps,
+                "effective_weights": {"empirical_conditional": 0.4},
+                "generator_summary": {
+                    "empirical_conditional": {
+                        "p_finish": 0.58,
+                        "p_no_touch": 0.81,
+                        "weight": 0.4,
+                        "sparse": False,
+                    }
+                },
+            },
         )
 
     monkeypatch.setattr(
-        "polymarket_engine.probability.runtime.run_seeded_monte_carlo",
-        fake_monte_carlo,
+        "polymarket_engine.probability.runtime.run_four_generator_ensemble",
+        fake_ensemble,
     )
 
     rows, errors = _compute_and_persist_rows(store=_Store(), inputs=runtime_inputs)  # type: ignore[arg-type]
 
     assert errors == []
     assert len(rows) == 2
+    assert rows[0]["model_version"] == "ensemble-v1"
+    assert rows[0]["backend"] == "ensemble"
+    assert rows[0]["generator_version"] == "four-generator-ensemble-v1"
+    assert rows[0]["generator_summary"]["empirical_conditional"]["weight"] == 0.4
     assert len(calls) == 1
     assert [row[1].state_id for row in calls[0]] == ["state-btc-up", "state-eth-up"]
 
@@ -86,13 +108,15 @@ def test_compute_and_persist_rows_batches_valid_outputs_after_compute_failure(
         ) -> None:
             calls.append(tuple(rows))
 
-    def fake_monte_carlo(
+    def fake_ensemble(
         probability_input: ProbabilityInput,
         *,
         path_count: int,
         steps: int,
         seed: int,
+        history_fragments: tuple[tuple[float, ...], ...] | None = None,
     ) -> ProbabilityOutput:
+        del history_fragments
         if probability_input.state_id == "state-btc-up":
             raise RuntimeError("fixture compute failure")
         return ProbabilityOutput(
@@ -101,14 +125,19 @@ def test_compute_and_persist_rows_batches_valid_outputs_after_compute_failure(
             p_finish=0.58,
             p_no_touch=0.81,
             z_path=probability_input.z_path,
-            model_version="test-model",
+            model_version="ensemble-v1",
             seed=seed,
-            diagnostics={"path_count": path_count, "steps": steps},
+            diagnostics={
+                "backend": "ensemble",
+                "generator_version": "four-generator-ensemble-v1",
+                "path_count": path_count,
+                "steps": steps,
+            },
         )
 
     monkeypatch.setattr(
-        "polymarket_engine.probability.runtime.run_seeded_monte_carlo",
-        fake_monte_carlo,
+        "polymarket_engine.probability.runtime.run_four_generator_ensemble",
+        fake_ensemble,
     )
 
     rows, errors = _compute_and_persist_rows(store=_Store(), inputs=runtime_inputs)  # type: ignore[arg-type]
@@ -149,7 +178,117 @@ def test_build_probability_payload_uses_hot_inputs_without_duckdb_read(
     assert payload["state"] == "OK"
     assert payload["errors"] == []
     assert payload["rows"]
-    assert payload["rows"][0]["contract"] == "BTC 5m UP"
+    row = payload["rows"][0]
+    assert row["contract"] == "BTC 5m UP"
+    assert row["model_version"] == "ensemble-v1"
+    assert row["backend"] == "ensemble"
+    assert row["generator_version"] == "four-generator-ensemble-v1"
+    assert row["generator_summary"]
+    assert row["effective_weights"]
+
+
+def test_hot_input_fallback_uses_probability_fragments_prior(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hot_inputs_path = tmp_path / "live" / "probability_inputs.json"
+    probability_fragments_path = tmp_path / "live" / "probability_fragments.json"
+    decision_state = _decision_state()
+    write_hot_probability_inputs(
+        out_path=hot_inputs_path,
+        states=(decision_state,),
+        generated_at=datetime.now(timezone.utc),
+    )
+    prior_one = (70_000.0, 70_020.0, 70_060.0)
+    prior_two = (70_000.0, 70_040.0, 70_090.0)
+    future = (70_000.0, 69_980.0, 69_950.0)
+    write_probability_fragments(
+        out_path=probability_fragments_path,
+        generated_at=datetime.now(timezone.utc),
+        fragments=(
+            GeneratorFragment(
+                fragment_id="btc-prior-one",
+                asset="BTC",
+                asof_ts=decision_state.asof_ts,
+                prices=prior_one,
+                horizon_seconds=300,
+                z_path_bucket="near",
+                quality_bucket="OK",
+            ),
+            GeneratorFragment(
+                fragment_id="btc-prior-two",
+                asset="BTC",
+                asof_ts=decision_state.asof_ts,
+                prices=prior_two,
+                horizon_seconds=300,
+                z_path_bucket="near",
+                quality_bucket="OK",
+            ),
+            GeneratorFragment(
+                fragment_id="btc-future",
+                asset="BTC",
+                asof_ts=datetime.now(timezone.utc),
+                prices=future,
+                horizon_seconds=300,
+                z_path_bucket="near",
+                quality_bucket="OK",
+            ),
+        ),
+    )
+    seen_history: list[tuple[tuple[float, ...], ...] | None] = []
+
+    def fake_ensemble(
+        probability_input: ProbabilityInput,
+        *,
+        path_count: int,
+        steps: int,
+        seed: int,
+        history_fragments: tuple[tuple[float, ...], ...] | None = None,
+    ) -> ProbabilityOutput:
+        seen_history.append(history_fragments)
+        return ProbabilityOutput(
+            state_id=probability_input.state_id,
+            asof_ts=probability_input.asof_ts,
+            p_finish=0.58,
+            p_no_touch=0.81,
+            z_path=probability_input.z_path,
+            model_version="ensemble-v1",
+            seed=seed,
+            diagnostics={
+                "backend": "ensemble",
+                "generator_version": "four-generator-ensemble-v1",
+                "path_count": path_count,
+                "steps": steps,
+                "effective_weights": {"empirical_conditional": 0.4},
+                "generator_summary": {},
+                "generator_runs": [],
+                "effective_generator_values": {},
+                "u_gen": 0.03,
+                "mc_dispersion": 0.08,
+                "uncertainty_buffer": 0.055,
+                "path_diagnosis": "OK",
+                "sparse_scope": False,
+            },
+        )
+
+    monkeypatch.setattr(
+        "polymarket_engine.probability.runtime.run_four_generator_ensemble",
+        fake_ensemble,
+    )
+
+    payload = build_probability_payload(
+        duckdb_path=tmp_path / "missing.duckdb",
+        limit=4,
+        probability_inputs_path=hot_inputs_path,
+        probability_fragments_path=probability_fragments_path,
+    )
+
+    assert seen_history == [(prior_one, prior_two)]
+    row = payload["rows"][0]
+    assert row["prior_fragment_count"] == 2
+    assert row["prior_fragment_reason"] == "exact"
+    assert row["prior_fragment_sparse"] is False
+    assert row["prior_fragment_ids"] == ["btc-prior-one", "btc-prior-two"]
 
 
 def test_probability_runtime_cache_keys_hot_inputs_by_limit(tmp_path: Path) -> None:
