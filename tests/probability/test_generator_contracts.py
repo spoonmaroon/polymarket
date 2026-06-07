@@ -1,367 +1,148 @@
-import math
-from datetime import datetime, timezone
-from typing import Any, cast
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from typing import Any
 
 import pytest
 
 from polymarket_engine.probability.generator_contracts import (
     DynamicWeightScope,
     GeneratorId,
-    GeneratorResult,
     GeneratorRun,
-    GeneratorWeight,
-    HistoricalValidationWindow,
+    generator_runs_to_json,
 )
 
 
-def _asof() -> datetime:
-    return datetime(2026, 6, 5, 16, 0, tzinfo=timezone.utc)
-
-
-def _scope() -> DynamicWeightScope:
-    return DynamicWeightScope(
-        asset="BTC",
-        horizon_seconds=300,
-        seconds_left_bucket="60-120",
-        z_path_bucket="near",
-        vol_regime="normal",
-        vol_trend="rising",
-        wick_regime="quiet",
-        source_quality_state="ready",
-    )
-
-
-def _result() -> GeneratorResult:
-    return GeneratorResult(
-        p_finish=0.62,
-        p_no_touch=0.81,
-        z_path=0.42,
-        diagnostics={"source": "fixture"},
-    )
-
-
-def _validation_window() -> HistoricalValidationWindow:
-    return HistoricalValidationWindow(
-        asof_ts=datetime(2026, 6, 5, 16, 0, tzinfo=timezone.utc),
-        evaluated_through_ts=datetime(2026, 6, 5, 17, 0, tzinfo=timezone.utc),
-        label_window_seconds=3600,
-    )
-
-
-def test_generator_id_values_match_contract() -> None:
-    assert [generator.value for generator in GeneratorId] == [
-        "empirical_conditional",
-        "block_bootstrap",
-        "filtered_historical",
-        "stress_overlay",
-        "lognormal_baseline",
-    ]
-
-
-def test_generator_result_validates_probability_and_path_outputs() -> None:
-    result = _result()
-
-    assert result.p_finish == 0.62
-    assert result.p_no_touch == 0.81
-    assert result.z_path == 0.42
-
-
-def test_generator_result_defensively_freezes_diagnostics() -> None:
-    diagnostics: dict[str, Any] = {
-        "source": {"name": "fixture"},
-        "lags": [1, 2],
-    }
-
-    result = GeneratorResult(
-        p_finish=0.62,
-        p_no_touch=0.81,
-        z_path=0.42,
-        diagnostics=diagnostics,
-    )
-    cast(dict[str, Any], diagnostics["source"])["name"] = "mutated"
-    cast(list[int], diagnostics["lags"]).append(3)
-    diagnostics["new"] = "leak"
-
-    assert result.diagnostics_json_dict() == {
-        "source": {"name": "fixture"},
-        "lags": [1, 2],
-    }
-    with pytest.raises(TypeError):
-        cast(dict[str, Any], result.diagnostics)["new"] = "blocked"
-
-
-@pytest.mark.parametrize(
-    "invalid_diagnostics",
-    (
-        {"created_at": datetime(2026, 6, 5, 16, 0, tzinfo=timezone.utc)},
-        {"bad": {1, 2}},
-        {"raw": b"bytes"},
-        {"nan": math.nan},
-        {"inf": math.inf},
-        {1: "not a string key"},
-    ),
-)
-def test_generator_result_rejects_non_json_diagnostics(
-    invalid_diagnostics: Any,
-) -> None:
-    with pytest.raises(ValueError, match="diagnostics"):
-        GeneratorResult(
-            p_finish=0.62,
-            p_no_touch=0.81,
-            z_path=0.42,
-            diagnostics=cast(Any, invalid_diagnostics),
-        )
-
-
-@pytest.mark.parametrize(
-    ("field_name", "invalid_value"),
-    (
-        ("p_finish", -0.01),
-        ("p_finish", 1.01),
-        ("p_finish", math.nan),
-        ("p_no_touch", -0.01),
-        ("p_no_touch", math.inf),
-        ("z_path", math.nan),
-        ("diagnostics", (("not", "a dict"),)),
-    ),
-)
-def test_generator_result_rejects_invalid_fields(field_name: str, invalid_value: object) -> None:
-    values: dict[str, Any] = {
-        "p_finish": 0.54,
-        "p_no_touch": 0.72,
-        "z_path": 0.30,
-        "diagnostics": {},
-    }
-
-    with pytest.raises(ValueError, match=field_name):
-        GeneratorResult(**{**values, field_name: invalid_value})
-
-
-def test_generator_run_carries_metadata_scope_conditioning_and_result() -> None:
-    run = GeneratorRun(
-        generator_id=GeneratorId.EMPIRICAL_CONDITIONAL,
-        generator_name="Empirical conditional",
-        generator_version="empirical-v1",
-        scope=_scope(),
-        conditioning={"seconds_left_bucket": "60-120", "z_path_bucket": "near"},
-        result=_result(),
-        path_count=10_000,
-        steps=60,
-        seed=17,
-        asof_ts=_asof(),
-        diagnostics={"runtime": "offline"},
-        weight_seed=0.40,
-    )
-
-    assert run.generator_name == "Empirical conditional"
-    assert run.generator_version == "empirical-v1"
-    assert run.scope == _scope()
-    assert run.conditioning == {"seconds_left_bucket": "60-120", "z_path_bucket": "near"}
-    assert run.result == _result()
-    assert run.p_finish == 0.62
-    assert run.p_no_touch == 0.81
-    assert run.z_path == 0.42
-    assert run.steps == 60
-    assert run.weight_seed == 0.40
-    assert run.sparse is False
-    assert run.fallback_level == "none"
-
-
-def test_generator_run_defensively_freezes_conditioning_and_diagnostics() -> None:
-    conditioning: dict[str, Any] = {"bucket": {"z_path": "near"}, "lags": [1, 2]}
-    diagnostics: dict[str, Any] = {"inputs": {"rows": 20}, "warnings": []}
-
-    run = GeneratorRun(
-        generator_id=GeneratorId.EMPIRICAL_CONDITIONAL,
-        generator_name="Empirical conditional",
-        generator_version="empirical-v1",
-        scope=_scope(),
-        conditioning=conditioning,
-        result=_result(),
-        path_count=10_000,
-        steps=60,
-        seed=17,
-        asof_ts=_asof(),
-        diagnostics=diagnostics,
-    )
-    cast(dict[str, Any], conditioning["bucket"])["z_path"] = "mutated"
-    cast(list[int], conditioning["lags"]).append(3)
-    cast(dict[str, Any], diagnostics["inputs"])["rows"] = 99
-    cast(list[str], diagnostics["warnings"]).append("leak")
-
-    assert run.conditioning_json_dict() == {"bucket": {"z_path": "near"}, "lags": [1, 2]}
-    assert run.diagnostics_json_dict() == {"inputs": {"rows": 20}, "warnings": []}
-    with pytest.raises(TypeError):
-        cast(dict[str, Any], run.conditioning)["new"] = "blocked"
-    with pytest.raises(TypeError):
-        cast(dict[str, Any], run.diagnostics)["new"] = "blocked"
-
-
-@pytest.mark.parametrize(
-    ("field_name", "invalid_value"),
-    (
-        ("conditioning", {"created_at": datetime(2026, 6, 5, 16, 0, tzinfo=timezone.utc)}),
-        ("conditioning", {"bad": {1, 2}}),
-        ("conditioning", {"raw": b"bytes"}),
-        ("conditioning", {"nan": math.nan}),
-        ("diagnostics", {"created_at": datetime(2026, 6, 5, 16, 0, tzinfo=timezone.utc)}),
-        ("diagnostics", {"bad": {1, 2}}),
-        ("diagnostics", {"raw": b"bytes"}),
-        ("diagnostics", {"inf": math.inf}),
-    ),
-)
-def test_generator_run_rejects_non_json_conditioning_or_diagnostics(
-    field_name: str,
-    invalid_value: Any,
-) -> None:
-    values: dict[str, Any] = {
-        "generator_id": GeneratorId.BLOCK_BOOTSTRAP,
-        "generator_name": "Block bootstrap",
-        "generator_version": "block-v1",
-        "scope": _scope(),
-        "conditioning": {},
-        "result": _result(),
-        "path_count": 5000,
-        "steps": 60,
-        "seed": 23,
-        "asof_ts": _asof(),
-        "diagnostics": {},
-    }
-
-    with pytest.raises(ValueError, match=field_name):
-        GeneratorRun(**{**values, field_name: invalid_value})
-
-
-@pytest.mark.parametrize(
-    ("field_name", "invalid_value"),
-    (
-        ("generator_name", ""),
-        ("generator_version", ""),
-        ("scope", "BTC"),
-        ("conditioning", (("not", "a dict"),)),
-        ("result", "not-a-result"),
-        ("path_count", 0),
-        ("path_count", True),
-        ("steps", 0),
-        ("steps", True),
-        ("seed", 1.5),
-        ("seed", True),
-        ("diagnostics", (("not", "a dict"),)),
-        ("weight_seed", -0.01),
-        ("weight_seed", 1.01),
-        ("weight_seed", math.nan),
-    ),
-)
-def test_generator_run_rejects_invalid_fields(field_name: str, invalid_value: object) -> None:
-    values: dict[str, Any] = {
-        "generator_id": GeneratorId.BLOCK_BOOTSTRAP,
-        "generator_name": "Block bootstrap",
-        "generator_version": "block-v1",
-        "scope": _scope(),
-        "conditioning": {},
-        "result": _result(),
-        "path_count": 5000,
-        "steps": 60,
-        "seed": 23,
-        "asof_ts": _asof(),
-        "diagnostics": {},
-    }
-
-    with pytest.raises(ValueError, match=field_name):
-        GeneratorRun(**{**values, field_name: invalid_value})
-
-
-def test_generator_run_requires_timezone_aware_asof() -> None:
-    with pytest.raises(ValueError, match="asof_ts"):
+def test_generator_run_requires_probability_values() -> None:
+    with pytest.raises(ValueError, match="p_finish"):
         GeneratorRun(
-            generator_id=GeneratorId.FILTERED_HISTORICAL,
-            generator_name="Filtered historical",
-            generator_version="filtered-v1",
-            scope=_scope(),
-            conditioning={},
-            result=_result(),
-            path_count=5000,
-            steps=60,
-            seed=23,
-            asof_ts=datetime(2026, 6, 5, 16, 0),
+            generator_id=GeneratorId.EMPIRICAL_CONDITIONAL,
+            p_finish=1.2,
+            p_no_touch=0.4,
+            path_count=1024,
+            effective_path_count=900,
+            seed=1,
+            asof_ts=datetime(2026, 6, 6, tzinfo=UTC),
+            runtime_ms=12.5,
+            sparse=False,
             diagnostics={},
         )
 
 
-def test_dynamic_weight_scope_is_hashable() -> None:
-    scope = _scope()
+def test_generator_scope_is_hashable() -> None:
+    scope = DynamicWeightScope(
+        asset="BTC",
+        horizon_seconds=300,
+        seconds_left_bucket="120-180",
+        z_path_bucket="0.50-1.00",
+        vol_regime="normal",
+        vol_trend="flat",
+        wick_regime="quiet",
+        source_quality_state="ok",
+    )
 
     assert {scope: "weights"}[scope] == "weights"
 
 
-def test_historical_validation_window_can_describe_post_asof_label_period() -> None:
-    window = _validation_window()
-
-    assert window.asof_ts == datetime(2026, 6, 5, 16, 0, tzinfo=timezone.utc)
-    assert window.evaluated_through_ts == datetime(2026, 6, 5, 17, 0, tzinfo=timezone.utc)
-    assert window.label_window_seconds == 3600
-
-
-@pytest.mark.parametrize(
-    ("field_name", "invalid_value"),
-    (
-        ("asof_ts", datetime(2026, 6, 5, 16, 0)),
-        ("evaluated_through_ts", datetime(2026, 6, 5, 17, 0)),
-        ("evaluated_through_ts", datetime(2026, 6, 5, 15, 59, tzinfo=timezone.utc)),
-        ("label_window_seconds", 0),
-        ("label_window_seconds", True),
-    ),
-)
-def test_historical_validation_window_rejects_invalid_fields(
-    field_name: str,
-    invalid_value: Any,
-) -> None:
-    values: dict[str, Any] = {
-        "asof_ts": datetime(2026, 6, 5, 16, 0, tzinfo=timezone.utc),
-        "evaluated_through_ts": datetime(2026, 6, 5, 17, 0, tzinfo=timezone.utc),
-        "label_window_seconds": 3600,
-    }
-
-    with pytest.raises(ValueError, match=field_name):
-        HistoricalValidationWindow(**{**values, field_name: invalid_value})
-
-
-def test_generator_weight_accepts_optional_score() -> None:
-    weight = GeneratorWeight(
-        generator_id=GeneratorId.STRESS_OVERLAY,
-        weight=0.10,
-        scope=_scope(),
-        label_count=40,
-        source="seed",
-        validation_window=_validation_window(),
-        score=0.21,
+def test_generator_runs_to_json_is_stable_and_strict() -> None:
+    run = GeneratorRun(
+        generator_id=GeneratorId.BLOCK_BOOTSTRAP,
+        p_finish=0.61,
+        p_no_touch=0.58,
+        path_count=2048,
+        effective_path_count=1900,
+        seed=17,
+        asof_ts=datetime(2026, 6, 6, tzinfo=UTC),
+        runtime_ms=8.25,
+        sparse=False,
+        diagnostics={"bucket": "btc-5m"},
     )
 
-    assert weight.score == 0.21
-    assert weight.validation_window == _validation_window()
+    payload = generator_runs_to_json((run,))
+
+    assert payload[0]["generator_id"] == "block_bootstrap"
+    assert payload[0]["asof_ts"] == "2026-06-06T00:00:00+00:00"
 
 
 @pytest.mark.parametrize(
-    ("field_name", "invalid_value"),
+    ("kwargs", "match"),
     (
-        ("weight", -0.01),
-        ("weight", 1.01),
-        ("weight", math.nan),
-        ("label_count", -1),
-        ("label_count", True),
-        ("score", math.inf),
+        ({"generator_id": "block_bootstrap"}, "generator_id"),
+        ({"path_count": 0}, "path_count"),
+        ({"effective_path_count": -1}, "effective_path_count"),
+        ({"runtime_ms": float("inf")}, "runtime_ms"),
+        ({"asof_ts": "bad"}, "asof_ts"),
+        ({"asof_ts": datetime(2026, 6, 6)}, "asof_ts"),
+        ({"diagnostics": {1: "bad"}}, "diagnostics"),
+        ({"diagnostics": {"nested": {1: "bad"}}}, "diagnostics"),
+        ({"diagnostics": {"nested": ({1: "bad"},)}}, "diagnostics"),
+        ({"diagnostics": {"bad": float("nan")}}, "diagnostics"),
     ),
 )
-def test_generator_weight_rejects_invalid_fields(field_name: str, invalid_value: object) -> None:
-    values: dict[str, Any] = {
-        "generator_id": GeneratorId.LOGNORMAL_BASELINE,
-        "weight": 0.20,
-        "scope": _scope(),
-        "label_count": 12,
-        "source": "fixture",
-        "validation_window": _validation_window(),
-        "score": 0.33,
+def test_generator_run_validates_contract_fields(
+    kwargs: dict[str, Any],
+    match: str,
+) -> None:
+    values = {
+        "generator_id": GeneratorId.LOGNORMAL_CONTROL,
+        "p_finish": 0.5,
+        "p_no_touch": 0.5,
+        "path_count": 1024,
+        "effective_path_count": 1024,
+        "seed": None,
+        "asof_ts": datetime(2026, 6, 6, tzinfo=UTC),
+        "runtime_ms": 10.0,
+        "sparse": False,
+        "diagnostics": {},
     }
 
-    with pytest.raises(ValueError, match=field_name):
-        GeneratorWeight(**{**values, field_name: invalid_value})
+    with pytest.raises(ValueError, match=match):
+        GeneratorRun(**{**values, **kwargs})
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    (
+        ({"asset": "SOL"}, "asset"),
+        ({"horizon_seconds": 0}, "horizon_seconds"),
+        ({"seconds_left_bucket": ""}, "seconds_left_bucket"),
+        ({"seconds_left_bucket": ["120-180"]}, "seconds_left_bucket"),
+        ({"vol_regime": ""}, "vol_regime"),
+    ),
+)
+def test_dynamic_weight_scope_validates_bucket_fields(
+    kwargs: dict[str, Any],
+    match: str,
+) -> None:
+    values = {
+        "asset": "ETH",
+        "horizon_seconds": 900,
+        "seconds_left_bucket": "300-600",
+        "z_path_bucket": "0.00-0.50",
+        "vol_regime": "normal",
+        "vol_trend": "flat",
+        "wick_regime": "quiet",
+        "source_quality_state": "ok",
+    }
+
+    with pytest.raises(ValueError, match=match):
+        DynamicWeightScope(**{**values, **kwargs})
+
+
+def test_generator_runs_to_json_rejects_non_finite_nested_values() -> None:
+    run = GeneratorRun(
+        generator_id=GeneratorId.FILTERED_HISTORICAL,
+        p_finish=0.50,
+        p_no_touch=0.48,
+        path_count=1024,
+        effective_path_count=1000,
+        seed=3,
+        asof_ts=datetime(2026, 6, 6, tzinfo=UTC),
+        runtime_ms=5.0,
+        sparse=False,
+        diagnostics={"nested": {"ok": 1.0}},
+    )
+    object.__setattr__(run, "diagnostics", {"nested": {"bad": float("nan")}})
+
+    with pytest.raises(ValueError):
+        generator_runs_to_json((run,))

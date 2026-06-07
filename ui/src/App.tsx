@@ -1,19 +1,29 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   filterGraphableProbabilityRows,
+  generatorBreakdownRows,
+  mergeGraphableProbabilityPayloadRows,
   mergeProbabilityEventsIntoPayload,
-  probabilityDisplayStatus,
   probabilityDisplayValue,
-  probabilityKind,
   probabilityMetadata,
+  probabilityPriorSummary,
   probabilityRowKey,
+  probabilityRuntimeStateLabel,
+  probabilityRowsWithRolloverHold,
   probabilitySelectionKey,
+  visibleProbabilityDiagnosticRows,
 } from "./probabilityRows";
+import {
+  marketGroupKey,
+  marketSideKey,
+  visibleMarketMonitorRows,
+} from "./marketRows";
 
 const LIVE_LIMIT = 12;
 const PROBABILITY_LIMIT = 24;
 const POLL_INTERVAL_MS = 2500;
-const MC_REFRESH_HOLD_MS = 15000;
+const MC_REFRESH_HOLD_MS = 15_000;
+const ROLLOVER_ROW_HOLD_MS = 30_000;
 
 type JsonRecord = Record<string, unknown>;
 
@@ -149,13 +159,9 @@ type ProbabilityRow = {
   p_hat_ci_low?: number;
   p_hat_ci_high?: number;
   p_no_touch?: number;
-  probability_kind?: string;
-  mc_display_status?: string;
   z_path?: number;
   sigma_tau?: number;
   age_ms?: number;
-  source_age_ms?: number | null;
-  book_age_ms?: number | null;
   flags?: string[];
   model_version?: string;
   seed?: number | null;
@@ -164,6 +170,7 @@ type ProbabilityRow = {
   uncertainty_buffer?: number | null;
   path_diagnosis?: string[];
   effective_weights?: Record<string, number>;
+  generator_summary?: unknown;
   decision_hint?: string | null;
   edge_after_costs?: number | null;
   required_edge?: number | null;
@@ -184,11 +191,6 @@ type ProbabilityRow = {
   generated_at?: string;
   valid_from?: string;
   valid_until?: string;
-  refresh_display_until?: string;
-  latency?: {
-    runtime_ms?: number | null;
-    total_lag_ms?: number | null;
-  };
   time_bucket?: string;
   z_path_bucket?: string;
   sigma_bucket?: string;
@@ -197,6 +199,12 @@ type ProbabilityRow = {
   path_count?: number;
   paths_per_seed?: number;
   seed_count?: number;
+  prior_fragment_count?: number;
+  prior_fragment_reason?: string;
+  prior_fragment_sparse?: boolean;
+  prior_fragment_ids?: string[];
+  prior_fragment_error?: string;
+  prior_fragment_generators?: string[];
   prior_sensitivity?: unknown[];
   generator_metadata?: JsonRecord;
   cache_metadata?: JsonRecord;
@@ -231,6 +239,18 @@ type ProbabilityPayload = {
   cache_metadata?: JsonRecord;
   grid_cache?: JsonRecord;
   cache?: JsonRecord;
+  budget?: ProbabilityBudget;
+};
+
+type ProbabilityBudget = {
+  requested_total_paths?: number;
+  allocated_total_paths?: number;
+  max_total_paths?: number;
+  path_budget_per_input?: number;
+  clamped_inputs?: number;
+  worker_mode?: string;
+  generator_policy?: string;
+  cycle_runtime_breached?: boolean;
 };
 
 type ProbabilityEventPayload = {
@@ -285,7 +305,14 @@ export function App() {
   const [live, setLive] = useState<ApiState<RuntimeLivePayload>>(emptyLive);
   const [probabilities, setProbabilities] =
     useState<ApiState<ProbabilityPayload>>(emptyProbabilities);
-  const rows = safeRows(probabilities.payload);
+  const liveRows = useMemo(() => safeRows(probabilities.payload), [probabilities.payload]);
+  const [heldRows, setHeldRows] = useState<ProbabilityRow[]>([]);
+  const [heldRowsAt, setHeldRowsAt] = useState(0);
+  const rows = probabilityRowsWithRolloverHold(liveRows, heldRows, {
+    nowMs: Date.now(),
+    heldAtMs: heldRowsAt,
+    holdMs: ROLLOVER_ROW_HOLD_MS,
+  });
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const requestSequenceRef = useRef(0);
   const marketRows = useMemo(
@@ -299,6 +326,13 @@ export function App() {
     [live.payload?.monitor?.orderbooks, live.payload?.volatility?.rows, rows],
   );
   const selectedRow = selectProbabilityRow(rows, selectedId, Date.now());
+
+  useEffect(() => {
+    if (liveRows.length > 0) {
+      setHeldRows(liveRows);
+      setHeldRowsAt(Date.now());
+    }
+  }, [liveRows]);
 
   useEffect(() => {
     let active = true;
@@ -414,7 +448,6 @@ export function App() {
             marketRows={marketRows}
             onSelectProbability={setSelectedId}
           />
-          <CompactVolatility volatility={live.payload?.volatility ?? null} />
           <ProbabilityTable
             rows={rows}
             selectedKey={selectedRow ? selectionKey(selectedRow) : null}
@@ -428,6 +461,9 @@ export function App() {
           />
           <RuntimeLogPanel live={live} probabilities={probabilities} selectedRow={selectedRow} />
         </section>
+        <aside className="side-stack">
+          <CompactVolatility volatility={live.payload?.volatility ?? null} />
+        </aside>
       </section>
     </main>
   );
@@ -444,18 +480,14 @@ function CompactLiveHealth({
 }) {
   const payload = live.payload;
   const orderbookCount = arrayLength(payload?.monitor?.orderbooks);
-  const nowcastCount = safeNowcastRows(probabilities.payload).length;
-  const latestMetadata = latestProbabilityMetadata(rows);
   return (
     <div className="topbar-health" aria-label="Compact live health">
       <span>{payload?.status?.state ?? statusLabel(live.status)}</span>
       <span>{formatInteger(orderbookCount)} books</span>
-      <span>{probabilities.payload?.state ?? statusLabel(probabilities.status)}</span>
-      <span>{formatInteger(rows.length)} MC</span>
-      <span>{formatInteger(nowcastCount)} NOW</span>
-      <span>{formatInteger(latestMetadata?.totalPaths)} paths</span>
-      <span>{formatAge(latestMetadata?.runtimeMs)}</span>
-      <span>{probabilities.source ?? "poll"}</span>
+      <span>{payload?.volatility?.state ?? "vol -"}</span>
+      <span>{formatProbabilityRuntimeState(probabilities)}</span>
+      <span>{formatInteger(rows.length)} MC rows</span>
+      <span>{formatLatency(payload?.latency)}</span>
     </div>
   );
 }
@@ -481,24 +513,19 @@ function StatusStrip({
     probabilityPayload?.generated_at ??
     livePayload?.status?.generated_at ??
     livePayload?.server_sent_at;
-  const nowcastCount = safeNowcastRows(probabilityPayload).length;
-  const latestMetadata = latestProbabilityMetadata(rows);
   return (
     <section className="status-strip" aria-label="Runtime status">
       <Metric label="Live state" value={liveState} tone={liveTone(livePayload?.ok, live.status)} />
+      <Metric label="Generated" value={formatTimestamp(generatedAt)} />
       <Metric
-        label="MC state"
-        value={probabilityPayload?.state ?? statusLabel(probabilities.status)}
+        label="Monte Carlo"
+        value={formatProbabilityRuntimeState(probabilities)}
         tone={probabilityTone(probabilityPayload)}
       />
-      <Metric label="MC rows" value={formatInteger(rowCount)} />
-      <Metric label="NOWCAST rows" value={formatInteger(nowcastCount)} />
-      <Metric label="CUDA paths" value={formatInteger(latestMetadata?.totalPaths)} />
-      <Metric label="GPU runtime" value={formatAge(latestMetadata?.runtimeMs)} />
-      <Metric label="Total lag" value={formatAge(latestMetadata?.totalLagMs)} />
-      <Metric label="Source" value={probabilities.source ?? "poll"} />
-      <Metric label="Generated" value={formatTimestamp(generatedAt)} />
+      <Metric label="Rows" value={formatInteger(rowCount)} />
+      <Metric label="Paths" value={formatPathBudget(probabilityPayload?.budget, rows)} />
       <Metric label="Cache" value={formatCacheState(probabilityPayload, rows)} />
+      <Metric label="API build" value={formatLatency(livePayload?.latency)} />
       {live.error ? <div className="status-note">Live API: {live.error}</div> : null}
       {probabilities.error ? (
         <div className="status-note">Monte Carlo API: {probabilities.error}</div>
@@ -534,9 +561,9 @@ function MarketMonitor({
             <span>Expiry</span>
             <span>K</span>
             <span>UP bid/ask</span>
-            <span>UP MC</span>
+            <span>MC UP</span>
             <span>DOWN bid/ask</span>
-            <span>DOWN MC</span>
+            <span>MC DOWN</span>
             <span>Vol</span>
           </div>
           {rows.map((row) => (
@@ -581,7 +608,6 @@ function ProbabilityButton({
     return <span>-</span>;
   }
   const key = selectionKey(row);
-  const metadata = probabilityMetadata(row);
   return (
     <button
       className={
@@ -590,11 +616,7 @@ function ProbabilityButton({
       onClick={() => onSelect(key)}
       type="button"
     >
-      <strong>{formatProbability(probabilityDisplayValue(row))}</strong>
-      <small>{compactList([formatLaneStatus(row), formatNoTouch(row)])}</small>
-      <small>
-        {compactList([formatCompactPathCount(metadata.totalPaths), formatAgeIfPresent(metadata.totalLagMs)])}
-      </small>
+      {formatProbability(probabilityDisplayValue(row))}
     </button>
   );
 }
@@ -650,10 +672,7 @@ function ProbabilityTable({
                   <strong>{contractLabel(row)}</strong>
                   <small>{compactList([row.asset, row.side, row.contract_id])}</small>
                 </span>
-                <span className="probability-value-cell">
-                  <strong>{formatProbability(probabilityDisplayValue(row))}</strong>
-                  <small>{compactList([formatLaneStatus(row), formatNoTouch(row)])}</small>
-                </span>
+                <span>{formatProbability(probabilityDisplayValue(row))}</span>
                 <span>
                   <GatePill value={row.decision_hint} />
                 </span>
@@ -693,9 +712,7 @@ function SelectedDetails({
 
   const preview = parseSimulationPreview(row.simulation_preview);
   const pairRows = currentMarketRows(marketRows, Date.now());
-  const selectedMarketRow = marketRowForProbability(row, marketRows);
   const timingLabel = contractTimingLabel(row, Date.now());
-  const metadata = probabilityMetadata(row);
   return (
     <section className="panel detail-panel">
       <div className="simulation-head">
@@ -708,16 +725,15 @@ function SelectedDetails({
       </div>
 
       <div className="hero-metrics">
-        <Metric label="MC p_finish" value={formatProbability(probabilityDisplayValue(row))} />
-        <Metric label="p no touch" value={formatProbability(row.p_no_touch)} />
+        <Metric label="Monte Carlo" value={formatProbability(probabilityDisplayValue(row))} />
+        <Metric label="model" value={row.model_version ?? probabilities?.model_version ?? "-"} />
+        <Metric label="generator" value={row.generator_version ?? "-"} />
         <Metric label={timingLabel} value={formatTimestamp(row.expiry_ts)} />
         <Metric label="edge / required" value={formatEdge(row)} />
-        <Metric label="Total CUDA paths" value={formatInteger(metadata.totalPaths)} />
-        <Metric label="GPU runtime" value={formatAge(metadata.runtimeMs)} />
-        <Metric label="Total lag" value={formatAge(metadata.totalLagMs)} />
-        <Metric label="Lane" value={formatLaneStatus(row)} />
-        <Metric label="dynamic edge" value={formatDynamicEdge(row)} />
         <Metric label="wave" value={formatWave(row)} />
+        <Metric label="dynamic edge" value={formatDynamicEdge(row)} />
+        <Metric label="sigma_tau" value={formatSmall(row.sigma_tau)} />
+        <Metric label="Total CUDA paths" value={formatInteger(probabilityMetadata(row).totalPaths)} />
       </div>
 
       <ContractPairSelector
@@ -728,7 +744,7 @@ function SelectedDetails({
 
       <MonteCarloComparisonGrid
         fallbackRow={row}
-        marketRow={selectedMarketRow}
+        marketRows={pairRows}
         onSelectProbability={onSelectProbability}
         selectedKey={selectionKey(row)}
       />
@@ -824,49 +840,73 @@ function PairProbabilityButton({
     >
       <strong>{label}</strong>
       <span>{formatProbability(probabilityDisplayValue(row))}</span>
-      <small>{compactList([formatNoTouch(row), quote])}</small>
+      <small>{quote}</small>
     </button>
   );
 }
 
 function MonteCarloComparisonGrid({
   fallbackRow,
-  marketRow,
+  marketRows,
   selectedKey,
   onSelectProbability,
 }: {
   fallbackRow: ProbabilityRow;
-  marketRow?: MarketMonitorRow;
+  marketRows: MarketMonitorRow[];
   selectedKey: string;
   onSelectProbability: (key: string) => void;
 }) {
-  const upValue = normalizedProbability(probabilityDisplayValue(marketRow?.upProbability));
-  const downValue = normalizedProbability(probabilityDisplayValue(marketRow?.downProbability));
-  const leader =
-    upValue === null || downValue === null
-      ? null
-      : upValue > downValue
-        ? "UP"
-        : downValue > upValue
-          ? "DOWN"
-          : null;
-  const sides = marketRow
-    ? [
-        { label: "UP", row: marketRow.upProbability, quote: formatQuote(marketRow.up) },
-        { label: "DOWN", row: marketRow.downProbability, quote: formatQuote(marketRow.down) },
-      ]
-    : [{ label: fallbackRow.side ?? "Selected", row: fallbackRow, quote: "-" }];
+  const sides = marketRows.flatMap((marketRow) => {
+    const upValue = normalizedProbability(probabilityDisplayValue(marketRow.upProbability));
+    const downValue = normalizedProbability(probabilityDisplayValue(marketRow.downProbability));
+    const leader =
+      upValue === null || downValue === null
+        ? null
+        : upValue > downValue
+          ? "UP"
+          : downValue > upValue
+            ? "DOWN"
+            : null;
+    return [
+      {
+        key: `${marketRow.key}:UP`,
+        label: `${marketRow.asset} UP`,
+        row: marketRow.upProbability,
+        quote: formatQuote(marketRow.up),
+        isLeader: leader === "UP",
+      },
+      {
+        key: `${marketRow.key}:DOWN`,
+        label: `${marketRow.asset} DOWN`,
+        row: marketRow.downProbability,
+        quote: formatQuote(marketRow.down),
+        isLeader: leader === "DOWN",
+      },
+    ];
+  });
+  const visibleSides =
+    sides.length > 0
+      ? sides
+      : [
+          {
+            key: selectionKey(fallbackRow),
+            label: fallbackRow.side ?? "Selected",
+            row: fallbackRow,
+            quote: "-",
+            isLeader: false,
+          },
+        ];
 
   return (
-    <section className="comparison-grid" aria-label="UP and DOWN Monte Carlo comparison">
-      {sides.map((side) => (
+    <section className="comparison-grid" aria-label="BTC and ETH UP and DOWN Monte Carlo comparison">
+      {visibleSides.map((side) => (
         <MonteCarloComparisonCard
-          key={side.label}
+          key={side.key}
           label={side.label}
           quote={side.quote}
           row={side.row}
           selectedKey={selectedKey}
-          isLeader={leader === side.label}
+          isLeader={side.isLeader}
           onSelectProbability={onSelectProbability}
         />
       ))}
@@ -904,7 +944,6 @@ function MonteCarloComparisonCard({
   }
   const key = selectionKey(row);
   const preview = parseSimulationPreview(row.simulation_preview);
-  const metadata = probabilityMetadata(row);
   const className = compactList([
     "comparison-card",
     key === selectedKey ? "selected-comparison" : undefined,
@@ -919,23 +958,11 @@ function MonteCarloComparisonCard({
       >
         <div>
           <h3>{label} Monte Carlo</h3>
-          <span>
-            {compactList([
-              `p_finish ${formatProbability(probabilityDisplayValue(row))}`,
-              formatNoTouch(row),
-              quote,
-              isLeader ? "leading" : undefined,
-            ])}
-          </span>
+          <span>{compactList([formatProbability(probabilityDisplayValue(row)), quote, isLeader ? "leading" : undefined])}</span>
         </div>
         <GatePill value={row.decision_hint} />
       </button>
       <MonteCarloCanvas preview={preview} row={row} />
-      <div className="comparison-stats">
-        <Metric label="status" value={formatLaneStatus(row)} />
-        <Metric label="CUDA paths" value={formatInteger(metadata.totalPaths)} />
-        <Metric label="runtime / lag" value={formatRuntimeAndLag(metadata)} />
-      </div>
     </section>
   );
 }
@@ -981,8 +1008,8 @@ function MonteCarloInputsPanel({
     return (
       <section className="panel mc-input-panel">
         <PanelHeader
-          title="Monte Carlo Conditioning + CUDA Cache"
-          subtitle="Prior-driven state, cache identity, and GPU path-count targets."
+          title="Monte Carlo Inputs + Cache"
+          subtitle="Selected cached-grid state and path-count targets."
         />
         <EmptyState title="No selected row" body="Select a Monte Carlo row to inspect inputs." />
       </section>
@@ -991,27 +1018,30 @@ function MonteCarloInputsPanel({
 
   const preview = parseSimulationPreview(row.simulation_preview);
   const metadata = probabilityMetadata(row);
+  const generatorRows = generatorBreakdownRows(row);
   const marketRow = marketRowForProbability(row, marketRows);
   const selectedBook = orderbookForSide(row, marketRow);
   return (
     <section className="panel mc-input-panel">
       <PanelHeader
-        title="Monte Carlo Conditioning + CUDA Cache"
-        subtitle="Prior-driven state, cache identity, and GPU path-count targets."
+        title="Monte Carlo Inputs + Cache"
+        subtitle={compactList([
+          row.model_version ?? probabilities.payload?.model_version ?? "model -",
+          row.generator_version ?? "generator -",
+        ])}
       />
       <div className="mc-metric-grid">
         <Metric label="UI updated" value={formatLocalTimestamp(probabilities.updatedAt)} />
+        <Metric label="model" value={row.model_version ?? probabilities.payload?.model_version ?? "-"} />
+        <Metric label="generator" value={row.generator_version ?? "-"} />
         <Metric label="row generated" value={formatTimestamp(row.generated_at)} />
         <Metric label="valid until" value={formatTimestamp(row.valid_until)} />
-        <Metric label="lane" value={formatLaneStatus(row)} />
         <Metric label="cache" value={formatRowCache(row)} />
         <Metric label="Total CUDA paths" value={formatInteger(metadata.totalPaths)} />
         <Metric label="Paths / seed" value={formatInteger(metadata.pathsPerSeed)} />
         <Metric label="Seeds" value={formatInteger(metadata.seedCount)} />
         <Metric label="Preview paths" value={formatInteger(metadata.previewPathCount)} />
-        <Metric label="GPU runtime" value={formatAge(metadata.runtimeMs)} />
-        <Metric label="Total lag" value={formatAge(metadata.totalLagMs)} />
-        <Metric label="UI source" value={probabilities.source ?? "poll"} />
+        <Metric label="Prior" value={probabilityPriorSummary(row) ?? "-"} />
       </div>
       <div className="mc-input-grid">
         <section className="mc-input-section">
@@ -1024,8 +1054,6 @@ function MonteCarloInputsPanel({
               ["threshold_k", formatThreshold(marketRow?.threshold ?? preview?.threshold)],
               ["settlement_start", preview?.start_price ? formatPrice(preview.start_price) : undefined],
               ["comparison", preview?.comparison_operator],
-              ["p_finish", formatProbability(probabilityDisplayValue(row))],
-              ["p_no_touch", formatProbability(row.p_no_touch)],
               ["z_path", formatSigned(row.z_path)],
               ["sigma_tau", formatSmall(row.sigma_tau)],
             ]}
@@ -1041,8 +1069,6 @@ function MonteCarloInputsPanel({
               ["selected_quote", formatQuote(selectedBook)],
               ["book_event_ts", selectedBook?.event_ts],
               ["book_observed_ts", selectedBook?.observed_ts],
-              ["source_age", formatAge(row.source_age_ms ?? undefined)],
-              ["book_age", formatAge(row.book_age_ms ?? undefined)],
               ["row_age", formatAge(row.age_ms)],
               ["flags", compactList(row.flags)],
             ]}
@@ -1054,8 +1080,6 @@ function MonteCarloInputsPanel({
             entries={[
               ["model", row.model_version ?? probabilities.payload?.model_version],
               ["generator", row.generator_version],
-              ["cache_status", row.cache_status],
-              ["display_status", probabilityDisplayStatus(row)],
               ["seed", row.seed],
               ["time_bucket", row.time_bucket],
               ["z_bucket", row.z_path_bucket],
@@ -1066,13 +1090,43 @@ function MonteCarloInputsPanel({
           />
         </section>
         <section className="mc-input-section">
+          <h3>Prior Distribution</h3>
+          <KeyValueList
+            entries={[
+              ["prior_fragments", row.prior_fragment_count],
+              ["prior_scope", row.prior_fragment_reason],
+              [
+                "sparse",
+                row.prior_fragment_sparse === true
+                  ? "true"
+                  : row.prior_fragment_sparse === false
+                    ? "false"
+                    : undefined,
+              ],
+              ["generators", compactList(row.prior_fragment_generators)],
+              ["fragment_ids", compactList(row.prior_fragment_ids?.slice(0, 6))],
+              ["prior_error", row.prior_fragment_error],
+            ]}
+          />
+        </section>
+        {generatorRows.length > 0 ? (
+          <section className="mc-input-section">
+            <h3>Four-Generator Breakdown</h3>
+            <KeyValueList
+              entries={generatorRows.map((generator) => [
+                generatorLabel(generator.id),
+                formatGeneratorBreakdown(generator),
+              ])}
+            />
+          </section>
+        ) : null}
+        <section className="mc-input-section">
           <h3>Path Preview</h3>
           <KeyValueList
             entries={[
               ["preview_paths", metadata.previewPathCount],
               ["steps", preview?.steps],
               ["wins", preview?.terminal_win_count],
-              ["no_touch_wins", preview?.no_touch_win_count],
               ["mc_dispersion", row.mc_dispersion],
               ["uncertainty", row.uncertainty_buffer],
               ["decision_check", formatGate(row.decision_hint)],
@@ -1082,17 +1136,6 @@ function MonteCarloInputsPanel({
               ["decision_reasons", compactList(row.gate_reasons)],
               ["wave_reasons", compactList(row.wave_reasons)],
             ]}
-          />
-          <WeightBars weights={row.effective_weights ?? {}} />
-          <ChipRow
-            values={[
-              ...unknownList(row.wave_reasons),
-              ...unknownList(row.wave_markers),
-              ...unknownList(row.gate_reasons),
-              ...unknownList(row.path_diagnosis),
-              ...unknownList(row.flags),
-            ]}
-            fallback="CLEAR"
           />
         </section>
       </div>
@@ -1104,8 +1147,6 @@ function MonteCarloInputsPanel({
             ["cache_asof", row.cache_asof_ts],
             ["cache_start", row.cache_start_ts],
             ["cache_expiry", row.cache_expiry_ts],
-            ["valid_from", row.valid_from],
-            ["refresh_display_until", row.refresh_display_until],
           ]}
         />
       </section>
@@ -1351,30 +1392,6 @@ function Metric({
   );
 }
 
-function WeightBars({ weights }: { weights: Record<string, number> }) {
-  const entries = Object.entries(weights)
-    .filter(([, value]) => Number.isFinite(value))
-    .sort(([left], [right]) => left.localeCompare(right));
-  if (entries.length === 0) {
-    return <p className="quiet">No generator weights attached.</p>;
-  }
-  return (
-    <div className="weight-bars">
-      {entries.map(([name, value]) => (
-        <div className="weight-row" key={name}>
-          <div className="weight-label">
-            <span>{shortWeightLabel(name)}</span>
-            <strong>{Math.round(value * 100)}%</strong>
-          </div>
-          <div className="bar-track" aria-hidden="true">
-            <div className="bar-fill" style={{ width: `${clamp01(value) * 100}%` }} />
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
 function GatePill({ value }: { value?: string | null }) {
   const label = formatGate(value);
   return <span className={`gate-pill gate-${gateTone(label)}`}>{label}</span>;
@@ -1390,19 +1407,6 @@ function WaveBadge({ row }: { row: ProbabilityRow }) {
       <strong>{score}</strong>
       {markers ? <small>{markers}</small> : null}
     </span>
-  );
-}
-
-function ChipRow({ values, fallback }: { values: unknown[]; fallback: string }) {
-  const chips = values.map(compactValue).filter(Boolean);
-  return (
-    <div className="chip-row">
-      {(chips.length > 0 ? chips : [fallback]).map((value) => (
-        <span className="chip" key={value}>
-          {sanitizeOperatorLabel(value)}
-        </span>
-      ))}
-    </div>
   );
 }
 
@@ -1504,9 +1508,14 @@ function retainPreviousProbabilityRows(
     };
   }
   if (next.payload && previousRows.length > 0 && nextRows.length > 0) {
+    const retainedPayload = mergeGraphableProbabilityPayloadRows(
+      previous.payload,
+      next.payload,
+      nowMs,
+    );
     return {
       ...next,
-      payload: mergeProbabilityPreviews(previous.payload, next.payload),
+      payload: mergeProbabilityPreviews(previous.payload, retainedPayload),
     };
   }
   return next;
@@ -1541,6 +1550,8 @@ function markProbabilityRowsHeldForRefresh(
   const refreshDisplayUntil = new Date(holdUntilMs).toISOString();
   return {
     ...payload,
+    previous_mc_retained: true,
+    retained_mc_rows: payload.rows.length,
     rows: payload.rows.map((row) => ({
       ...row,
       refresh_display_until: refreshDisplayUntil,
@@ -1549,19 +1560,7 @@ function markProbabilityRowsHeldForRefresh(
 }
 
 function safeRows(payload: ProbabilityPayload | null, nowMs = Date.now()): ProbabilityRow[] {
-  return filterGraphableProbabilityRows(payload, nowMs);
-}
-
-function safeNowcastRows(payload: ProbabilityPayload | null, nowMs = Date.now()): ProbabilityRow[] {
-  if (!Array.isArray(payload?.nowcast_rows)) {
-    return [];
-  }
-  return filterGraphableProbabilityRows({ rows: payload.nowcast_rows }, nowMs);
-}
-
-function latestProbabilityMetadata(rows: ProbabilityRow[]) {
-  const row = rows.find((candidate) => isFiniteNumber(candidate.path_count)) ?? rows[0];
-  return row ? probabilityMetadata(row) : null;
+  return visibleProbabilityDiagnosticRows(filterGraphableProbabilityRows(payload, nowMs), nowMs);
 }
 
 function selectProbabilityRow(
@@ -1747,7 +1746,10 @@ export function buildMarketMonitorRows(
     grouped.set(key, group);
   }
 
-  return [...grouped.values()].sort((left, right) => compareMarketPreference(left, right, nowMs));
+  return visibleMarketMonitorRows(
+    [...grouped.values()].sort((left, right) => compareMarketPreference(left, right, nowMs)),
+    probabilities.length,
+  );
 }
 
 function currentMarketRows(rows: MarketMonitorRow[], nowMs: number) {
@@ -2025,12 +2027,9 @@ function buildRuntimeLogEntries(
       compactList([
         selectedRow.asset,
         selectedRow.side,
-        `${formatLaneStatus(selectedRow)} ${formatProbability(probabilityDisplayValue(selectedRow))}`,
-        formatNoTouch(selectedRow),
+        `MC ${formatProbability(probabilityDisplayValue(selectedRow))}`,
         `wave ${formatWave(selectedRow)}`,
         `total paths=${formatInteger(selectedRow.path_count)}`,
-        `runtime=${formatAge(probabilityMetadata(selectedRow).runtimeMs)}`,
-        `lag=${formatAge(probabilityMetadata(selectedRow).totalLagMs)}`,
       ]),
       { at: selectedRow.asof_ts },
     );
@@ -2095,6 +2094,19 @@ function probabilityEmptyBody(state: ApiState<ProbabilityPayload>) {
     return "Runtime Monte Carlo generation is disabled.";
   }
   return state.payload?.error ?? "The endpoint returned an empty row set.";
+}
+
+function formatProbabilityRuntimeState(state: ApiState<ProbabilityPayload>) {
+  if (state.payload?.state) {
+    return probabilityRuntimeStateLabel(state.payload.state);
+  }
+  if (state.status === "loading") {
+    return "Loading";
+  }
+  if (state.status === "error") {
+    return "Runtime error";
+  }
+  return "Waiting for Monte Carlo";
 }
 
 function parseSimulationPreview(value: unknown): SimulationPreview | null {
@@ -2225,66 +2237,12 @@ function compactList(values?: Array<string | number | boolean | null | undefined
     .join(" / ");
 }
 
-function marketSideKey(
-  marketSlug?: string,
-  asset?: string,
-  expiryTs?: string,
-  side?: string,
-  startTs?: string,
-): string | null {
-  const normalizedSide = normalizeSide(side);
-  if (!normalizedSide) {
-    return null;
-  }
-  const normalizedExpiry = identityTimestamp(expiryTs);
-  const normalizedStart = identityTimestamp(startTs);
-  if (marketSlug?.trim()) {
-    return `${marketSlug.trim().toLowerCase()}|${normalizedStart ?? ""}|${
-      normalizedExpiry ?? ""
-    }|${normalizedSide}`;
-  }
-  const normalizedAsset = normalizeAsset(asset);
-  if (!normalizedAsset || !normalizedExpiry) {
-    return null;
-  }
-  return `${normalizedAsset}|${normalizedStart ?? ""}|${normalizedExpiry}|${normalizedSide}`;
-}
-
-function marketGroupKey(
-  marketSlug?: string,
-  asset?: string,
-  expiryTs?: string,
-  startTs?: string,
-) {
-  const normalizedAsset = normalizeAsset(asset);
-  const normalizedExpiry = identityTimestamp(expiryTs);
-  const normalizedStart = identityTimestamp(startTs);
-  if (marketSlug?.trim()) {
-    return `${marketSlug.trim().toLowerCase()}|${normalizedStart ?? ""}|${
-      normalizedExpiry ?? ""
-    }`;
-  }
-  if (!normalizedAsset || !normalizedExpiry) {
-    return null;
-  }
-  return `${normalizedAsset}|${normalizedStart ?? ""}|${normalizedExpiry}`;
-}
-
 function normalizeAsset(value?: string) {
   return value?.trim().toUpperCase() ?? "";
 }
 
 function normalizeSide(value?: string) {
   return value?.trim().toUpperCase() ?? "";
-}
-
-function identityTimestamp(value?: string) {
-  const trimmed = value?.trim();
-  if (!trimmed) {
-    return undefined;
-  }
-  const parsed = timestampMs(trimmed);
-  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : trimmed;
 }
 
 function assetFromSlug(value?: string) {
@@ -2325,6 +2283,23 @@ function formatProbability(value?: number) {
 
 function formatSmall(value?: number) {
   return isFiniteNumber(value) ? value.toFixed(5) : "-";
+}
+
+function generatorLabel(id: string) {
+  return id
+    .split("_")
+    .filter(Boolean)
+    .map((part) => `${part.slice(0, 1).toUpperCase()}${part.slice(1)}`)
+    .join(" ");
+}
+
+function formatGeneratorBreakdown(generator: ReturnType<typeof generatorBreakdownRows>[number]) {
+  return compactList([
+    `p_finish ${formatProbability(generator.p_finish)}`,
+    `p_no_touch ${formatProbability(generator.p_no_touch)}`,
+    `weight ${formatSmall(generator.weight)}`,
+    generator.sparse === true ? "sparse" : undefined,
+  ]);
 }
 
 function formatSigned(value?: number) {
@@ -2378,15 +2353,6 @@ function formatDynamicEdge(row: ProbabilityRow) {
   return `${row.dynamic_edge.toFixed(3)} / ${row.dynamic_required_edge.toFixed(3)}`;
 }
 
-function formatLaneStatus(row: ProbabilityRow) {
-  const lane = probabilityKind(row);
-  return probabilityDisplayStatus(row) === "held" ? `held ${lane}` : lane;
-}
-
-function formatNoTouch(row: ProbabilityRow) {
-  return `pNT ${formatProbability(row.p_no_touch)}`;
-}
-
 function formatAge(ageMs?: number) {
   if (!isFiniteNumber(ageMs)) {
     return "-";
@@ -2395,22 +2361,6 @@ function formatAge(ageMs?: number) {
     return `${(ageMs / 1000).toFixed(1)}s`;
   }
   return `${ageMs}ms`;
-}
-
-function formatAgeIfPresent(ageMs?: number) {
-  return isFiniteNumber(ageMs) ? formatAge(ageMs) : undefined;
-}
-
-function formatCompactPathCount(value?: number) {
-  return isFiniteNumber(value) ? `${formatInteger(value)} paths` : undefined;
-}
-
-function formatRuntimeAndLag(metadata: ReturnType<typeof probabilityMetadata>) {
-  const value = compactList([
-    formatAgeIfPresent(metadata.runtimeMs),
-    metadata.totalLagMs !== undefined ? `lag ${formatAge(metadata.totalLagMs)}` : undefined,
-  ]);
-  return value || "-";
 }
 
 function formatCacheState(payload: ProbabilityPayload | null, rows: ProbabilityRow[]) {
@@ -2428,6 +2378,39 @@ function formatCacheState(payload: ProbabilityPayload | null, rows: ProbabilityR
     return `${hits}/${rows.length} grid${suffix}`;
   }
   return payload.cached ? "api hit" : "no grid";
+}
+
+function formatPathBudget(budget: ProbabilityBudget | undefined, rows: ProbabilityRow[]) {
+  if (!budget) {
+    const rowPaths = totalRowPaths(rows);
+    return rowPaths > 0 ? `${formatInteger(rowPaths)} row paths` : "pending";
+  }
+  const rowPaths = totalRowPaths(rows);
+  const allocatedPaths =
+    isFiniteNumber(budget.allocated_total_paths) && budget.allocated_total_paths > 0
+      ? budget.allocated_total_paths
+      : rowPaths;
+  const allocated = formatInteger(allocatedPaths);
+  const max = formatInteger(budget.max_total_paths);
+  const perInput =
+    isFiniteNumber(budget.path_budget_per_input) && budget.path_budget_per_input > 0
+      ? budget.path_budget_per_input
+      : rowPaths > 0 && rows.length > 0
+        ? Math.round(rowPaths / rows.length)
+        : undefined;
+  const requestedPaths =
+    isFiniteNumber(budget.requested_total_paths) && budget.requested_total_paths > 0
+      ? budget.requested_total_paths
+      : rowPaths;
+  const requested = formatInteger(requestedPaths);
+  return `${allocated}/${max} paths, ${formatInteger(perInput)} each, req ${requested}`;
+}
+
+function totalRowPaths(rows: ProbabilityRow[]) {
+  return rows.reduce(
+    (total, row) => total + (isFiniteNumber(row.path_count) ? row.path_count : 0),
+    0,
+  );
 }
 
 function formatRowCache(row: ProbabilityRow) {
@@ -2513,19 +2496,6 @@ function statusLabel(status: ApiState<unknown>["status"]) {
     return "ERROR";
   }
   return "OK";
-}
-
-function shortWeightLabel(value: string) {
-  if (value === "empirical_conditional") {
-    return "empirical";
-  }
-  if (value === "lognormal_baseline") {
-    return "lognormal";
-  }
-  if (value === "stress_overlay") {
-    return "stress";
-  }
-  return value.replaceAll("_", " ");
 }
 
 function clamp01(value: number) {

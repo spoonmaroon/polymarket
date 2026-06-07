@@ -235,7 +235,26 @@ impl StateManagerRuntime {
             self.refresh_contracts().await?;
             return Ok(());
         }
-        for book in polymarket::fetch_orderbooks(&self.market_tokens).await? {
+        let result = polymarket::fetch_orderbooks(&self.market_tokens).await;
+        self.apply_rest_backup_result(now, result).await
+    }
+
+    async fn apply_rest_backup_result(
+        &mut self,
+        now: DateTime<Utc>,
+        result: Result<Vec<NormalizedOrderBook>>,
+    ) -> Result<()> {
+        let books = match result {
+            Ok(books) => books,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "rest backup orderbook fetch failed; keeping websocket state"
+                );
+                return Ok(());
+            }
+        };
+        for book in books {
             self.book_state.upsert_book(book).await;
         }
         self.last_refresh = now;
@@ -1301,6 +1320,39 @@ mod tests {
         };
 
         assert_eq!(runtime.refresh_action(now), RefreshAction::RestBackup);
+    }
+
+    #[tokio::test]
+    async fn rest_backup_fetch_error_keeps_runtime_alive_without_advancing_refresh() {
+        let start = 1_780_302_400;
+        let now = Utc.timestamp_opt(start + 60, 0).unwrap();
+        let last_refresh = now - Duration::seconds(16);
+        let mut runtime = StateManagerRuntime {
+            config: config(),
+            latest_prices: crate::prices::LatestPrices::default(),
+            orderbook_streams: clob_ws::BestBidAskStreamManager::new(LiveBookState::default()),
+            book_state: LiveBookState::default(),
+            warmed: std::sync::Arc::new(std::sync::RwLock::new(vec![
+                warmed("BTC", start, "current"),
+                warmed("BTC", start + 300, "next"),
+            ])),
+            market_tokens: vec![],
+            token_ids: vec!["current-up".to_owned(), "current-down".to_owned()],
+            subscriptions: vec![],
+            last_refresh,
+            chainlink_streams: prices::ChainlinkStreamManager::inactive_for_tests(vec![
+                "btc/usd".to_owned(),
+            ]),
+            hot_decision_worker: None,
+            hot_decision_telemetry: None,
+        };
+
+        let result = runtime
+            .apply_rest_backup_result(now, Err(anyhow::anyhow!("transient dns failure")))
+            .await;
+
+        assert!(result.is_ok());
+        assert_eq!(runtime.last_refresh, last_refresh);
     }
 
     #[tokio::test]

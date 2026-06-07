@@ -151,3 +151,25 @@ def test_spoon_docs_pin_safe_hot_replay_gate_command() -> None:
     assert "copied read-only snapshot" in part_two
     assert "does not pause collector or normalizer" in part_two
     assert "must not enter the hot live decision path" in part_two
+
+
+def test_runtime_keeper_runbook_documents_startup_recovery() -> None:
+    text = (ROOT / "docs" / "SPOON_DEPLOYMENT.md").read_text(encoding="utf-8")
+
+    assert "Runtime keeper" in text
+    assert "polymarket-engine runtime-keeper" in text
+    assert "scripts/install_thepc_runtime_keeper.sh" in text
+    assert "scripts/check_mac_polymarket_tunnel.sh" in text
+    assert "runtime_keeper.json" in text
+
+
+def test_active_active_cpu_authority_runbook_documents_split() -> None:
+    text = (ROOT / "docs" / "SPOON_DEPLOYMENT.md").read_text(encoding="utf-8")
+
+    assert "CPU Authority / THEPC GPU Active-Active Split" in text
+    assert "deploy/cluster/cluster.local.example.json" in text
+    assert "docker-compose.spoon-cpu-authority.yml" in text
+    assert "docker-compose.thepc-gpu-api.yml" in text
+    assert "polymarket-engine sync-cluster-artifacts" in text
+    assert "probability_fragments.json" in text
+    assert "single-writer" in text

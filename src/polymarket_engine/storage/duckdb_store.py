@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator, Mapping, Sequence
+import os
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -15,12 +16,7 @@ import polars as pl
 from polymarket_engine.domain.contracts import ContractSpec
 from polymarket_engine.domain.contract_rules import NormalizedContractRule
 from polymarket_engine.domain.market_state import DecisionState, OrderBookObservation, PriceObservation
-from polymarket_engine.probability.ensemble_weights import DynamicWeightSet
-from polymarket_engine.probability.event_log import ProbabilityEventLogRow
-from polymarket_engine.probability.event_log import SimulationArtifactRow
-from polymarket_engine.probability.generator_contracts import DynamicWeightScope, GeneratorId
 from polymarket_engine.probability.schema import ProbabilityInput, ProbabilityOutput
-from polymarket_engine.research.generator_validation import generator_weight_snapshot_payload
 from polymarket_engine.storage.retention import RAW_HOT_RETENTION_DAYS, retention_manifest_class
 
 
@@ -30,6 +26,71 @@ def _json(value: Any) -> str:
 
 def _strict_json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def _configure_connection(conn: duckdb.DuckDBPyConnection) -> None:
+    if "POLYMARKET_DUCKDB_THREADS" in os.environ:
+        threads = _parse_duckdb_threads(os.environ["POLYMARKET_DUCKDB_THREADS"])
+        _set_duckdb_setting(conn, "threads", threads, "POLYMARKET_DUCKDB_THREADS")
+    if "POLYMARKET_DUCKDB_MEMORY_LIMIT" in os.environ:
+        memory_limit = _parse_duckdb_memory_limit(
+            os.environ["POLYMARKET_DUCKDB_MEMORY_LIMIT"]
+        )
+        _set_duckdb_setting(
+            conn,
+            "memory_limit",
+            memory_limit,
+            "POLYMARKET_DUCKDB_MEMORY_LIMIT",
+        )
+    if "POLYMARKET_DUCKDB_PRESERVE_INSERTION_ORDER" in os.environ:
+        preserve = _parse_duckdb_bool(
+            os.environ["POLYMARKET_DUCKDB_PRESERVE_INSERTION_ORDER"],
+            "POLYMARKET_DUCKDB_PRESERVE_INSERTION_ORDER",
+        )
+        _set_duckdb_setting(
+            conn,
+            "preserve_insertion_order",
+            preserve,
+            "POLYMARKET_DUCKDB_PRESERVE_INSERTION_ORDER",
+        )
+
+
+def _parse_duckdb_threads(value: str) -> int:
+    try:
+        threads = int(value)
+    except ValueError as exc:
+        raise ValueError("POLYMARKET_DUCKDB_THREADS must be a positive integer") from exc
+    if threads <= 0:
+        raise ValueError("POLYMARKET_DUCKDB_THREADS must be a positive integer")
+    return threads
+
+
+def _parse_duckdb_memory_limit(value: str) -> str:
+    memory_limit = value.strip()
+    if not memory_limit:
+        raise ValueError("POLYMARKET_DUCKDB_MEMORY_LIMIT must be non-empty")
+    return memory_limit
+
+
+def _parse_duckdb_bool(value: str, env_name: str) -> bool:
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "t", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "f", "no", "n", "off"}:
+        return False
+    raise ValueError(f"{env_name} must be a boolean value")
+
+
+def _set_duckdb_setting(
+    conn: duckdb.DuckDBPyConnection,
+    setting_name: str,
+    value: object,
+    env_name: str,
+) -> None:
+    try:
+        conn.execute(f"SET {setting_name} = ?", [value])
+    except duckdb.Error as exc:
+        raise ValueError(f"{env_name} has invalid DuckDB setting value: {value!r}") from exc
 
 
 def _contract_specs_signature(contracts: Sequence[ContractSpec]) -> tuple[tuple[object, ...], ...]:
@@ -150,14 +211,16 @@ class MarketOutcomeRecord:
 
 
 class DuckDbIngestStore:
-    def __init__(self, db_path: Path) -> None:
+    def __init__(self, db_path: Path, *, persistent_connection: bool = True) -> None:
         self.db_path = db_path
+        self._persistent_connection = persistent_connection
         self._conn: duckdb.DuckDBPyConnection | None = None
         self._last_contract_specs_signature: tuple[tuple[object, ...], ...] | None = None
 
     def __enter__(self) -> DuckDbIngestStore:
-        if self._conn is None:
+        if self._persistent_connection and self._conn is None:
             self._conn = duckdb.connect(str(self.db_path))
+            _configure_connection(self._conn)
         return self
 
     def __exit__(
@@ -176,6 +239,7 @@ class DuckDbIngestStore:
             yield self._conn
             return
         with duckdb.connect(str(self.db_path)) as conn:
+            _configure_connection(conn)
             yield conn
 
     def apply_schema(self) -> None:
@@ -832,231 +896,98 @@ class DuckDbIngestStore:
         probability_input: ProbabilityInput,
         output: ProbabilityOutput,
     ) -> None:
-        if output.state_id != probability_input.state_id:
-            raise ValueError("output state_id must match probability_input state_id")
-        if output.asof_ts != probability_input.asof_ts:
-            raise ValueError("output asof_ts must match probability_input asof_ts")
+        self.insert_probability_outputs(((output_id, probability_input, output),))
+
+    def insert_probability_outputs(
+        self,
+        rows: Sequence[tuple[str, ProbabilityInput, ProbabilityOutput]],
+    ) -> None:
+        if not rows:
+            return
+        for _, probability_input, output in rows:
+            if output.state_id != probability_input.state_id:
+                raise ValueError("output state_id must match probability_input state_id")
+            if output.asof_ts != probability_input.asof_ts:
+                raise ValueError("output asof_ts must match probability_input asof_ts")
+
+        now = datetime.now(timezone.utc)
+        frame = pl.DataFrame(
+            {
+                "output_id": [output_id for output_id, _, _ in rows],
+                "state_id": [output.state_id for _, _, output in rows],
+                "asof_ts": [output.asof_ts for _, _, output in rows],
+                "model_version": [output.model_version for _, _, output in rows],
+                "p_finish": [output.p_finish for _, _, output in rows],
+                "p_no_touch": [output.p_no_touch for _, _, output in rows],
+                "z_path": [output.z_path for _, _, output in rows],
+                "seed": pl.Series("seed", [output.seed for _, _, output in rows], dtype=pl.Int64),
+                "input_json": [
+                    _strict_json(probability_input.to_json_dict())
+                    for _, probability_input, _ in rows
+                ],
+                "output_json": [
+                    _strict_json(output.to_json_dict()) for _, _, output in rows
+                ],
+                "created_at": [now for _ in rows],
+            }
+        )
         with self._connection() as conn:
+            conn.register("probability_output_rows", frame)
             conn.execute(
                 """
                 insert or replace into features.probability_outputs
                 (output_id, state_id, asof_ts, model_version, p_finish, p_no_touch,
                  z_path, seed, input_json, output_json, created_at)
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                select output_id, state_id, asof_ts::TIMESTAMPTZ, model_version,
+                       p_finish, p_no_touch, z_path, seed, input_json, output_json,
+                       created_at::TIMESTAMPTZ
+                from probability_output_rows
                 """,
-                [
-                    output_id,
-                    output.state_id,
-                    output.asof_ts,
-                    output.model_version,
-                    output.p_finish,
-                    output.p_no_touch,
-                    output.z_path,
-                    output.seed,
-                    _strict_json(probability_input.to_json_dict()),
-                    _strict_json(output.to_json_dict()),
-                    datetime.now(timezone.utc),
-                ],
             )
 
-    def insert_probability_event(self, row: ProbabilityEventLogRow) -> None:
+    def insert_generator_runs(self, rows: Sequence[dict[str, Any]]) -> None:
+        if not rows:
+            return
+        frame = pl.DataFrame(list(rows))
         with self._connection() as conn:
-            if (
-                conn.execute(
-                    """
-                    select 1
-                    from features.probability_event_log
-                    where event_id = ?
-                    limit 1
-                    """,
-                    [row.event_id],
-                ).fetchone()
-                is not None
-            ):
-                return
+            conn.register("generator_run_rows", frame)
             conn.execute(
                 """
-                insert into features.probability_event_log
-                (event_id, output_id, state_id, contract_id, market_slug, asset, side,
-                 start_ts, expiry_ts, asof_ts, probability_kind, backend, model_version,
-                 generator_version, cache_key, cache_status, p_finish, p_no_touch,
-                 z_path, sigma_tau, executable_price, spread, seconds_left, wave_phase,
-                 wave_score, path_count, seed, queue_ms, runtime_ms, state_to_status_ms,
-                 total_lag_ms, generated_at, valid_from, valid_until, diagnostics_json,
-                 created_at)
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                insert or replace into features.generator_runs
+                (generator_run_id, state_id, asof_ts, generator_id, p_finish,
+                 p_no_touch, path_count, effective_path_count, seed, runtime_ms,
+                 sparse, diagnostics_json, created_at)
+                select generator_run_id, state_id, asof_ts::TIMESTAMPTZ,
+                       generator_id, p_finish, p_no_touch, path_count,
+                       effective_path_count, seed, runtime_ms, sparse,
+                       diagnostics_json, created_at::TIMESTAMPTZ
+                from generator_run_rows
                 """,
-                [
-                    row.event_id,
-                    row.output_id,
-                    row.state_id,
-                    row.contract_id,
-                    row.market_slug,
-                    row.asset,
-                    row.side,
-                    row.start_ts,
-                    row.expiry_ts,
-                    row.asof_ts,
-                    row.probability_kind,
-                    row.backend,
-                    row.model_version,
-                    row.generator_version,
-                    row.cache_key,
-                    row.cache_status,
-                    row.p_finish,
-                    row.p_no_touch,
-                    row.z_path,
-                    row.sigma_tau,
-                    row.executable_price,
-                    row.spread,
-                    row.seconds_left,
-                    row.wave_phase,
-                    row.wave_score,
-                    row.path_count,
-                    row.seed,
-                    row.queue_ms,
-                    row.runtime_ms,
-                    row.state_to_status_ms,
-                    row.total_lag_ms,
-                    row.generated_at,
-                    row.valid_from,
-                    row.valid_until,
-                    _strict_json(row.diagnostics),
-                    datetime.now(timezone.utc),
-                ],
             )
 
-    def insert_simulation_artifact(
-        self,
-        *,
-        artifact_id: str,
-        output_id: str | None,
-        state_id: str,
-        asof_ts: datetime,
-        model_version: str,
-        backend: str,
-        path_count: int,
-        terminal_win_count: int,
-        no_touch_win_count: int,
-        terminal_price_quantiles: dict[str, float],
-        crossing_count_quantiles: dict[str, float],
-        sampled_paths: list[dict[str, object]],
-        diagnostics: dict[str, object],
-    ) -> None:
-        row = SimulationArtifactRow(
-            artifact_id=artifact_id,
-            output_id=output_id,
-            state_id=state_id,
-            asof_ts=asof_ts,
-            model_version=model_version,
-            backend=backend,
-            path_count=path_count,
-            terminal_win_count=terminal_win_count,
-            no_touch_win_count=no_touch_win_count,
-            terminal_price_quantiles=terminal_price_quantiles,
-            crossing_count_quantiles=crossing_count_quantiles,
-            sampled_paths=sampled_paths,
-            diagnostics=diagnostics,
-        )
-        payload = row.to_json_dict()
+    def insert_ensemble_decisions(self, rows: Sequence[dict[str, Any]]) -> None:
+        if not rows:
+            return
+        frame = pl.DataFrame(list(rows))
         with self._connection() as conn:
+            conn.register("ensemble_decision_rows", frame)
             conn.execute(
                 """
-                insert or replace into features.simulation_artifacts
-                (artifact_id, output_id, state_id, asof_ts, model_version, backend,
-                 path_count, terminal_win_count, no_touch_win_count,
-                 terminal_price_quantiles_json, crossing_count_quantiles_json,
-                 sampled_paths_json, diagnostics_json, created_at)
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                insert or replace into features.ensemble_decisions
+                (decision_id, state_id, contract_id, asof_ts, execution_mode,
+                 decision_hint, p_finish, p_no_touch, z_path, edge_after_costs,
+                 required_edge, skip_reasons_json, edge_components_json,
+                 generator_summary_json, execution_summary_json,
+                 supervised_live_json, created_at)
+                select decision_id, state_id, contract_id, asof_ts::TIMESTAMPTZ,
+                       execution_mode, decision_hint, p_finish, p_no_touch,
+                       z_path, edge_after_costs, required_edge, skip_reasons_json,
+                       edge_components_json, generator_summary_json,
+                       execution_summary_json, supervised_live_json,
+                       created_at::TIMESTAMPTZ
+                from ensemble_decision_rows
                 """,
-                [
-                    row.artifact_id,
-                    row.output_id,
-                    row.state_id,
-                    row.asof_ts,
-                    row.model_version,
-                    row.backend,
-                    row.path_count,
-                    row.terminal_win_count,
-                    row.no_touch_win_count,
-                    _strict_json(payload["terminal_price_quantiles"]),
-                    _strict_json(payload["crossing_count_quantiles"]),
-                    _strict_json(payload["sampled_paths"]),
-                    _strict_json(row.diagnostics),
-                    datetime.now(timezone.utc),
-                ],
             )
-
-    def insert_generator_weight_snapshot(
-        self,
-        *,
-        snapshot_id: str,
-        weight_set: DynamicWeightSet,
-        scope: DynamicWeightScope,
-        scores: Mapping[GeneratorId, float] | None = None,
-        label_counts: Mapping[GeneratorId, int] | None = None,
-    ) -> None:
-        created_at = datetime.now(timezone.utc)
-        payload = generator_weight_snapshot_payload(
-            weight_set,
-            scope=scope,
-            snapshot_id=snapshot_id,
-            scores=scores,
-            label_counts=label_counts,
-            created_at=created_at,
-        )
-        if payload["uses_future_labels"]:
-            raise ValueError("generator weight snapshot uses future labels")
-
-        with self._connection() as conn:
-            conn.execute(
-                """
-                insert or replace into research.generator_weight_snapshots
-                (snapshot_id, runtime_asof_ts, evaluated_through_ts, label_window_seconds,
-                 source, scope_json, weights_json, scores_json, label_counts_json, created_at)
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    snapshot_id,
-                    weight_set.runtime_asof_ts,
-                    weight_set.validation_window.evaluated_through_ts,
-                    weight_set.validation_window.label_window_seconds,
-                    weight_set.source,
-                    _strict_json(payload["scope"]),
-                    _strict_json(payload["weights"]),
-                    _strict_json(payload["scores"]),
-                    _strict_json(payload["label_counts"]),
-                    created_at,
-                ],
-            )
-
-    def latest_generator_weight_snapshot(self) -> dict[str, Any] | None:
-        with self._connection() as conn:
-            row = conn.execute(
-                """
-                select snapshot_id, runtime_asof_ts, evaluated_through_ts,
-                       label_window_seconds, source, scope_json, weights_json,
-                       scores_json, label_counts_json, created_at
-                from research.generator_weight_snapshots
-                order by runtime_asof_ts desc, created_at desc
-                limit 1
-                """
-            ).fetchone()
-        if row is None:
-            return None
-        return {
-            "snapshot_id": row[0],
-            "runtime_asof_ts": _isoformat_utc(row[1]),
-            "evaluated_through_ts": _isoformat_utc(row[2]),
-            "label_window_seconds": int(row[3]),
-            "source": row[4],
-            "scope": json.loads(row[5]),
-            "weights": json.loads(row[6]),
-            "scores": json.loads(row[7]),
-            "label_counts": json.loads(row[8]),
-            "created_at": _isoformat_utc(row[9]),
-        }
 
     def normalized_table_health(self) -> tuple[dict[str, object], ...]:
         with self._connection() as conn:
@@ -1092,15 +1023,7 @@ class DuckDbIngestStore:
                            count(*) as rows, max(created_at) as latest_ts
                     from features.probability_outputs
                     union all
-                    select 8 as sort_order, 'features.probability_event_log' as table_name,
-                           count(*) as rows, max(created_at) as latest_ts
-                    from features.probability_event_log
-                    union all
-                    select 9 as sort_order, 'features.simulation_artifacts' as table_name,
-                           count(*) as rows, max(created_at) as latest_ts
-                    from features.simulation_artifacts
-                    union all
-                    select 10 as sort_order, 'validation.market_outcome_history' as table_name,
+                    select 8 as sort_order, 'validation.market_outcome_history' as table_name,
                            count(*) as rows, max(updated_at) as latest_ts
                     from validation.market_outcome_history
                 ) as health_rows
@@ -1472,12 +1395,6 @@ def _drop_incompatible_tables(conn: duckdb.DuckDBPyConnection) -> None:
             "book_event_ts",
             "source_observed_lag_ms",
             "book_observed_lag_ms",
-        },
-        ("features", "probability_grid_cache"): {
-            "market_slug",
-            "start_ts",
-            "expiry_ts",
-            "asof_ts",
         },
         ("validation", "market_outcome_history"): {
             "winning_token_id",

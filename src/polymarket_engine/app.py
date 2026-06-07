@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from polymarket_engine.runtime_api import (
     build_runtime_router,
     container_status_enabled_from_env,
+    runtime_probability_compute_fallback_enabled_from_env,
     runtime_probabilities_enabled_from_env,
 )
 
@@ -20,16 +21,25 @@ def create_app(
     duckdb_path: Path = Path("data/db/polymarket.duckdb"),
     normalized_health_path: Path = Path("data/live/normalized_health.json"),
     probability_status_path: Optional[Path] = None,
+    probability_inputs_path: Optional[Path] = None,
+    probability_fragments_path: Optional[Path] = None,
     outcome_status_path: Optional[Path] = None,
     target_cache_path: Optional[Path] = None,
     volatility_status_path: Optional[Path] = None,
     data_dir: Path = Path("data"),
     enable_container_status: bool | None = None,
     enable_runtime_probabilities: bool | None = None,
+    allow_runtime_probability_compute: bool | None = None,
     ui_dist_path: Optional[Path] = None,
 ) -> FastAPI:
     probability_status_path = probability_status_path or status_path.with_name(
         "probabilities.json"
+    )
+    probability_inputs_path = probability_inputs_path or status_path.with_name(
+        "probability_inputs.json"
+    )
+    probability_fragments_path = probability_fragments_path or status_path.with_name(
+        "probability_fragments.json"
     )
     outcome_status_path = outcome_status_path or status_path.with_name("outcomes.json")
     target_cache_path = target_cache_path or status_path.with_name("targets.json")
@@ -48,6 +58,8 @@ def create_app(
             duckdb_path=duckdb_path,
             normalized_health_path=normalized_health_path,
             probability_status_path=probability_status_path,
+            probability_inputs_path=probability_inputs_path,
+            probability_fragments_path=probability_fragments_path,
             outcome_status_path=outcome_status_path,
             target_cache_path=target_cache_path,
             volatility_status_path=volatility_status_path,
@@ -58,6 +70,9 @@ def create_app(
             enable_runtime_probabilities=runtime_probabilities_enabled_from_env()
             if enable_runtime_probabilities is None
             else enable_runtime_probabilities,
+            allow_probability_compute_fallback=runtime_probability_compute_fallback_enabled_from_env()
+            if allow_runtime_probability_compute is None
+            else allow_runtime_probability_compute,
         )
     )
     resolved_ui_dist_path = _resolve_ui_dist_path(ui_dist_path)
@@ -82,6 +97,14 @@ def create_app_from_env() -> FastAPI:
         probability_status_path=_env_path(
             "POLYMARKET_PROBABILITY_STATUS_PATH",
             Path("data/live/probabilities.json"),
+        ),
+        probability_inputs_path=_env_path(
+            "POLYMARKET_PROBABILITY_INPUTS_PATH",
+            status_path.with_name("probability_inputs.json"),
+        ),
+        probability_fragments_path=_env_path(
+            "POLYMARKET_PROBABILITY_FRAGMENTS_PATH",
+            status_path.with_name("probability_fragments.json"),
         ),
         outcome_status_path=_env_path(
             "POLYMARKET_OUTCOME_STATUS_PATH",

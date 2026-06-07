@@ -1777,7 +1777,15 @@ Decision rule: high congestion, high crossing count, or large adverse wick ratio
 | `depth_decay_1s` / `depth_decay_3s` | Measures whether depth disappears under latency stress. |
 | `order_book_imbalance` | Research feature; may indicate one-sided pressure or fragile liquidity. |
 | `last_trade_recency` | Confirms whether the market is active or stale. |
+| `trade_flow_pressure` | Research feature from recent trade prints, size, side inference, and book deltas; may indicate aggressive demand but cannot create trades until ablation proves after-cost value. |
+| `sweep_replenishment_signal` | Research feature for taker sweeps, depth replenishment, cancellations, and liquidity withdrawal; can support wait, block, execution-style, or required-edge decisions after validation. |
 | `fillability_score` | Combined score from depth, bid-ask spread, target-size VWAP, quote age, and latency stress. |
+
+Order-flow strategy research lane:
+
+Polymarket order flow may become a strategy layer, but only after enough timestamped book events and trade prints exist for as-of replay. Candidate hypotheses include aggressive taker pressure, failed sweeps, liquidity replenishment after a move, depth withdrawal near threshold `K`, and imbalance persistence between UP and DOWN books. Initial use should be conservative: demand more edge, wait, block, reduce size, or choose passive versus marketable-limit execution. It should not independently create trades until replay and live shadow ablations show incremental after-cost expectancy beyond `p_finish`, `p_no_touch`, `z_path`, and the executable order-book model.
+
+This lane is separate from ETF/options flow context. Polymarket order flow is venue microstructure from the CLOB itself; ETF/GEX flow remains a later external-context layer.
 
 ## 9.4 Source-quality features
 
@@ -1999,6 +2007,7 @@ These are starting research standards. They should be revised after the first sh
 | Core ETH Monte Carlo only | Does ETH have its own signal after costs? |
 | Core BTC/ETH plus structure gates | Do crossing, congestion, wick, and level features improve outcomes? |
 | Core plus order-book execution model | Does the edge survive VWAP, depth, quote age, and latency stress? |
+| Core plus Polymarket order-flow strategy features | Do trade prints, book deltas, imbalance persistence, sweeps, and replenishment improve after-cost EV beyond the fair-value and execution-cost model? |
 | Core plus event/news risk | Do macro and crypto event flags improve required-edge and block decisions? |
 | Core plus portfolio sizing | Does risk-adjusted sizing improve return per drawdown? |
 | Core plus XGBoost blocker | Does XGBoost reduce false positives out of sample without deleting too many winners? |
@@ -2293,13 +2302,14 @@ Promotion requires:
 | 7\. Portfolio layer | Add sizing caps, exposure limits, drawdown limits, and kill-switch state. |
 | 8\. Shadow validation | Run live read-only decisions and append labels after resolution. |
 | 9\. XGBoost challenger | Train blocker/calibrator only after enough clean labels exist. |
-| 10\. Future layers | ETF/GEX, SOL, advanced noise estimators, real execution pilot. |
+| 10\. Future layers | Polymarket order-flow strategies, ETF/GEX, SOL, advanced noise estimators, real execution pilot. |
 
 ## 15.2 Future research kept outside v1 authority
 
 | Future layer | Why later |
 |----|----|
 | SOL trading | Needs separate liquidity, data-quality, and calibration proof. |
+| Polymarket order-flow strategies | Needs enough book-event and trade-print history to prove incremental after-cost value beyond execution-quality gates. |
 | ETF/GEX context | Useful but should pass prospective ablation before it changes decisions. |
 | Advanced microstructure estimators | Realized kernels, pre-averaging, and two-scale estimators should challenge the simple first version later. |
 | XGBoost trade creation | Too easy to overfit; first use should be blocker/calibrator only. |
@@ -2737,7 +2747,15 @@ If historical Tier 1 data is unavailable, the system should begin collecting it 
 | depth_decay_1s  /  depth_decay_3s | Measures whether depth disappears under latency stress. |
 | order_book_imbalance | Research feature; may indicate one-sided pressure or fragile liquidity. |
 | last_trade_recency | Confirms whether the market is active or stale. |
+| trade_flow_pressure | Research feature from recent trade prints, size, side inference, and book deltas; may indicate aggressive demand but cannot create trades until ablation proves after-cost value. |
+| sweep_replenishment_signal | Research feature for taker sweeps, depth replenishment, cancellations, and liquidity withdrawal; can support wait, block, execution-style, or required-edge decisions after validation. |
 | fillability_score | Combined score from depth, bid-ask spread, target-size VWAP, quote age, and latency stress. |
+
+Order-flow strategy research lane:
+
+Polymarket order flow may become a strategy layer, but only after enough timestamped book events and trade prints exist for as-of replay. Candidate hypotheses include aggressive taker pressure, failed sweeps, liquidity replenishment after a move, depth withdrawal near threshold K, and imbalance persistence between UP and DOWN books. Initial use should be conservative: demand more edge, wait, block, reduce size, or choose passive versus marketable-limit execution. It should not independently create trades until replay and live shadow ablations show incremental after-cost expectancy beyond p_finish, p_no_touch, z_path, and the executable order-book model.
+
+This lane is separate from ETF/options flow context. Polymarket order flow is venue microstructure from the CLOB itself; ETF/GEX flow remains a later external-context layer.
 
 #### 8.4 Source-quality features
 
@@ -2860,6 +2878,7 @@ These are starting research standards. They should be revised after the first sh
 | Core ETH Monte Carlo only | Does ETH have its own signal after costs? |
 | Core BTC/ETH plus structure gates | Do crossing, congestion, wick, and level features improve outcomes? |
 | Core plus order-book execution model | Does the edge survive VWAP, depth, quote age, and latency stress? |
+| Core plus Polymarket order-flow strategy features | Do trade prints, book deltas, imbalance persistence, sweeps, and replenishment improve after-cost EV beyond the fair-value and execution-cost model? |
 | Core plus event/news risk | Do macro and crypto event flags improve required-edge and block decisions? |
 | Core plus portfolio sizing | Does risk-adjusted sizing improve return per drawdown? |
 | Core plus XGBoost blocker | Does XGBoost reduce false positives out of sample without deleting too many winners? |

@@ -1,220 +1,236 @@
-from typing import Any
+from __future__ import annotations
+
+import math
+from collections.abc import Callable
 
 import pytest
 
+from polymarket_engine.execution.book import ExecutionBookMetrics
 from polymarket_engine.probability.decision_gates import (
-    ExecutableQualityInput,
-    evaluate_probability_gates,
+    DecisionInputs,
+    DecisionMode,
+    evaluate_decision,
 )
-from polymarket_engine.probability.ensemble_outputs import EnsembleOutput
+from polymarket_engine.probability.ensemble_outputs import (
+    EnsembleProbability,
+    PathDiagnosis,
+)
 
 
 def _ensemble(
     *,
-    p_finish: float = 0.80,
-    p_no_touch: float = 0.80,
-    z_path: float = 0.75,
-    mc_dispersion: float = 0.03,
-    uncertainty_buffer: float = 0.02,
-    path_diagnosis: tuple[str, ...] = ("CLEAN",),
-) -> EnsembleOutput:
-    return EnsembleOutput(
+    p_finish: float = 0.72,
+    p_no_touch: float = 0.68,
+    u_gen_finish: float | None = None,
+    u_gen_touch: float = 0.03,
+    u_gen: float = 0.03,
+    mc_dispersion: float = 0.04,
+    uncertainty_buffer: float = 0.025,
+    path_diagnosis: PathDiagnosis = PathDiagnosis.CLEAN,
+    effective_generator_values: dict[str, dict[str, float]] | None = None,
+) -> EnsembleProbability:
+    return EnsembleProbability(
         p_finish=p_finish,
         p_no_touch=p_no_touch,
-        z_path=z_path,
+        u_gen_finish=u_gen if u_gen_finish is None else u_gen_finish,
+        u_gen_touch=u_gen_touch,
+        u_gen=u_gen,
         mc_dispersion=mc_dispersion,
         uncertainty_buffer=uncertainty_buffer,
         path_diagnosis=path_diagnosis,
-        effective_weights={},
+        effective_generator_values=(
+            {} if effective_generator_values is None else effective_generator_values
+        ),
     )
 
 
-def _quality(
+def _execution(
     *,
-    executable_entry_price: float = 0.70,
-    execution_costs: float = 0.01,
-    quote_age_ms: int = 250,
-    source_age_ms: int = 300,
-    book_age_ms: int = 250,
-    latency_ms: int = 150,
-    hard_failures: Any = (),
-    source_fresh: bool = True,
-    book_fresh: bool = True,
-) -> ExecutableQualityInput:
-    return ExecutableQualityInput(
-        executable_entry_price=executable_entry_price,
-        execution_costs=execution_costs,
+    entry_vwap: float = 0.62,
+    exit_vwap: float = 0.59,
+    spread: float = 0.02,
+    quote_age_ms: int = 100,
+    exit_depth: bool = True,
+) -> ExecutionBookMetrics:
+    return ExecutionBookMetrics(
+        entry_vwap=entry_vwap,
+        exit_vwap=exit_vwap,
+        entry_slippage=0.004,
+        exit_slippage=0.005,
+        spread=spread,
+        entry_depth_available=True,
+        exit_depth_available=exit_depth,
         quote_age_ms=quote_age_ms,
-        source_age_ms=source_age_ms,
-        book_age_ms=book_age_ms,
-        latency_ms=latency_ms,
-        hard_failures=hard_failures,
-        source_fresh=source_fresh,
-        book_fresh=book_fresh,
+        skip_reasons=() if exit_depth else ("insufficient_exit_depth",),
     )
 
 
-def test_evaluate_probability_gates_returns_trade_candidate_when_edge_clears_buffers() -> None:
-    result = evaluate_probability_gates(
-        _ensemble(),
-        _quality(),
-    )
-
-    assert result.action == "TRADE_CANDIDATE"
-    assert result.decision_hint == "TRADE_CANDIDATE"
-    assert result.edge_after_costs == pytest.approx(0.09)
-    assert result.required_edge == pytest.approx(0.05)
-    assert result.path_risk_buffer == pytest.approx(0.0)
-    assert result.reasons == ()
-
-
-def test_evaluate_probability_gates_demands_more_edge_when_edge_is_too_small() -> None:
-    result = evaluate_probability_gates(
-        _ensemble(p_finish=0.75),
-        _quality(executable_entry_price=0.71),
-    )
-
-    assert result.decision_hint == "DEMAND_MORE_EDGE"
-    assert result.edge_after_costs == pytest.approx(0.03)
-    assert result.required_edge == pytest.approx(0.05)
-    assert result.reasons == ("INSUFFICIENT_EDGE",)
-
-
-def test_evaluate_probability_gates_uses_p_no_touch_as_path_buffer_not_fair_value() -> None:
-    result = evaluate_probability_gates(
-        _ensemble(
-            p_finish=0.80,
-            p_no_touch=0.60,
-            z_path=0.75,
-            path_diagnosis=("CLEAN",),
-        ),
-        _quality(executable_entry_price=0.73),
-        p_no_touch_soft_floor=0.70,
-        path_risk_buffer_per_probability_point=0.50,
-    )
-
-    assert result.decision_hint == "DEMAND_MORE_EDGE"
-    assert result.edge_after_costs == pytest.approx(0.06)
-    assert result.path_risk_buffer == pytest.approx(0.05)
-    assert result.required_edge == pytest.approx(0.10)
-    assert result.reasons == (
-        "P_NO_TOUCH_BELOW_FLOOR",
-        "PATH_RISK_BUFFER",
-        "INSUFFICIENT_EDGE",
+def _inputs(
+    *,
+    execution_mode: DecisionMode = DecisionMode.PAPER,
+    ensemble: EnsembleProbability | None = None,
+    execution: ExecutionBookMetrics | None = None,
+    z_path: float = 1.2,
+    min_z_path: float = 0.4,
+    min_p_no_touch: float = 0.55,
+    base_edge: float = 0.02,
+    latency_buffer: float = 0.005,
+    source_buffer: float = 0.005,
+    crowding_buffer: float = 0.0,
+    support_resistance_buffer: float = 0.0,
+    support_resistance_reasons: tuple[str, ...] = (),
+    crowding_reasons: tuple[str, ...] = (),
+    quality_reasons: tuple[str, ...] = (),
+) -> DecisionInputs:
+    return DecisionInputs(
+        execution_mode=execution_mode,
+        ensemble=ensemble or _ensemble(),
+        execution=execution or _execution(),
+        z_path=z_path,
+        min_z_path=min_z_path,
+        min_p_no_touch=min_p_no_touch,
+        base_edge=base_edge,
+        latency_buffer=latency_buffer,
+        source_buffer=source_buffer,
+        crowding_buffer=crowding_buffer,
+        support_resistance_buffer=support_resistance_buffer,
+        support_resistance_reasons=support_resistance_reasons,
+        crowding_reasons=crowding_reasons,
+        quality_reasons=quality_reasons,
     )
 
 
-def test_evaluate_probability_gates_blocks_when_p_no_touch_is_below_hard_floor() -> None:
-    result = evaluate_probability_gates(
-        _ensemble(
-            p_finish=0.92,
-            p_no_touch=0.49,
-            z_path=0.75,
-            path_diagnosis=("CLEAN",),
-        ),
-        _quality(executable_entry_price=0.50),
-        p_no_touch_hard_floor=0.50,
+def test_decision_promotes_to_paper_trade_when_edge_and_path_are_clean() -> None:
+    decision = evaluate_decision(_inputs())
+
+    assert decision.decision_hint == "PAPER_TRADE"
+    assert decision.edge_after_costs == 0.09999999999999998
+    assert decision.required_edge == 0.064
+    assert decision.edge_components == {
+        "base_edge": 0.02,
+        "entry_slippage_buffer": 0.004,
+        "exit_slippage_buffer": 0.005,
+        "latency_buffer": 0.005,
+        "source_buffer": 0.005,
+        "uncertainty_buffer": 0.025,
+        "crowding_buffer": 0.0,
+        "support_resistance_buffer": 0.0,
+    }
+    assert decision.supervised_live_action == "DISABLED"
+    assert decision.live_order_intent is None
+    assert decision.skip_reasons == ()
+
+
+def test_decision_blocks_when_exit_liquidity_is_missing() -> None:
+    decision = evaluate_decision(_inputs(execution=_execution(exit_depth=False)))
+
+    assert decision.decision_hint == "BLOCK"
+    assert decision.skip_reasons == ("insufficient_exit_depth",)
+
+
+def test_supervised_live_requires_manual_approval_and_no_order_intent() -> None:
+    decision = evaluate_decision(
+        _inputs(execution_mode=DecisionMode.SUPERVISED_LIVE)
     )
 
-    assert result.action == "BLOCK"
-    assert result.decision_hint == "BLOCK"
-    assert result.edge_after_costs == pytest.approx(0.41)
-    assert result.reasons == (
-        "P_NO_TOUCH_BELOW_HARD_FLOOR",
-        "P_NO_TOUCH_BELOW_FLOOR",
+    assert decision.decision_hint == "REQUIRE_MANUAL_APPROVAL"
+    assert decision.supervised_live_action == "REQUIRE_MANUAL_APPROVAL"
+    assert decision.live_order_intent is None
+
+
+def test_decision_demands_more_edge_when_edge_is_below_required_buffers() -> None:
+    decision = evaluate_decision(_inputs(ensemble=_ensemble(p_finish=0.66)))
+
+    assert decision.decision_hint == "DEMAND_MORE_EDGE"
+    assert decision.edge_after_costs == 0.040000000000000036
+    assert decision.required_edge == 0.064
+    assert decision.skip_reasons == ("insufficient_edge",)
+
+
+def test_sparse_path_waits_with_stable_deduped_reasons() -> None:
+    decision = evaluate_decision(
+        _inputs(
+            ensemble=_ensemble(path_diagnosis=PathDiagnosis.SPARSE),
+            quality_reasons=("source_lag", "sparse_generator_scope"),
+            crowding_reasons=("source_lag",),
+        )
     )
 
-
-def test_evaluate_probability_gates_does_not_trade_when_p_no_touch_is_below_floor() -> None:
-    result = evaluate_probability_gates(
-        _ensemble(
-            p_finish=0.95,
-            p_no_touch=0.60,
-            z_path=0.90,
-            path_diagnosis=("CLEAN",),
-        ),
-        _quality(executable_entry_price=0.50),
-    )
-
-    assert result.decision_hint == "WAIT"
-    assert result.edge_after_costs > result.required_edge
-    assert result.path_risk_buffer == pytest.approx(0.015)
-    assert result.reasons == ("P_NO_TOUCH_BELOW_FLOOR",)
-
-
-def test_evaluate_probability_gates_blocks_wrong_side_z_path_even_when_edge_clears() -> None:
-    result = evaluate_probability_gates(
-        _ensemble(p_finish=0.95, z_path=-2.0, path_diagnosis=("CLEAN",)),
-        _quality(executable_entry_price=0.40),
-    )
-
-    assert result.decision_hint == "BLOCK"
-    assert "WRONG_SIDE" in result.reasons
-    assert "Z_PATH_BELOW_FLOOR" not in result.reasons
-    assert result.edge_after_costs > result.required_edge
+    assert decision.decision_hint == "WAIT"
+    assert decision.skip_reasons == ("source_lag", "sparse_generator_scope")
 
 
 @pytest.mark.parametrize(
-    ("ensemble", "hard_failures", "expected_reason"),
+    ("field_name", "input_factory"),
     (
-        (_ensemble(), ("STALE_OR_UNSAFE",), "STALE_OR_UNSAFE"),
-        (_ensemble(mc_dispersion=0.11), (), "MC_DISPERSION"),
-        (_ensemble(path_diagnosis=("SPARSE",)), (), "SPARSE"),
-        (_ensemble(path_diagnosis=("STALE_OR_UNSAFE",)), (), "STALE_OR_UNSAFE"),
+        ("ensemble.p_finish", lambda: _inputs(ensemble=_ensemble(p_finish=math.nan))),
+        ("ensemble.p_no_touch", lambda: _inputs(ensemble=_ensemble(p_no_touch=math.inf))),
+        (
+            "ensemble.u_gen_finish",
+            lambda: _inputs(ensemble=_ensemble(u_gen_finish=math.nan)),
+        ),
+        (
+            "ensemble.u_gen_touch",
+            lambda: _inputs(ensemble=_ensemble(u_gen_touch=math.inf)),
+        ),
+        (
+            "ensemble.mc_dispersion",
+            lambda: _inputs(ensemble=_ensemble(mc_dispersion=math.nan)),
+        ),
+        (
+            "ensemble.effective_generator_values.x.p_finish",
+            lambda: _inputs(
+                ensemble=_ensemble(
+                    effective_generator_values={"x": {"p_finish": math.nan}},
+                ),
+            ),
+        ),
+        (
+            "ensemble.effective_generator_values.x.p_finish",
+            lambda: _inputs(
+                ensemble=_ensemble(
+                    effective_generator_values={"x": {"p_finish": -0.2}},
+                ),
+            ),
+        ),
+        (
+            "ensemble.effective_generator_values.x.p_no_touch",
+            lambda: _inputs(
+                ensemble=_ensemble(
+                    effective_generator_values={"x": {"p_no_touch": 1.2}},
+                ),
+            ),
+        ),
+        (
+            "ensemble.effective_generator_values.x.weight",
+            lambda: _inputs(
+                ensemble=_ensemble(
+                    effective_generator_values={"x": {"weight": -1.0}},
+                ),
+            ),
+        ),
+        (
+            "execution.entry_vwap",
+            lambda: _inputs(execution=_execution(entry_vwap=math.nan)),
+        ),
+        (
+            "execution.exit_vwap",
+            lambda: _inputs(execution=_execution(exit_vwap=math.inf)),
+        ),
+        ("execution.spread", lambda: _inputs(execution=_execution(spread=math.nan))),
+        (
+            "execution.quote_age_ms",
+            lambda: _inputs(execution=_execution(quote_age_ms=-1)),
+        ),
+        ("base_edge", lambda: _inputs(base_edge=math.nan)),
+        ("latency_buffer", lambda: _inputs(latency_buffer=math.inf)),
+        ("min_p_no_touch", lambda: _inputs(min_p_no_touch=math.nan)),
+        ("z_path", lambda: _inputs(z_path=math.inf)),
     ),
 )
-def test_evaluate_probability_gates_blocks_on_hard_failures_or_hard_diagnoses(
-    ensemble: EnsembleOutput,
-    hard_failures: tuple[str, ...],
-    expected_reason: str,
+def test_decision_rejects_nonfinite_numeric_inputs(
+    field_name: str,
+    input_factory: Callable[[], DecisionInputs],
 ) -> None:
-    result = evaluate_probability_gates(
-        ensemble,
-        _quality(executable_entry_price=0.60, hard_failures=hard_failures),
-    )
-
-    assert result.decision_hint == "BLOCK"
-    assert expected_reason in result.reasons
-
-
-def test_executable_quality_input_normalizes_list_hard_failures_and_rejects_string() -> None:
-    quality = _quality(hard_failures=["STALE_OR_UNSAFE", "MANUAL_BLOCK"])
-
-    assert quality.hard_failures == ("STALE_OR_UNSAFE", "MANUAL_BLOCK")
-    with pytest.raises(ValueError, match="hard_failures"):
-        _quality(hard_failures="STALE_OR_UNSAFE")
-
-
-def test_evaluate_probability_gates_blocks_high_uncertainty_even_when_edge_clears() -> None:
-    result = evaluate_probability_gates(
-        _ensemble(p_finish=0.95, uncertainty_buffer=0.121),
-        _quality(executable_entry_price=0.40),
-    )
-
-    assert result.decision_hint == "BLOCK"
-    assert "UNCERTAINTY_BUFFER" in result.reasons
-    assert result.edge_after_costs > result.required_edge
-
-
-@pytest.mark.parametrize(
-    ("quality", "expected_reason"),
-    (
-        (_quality(quote_age_ms=1501), "QUOTE_STALE"),
-        (_quality(source_age_ms=2001), "SOURCE_STALE"),
-        (_quality(book_age_ms=1501), "BOOK_STALE"),
-        (_quality(latency_ms=501), "LATENCY_STALE"),
-        (_quality(source_fresh=False), "SOURCE_NOT_FRESH"),
-        (_quality(book_fresh=False), "BOOK_NOT_FRESH"),
-    ),
-)
-def test_evaluate_probability_gates_blocks_on_first_class_freshness_inputs(
-    quality: ExecutableQualityInput,
-    expected_reason: str,
-) -> None:
-    result = evaluate_probability_gates(
-        _ensemble(),
-        quality,
-    )
-
-    assert result.decision_hint == "BLOCK"
-    assert expected_reason in result.reasons
+    with pytest.raises(ValueError, match=field_name):
+        evaluate_decision(input_factory())

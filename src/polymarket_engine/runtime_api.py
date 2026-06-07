@@ -3,9 +3,8 @@ from __future__ import annotations
 import asyncio
 from dataclasses import asdict
 from datetime import datetime, timezone
-import hashlib
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Sequence, cast
 import json
 import os
 import subprocess
@@ -27,7 +26,11 @@ from polymarket_engine.validation.outcomes import build_outcome_history_payload
 
 NORMALIZED_HEALTH_SCHEMA_VERSION = "polymarket-normalized-health-v1"
 VOLATILITY_STATUS_SCHEMA_VERSION = "polymarket-volatility-runtime-v1"
-VOLATILITY_STATUS_FLAGS = frozenset({"stale_source", "missing_volatility", "invalid_flags_json"})
+_PROBABILITY_EVENT_ROWS_CACHE: dict[
+    tuple[str, int, int, int],
+    tuple[list[dict[str, Any]], list[str]],
+] = {}
+_PROBABILITY_EVENT_ROWS_CACHE_LIMIT = 32
 
 
 def build_runtime_router(
@@ -36,12 +39,15 @@ def build_runtime_router(
     duckdb_path: Path = Path("data/db/polymarket.duckdb"),
     normalized_health_path: Path = Path("data/live/normalized_health.json"),
     probability_status_path: Path = Path("data/live/probabilities.json"),
+    probability_inputs_path: Path | None = Path("data/live/probability_inputs.json"),
+    probability_fragments_path: Path | None = Path("data/live/probability_fragments.json"),
     outcome_status_path: Path = Path("data/live/outcomes.json"),
     target_cache_path: Path = Path("data/live/targets.json"),
     volatility_status_path: Path = Path("data/live/volatility.json"),
     data_dir: Path = Path("data"),
     enable_container_status: bool = False,
     enable_runtime_probabilities: bool = False,
+    allow_probability_compute_fallback: bool = False,
 ) -> APIRouter:
     router = APIRouter(prefix="/api/runtime")
     probability_cache = ProbabilityRuntimeCache()
@@ -147,6 +153,8 @@ def build_runtime_router(
             status_path=status_path,
             duckdb_path=duckdb_path,
             normalized_health_path=normalized_health_path,
+            probability_status_path=probability_status_path,
+            probability_inputs_path=probability_inputs_path,
             target_cache_path=target_cache_path,
             volatility_status_path=volatility_status_path,
             limit=limit,
@@ -167,6 +175,8 @@ def build_runtime_router(
                     status_path=status_path,
                     duckdb_path=duckdb_path,
                     normalized_health_path=normalized_health_path,
+                    probability_status_path=probability_status_path,
+                    probability_inputs_path=probability_inputs_path,
                     target_cache_path=target_cache_path,
                     volatility_status_path=volatility_status_path,
                     limit=limit,
@@ -192,8 +202,31 @@ def build_runtime_router(
                     limit=limit,
                 )
             return _probabilities_disabled_payload()
+        hot_or_fallback_payload: dict[str, Any] | None = None
+        if probability_status_path.exists():
+            status_payload = _probability_status_payload(
+                probability_status_path=probability_status_path,
+                limit=limit,
+            )
+            rows = status_payload.get("rows")
+            if isinstance(rows, list) and rows:
+                return status_payload
         try:
-            payload = probability_cache.payload(duckdb_path=duckdb_path, limit=limit)
+            if probability_inputs_path is not None and probability_inputs_path.exists():
+                hot_or_fallback_payload = probability_cache.payload(
+                    duckdb_path=duckdb_path,
+                    limit=limit,
+                    allow_compute=allow_probability_compute_fallback,
+                    probability_inputs_path=probability_inputs_path,
+                    probability_fragments_path=probability_fragments_path,
+                )
+                hot_rows = hot_or_fallback_payload.get("rows")
+                if (
+                    hot_or_fallback_payload.get("source") == "hot_inputs"
+                    and isinstance(hot_rows, list)
+                    and hot_rows
+                ):
+                    return hot_or_fallback_payload
         except ValueError as exc:
             return {
                 "ok": False,
@@ -206,12 +239,33 @@ def build_runtime_router(
                 "skipped": 0,
                 "errors": [str(exc)],
             }
-        if payload.get("state") in {"MISSING", "INVALID"} and probability_status_path.exists():
+        if probability_status_path.exists():
             return _probability_status_payload(
                 probability_status_path=probability_status_path,
                 limit=limit,
             )
-        return payload
+        if hot_or_fallback_payload is not None:
+            return hot_or_fallback_payload
+        try:
+            return probability_cache.payload(
+                duckdb_path=duckdb_path,
+                limit=limit,
+                allow_compute=allow_probability_compute_fallback,
+                probability_inputs_path=probability_inputs_path,
+                probability_fragments_path=probability_fragments_path,
+            )
+        except ValueError as exc:
+            return {
+                "ok": False,
+                "state": "INVALID",
+                "error": str(exc),
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "cached": False,
+                "model_version": None,
+                "rows": [],
+                "skipped": 0,
+                "errors": [str(exc)],
+            }
 
     @router.get("/probability-events/stream")
     def runtime_probability_events_stream(
@@ -228,7 +282,6 @@ def build_runtime_router(
             while max_events is None or emitted < max_events:
                 payload = _probability_events_payload(
                     probability_event_path=probability_event_path,
-                    probability_status_path=probability_status_path,
                     limit=limit,
                     after_event_id=last_event_id,
                 )
@@ -301,6 +354,10 @@ def runtime_probabilities_enabled_from_env() -> bool:
     return os.getenv("POLYMARKET_ENABLE_RUNTIME_PROBABILITIES") == "1"
 
 
+def runtime_probability_compute_fallback_enabled_from_env() -> bool:
+    return os.getenv("POLYMARKET_ALLOW_RUNTIME_PROBABILITY_COMPUTE") == "1"
+
+
 def _probabilities_disabled_payload() -> dict[str, Any]:
     return {
         "schema_version": "polymarket-probability-runtime-v1",
@@ -347,8 +404,12 @@ def _probability_status_payload(
             "skipped": 0,
             "errors": ["probability status shape invalid: rows must be a list"],
         }
+    display_rows = rows
+    last_good_rows = status_payload.get("last_good_rows")
+    if not display_rows and isinstance(last_good_rows, list):
+        display_rows = [row for row in last_good_rows if isinstance(row, dict)]
     limited = dict(status_payload)
-    limited["rows"] = rows[:limit]
+    limited["rows"] = display_rows[:limit]
     limited["cached"] = False
     return limited
 
@@ -356,7 +417,6 @@ def _probability_status_payload(
 def _probability_events_payload(
     *,
     probability_event_path: Path,
-    probability_status_path: Path,
     limit: int,
     after_event_id: str | None,
 ) -> dict[str, Any]:
@@ -364,13 +424,6 @@ def _probability_events_payload(
         probability_event_path,
         limit=max(limit, 1),
     )
-    event_source = "jsonl"
-    if not rows and errors == [f"{probability_event_path} missing"]:
-        rows, errors = _probability_event_rows_from_status(
-            probability_status_path,
-            limit=max(limit, 1),
-        )
-        event_source = "status"
     if after_event_id:
         rows = _probability_events_after(rows, after_event_id)
     return {
@@ -380,7 +433,6 @@ def _probability_events_payload(
         "error": None if not errors else errors[0],
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "path": str(probability_event_path),
-        "event_source": event_source,
         "events": rows[-limit:] if limit > 0 else [],
         "errors": errors,
     }
@@ -395,7 +447,16 @@ def _read_probability_event_rows(
     if read_path is None:
         return [], [f"{path} missing"]
     try:
-        lines = read_path.read_text(encoding="utf-8").splitlines()
+        stat = read_path.stat()
+    except OSError as exc:
+        return [], [f"file stat failed: {_format_error(exc)}"]
+    cache_key = (str(read_path), stat.st_mtime_ns, stat.st_size, limit)
+    cached = _PROBABILITY_EVENT_ROWS_CACHE.get(cache_key)
+    if cached is not None:
+        cached_rows, cached_errors = cached
+        return [dict(row) for row in cached_rows], list(cached_errors)
+    try:
+        lines = _tail_text_lines(read_path, max_lines=max(limit * 2, limit))
     except OSError as exc:
         return [], [f"file read failed: {_format_error(exc)}"]
 
@@ -413,7 +474,30 @@ def _read_probability_event_rows(
             errors.append("probability event line must be an object")
             continue
         rows.append(payload)
-    return rows[-limit:], errors
+    result_rows = rows[-limit:]
+    if len(_PROBABILITY_EVENT_ROWS_CACHE) >= _PROBABILITY_EVENT_ROWS_CACHE_LIMIT:
+        _PROBABILITY_EVENT_ROWS_CACHE.clear()
+    _PROBABILITY_EVENT_ROWS_CACHE[cache_key] = ([dict(row) for row in result_rows], list(errors))
+    return result_rows, errors
+
+
+def _tail_text_lines(path: Path, *, max_lines: int, block_size: int = 64 * 1024) -> list[str]:
+    if max_lines <= 0:
+        return []
+    with path.open("rb") as handle:
+        handle.seek(0, os.SEEK_END)
+        position = handle.tell()
+        chunks: list[bytes] = []
+        newline_count = 0
+        while position > 0 and newline_count <= max_lines:
+            read_size = min(block_size, position)
+            position -= read_size
+            handle.seek(position)
+            chunk = handle.read(read_size)
+            chunks.append(chunk)
+            newline_count += chunk.count(b"\n")
+    data = b"".join(reversed(chunks))
+    return [line.decode("utf-8") for line in data.splitlines()[-max_lines:]]
 
 
 def _newest_probability_event_drain(path: Path) -> Path | None:
@@ -426,48 +510,6 @@ def _newest_probability_event_drain(path: Path) -> Path | None:
         if newest is None or mtime_ns > newest[0]:
             newest = (mtime_ns, candidate)
     return None if newest is None else newest[1]
-
-
-def _probability_event_rows_from_status(
-    path: Path,
-    *,
-    limit: int,
-) -> tuple[list[dict[str, Any]], list[str]]:
-    payload, read_error = _read_json_or_error(path)
-    if payload is None:
-        return [], [read_error["error"]]
-
-    rows: list[dict[str, Any]] = []
-    errors: list[str] = []
-    for lane_key, default_kind in (("rows", "MC"), ("nowcast_rows", "NOWCAST")):
-        lane_rows = payload.get(lane_key, [])
-        if not isinstance(lane_rows, list):
-            errors.append(f"probability status shape invalid: {lane_key} must be a list")
-            continue
-        for row in lane_rows:
-            if not isinstance(row, dict):
-                errors.append(f"probability status shape invalid: {lane_key} row must be an object")
-                continue
-            event = dict(row)
-            event.setdefault("probability_kind", default_kind)
-            event.setdefault("generated_at", payload.get("generated_at"))
-            event["event_id"] = _status_probability_event_id(event)
-            rows.append(event)
-    return rows[-limit:], errors
-
-
-def _status_probability_event_id(row: dict[str, Any]) -> str:
-    identity = {
-        "asof_ts": row.get("asof_ts"),
-        "contract_id": row.get("contract_id") or row.get("contract"),
-        "generated_at": row.get("generated_at"),
-        "output_id": row.get("output_id"),
-        "probability_kind": row.get("probability_kind"),
-        "side": row.get("side"),
-        "state_id": row.get("state_id"),
-    }
-    encoded = json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return f"status-{hashlib.sha1(encoded).hexdigest()[:20]}"
 
 
 def _probability_events_after(
@@ -494,6 +536,8 @@ def _runtime_live_payload(
     status_path: Path,
     duckdb_path: Path,
     normalized_health_path: Path,
+    probability_status_path: Path,
+    probability_inputs_path: Path | None,
     target_cache_path: Path,
     volatility_status_path: Path,
     limit: int,
@@ -548,6 +592,11 @@ def _runtime_live_payload(
                     state="INVALID",
                     error=f"runtime monitor unavailable: {_format_error(exc)}",
                 )
+    monitor = _enrich_monitor_thresholds_from_probability_inputs(
+        monitor,
+        probability_status_path=probability_status_path,
+        probability_inputs_path=probability_inputs_path,
+    )
 
     latency = _live_latency_payload(
         status=status,
@@ -571,6 +620,152 @@ def _runtime_live_payload(
         "volatility": volatility,
         "latency": latency,
     }
+
+
+def _enrich_monitor_thresholds_from_probability_inputs(
+    monitor: dict[str, Any],
+    *,
+    probability_status_path: Path,
+    probability_inputs_path: Path | None,
+) -> dict[str, Any]:
+    thresholds = _probability_status_thresholds_by_market(probability_status_path)
+    thresholds.update(_probability_input_thresholds_by_market(probability_inputs_path))
+    threshold_cache = getattr(
+        _enrich_monitor_thresholds_from_probability_inputs,
+        "_threshold_cache",
+        None,
+    )
+    if not isinstance(threshold_cache, dict):
+        threshold_cache = {}
+        setattr(
+            _enrich_monitor_thresholds_from_probability_inputs,
+            "_threshold_cache",
+            threshold_cache,
+        )
+    if thresholds:
+        threshold_cache.update({slug: dict(threshold) for slug, threshold in thresholds.items()})
+        thresholds = {**threshold_cache, **thresholds}
+    else:
+        thresholds = threshold_cache
+    if not thresholds:
+        return monitor
+    orderbooks = monitor.get("orderbooks")
+    if not isinstance(orderbooks, (list, tuple)):
+        return monitor
+    enriched_orderbooks: list[object] = []
+    for orderbook in orderbooks:
+        if not isinstance(orderbook, dict):
+            enriched_orderbooks.append(orderbook)
+            continue
+        enriched_orderbook = dict(orderbook)
+        market_slug = orderbook.get("market_slug")
+        if not isinstance(market_slug, str):
+            enriched_orderbooks.append(enriched_orderbook)
+            continue
+        threshold = thresholds.get(market_slug)
+        if threshold is None:
+            enriched_orderbooks.append(enriched_orderbook)
+            continue
+        enriched_orderbook["threshold_price"] = threshold["threshold_price"]
+        enriched_orderbook["threshold_event_ts"] = (
+            enriched_orderbook.get("threshold_event_ts") or threshold.get("threshold_event_ts")
+        )
+        enriched_orderbook["threshold_observed_ts"] = (
+            enriched_orderbook.get("threshold_observed_ts")
+            or threshold.get("threshold_observed_ts")
+        )
+        enriched_orderbooks.append(enriched_orderbook)
+    return {**monitor, "orderbooks": enriched_orderbooks}
+
+
+def _probability_status_thresholds_by_market(
+    probability_status_path: Path,
+) -> dict[str, dict[str, str]]:
+    payload, _read_error = _read_json_or_error(probability_status_path)
+    if payload is None:
+        return {}
+    raw_rows = payload.get("rows")
+    if not isinstance(raw_rows, list) or not raw_rows:
+        raw_rows = payload.get("last_good_rows")
+    if not isinstance(raw_rows, list):
+        return {}
+    thresholds: dict[str, dict[str, str]] = {}
+    for row in raw_rows:
+        if not isinstance(row, dict):
+            continue
+        market_slug = row.get("market_slug")
+        if not isinstance(market_slug, str):
+            continue
+        threshold = _threshold_from_probability_status_row(row)
+        if threshold is None:
+            continue
+        threshold_ts = str(row.get("asof_ts") or row.get("generated_at") or payload.get("generated_at") or "")
+        thresholds[market_slug] = {
+            "threshold_price": _format_scalar_string(threshold),
+            "threshold_event_ts": threshold_ts,
+            "threshold_observed_ts": threshold_ts,
+        }
+    return thresholds
+
+
+def _threshold_from_probability_status_row(row: dict[str, Any]) -> float | None:
+    for key in ("threshold_price", "threshold"):
+        threshold = _positive_float_or_none(row.get(key))
+        if threshold is not None:
+            return threshold
+    preview = row.get("simulation_preview")
+    if isinstance(preview, dict):
+        return _positive_float_or_none(preview.get("threshold"))
+    return None
+
+
+def _probability_input_thresholds_by_market(
+    probability_inputs_path: Path | None,
+) -> dict[str, dict[str, str]]:
+    if probability_inputs_path is None:
+        return {}
+    payload, _read_error = _read_json_or_error(probability_inputs_path)
+    if payload is None:
+        return {}
+    rows = payload.get("inputs")
+    if not isinstance(rows, list):
+        return {}
+    thresholds: dict[str, dict[str, str]] = {}
+    generated_at = payload.get("generated_at")
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        market_slug = row.get("market_slug")
+        probability_input = row.get("probability_input")
+        if not isinstance(market_slug, str) or not isinstance(probability_input, dict):
+            continue
+        threshold = _positive_float_or_none(probability_input.get("threshold"))
+        if threshold is None:
+            continue
+        asof_ts = probability_input.get("asof_ts")
+        threshold_ts = str(asof_ts or generated_at or "")
+        thresholds[market_slug] = {
+            "threshold_price": _format_scalar_string(threshold),
+            "threshold_event_ts": threshold_ts,
+            "threshold_observed_ts": threshold_ts,
+        }
+    return thresholds
+
+
+def _positive_float_or_none(value: object) -> float | None:
+    try:
+        number = float(cast(Any, value))
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
+def _has_positive_number(value: object) -> bool:
+    return _positive_float_or_none(value) is not None
+
+
+def _format_scalar_string(value: float) -> str:
+    return f"{value:.12g}"
 
 
 def _live_volatility_payload(
@@ -740,7 +935,6 @@ def _volatility_flags(raw_flags: object, *, sigma_tau: object) -> list[str]:
             flags = [str(flag) for flag in loaded]
         else:
             flags = ["invalid_flags_json"]
-    flags = [flag for flag in flags if flag in VOLATILITY_STATUS_FLAGS]
     if sigma_tau is None and "missing_volatility" not in flags:
         flags.append("missing_volatility")
     return flags if flags else ["OK"]
@@ -749,9 +943,7 @@ def _volatility_flags(raw_flags: object, *, sigma_tau: object) -> list[str]:
 def _optional_float(value: object) -> float | None:
     if value is None:
         return None
-    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
-        return None
-    return float(value)
+    return float(cast(Any, value))
 
 
 def _read_json_or_error(path: Path) -> tuple[dict[str, Any] | None, dict[str, str]]:

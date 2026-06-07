@@ -11,31 +11,30 @@ def test_deploy_defaults_disable_cpu_runtime_probabilities() -> None:
     )
     env_example = (ROOT / "deploy/collector/.env.example").read_text(encoding="utf-8")
 
-    assert "POLYMARKET_NORMALIZER_ENABLE_PROBABILITIES:-0" in compose
     assert "POLYMARKET_ENABLE_RUNTIME_PROBABILITIES:-0" in compose
-    assert 'ENABLE_PROBABILITIES="${POLYMARKET_NORMALIZER_ENABLE_PROBABILITIES:-0}"' in entrypoint
-    assert "POLYMARKET_NORMALIZER_ENABLE_PROBABILITIES=0" in env_example
+    assert "POLYMARKET_ALLOW_RUNTIME_PROBABILITY_COMPUTE:-0" in compose
+    assert "--probability-inputs-path" in entrypoint
+    assert "--probability-fragments-path" in entrypoint
     assert "POLYMARKET_ENABLE_RUNTIME_PROBABILITIES=0" in env_example
+    assert "POLYMARKET_ALLOW_RUNTIME_PROBABILITY_COMPUTE=0" in env_example
 
 
 def test_pc_deploy_forces_existing_env_to_gpu_runtime_probabilities() -> None:
     script = (ROOT / "scripts/deploy_pc.sh").read_text(encoding="utf-8")
 
-    assert 'set_env POLYMARKET_NORMALIZER_ENABLE_PROBABILITIES "0" deploy/collector/.env' in script
-    assert 'set_env POLYMARKET_ENABLE_RUNTIME_PROBABILITIES "0" deploy/collector/.env' in script
-    assert 'export POLYMARKET_NORMALIZER_ENABLE_PROBABILITIES="0"' in script
-    assert 'export POLYMARKET_ENABLE_RUNTIME_PROBABILITIES="0"' in script
+    assert "set_env POLYMARKET_ENABLE_RUNTIME_PROBABILITIES 1 deploy/collector/.env" in script
+    assert "set_env POLYMARKET_ALLOW_RUNTIME_PROBABILITY_COMPUTE 0 deploy/collector/.env" in script
 
 
 def test_pc_deploy_probability_smoke_requires_fresh_cuda_rows() -> None:
     script = (ROOT / "scripts/deploy_pc.sh").read_text(encoding="utf-8")
 
-    assert "deploy_started_at = time.time()" in script
-    assert "cuda_generator_versions" in script
-    assert '"cuda-lognormal-chainlink-sigma-batch-v1"' in script
-    assert '"cuda-lognormal-chainlink-sigma-multiseed-v1"' in script
-    assert 'row.get("generator_version") not in cuda_generator_versions' in script
-    assert 'int(row.get("path_count") or 0) < 10_000' in script
+    assert 'row.get("model_version") == "ensemble-v1"' in script
+    assert "required_generators" in script
+    assert '"empirical_conditional"' in script
+    assert '"block_bootstrap"' in script
+    assert '"filtered_historical"' in script
+    assert '"stress_overlay"' in script
     assert "required_contracts" in script
     assert "last_good_rows" in script
     assert '("BTC", "UP")' in script

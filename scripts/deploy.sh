@@ -8,6 +8,7 @@ REPO="${REPO:-$HOME/polymarket}"
 DATA_DIR="${POLYMARKET_DATA_DIR:-$HOME/polymarket-data}"
 COMPOSE_FILE="$REPO/deploy/collector/docker-compose.yml"
 STATUS_PATH="$DATA_DIR/live/status.json"
+OUTCOME_STATUS_PATH="$DATA_DIR/live/outcomes.json"
 LOCK_DIR="/tmp/polymarket-deploy.lock.d"
 LOG_FILE="$REPO/logs/deploy.log"
 DEPLOYED_MARKER="$HOME/.polymarket/last-deployed-sha"
@@ -18,6 +19,7 @@ ALLOW_SPOON_BUILD="${POLYMARKET_DEPLOY_ALLOW_SPOON_BUILD:-0}"
 EXPECTED_DEPLOY_SHA="${POLYMARKET_EXPECTED_DEPLOY_SHA:-}"
 COLLECTOR_IMAGE="${POLYMARKET_COLLECTOR_IMAGE:-polymarket-rust-collector:latest}"
 NORMALIZER_IMAGE="${POLYMARKET_NORMALIZER_IMAGE:-polymarket-normalizer:latest}"
+CUDA_PROBABILITY_IMAGE="${POLYMARKET_CUDA_PROBABILITY_IMAGE:-polymarket-cuda-probability:latest}"
 LOG() { echo "[$(date -Iseconds)] $*" | tee -a "$LOG_FILE"; }
 
 mkdir -p "$REPO/logs" "$DATA_DIR/raw" "$DATA_DIR/db" "$DATA_DIR/live" "$DATA_DIR/logs" "$(dirname "$DEPLOYED_MARKER")"
@@ -47,6 +49,27 @@ normalizer_running() {
 normalizer_uses_sidecar() {
   compose -f "$COMPOSE_FILE" top normalizer 2>> "$LOG_FILE" \
     | grep "$NORMALIZER_SIDECAR_COMMAND" >> "$LOG_FILE" 2>&1
+}
+
+outcome_refresh_stopped() {
+  ! compose -f "$COMPOSE_FILE" ps --services --status running outcome-refresh 2>> "$LOG_FILE" \
+    | grep -qx outcome-refresh
+}
+
+outcome_status_fresh() {
+  python3 - "$OUTCOME_STATUS_PATH" <<'PY' >> "$LOG_FILE" 2>&1
+import json
+import os
+import sys
+import time
+
+path = sys.argv[1]
+payload = json.load(open(path, encoding="utf-8"))
+if payload.get("schema_version") != "polymarket-outcome-runtime-v1":
+    raise SystemExit(1)
+if time.time() - os.stat(path).st_mtime > 120:
+    raise SystemExit(1)
+PY
 }
 
 required_image_available() {
@@ -98,6 +121,7 @@ if [ "$USE_PREBUILT" = "1" ]; then
   EXPECTED_SHORT_SHA="${EXPECTED_FULL_SHA:0:12}"
   EXPECTED_COLLECTOR_IMAGE="polymarket-rust-collector:$EXPECTED_SHORT_SHA"
   EXPECTED_NORMALIZER_IMAGE="polymarket-normalizer:$EXPECTED_SHORT_SHA"
+  EXPECTED_CUDA_PROBABILITY_IMAGE="polymarket-cuda-probability:$EXPECTED_SHORT_SHA"
   if [ "$COLLECTOR_IMAGE" != "$EXPECTED_COLLECTOR_IMAGE" ]; then
     LOG "collector image $COLLECTOR_IMAGE does not match expected $EXPECTED_COLLECTOR_IMAGE"
     exit 1
@@ -106,10 +130,18 @@ if [ "$USE_PREBUILT" = "1" ]; then
     LOG "normalizer image $NORMALIZER_IMAGE does not match expected $EXPECTED_NORMALIZER_IMAGE"
     exit 1
   fi
+  if [ "$CUDA_PROBABILITY_IMAGE" != "$EXPECTED_CUDA_PROBABILITY_IMAGE" ]; then
+    LOG "CUDA probability image $CUDA_PROBABILITY_IMAGE does not match expected $EXPECTED_CUDA_PROBABILITY_IMAGE"
+    exit 1
+  fi
 fi
 DEPLOYED_SHA="$(cat "$DEPLOYED_MARKER" 2>/dev/null || true)"
 if [ "$USE_PREBUILT" != "1" ] && [ "$LOCAL" = "$REMOTE" ] && [ "$DEPLOYED_SHA" = "$REMOTE" ] && [ "${DEPLOY_FORCE:-0}" != "1" ]; then
-  if normalizer_running && normalizer_uses_sidecar && python3 "$REPO/scripts/check_collector_status.py" \
+  if normalizer_running \
+    && normalizer_uses_sidecar \
+    && outcome_refresh_stopped \
+    && outcome_status_fresh \
+    && python3 "$REPO/scripts/check_collector_status.py" \
     --status-path "$STATUS_PATH" \
     --max-status-age-seconds 30 \
     --max-price-age-ms 30000 \
@@ -142,6 +174,8 @@ fi
 
 LOG "stopping legacy Python collector containers if present"
 docker rm -f polymarket-collector-collector-1 polymarket-python-collector-retired-retired-python-collector-1 >> "$LOG_FILE" 2>&1 || true
+LOG "stopping retired outcome-refresh sidecar if present"
+compose -f "$COMPOSE_FILE" stop outcome-refresh >> "$LOG_FILE" 2>&1 || true
 
 if [ "$USE_PREBUILT" = "1" ]; then
   if ! required_image_available "$COLLECTOR_IMAGE"; then
@@ -152,11 +186,16 @@ if [ "$USE_PREBUILT" = "1" ]; then
     LOG "POLYMARKET_DEPLOY_USE_PREBUILT=1 but required normalizer image is missing: $NORMALIZER_IMAGE"
     exit 1
   fi
-  LOG "starting prebuilt images collector=$COLLECTOR_IMAGE normalizer=$NORMALIZER_IMAGE"
+  if ! required_image_available "$CUDA_PROBABILITY_IMAGE"; then
+    LOG "POLYMARKET_DEPLOY_USE_PREBUILT=1 but required CUDA probability image is missing: $CUDA_PROBABILITY_IMAGE"
+    exit 1
+  fi
+  LOG "starting prebuilt images collector=$COLLECTOR_IMAGE normalizer=$NORMALIZER_IMAGE cuda_probability=$CUDA_PROBABILITY_IMAGE"
   if ! (
     export POLYMARKET_COLLECTOR_IMAGE="$COLLECTOR_IMAGE"
     export POLYMARKET_NORMALIZER_IMAGE="$NORMALIZER_IMAGE"
-    compose -f "$COMPOSE_FILE" up -d collector normalizer api
+    export POLYMARKET_CUDA_PROBABILITY_IMAGE="$CUDA_PROBABILITY_IMAGE"
+    compose -f "$COMPOSE_FILE" up -d collector normalizer api gpu-probability-worker
   ) >> "$LOG_FILE" 2>&1; then
     LOG "docker compose failed"
     exit 1
@@ -167,14 +206,18 @@ else
     exit 1
   fi
   export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-1}"
-  if ! compose -f "$COMPOSE_FILE" up -d --build collector normalizer api >> "$LOG_FILE" 2>&1; then
+  if ! compose -f "$COMPOSE_FILE" up -d --build collector normalizer api gpu-probability-worker >> "$LOG_FILE" 2>&1; then
     LOG "docker compose failed"
     exit 1
   fi
 fi
 
 for _ in $(seq 1 "$DEPLOY_SMOKE_ATTEMPTS"); do
-  if normalizer_running && normalizer_uses_sidecar && python3 "$REPO/scripts/check_collector_status.py" \
+  if normalizer_running \
+    && normalizer_uses_sidecar \
+    && outcome_refresh_stopped \
+    && outcome_status_fresh \
+    && python3 "$REPO/scripts/check_collector_status.py" \
     --status-path "$STATUS_PATH" \
     --max-status-age-seconds 30 \
     --max-price-age-ms 30000 \
@@ -193,5 +236,5 @@ for _ in $(seq 1 "$DEPLOY_SMOKE_ATTEMPTS"); do
 done
 
 LOG "collector smoke failed; leaving container logs in docker compose"
-compose -f "$COMPOSE_FILE" logs --tail=80 collector normalizer api >> "$LOG_FILE" 2>&1 || true
+compose -f "$COMPOSE_FILE" logs --tail=80 collector normalizer api gpu-probability-worker >> "$LOG_FILE" 2>&1 || true
 exit 1

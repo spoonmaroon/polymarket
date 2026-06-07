@@ -1,8 +1,8 @@
 CREATE SCHEMA IF NOT EXISTS ops;
 CREATE SCHEMA IF NOT EXISTS core;
 CREATE SCHEMA IF NOT EXISTS features;
-CREATE SCHEMA IF NOT EXISTS validation;
 CREATE SCHEMA IF NOT EXISTS research;
+CREATE SCHEMA IF NOT EXISTS validation;
 
 CREATE TABLE IF NOT EXISTS ops.ingest_files (
     file_id VARCHAR PRIMARY KEY,
@@ -204,59 +204,39 @@ CREATE TABLE IF NOT EXISTS features.probability_outputs (
     created_at TIMESTAMPTZ NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS features.probability_event_log (
-    event_id VARCHAR PRIMARY KEY,
-    output_id VARCHAR,
+CREATE TABLE IF NOT EXISTS features.generator_runs (
+    generator_run_id VARCHAR PRIMARY KEY,
     state_id VARCHAR NOT NULL,
-    contract_id VARCHAR NOT NULL,
-    market_slug VARCHAR NOT NULL,
-    asset VARCHAR NOT NULL,
-    side VARCHAR NOT NULL,
-    start_ts TIMESTAMPTZ NOT NULL,
-    expiry_ts TIMESTAMPTZ NOT NULL,
     asof_ts TIMESTAMPTZ NOT NULL,
-    probability_kind VARCHAR NOT NULL,
-    backend VARCHAR NOT NULL,
-    model_version VARCHAR NOT NULL,
-    generator_version VARCHAR,
-    cache_key VARCHAR,
-    cache_status VARCHAR,
+    generator_id VARCHAR NOT NULL,
     p_finish DOUBLE NOT NULL,
     p_no_touch DOUBLE NOT NULL,
-    z_path DOUBLE NOT NULL,
-    sigma_tau DOUBLE,
-    executable_price DOUBLE,
-    spread DOUBLE,
-    seconds_left DOUBLE NOT NULL,
-    wave_phase VARCHAR NOT NULL,
-    wave_score DOUBLE NOT NULL,
-    path_count UBIGINT,
+    path_count BIGINT NOT NULL,
+    effective_path_count BIGINT NOT NULL,
     seed BIGINT,
-    queue_ms DOUBLE,
-    runtime_ms DOUBLE,
-    state_to_status_ms DOUBLE,
-    total_lag_ms DOUBLE,
-    generated_at TIMESTAMPTZ NOT NULL,
-    valid_from TIMESTAMPTZ NOT NULL,
-    valid_until TIMESTAMPTZ NOT NULL,
+    runtime_ms DOUBLE NOT NULL,
+    sparse BOOLEAN NOT NULL,
     diagnostics_json VARCHAR NOT NULL,
     created_at TIMESTAMPTZ NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS features.simulation_artifacts (
-    artifact_id VARCHAR PRIMARY KEY,
-    output_id VARCHAR,
+CREATE TABLE IF NOT EXISTS features.ensemble_decisions (
+    decision_id VARCHAR PRIMARY KEY,
     state_id VARCHAR NOT NULL,
+    contract_id VARCHAR NOT NULL,
     asof_ts TIMESTAMPTZ NOT NULL,
-    model_version VARCHAR NOT NULL,
-    backend VARCHAR NOT NULL,
-    path_count UBIGINT NOT NULL,
-    terminal_win_count UBIGINT NOT NULL,
-    no_touch_win_count UBIGINT NOT NULL,
-    terminal_price_quantiles_json VARCHAR NOT NULL,
-    crossing_count_quantiles_json VARCHAR NOT NULL,
-    sampled_paths_json VARCHAR NOT NULL,
-    diagnostics_json VARCHAR NOT NULL,
+    execution_mode VARCHAR NOT NULL,
+    decision_hint VARCHAR NOT NULL,
+    p_finish DOUBLE NOT NULL,
+    p_no_touch DOUBLE NOT NULL,
+    z_path DOUBLE NOT NULL,
+    edge_after_costs DOUBLE NOT NULL,
+    required_edge DOUBLE NOT NULL,
+    skip_reasons_json VARCHAR NOT NULL,
+    edge_components_json VARCHAR NOT NULL,
+    generator_summary_json VARCHAR NOT NULL,
+    execution_summary_json VARCHAR NOT NULL,
+    supervised_live_json VARCHAR NOT NULL,
     created_at TIMESTAMPTZ NOT NULL
 );
 
@@ -289,6 +269,16 @@ CREATE TABLE IF NOT EXISTS features.probability_grid_cache (
     valid_from TIMESTAMPTZ NOT NULL,
     valid_until TIMESTAMPTZ NOT NULL,
     diagnostics_json VARCHAR NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS research.generator_weight_candidates (
+    weight_candidate_id VARCHAR PRIMARY KEY,
+    scope_json VARCHAR NOT NULL,
+    trained_through_ts TIMESTAMPTZ NOT NULL,
+    generator_weights_json VARCHAR NOT NULL,
+    label_count BIGINT NOT NULL,
+    scoring_rule VARCHAR NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS validation.contract_labels (
@@ -339,17 +329,4 @@ CREATE TABLE IF NOT EXISTS validation.market_outcome_history (
     rule_hash VARCHAR NOT NULL,
     mismatch BOOLEAN,
     updated_at TIMESTAMPTZ NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS research.generator_weight_snapshots (
-    snapshot_id VARCHAR PRIMARY KEY,
-    runtime_asof_ts TIMESTAMPTZ NOT NULL,
-    evaluated_through_ts TIMESTAMPTZ NOT NULL,
-    label_window_seconds INTEGER NOT NULL,
-    source VARCHAR NOT NULL,
-    scope_json VARCHAR NOT NULL,
-    weights_json VARCHAR NOT NULL,
-    scores_json VARCHAR NOT NULL,
-    label_counts_json VARCHAR NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL
 );

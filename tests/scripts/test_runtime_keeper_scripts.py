@@ -1,0 +1,31 @@
+from pathlib import Path
+
+
+REPO = Path(__file__).parents[2]
+
+
+def test_thepc_runtime_keeper_installer_installs_loop_and_task() -> None:
+    script = (REPO / "scripts" / "install_thepc_runtime_keeper.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'exec "\\$ENGINE_BIN" runtime-keeper' in script
+    assert 'python3 -m pip install --user --break-system-packages -e "$REPO"' in script
+    assert "POLYMARKET_ENGINE_BIN" in script
+    assert "$HOME/.local/bin/polymarket-engine" in script
+    assert "--loop" in script
+    assert "Register-ScheduledTask" in script
+    assert "Polymarket Runtime Keeper" in script
+    assert "wsl.exe" in script
+    assert "Start-Sleep -Seconds 20" in script
+
+
+def test_mac_tunnel_checker_reloads_launch_agent_and_checks_health() -> None:
+    script = (REPO / "scripts" / "check_mac_polymarket_tunnel.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "com.goon.polymarket-thepc-api-tunnel" in script
+    assert "launchctl bootstrap" in script
+    assert "launchctl kickstart" in script
+    assert "http://127.0.0.1:8000/health" in script

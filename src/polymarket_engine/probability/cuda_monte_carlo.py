@@ -9,15 +9,15 @@ from datetime import datetime
 from types import ModuleType
 from typing import Any
 
-from polymarket_engine.probability.monte_carlo import _evenly_spaced_indices
 from polymarket_engine.probability.monte_carlo import _require_positive_int
-from polymarket_engine.probability.monte_carlo import _sampled_path_payload
-from polymarket_engine.probability.monte_carlo import _terminal_histogram
 from polymarket_engine.probability.schema import ProbabilityInput, ProbabilityOutput
 
 
 class CudaUnavailableError(RuntimeError):
     """Raised when the NVIDIA CUDA Monte Carlo path cannot run."""
+
+
+TERMINAL_HISTOGRAM_BINS = 16
 
 
 @dataclass(frozen=True)
@@ -456,6 +456,66 @@ def _to_cpu_list(values: Any) -> Any:
 
 def _float_tuple_from_cpu_row(values: Any) -> tuple[float, ...]:
     return tuple(float(price) for price in _to_cpu_list(values))
+
+
+def _sampled_path_payload(
+    probability_input: ProbabilityInput,
+    path: tuple[float, ...],
+    *,
+    path_index: int,
+    sampled_point_indices: tuple[int, ...],
+) -> dict[str, Any]:
+    return {
+        "index": path_index,
+        "terminal_win": _price_satisfies_contract(probability_input, path[-1]),
+        "no_touch_win": all(_price_satisfies_contract(probability_input, price) for price in path),
+        "points": [path[index] for index in sampled_point_indices],
+    }
+
+
+def _terminal_histogram(terminal_prices: tuple[float, ...]) -> list[dict[str, Any]]:
+    lower_bound = min(terminal_prices)
+    upper_bound = max(terminal_prices)
+    if lower_bound == upper_bound:
+        return [{"lower": lower_bound, "upper": upper_bound, "count": len(terminal_prices)}]
+
+    bin_count = min(TERMINAL_HISTOGRAM_BINS, len(terminal_prices))
+    width = (upper_bound - lower_bound) / bin_count
+    counts = [0] * bin_count
+    for price in terminal_prices:
+        index = min(bin_count - 1, int((price - lower_bound) / width))
+        counts[index] += 1
+    return [
+        {
+            "lower": lower_bound + width * index,
+            "upper": lower_bound + width * (index + 1),
+            "count": count,
+        }
+        for index, count in enumerate(counts)
+    ]
+
+
+def _evenly_spaced_indices(length: int, count: int) -> tuple[int, ...]:
+    if count <= 0:
+        return ()
+    if count >= length:
+        return tuple(range(length))
+    if count == 1:
+        return (0,)
+    return tuple(round(index * (length - 1) / (count - 1)) for index in range(count))
+
+
+def _price_satisfies_contract(probability_input: ProbabilityInput, price: float) -> bool:
+    threshold = probability_input.threshold
+    if probability_input.comparison_operator == ">":
+        return price > threshold
+    if probability_input.comparison_operator == ">=":
+        return price >= threshold
+    if probability_input.comparison_operator == "<":
+        return price < threshold
+    if probability_input.comparison_operator == "<=":
+        return price <= threshold
+    raise ValueError("unsupported comparison_operator")
 
 
 def _prior_sensitivity_from_cpu_paths(

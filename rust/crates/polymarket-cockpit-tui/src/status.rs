@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-
 use serde::{Deserialize, Serialize, de};
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -108,11 +106,19 @@ pub struct RuntimeDisplayLag {
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct RuntimeProbabilities {
+    #[serde(default = "default_true")]
+    pub ok: bool,
+    #[serde(default)]
+    pub state: String,
     pub generated_at: String,
     #[serde(default)]
     pub cached: bool,
     #[serde(default)]
     pub rows: Vec<RuntimeProbabilityRow>,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub error: Option<String>,
+    #[serde(default)]
+    pub errors: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -156,81 +162,21 @@ pub struct RuntimeOutcomeRow {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct RuntimeProbabilityRow {
     pub contract: String,
-    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
-    pub contract_id: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
-    pub market_slug: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
-    pub asset: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
-    pub side: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
-    pub start_ts: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
-    pub asof_ts: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
-    pub expiry_ts: Option<String>,
     pub p_finish: f64,
     pub p_no_touch: f64,
     pub z_path: f64,
     pub sigma_tau: f64,
-    #[serde(default)]
-    pub u_gen: Option<f64>,
     pub age_ms: u64,
     #[serde(default)]
     pub flags: Vec<String>,
-    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
-    pub cache_key: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
-    pub cache_status: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
-    pub generated_at: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
-    pub valid_from: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
-    pub valid_until: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
-    pub time_bucket: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
-    pub z_path_bucket: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
-    pub sigma_bucket: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
-    pub volatility_regime: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
-    pub generator_version: Option<String>,
     #[serde(default)]
-    pub path_count: Option<u64>,
-    #[serde(default)]
-    pub mc_dispersion: Option<f64>,
-    #[serde(default)]
-    pub uncertainty_buffer: Option<f64>,
-    #[serde(default)]
-    pub path_diagnosis: Vec<String>,
-    #[serde(default)]
-    pub effective_weights: BTreeMap<String, f64>,
-    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
     pub decision_hint: Option<String>,
     #[serde(default)]
     pub edge_after_costs: Option<f64>,
     #[serde(default)]
     pub required_edge: Option<f64>,
     #[serde(default)]
-    pub gate_reasons: Vec<String>,
-    #[serde(default)]
-    pub wave_score: Option<f64>,
-    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
-    pub wave_phase: Option<String>,
-    #[serde(default)]
-    pub wave_reasons: Vec<String>,
-    #[serde(default)]
-    pub wave_markers: Vec<String>,
-    #[serde(default)]
-    pub dynamic_edge: Option<f64>,
-    #[serde(default)]
-    pub dynamic_required_edge: Option<f64>,
-    #[serde(default)]
-    pub generator_metadata: BTreeMap<String, serde_json::Value>,
+    pub skip_reasons: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -317,6 +263,10 @@ where
             "expected scalar string/number/null, got {other}"
         ))),
     }
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl RuntimeStatus {
@@ -491,50 +441,12 @@ mod tests {
             "cached": true,
             "rows": [{
                 "contract": "BTC 5m UP",
-                "contract_id": "btc-updown-5m-1780521900:UP",
-                "asset": "BTC",
-                "side": "UP",
-                "market_slug": "btc-updown-5m-1780521900",
-                "start_ts": "2026-06-03T21:20:00Z",
-                "asof_ts": "2026-06-03T21:20:00Z",
-                "expiry_ts": "2026-06-03T21:25:00Z",
                 "p_finish": 0.57,
                 "p_no_touch": 0.31,
                 "z_path": 0.42,
                 "sigma_tau": 0.0123,
                 "age_ms": 850,
-                "flags": ["OK"],
-                "mc_dispersion": 0.073,
-                "uncertainty_buffer": 0.046,
-                "path_diagnosis": ["FRAGILE", "NEAR_THRESHOLD"],
-                "effective_weights": {
-                    "lognormal_baseline": 0.55,
-                    "empirical_conditional": 0.30,
-                    "stress_overlay": 0.15
-                },
-                "decision_hint": "WAIT",
-                "edge_after_costs": 0.019,
-                "required_edge": 0.086,
-                "gate_reasons": ["NEAR_THRESHOLD"],
-                "wave_score": 0.87,
-                "wave_phase": "breaking",
-                "wave_reasons": ["EDGE_OK", "PRICE_90"],
-                "wave_markers": ["P90"],
-                "dynamic_edge": 0.045,
-                "dynamic_required_edge": 0.030,
-                "u_gen": 0.046,
-                "cache_key": "BTC|UP|h300|t0-30|z0.75-1.00|sigma0.010-0.015|volnormal|eventnone|risknormal|genoffline-lognormal-chainlink-sigma-v1",
-                "cache_status": "HIT",
-                "generated_at": "2026-06-03T21:20:01Z",
-                "valid_from": "2026-06-03T21:20:00Z",
-                "valid_until": "2026-06-03T21:20:30Z",
-                "time_bucket": "0-30",
-                "z_path_bucket": "0.75-1.00",
-                "sigma_bucket": "0.010-0.015",
-                "volatility_regime": "normal",
-                "generator_version": "offline-lognormal-chainlink-sigma-v1",
-                "path_count": 10000,
-                "generator_metadata": {"snapshot_id": "weights-1"}
+                "flags": ["OK"]
             }]
         }"#;
 
@@ -542,77 +454,8 @@ mod tests {
 
         assert!(probabilities.cached);
         assert_eq!(probabilities.rows[0].contract, "BTC 5m UP");
-        assert_eq!(
-            probabilities.rows[0].contract_id.as_deref(),
-            Some("btc-updown-5m-1780521900:UP")
-        );
-        assert_eq!(probabilities.rows[0].asset.as_deref(), Some("BTC"));
-        assert_eq!(probabilities.rows[0].side.as_deref(), Some("UP"));
-        assert_eq!(
-            probabilities.rows[0].asof_ts.as_deref(),
-            Some("2026-06-03T21:20:00Z")
-        );
-        assert_eq!(
-            probabilities.rows[0].expiry_ts.as_deref(),
-            Some("2026-06-03T21:25:00Z")
-        );
-        assert_eq!(
-            probabilities.rows[0].market_slug.as_deref(),
-            Some("btc-updown-5m-1780521900")
-        );
-        assert_eq!(
-            probabilities.rows[0].start_ts.as_deref(),
-            Some("2026-06-03T21:20:00Z")
-        );
         assert_eq!(probabilities.rows[0].p_finish, 0.57);
         assert_eq!(probabilities.rows[0].flags, vec!["OK"]);
-        assert_eq!(probabilities.rows[0].u_gen, Some(0.046));
-        assert_eq!(probabilities.rows[0].cache_status.as_deref(), Some("HIT"));
-        assert_eq!(
-            probabilities.rows[0].cache_key.as_deref(),
-            Some(
-                "BTC|UP|h300|t0-30|z0.75-1.00|sigma0.010-0.015|volnormal|eventnone|risknormal|genoffline-lognormal-chainlink-sigma-v1"
-            )
-        );
-        assert_eq!(
-            probabilities.rows[0].generated_at.as_deref(),
-            Some("2026-06-03T21:20:01Z")
-        );
-        assert_eq!(
-            probabilities.rows[0].valid_until.as_deref(),
-            Some("2026-06-03T21:20:30Z")
-        );
-        assert_eq!(probabilities.rows[0].path_count, Some(10000));
-        assert_eq!(probabilities.rows[0].mc_dispersion, Some(0.073));
-        assert_eq!(probabilities.rows[0].uncertainty_buffer, Some(0.046));
-        assert_eq!(
-            probabilities.rows[0].path_diagnosis,
-            vec!["FRAGILE", "NEAR_THRESHOLD"]
-        );
-        assert_eq!(
-            probabilities.rows[0].effective_weights["stress_overlay"],
-            0.15
-        );
-        assert_eq!(probabilities.rows[0].decision_hint.as_deref(), Some("WAIT"));
-        assert_eq!(probabilities.rows[0].edge_after_costs, Some(0.019));
-        assert_eq!(probabilities.rows[0].required_edge, Some(0.086));
-        assert_eq!(probabilities.rows[0].gate_reasons, vec!["NEAR_THRESHOLD"]);
-        assert_eq!(probabilities.rows[0].wave_score, Some(0.87));
-        assert_eq!(
-            probabilities.rows[0].wave_phase.as_deref(),
-            Some("breaking")
-        );
-        assert_eq!(
-            probabilities.rows[0].wave_reasons,
-            vec!["EDGE_OK", "PRICE_90"]
-        );
-        assert_eq!(probabilities.rows[0].wave_markers, vec!["P90"]);
-        assert_eq!(probabilities.rows[0].dynamic_edge, Some(0.045));
-        assert_eq!(probabilities.rows[0].dynamic_required_edge, Some(0.030));
-        assert_eq!(
-            probabilities.rows[0].generator_metadata["snapshot_id"],
-            serde_json::json!("weights-1")
-        );
     }
 
     #[test]

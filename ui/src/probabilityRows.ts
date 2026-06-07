@@ -1,8 +1,8 @@
 export type ProbabilityRowForGraph = {
   expiry_ts?: string;
   cache_expiry_ts?: string;
-  refresh_display_until?: string;
   valid_until?: string;
+  refresh_display_until?: string;
   [key: string]: unknown;
 };
 
@@ -10,6 +10,8 @@ export type ProbabilityPayloadForGraph<Row extends ProbabilityRowForGraph> = {
   ok?: boolean;
   state?: string;
   rows?: Row[];
+  previous_mc_retained?: boolean;
+  retained_mc_rows?: number;
 };
 
 export type ProbabilityValueRow = ProbabilityRowForGraph & {
@@ -29,18 +31,29 @@ export type ProbabilityValueRow = ProbabilityRowForGraph & {
   p_hat?: number;
   p_no_touch?: number;
   probability_kind?: string;
-  generator_version?: string;
   path_count?: number;
   paths_per_seed?: number;
   seed_count?: number;
+  prior_fragment_count?: number;
+  prior_fragment_reason?: string;
+  prior_fragment_sparse?: boolean;
+  prior_fragment_ids?: string[];
+  prior_fragment_error?: string;
+  prior_fragment_generators?: string[];
   cache_status?: string;
-  mc_display_status?: string;
   generated_at?: string;
-  latency?: {
-    runtime_ms?: number;
-    total_lag_ms?: number;
-  };
+  effective_weights?: Record<string, number>;
+  generator_metadata?: unknown;
+  generator_summary?: unknown;
   simulation_preview?: unknown;
+};
+
+export type GeneratorBreakdownRow = {
+  id: string;
+  p_finish?: number;
+  p_no_touch?: number;
+  weight?: number;
+  sparse?: boolean;
 };
 
 export type ProbabilityPayloadForEvents<Row extends ProbabilityValueRow> =
@@ -57,22 +70,28 @@ export function filterGraphableProbabilityRows<Row extends ProbabilityRowForGrap
   if (!Array.isArray(payload?.rows)) {
     return [];
   }
+  const allowExpiredValidity =
+    payload.previous_mc_retained === true && Number(payload.retained_mc_rows ?? 0) > 0;
   return payload.rows
     .filter((row): row is Row => isRecord(row))
-    .filter((row) => isGraphableProbabilityRow(row, nowMs));
+    .filter((row) => isGraphableProbabilityRow(row, nowMs, allowExpiredValidity));
 }
 
-export function isGraphableProbabilityRow(row: ProbabilityRowForGraph, nowMs: number) {
+export function isGraphableProbabilityRow(
+  row: ProbabilityRowForGraph,
+  nowMs: number,
+  allowExpiredValidity = false,
+) {
   const expiryMs = timestampMs(row.expiry_ts ?? row.cache_expiry_ts);
-  const refreshDisplayUntilMs = timestampMs(row.refresh_display_until);
-  const heldForRefresh =
-    Number.isFinite(refreshDisplayUntilMs) && refreshDisplayUntilMs > nowMs;
   const expiryIsFresh = Number.isFinite(expiryMs) && expiryMs > nowMs;
-  if (!expiryIsFresh && !heldForRefresh) {
+  const refreshHoldMs = timestampMs(row.refresh_display_until);
+  const refreshHoldIsFresh =
+    allowExpiredValidity && Number.isFinite(refreshHoldMs) && refreshHoldMs > nowMs;
+  if (!expiryIsFresh && !refreshHoldIsFresh) {
     return false;
   }
   const validUntilMs = timestampMs(row.valid_until);
-  return heldForRefresh || !Number.isFinite(validUntilMs) || validUntilMs > nowMs;
+  return allowExpiredValidity || !Number.isFinite(validUntilMs) || validUntilMs > nowMs;
 }
 
 export function probabilityDisplayValue(row?: ProbabilityValueRow | null) {
@@ -97,9 +116,18 @@ export function probabilityRowKey(row: ProbabilityValueRow) {
 }
 
 export function probabilitySelectionKey(row: ProbabilityValueRow) {
-  return keyParts([
+  const contractWindowKey = keyParts([
     ["contract", row.contract_id],
     ["market", row.market_slug ?? row.cache_market_slug],
+    ["asset", row.asset],
+    ["side", row.side],
+    ["start", row.start_ts ?? row.cache_start_ts],
+    ["expiry", row.expiry_ts ?? row.cache_expiry_ts],
+  ]);
+  if (contractWindowKey) {
+    return contractWindowKey;
+  }
+  return keyParts([
     ["contract_label", row.contract],
     ["asset", row.asset],
     ["side", row.side],
@@ -111,32 +139,139 @@ export function probabilitySelectionKey(row: ProbabilityValueRow) {
 export function probabilityMetadata(row: ProbabilityValueRow) {
   const preview = parsePreview(row.simulation_preview);
   return {
-    lane: probabilityKind(row),
-    displayStatus: probabilityDisplayStatus(row),
     totalPaths: isFiniteNumber(row.path_count) ? row.path_count : undefined,
     pathsPerSeed: isFiniteNumber(row.paths_per_seed) ? row.paths_per_seed : undefined,
     seedCount: isFiniteNumber(row.seed_count) ? row.seed_count : undefined,
     previewPathCount: Array.isArray(preview?.sampled_paths)
       ? preview.sampled_paths.length
       : undefined,
-    runtimeMs: isFiniteNumber(row.latency?.runtime_ms) ? row.latency.runtime_ms : undefined,
-    totalLagMs: isFiniteNumber(row.latency?.total_lag_ms)
-      ? row.latency.total_lag_ms
-      : undefined,
-    generatorVersion: row.generator_version,
-    cacheStatus: row.cache_status,
   };
 }
 
-export function probabilityDisplayStatus(row: ProbabilityValueRow, nowMs = Date.now()) {
-  if (row.mc_display_status === "held") {
-    return "held";
+export function probabilityPriorSummary(row: ProbabilityValueRow) {
+  const count = isFiniteNumber(row.prior_fragment_count)
+    ? row.prior_fragment_count
+    : undefined;
+  const reason =
+    typeof row.prior_fragment_reason === "string" && row.prior_fragment_reason.trim()
+      ? row.prior_fragment_reason.trim()
+      : undefined;
+  const parts = [
+    count !== undefined
+      ? `${count} fragment${count === 1 ? "" : "s"}`
+      : undefined,
+    reason,
+    row.prior_fragment_sparse === true ? "sparse" : undefined,
+  ].filter((part): part is string => Boolean(part));
+  return parts.length > 0 ? parts.join(", ") : undefined;
+}
+
+export function generatorBreakdownRows(row: ProbabilityValueRow): GeneratorBreakdownRow[] {
+  const metadata = isRecord(row.generator_metadata) ? row.generator_metadata : {};
+  const summarySource = isRecord(row.generator_summary)
+    ? row.generator_summary
+    : isRecord(metadata.generator_summary)
+      ? metadata.generator_summary
+      : {};
+  const weightsSource = isRecord(row.effective_weights)
+    ? row.effective_weights
+    : isRecord(metadata.effective_weights)
+      ? metadata.effective_weights
+      : {};
+  const generatorIds = new Set([...Object.keys(summarySource), ...Object.keys(weightsSource)]);
+
+  return [...generatorIds].flatMap((id) => {
+    const summary = summarySource[id];
+    const summaryRow = isRecord(summary) ? summary : {};
+    const weight = isFiniteNumber(summaryRow.weight)
+      ? summaryRow.weight
+      : isFiniteNumber(weightsSource[id])
+        ? weightsSource[id]
+        : undefined;
+    if (!isRecord(summary) && !isFiniteNumber(weight)) {
+      return [];
+    }
+    return [
+      {
+        id,
+        p_finish: isFiniteNumber(summaryRow.p_finish) ? summaryRow.p_finish : undefined,
+        p_no_touch: isFiniteNumber(summaryRow.p_no_touch) ? summaryRow.p_no_touch : undefined,
+        weight,
+        sparse: typeof summaryRow.sparse === "boolean" ? summaryRow.sparse : undefined,
+      },
+    ];
+  });
+}
+
+export function visibleProbabilityDiagnosticRows<Row extends ProbabilityValueRow>(
+  rows: Row[],
+  nowMs = Date.now(),
+): Row[] {
+  const groups = new Map<string, Row[]>();
+  for (const row of rows) {
+    const asset = normalizedAsset(row.asset) || assetFromMarketSlug(row.market_slug);
+    if (!asset) {
+      continue;
+    }
+    groups.set(asset, [...(groups.get(asset) ?? []), row]);
   }
-  const refreshDisplayUntilMs = timestampMs(row.refresh_display_until);
-  if (Number.isFinite(refreshDisplayUntilMs) && refreshDisplayUntilMs > nowMs) {
-    return "held";
+
+  return [...groups.entries()]
+    .sort(([left], [right]) => compareAsset(left, right))
+    .flatMap(([, assetRows]) => activeWindowRows(assetRows, nowMs));
+}
+
+export function probabilityRowsWithRolloverHold<Row extends ProbabilityValueRow>(
+  liveRows: Row[],
+  heldRows: Row[],
+  options: {
+    nowMs?: number;
+    heldAtMs?: number;
+    holdMs?: number;
+  } = {},
+): Row[] {
+  const nowMs = options.nowMs ?? Date.now();
+  const heldAtMs = options.heldAtMs ?? 0;
+  const holdMs = options.holdMs ?? 12_000;
+  if (liveRows.length > 0) {
+    return liveRows;
   }
-  return "live";
+  if (heldRows.length === 0 || heldAtMs <= 0) {
+    return liveRows;
+  }
+  return nowMs - heldAtMs <= holdMs
+    ? heldRows.filter((row) => isGraphableProbabilityRow(row, nowMs, true))
+    : liveRows;
+}
+
+export function probabilityRuntimeStateLabel(value?: string | null) {
+  const normalized = value?.trim().toUpperCase();
+  if (!normalized) {
+    return "Pending";
+  }
+  switch (normalized) {
+    case "OK":
+      return "Monte Carlo ready";
+    case "NOWCAST":
+      return "Fast estimate updating";
+    case "STALE_INPUTS":
+      return "Holding last Monte Carlo";
+    case "PARTIAL":
+      return "Partial Monte Carlo";
+    case "DISABLED":
+      return "Monte Carlo off";
+    case "LOADING":
+      return "Loading";
+    case "ERROR":
+      return "Runtime error";
+    default:
+      return normalized
+        .toLowerCase()
+        .split("_")
+        .filter(Boolean)
+        .map((part) => `${part.slice(0, 1).toUpperCase()}${part.slice(1)}`)
+        .join(" ");
+  }
 }
 
 export function mergeProbabilityEventsIntoPayload<Row extends ProbabilityValueRow>(
@@ -148,10 +283,73 @@ export function mergeProbabilityEventsIntoPayload<Row extends ProbabilityValueRo
   return {
     ...(payload ?? { ok: true, state: "OK" }),
     cached: false,
-    generated_at: newestGeneratedAt(events) ?? payload?.generated_at,
+    generated_at: newestPayloadGeneratedAt(payload?.generated_at, events),
     rows: mergeProbabilityLaneRows(payload?.rows, mcEvents),
     nowcast_rows: mergeProbabilityLaneRows(payload?.nowcast_rows, nowcastEvents),
   };
+}
+
+export function mergeGraphableProbabilityPayloadRows<Row extends ProbabilityValueRow>(
+  previous: ProbabilityPayloadForEvents<Row> | null,
+  next: ProbabilityPayloadForEvents<Row>,
+  nowMs = Date.now(),
+): ProbabilityPayloadForEvents<Row> {
+  if (next.state === "DISABLED") {
+    return next;
+  }
+  if (!shouldRetainPreviousProbabilityRows(next)) {
+    return next;
+  }
+  const previousRows = Array.isArray(previous?.rows)
+    ? previous.rows
+        .filter((row): row is Row => isRecord(row))
+        .filter((row) => isGraphableProbabilityRow(row, nowMs, true))
+    : [];
+  if (previousRows.length === 0) {
+    return next;
+  }
+  const nextRows = Array.isArray(next.rows)
+    ? next.rows.filter((row): row is Row => isRecord(row))
+    : [];
+  const previousKeys = new Set(previousRows.map(stableProbabilityMergeKey));
+  const nextKeys = new Set(nextRows.map(stableProbabilityMergeKey));
+  const rows = mergeProbabilityLaneRows(previousRows, nextRows);
+  const retainedRows = previousRows.filter(
+    (row) => !nextKeys.has(stableProbabilityMergeKey(row)),
+  );
+  const sameKeyRetainedRows = rows.filter((row) => {
+    const key = stableProbabilityMergeKey(row);
+    return (
+      previousKeys.has(key) &&
+      nextKeys.has(key) &&
+      !isGraphableProbabilityRow(row, nowMs) &&
+      isGraphableProbabilityRow(row, nowMs, true)
+    );
+  });
+  const retainedRowCount = retainedRows.length + sameKeyRetainedRows.length;
+  if (retainedRowCount === 0) {
+    return {
+      ...next,
+      rows,
+    };
+  }
+  return {
+    ...next,
+    previous_mc_retained: true,
+    retained_mc_rows: retainedRowCount,
+    rows,
+  };
+}
+
+function shouldRetainPreviousProbabilityRows<Row extends ProbabilityValueRow>(
+  payload: ProbabilityPayloadForEvents<Row>,
+) {
+  const rowCount = Array.isArray(payload.rows) ? payload.rows.length : 0;
+  if (rowCount === 0) {
+    return true;
+  }
+  const state = payload.state?.trim().toUpperCase();
+  return state === "PARTIAL" || state === "STALE_INPUTS";
 }
 
 function mergeProbabilityLaneRows<Row extends ProbabilityValueRow>(
@@ -168,9 +366,30 @@ function mergeProbabilityLaneRows<Row extends ProbabilityValueRow>(
   for (const event of events) {
     const key = stableProbabilityMergeKey(event);
     const previous = byKey.get(key);
+    if (previous && isOlderProbabilityRow(event, previous)) {
+      continue;
+    }
     byKey.set(key, { ...previous, ...event });
   }
   return [...byKey.values()];
+}
+
+function isOlderProbabilityRow(candidate: ProbabilityValueRow, existing: ProbabilityValueRow) {
+  const candidateMs = rowFreshnessMs(candidate);
+  const existingMs = rowFreshnessMs(existing);
+  return Number.isFinite(candidateMs) && Number.isFinite(existingMs) && candidateMs < existingMs;
+}
+
+function rowFreshnessMs(row: ProbabilityValueRow) {
+  const generatedAtMs = timestampMs(row.generated_at);
+  const asofMs = timestampMs(row.asof_ts);
+  if (Number.isFinite(generatedAtMs) && Number.isFinite(asofMs)) {
+    return Math.max(generatedAtMs, asofMs);
+  }
+  if (Number.isFinite(generatedAtMs)) {
+    return generatedAtMs;
+  }
+  return asofMs;
 }
 
 function stableProbabilityMergeKey(row: ProbabilityValueRow) {
@@ -181,7 +400,7 @@ function stableProbabilityMergeKey(row: ProbabilityValueRow) {
   );
 }
 
-export function probabilityKind(row: ProbabilityValueRow) {
+function probabilityKind(row: ProbabilityValueRow) {
   return typeof row.probability_kind === "string"
     ? row.probability_kind.toUpperCase()
     : "MC";
@@ -201,8 +420,220 @@ function newestGeneratedAt(rows: ProbabilityValueRow[]) {
   return newest;
 }
 
+function newestPayloadGeneratedAt(
+  payloadGeneratedAt: string | undefined,
+  rows: ProbabilityValueRow[],
+) {
+  const eventGeneratedAt = newestGeneratedAt(rows);
+  const payloadMs = timestampMs(payloadGeneratedAt);
+  const eventMs = timestampMs(eventGeneratedAt);
+  if (Number.isFinite(payloadMs) && Number.isFinite(eventMs)) {
+    return eventMs >= payloadMs ? eventGeneratedAt : payloadGeneratedAt;
+  }
+  return eventGeneratedAt ?? payloadGeneratedAt;
+}
+
 function parsePreview(value: unknown): { sampled_paths?: unknown[] } | null {
   return isRecord(value) ? value : null;
+}
+
+function activeWindowRows<Row extends ProbabilityValueRow>(rows: Row[], nowMs: number) {
+  const ranked = rows
+    .map((row) => ({ row, rank: contractTimingRank(row, nowMs) }))
+    .sort((left, right) => {
+      if (left.rank !== right.rank) {
+        return left.rank - right.rank;
+      }
+      return (
+        compareFiniteTimestamp(contractWindowDurationMs(left.row), contractWindowDurationMs(right.row)) ||
+        compareFiniteTimestamp(contractStartMs(left.row), contractStartMs(right.row)) ||
+        compareFiniteTimestamp(contractExpiryMs(left.row), contractExpiryMs(right.row)) ||
+        compareSide(left.row.side, right.row.side)
+      );
+    });
+  const preferred = ranked[0]?.row;
+  if (!preferred) {
+    return [];
+  }
+  const preferredStart = contractStartMs(preferred);
+  const preferredExpiry = contractExpiryMs(preferred);
+  const preferredDuration = contractWindowDurationMs(preferred);
+  const dedupedRows = rows
+    .filter(
+      (row) =>
+        sameTimestamp(contractStartMs(row), preferredStart) &&
+        sameTimestamp(contractExpiryMs(row), preferredExpiry) &&
+        sameTimestamp(contractWindowDurationMs(row), preferredDuration),
+    )
+    .reduce((deduped, row) => mergePreferredRow(deduped, row), new Map<string, Row>());
+  return [...dedupedRows.values()].sort((left, right) => compareSide(left.side, right.side));
+}
+
+function mergePreferredRow<Row extends ProbabilityValueRow>(rows: Map<string, Row>, row: Row) {
+  const key = probabilitySelectionKey(row) || probabilityRowKey(row) || JSON.stringify(row);
+  const previous = rows.get(key);
+  if (!previous || compareProbabilityRowCompleteness(row, previous) > 0) {
+    rows.set(key, row);
+  }
+  return rows;
+}
+
+function compareProbabilityRowCompleteness(
+  left: ProbabilityValueRow,
+  right: ProbabilityValueRow,
+) {
+  const scoreDelta = probabilityRowCompletenessScore(left) - probabilityRowCompletenessScore(right);
+  if (scoreDelta !== 0) {
+    return scoreDelta;
+  }
+  return timestampMs(left.generated_at) - timestampMs(right.generated_at);
+}
+
+function probabilityRowCompletenessScore(row: ProbabilityValueRow) {
+  let score = 0;
+  if (typeof row.contract === "string" && row.contract.trim()) {
+    score += 64;
+  }
+  if (
+    typeof row.decision_hint === "string" &&
+    row.decision_hint.trim() &&
+    row.decision_hint !== "PENDING"
+  ) {
+    score += 32;
+  }
+  if (row.simulation_preview) {
+    score += 16;
+  }
+  if (isFiniteNumber(row.age_ms)) {
+    score += 8;
+  }
+  if (isFiniteNumber(row.path_count)) {
+    score += 4;
+  }
+  if (typeof row.generated_at === "string" && row.generated_at.trim()) {
+    score += 2;
+  }
+  if (typeof row.output_id === "string" && row.output_id.trim()) {
+    score += 1;
+  }
+  return score;
+}
+
+function contractTimingRank(row: ProbabilityValueRow, nowMs: number) {
+  const start = contractStartMs(row);
+  const expiry = contractExpiryMs(row);
+  if (Number.isFinite(start) && Number.isFinite(expiry) && start <= nowMs && nowMs < expiry) {
+    return 0;
+  }
+  if (
+    (Number.isFinite(start) && nowMs < start) ||
+    (!Number.isFinite(start) && Number.isFinite(expiry) && nowMs < expiry)
+  ) {
+    return 1;
+  }
+  if (Number.isFinite(expiry)) {
+    return 2;
+  }
+  return 3;
+}
+
+function contractStartMs(row: ProbabilityValueRow) {
+  return timestampMs(row.start_ts ?? row.cache_start_ts);
+}
+
+function contractExpiryMs(row: ProbabilityValueRow) {
+  return timestampMs(row.expiry_ts ?? row.cache_expiry_ts);
+}
+
+function contractWindowDurationMs(row: ProbabilityValueRow) {
+  const start = contractStartMs(row);
+  const expiry = contractExpiryMs(row);
+  if (Number.isFinite(start) && Number.isFinite(expiry) && expiry > start) {
+    return expiry - start;
+  }
+  return intervalMsFromText(row.market_slug) ??
+    intervalMsFromText(row.cache_market_slug) ??
+    intervalMsFromText(row.contract_id) ??
+    intervalMsFromText(row.contract) ??
+    Number.POSITIVE_INFINITY;
+}
+
+function intervalMsFromText(value: unknown) {
+  const text = typeof value === "string" ? value.toLowerCase() : "";
+  const match = text.match(/(?:^|[-_])(\d+)(m|h)(?:[-_]|$)/);
+  if (!match) {
+    return null;
+  }
+  const amount = Number(match[1]);
+  if (!Number.isFinite(amount)) {
+    return null;
+  }
+  return match[2] === "h" ? amount * 60 * 60_000 : amount * 60_000;
+}
+
+function compareFiniteTimestamp(left: number, right: number) {
+  if (Number.isFinite(left) && Number.isFinite(right)) {
+    return left - right;
+  }
+  if (Number.isFinite(left)) {
+    return -1;
+  }
+  if (Number.isFinite(right)) {
+    return 1;
+  }
+  return 0;
+}
+
+function sameTimestamp(left: number, right: number) {
+  if (!Number.isFinite(left) && !Number.isFinite(right)) {
+    return true;
+  }
+  return left === right;
+}
+
+function normalizedAsset(value: unknown) {
+  const text = typeof value === "string" ? value.toUpperCase() : "";
+  return text === "BTC" || text === "ETH" ? text : "";
+}
+
+function assetFromMarketSlug(value: unknown) {
+  const text = typeof value === "string" ? value.toLowerCase() : "";
+  if (text.includes("btc")) {
+    return "BTC";
+  }
+  if (text.includes("eth")) {
+    return "ETH";
+  }
+  return "";
+}
+
+function compareAsset(left: string, right: string) {
+  return assetRank(left) - assetRank(right) || left.localeCompare(right);
+}
+
+function assetRank(asset: string) {
+  if (asset === "BTC") {
+    return 0;
+  }
+  if (asset === "ETH") {
+    return 1;
+  }
+  return 2;
+}
+
+function compareSide(left: unknown, right: unknown) {
+  return sideRank(left) - sideRank(right) || String(left ?? "").localeCompare(String(right ?? ""));
+}
+
+function sideRank(side: unknown) {
+  const value = typeof side === "string" ? side.toUpperCase() : "";
+  if (value === "UP") {
+    return 0;
+  }
+  if (value === "DOWN") {
+    return 1;
+  }
+  return 2;
 }
 
 function keyParts(parts: Array<[string, unknown]>) {
@@ -213,7 +644,7 @@ function keyParts(parts: Array<[string, unknown]>) {
 }
 
 function timestampMs(value?: string | number | null) {
-  if (!value) {
+  if (value === undefined || value === null || value === "") {
     return Number.POSITIVE_INFINITY;
   }
   if (typeof value === "number") {

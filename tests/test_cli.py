@@ -1,4 +1,5 @@
 import json
+import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from signal import SIGTERM, Signals
@@ -9,8 +10,6 @@ import pytest
 
 from polymarket_engine import cli
 from polymarket_engine.cli import parse_args
-from polymarket_engine.domain.contracts import ContractSpec
-from polymarket_engine.domain.market_state import DecisionState
 from polymarket_engine.ingestion.rust_event_normalizer import normalize_rust_event_tree
 from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
 
@@ -173,9 +172,13 @@ def test_parse_run_rust_normalizer_sidecar_args() -> None:
     assert args.status_path == Path("data/live/status.json")
     assert args.normalized_health_path == Path("data/live/normalized_health.json")
     assert args.probability_status_path == Path("data/live/probabilities.json")
+    assert args.probability_inputs_path == Path("data/live/probability_inputs.json")
+    assert args.probability_fragments_path == Path("data/live/probability_fragments.json")
+    assert args.fragment_max_rows == 250_000
     assert args.outcome_status_path == Path("data/live/outcomes.json")
     assert args.interval_seconds == 1.0
     assert args.enable_probabilities is False
+    assert args.enable_outcome_refresh is False
     assert args.once is True
 
 
@@ -198,6 +201,90 @@ def test_parse_run_rust_normalizer_sidecar_enable_probabilities_arg() -> None:
     assert args.enable_probabilities is True
 
 
+def test_parse_run_rust_normalizer_sidecar_enable_outcome_refresh_arg() -> None:
+    args = parse_args(
+        [
+            "run-rust-normalizer-sidecar",
+            "--raw-root",
+            "data/raw",
+            "--duckdb-path",
+            "data/db/polymarket.duckdb",
+            "--status-path",
+            "data/live/status.json",
+            "--normalized-health-path",
+            "data/live/normalized_health.json",
+            "--enable-outcome-refresh",
+        ]
+    )
+
+    assert args.enable_outcome_refresh is True
+
+
+def test_parse_run_outcome_refresh_sidecar_args() -> None:
+    args = parse_args(
+        [
+            "run-outcome-refresh-sidecar",
+            "--duckdb-path",
+            "data/db/polymarket.duckdb",
+            "--outcome-status-path",
+            "data/live/outcomes.json",
+            "--interval-seconds",
+            "12.5",
+            "--max-cycles",
+            "2",
+        ]
+    )
+
+    assert args.command == "run-outcome-refresh-sidecar"
+    assert args.duckdb_path == Path("data/db/polymarket.duckdb")
+    assert args.outcome_status_path == Path("data/live/outcomes.json")
+    assert args.interval_seconds == 12.5
+    assert args.max_cycles == 2
+
+
+def test_parse_run_rust_normalizer_sidecar_probability_inputs_path_arg() -> None:
+    args = parse_args(
+        [
+            "run-rust-normalizer-sidecar",
+            "--raw-root",
+            "data/raw",
+            "--duckdb-path",
+            "data/db/polymarket.duckdb",
+            "--status-path",
+            "data/live/status.json",
+            "--normalized-health-path",
+            "data/live/normalized_health.json",
+            "--probability-inputs-path",
+            "tmp/probability_inputs.json",
+        ]
+    )
+
+    assert args.probability_inputs_path == Path("tmp/probability_inputs.json")
+
+
+def test_parse_run_rust_normalizer_sidecar_probability_fragments_path_arg() -> None:
+    args = parse_args(
+        [
+            "run-rust-normalizer-sidecar",
+            "--raw-root",
+            "data/raw",
+            "--duckdb-path",
+            "data/db/polymarket.duckdb",
+            "--status-path",
+            "data/live/status.json",
+            "--normalized-health-path",
+            "data/live/normalized_health.json",
+            "--probability-fragments-path",
+            "tmp/probability_fragments.json",
+            "--fragment-max-rows",
+            "123",
+        ]
+    )
+
+    assert args.probability_fragments_path == Path("tmp/probability_fragments.json")
+    assert args.fragment_max_rows == 123
+
+
 def test_parse_run_cuda_probability_worker_defaults() -> None:
     args = parse_args(
         [
@@ -210,12 +297,36 @@ def test_parse_run_cuda_probability_worker_defaults() -> None:
     assert args.command == "run-cuda-probability-worker"
     assert args.duckdb_path == Path("data/db/polymarket.duckdb")
     assert args.probability_status_path == Path("data/live/probabilities.json")
-    assert args.probability_inputs_path is None
-    assert args.max_input_snapshot_age_seconds == 10.0
+    assert args.probability_inputs_path == Path("data/live/probability_inputs.json")
+    assert args.probability_fragments_path == Path("data/live/probability_fragments.json")
     assert args.interval_seconds == 1.0
     assert args.limit == 24
     assert args.valid_seconds == 30
+    assert args.max_input_snapshot_age_seconds == 30.0
+    assert args.worker_mode == "ensemble"
+    assert args.generator_policy == "all_four_every_cycle"
+    assert args.cpu_target_percent == 20.0
+    assert args.max_rss_mb == 512
+    assert args.max_cycle_runtime_ms == 750
+    assert args.max_total_paths == 40_000
+    assert args.sustained_breach_cycles == 3
+    assert args.fragment_max_rows == 250_000
+    assert args.cpu_threads == 1
     assert args.once is False
+
+
+def test_parse_run_cuda_probability_worker_probability_fragments_path_arg() -> None:
+    args = parse_args(
+        [
+            "run-cuda-probability-worker",
+            "--duckdb-path",
+            "data/db/polymarket.duckdb",
+            "--probability-fragments-path",
+            "tmp/probability_fragments.json",
+        ]
+    )
+
+    assert args.probability_fragments_path == Path("tmp/probability_fragments.json")
 
 
 def test_run_rust_normalizer_sidecar_defaults_to_quarter_second_cadence() -> None:
@@ -270,34 +381,6 @@ def test_parse_build_current_decision_states_args() -> None:
     assert args.include_next is True
 
 
-def test_parse_build_probability_grid_args() -> None:
-    args = parse_args(
-        [
-            "build-probability-grid",
-            "--duckdb-path",
-            "data/db/polymarket.duckdb",
-            "--assets",
-            "BTC,ETH",
-            "--limit",
-            "8",
-            "--path-count",
-            "10000",
-            "--seed",
-            "20260605",
-            "--valid-seconds",
-            "30",
-        ]
-    )
-
-    assert args.command == "build-probability-grid"
-    assert args.duckdb_path == Path("data/db/polymarket.duckdb")
-    assert args.assets == ("BTC", "ETH")
-    assert args.limit == 8
-    assert args.path_count == 10000
-    assert args.seed == 20260605
-    assert args.valid_seconds == 30
-
-
 def test_parse_verify_hot_decision_replay_args() -> None:
     args = parse_args(
         [
@@ -321,6 +404,50 @@ def test_parse_verify_hot_decision_replay_args() -> None:
     assert args.limit == 10
     assert args.scan_limit == 200
     assert args.report_out == Path("reports/hot-replay.json")
+
+
+def test_parse_runtime_keeper_args() -> None:
+    args = parse_args(
+        [
+            "runtime-keeper",
+            "--repo",
+            "/home/ender/polymarket",
+            "--data-dir",
+            "/home/ender/polymarket-data",
+            "--api-base-url",
+            "http://127.0.0.1:8000",
+            "--optional-container",
+            "polymarket-rust-collector-gpu-probability-worker-1",
+            "--loop",
+            "--loop-interval-seconds",
+            "15",
+        ]
+    )
+
+    assert args.command == "runtime-keeper"
+    assert args.repo == Path("/home/ender/polymarket")
+    assert args.data_dir == Path("/home/ender/polymarket-data")
+    assert args.api_base_url == "http://127.0.0.1:8000"
+    assert args.optional_container == [
+        "polymarket-rust-collector-gpu-probability-worker-1",
+    ]
+    assert args.loop is True
+    assert args.loop_interval_seconds == 15.0
+
+
+def test_parse_sync_cluster_artifacts_args() -> None:
+    args = parse_args(
+        [
+            "sync-cluster-artifacts",
+            "--manifest-path",
+            "/tmp/cluster.local.example.json",
+            "--execute",
+        ]
+    )
+
+    assert args.command == "sync-cluster-artifacts"
+    assert args.manifest_path == Path("/tmp/cluster.local.example.json")
+    assert args.execute is True
 
 
 @pytest.mark.anyio
@@ -637,6 +764,8 @@ async def test_run_rust_normalizer_sidecar_once_command(
         encoding="utf-8",
     )
     health_path = tmp_path / "live" / "normalized_health.json"
+    probability_inputs_path = tmp_path / "live" / "probability_inputs.json"
+    outcome_path = tmp_path / "live" / "outcomes.json"
 
     result = await cli.run_collect_command(
         [
@@ -649,6 +778,12 @@ async def test_run_rust_normalizer_sidecar_once_command(
             str(status_path),
             "--normalized-health-path",
             str(health_path),
+            "--probability-inputs-path",
+            str(probability_inputs_path),
+            "--probability-fragments-path",
+            str(tmp_path / "live" / "probability_fragments.json"),
+            "--outcome-status-path",
+            str(outcome_path),
             "--once",
         ]
     )
@@ -659,12 +794,10 @@ async def test_run_rust_normalizer_sidecar_once_command(
     assert payload["bytes_read"] > 0
     assert payload["elapsed_ms"] >= 0
     assert payload["contracts_upserted"] == 2
+    assert payload["market_outcomes_written"] == 0
     assert health_path.exists()
-    input_snapshot = json.loads(
-        health_path.with_name("probability_inputs.json").read_text(encoding="utf-8")
-    )
-    assert input_snapshot["schema_version"] == "polymarket-probability-inputs-v1"
-    assert input_snapshot["ok"] is True
+    assert probability_inputs_path.exists()
+    assert not outcome_path.exists()
 
 
 @pytest.mark.anyio
@@ -708,12 +841,56 @@ async def test_run_rust_normalizer_sidecar_loop_command_dispatches(
             "status_path": tmp_path / "live" / "status.json",
             "normalized_health_path": tmp_path / "live" / "normalized_health.json",
             "probability_status_path": Path("data/live/probabilities.json"),
+            "probability_inputs_path": Path("data/live/probability_inputs.json"),
+            "probability_fragments_path": Path("data/live/probability_fragments.json"),
+            "fragment_max_rows": 250_000,
             "outcome_status_path": Path("data/live/outcomes.json"),
             "volatility_status_path": Path("data/live/volatility.json"),
             "interval_seconds": 1.5,
             "include_next": True,
             "compute_probabilities": False,
+            "enable_outcome_refresh": False,
             "reprocess_all": True,
+        }
+    ]
+
+
+@pytest.mark.anyio
+async def test_run_outcome_refresh_sidecar_command_dispatches(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_loop(**kwargs: object) -> None:
+        calls.append(kwargs)
+
+    monkeypatch.setattr(
+        "polymarket_engine.validation.outcome_sidecar.run_outcome_refresh_loop",
+        fake_loop,
+    )
+
+    result = await cli.run_collect_command(
+        [
+            "run-outcome-refresh-sidecar",
+            "--duckdb-path",
+            str(tmp_path / "state.duckdb"),
+            "--outcome-status-path",
+            str(tmp_path / "live" / "outcomes.json"),
+            "--interval-seconds",
+            "15",
+            "--max-cycles",
+            "2",
+        ]
+    )
+
+    assert result == 0
+    assert calls == [
+        {
+            "duckdb_path": tmp_path / "state.duckdb",
+            "outcome_status_path": tmp_path / "live" / "outcomes.json",
+            "interval_seconds": 15.0,
+            "max_cycles": 2,
         }
     ]
 
@@ -777,73 +954,6 @@ async def test_run_build_current_decision_states_command(
     assert payload["contracts_upserted"] == 2
     assert payload["states_written"] == 0
     assert len(payload["unavailable"]) == 2
-
-
-@pytest.mark.anyio
-async def test_run_build_probability_grid_command_populates_cache(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    db_path = tmp_path / "state.duckdb"
-    store = DuckDbIngestStore(db_path)
-    store.apply_schema()
-    state = _probability_state()
-    store.upsert_contract_spec(state.contract)
-    store.upsert_asof_state_input(state)
-
-    result = await cli.run_collect_command(
-        [
-            "build-probability-grid",
-            "--duckdb-path",
-            str(db_path),
-            "--assets",
-            "BTC",
-            "--limit",
-            "4",
-            "--path-count",
-            "16",
-            "--seed",
-            "20260605",
-            "--valid-seconds",
-            "30",
-        ]
-    )
-
-    assert result == 0
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["ok"] is True
-    assert payload["rows_seen"] == 1
-    assert payload["rows_written"] == 1
-    assert payload["skipped_assets"] == 0
-    assert payload["cache_rows"][0]["market_slug"] == state.contract.slug
-    assert payload["cache_rows"][0]["start_ts"] == state.contract.start_ts.isoformat()
-    assert payload["cache_rows"][0]["expiry_ts"] == state.contract.expiry_ts.isoformat()
-    assert payload["cache_rows"][0]["asof_ts"] == state.asof_ts.isoformat()
-    assert payload["cache_rows"][0]["asset"] == "BTC"
-    assert payload["cache_rows"][0]["side"] == "UP"
-    assert payload["cache_rows"][0]["path_count"] == 16
-
-    with duckdb.connect(str(db_path), read_only=True) as conn:
-        row = conn.execute(
-            """
-            select market_slug, start_ts, expiry_ts, asof_ts, asset, side, path_count,
-                   epoch(valid_from), epoch(valid_until)
-            from features.probability_grid_cache
-            """
-        ).fetchone()
-
-    assert row is not None
-    assert row[:7] == (
-        state.contract.slug,
-        state.contract.start_ts,
-        state.contract.expiry_ts,
-        state.asof_ts,
-        "BTC",
-        "UP",
-        16,
-    )
-    assert row[7] >= state.asof_ts.timestamp()
-    assert row[8] == pytest.approx(row[7] + 30, abs=0.25)
 
 
 @pytest.mark.anyio
@@ -985,6 +1095,129 @@ async def test_run_collect_command_rejects_retired_python_collector(tmp_path: Pa
         )
 
 
+@pytest.mark.anyio
+async def test_sync_cluster_artifacts_dry_run_prints_rsync_commands(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest_path = tmp_path / "cluster.local.example.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "polymarket-cluster-manifest-v1",
+                "nodes": {
+                    "spoon": {"host": "spoon", "role": "cpu_authority"},
+                    "thepc": {"host": "thepc-lan", "role": "gpu_api"},
+                },
+                "artifacts": {
+                    "probability_inputs.json": {
+                        "owner": "spoon",
+                        "canonical_path": "/home/spoon/polymarket-data/live/probability_inputs.json",
+                        "mirrors": {
+                            "thepc": "/home/ender/polymarket-data/live/probability_inputs.json"
+                        },
+                    },
+                    "probabilities.json": {
+                        "owner": "thepc",
+                        "canonical_path": "/home/ender/polymarket-data/live/probabilities.json",
+                        "mirrors": {
+                            "spoon": "/home/spoon/polymarket-data/live/probabilities.thepc.json"
+                        },
+                    },
+                },
+                "mirror": {
+                    "source_node": "spoon",
+                    "target_node": "thepc",
+                    "max_age_seconds": 5.0,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        cli.subprocess,
+        "run",
+        lambda *args: (_ for _ in ()).throw(
+            AssertionError("did not expect execution in dry-run")
+        ),
+    )
+
+    result = await cli.run_collect_command(
+        ["sync-cluster-artifacts", "--manifest-path", str(manifest_path)]
+    )
+
+    assert result == 0
+    assert (
+        capsys.readouterr().out.strip()
+        == "rsync -az --delay-updates --partial --timeout=5 spoon:/home/spoon/polymarket-data/live/probability_inputs.json /home/ender/polymarket-data/live/probability_inputs.json"
+    )
+
+
+@pytest.mark.anyio
+async def test_sync_cluster_artifacts_execute_runs_rsync_commands(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest_path = tmp_path / "cluster.local.example.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "polymarket-cluster-manifest-v1",
+                "nodes": {
+                    "spoon": {"host": "spoon", "role": "cpu_authority"},
+                    "thepc": {"host": "thepc-lan", "role": "gpu_api"},
+                },
+                "artifacts": {
+                    "probability_inputs.json": {
+                        "owner": "spoon",
+                        "canonical_path": "/home/spoon/polymarket-data/live/probability_inputs.json",
+                        "mirrors": {
+                            "thepc": "/home/ender/polymarket-data/live/probability_inputs.json"
+                        },
+                    }
+                },
+                "mirror": {
+                    "source_node": "spoon",
+                    "target_node": "thepc",
+                    "max_age_seconds": 5.0,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    commands: list[list[str]] = []
+
+    def fake_run(
+        command: list[str],
+        capture_output: bool = False,
+        text: bool = False,
+    ) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    result = await cli.run_collect_command(
+        ["sync-cluster-artifacts", "--manifest-path", str(manifest_path), "--execute"]
+    )
+
+    assert result == 0
+    assert commands == [
+        [
+            "rsync",
+            "-az",
+            "--delay-updates",
+            "--partial",
+            "--timeout=5",
+            "spoon:/home/spoon/polymarket-data/live/probability_inputs.json",
+            "/home/ender/polymarket-data/live/probability_inputs.json",
+        ]
+    ]
+
+
 def test_shutdown_signal_handler_cancels_collector_task() -> None:
     class FakeLoop:
         def __init__(self) -> None:
@@ -1065,68 +1298,4 @@ def _write_jsonl(path: Path, rows: list[dict[str, object]]) -> None:
     path.write_text(
         "".join(f"{json.dumps(row, sort_keys=True)}\n" for row in rows),
         encoding="utf-8",
-    )
-
-
-def _probability_contract() -> ContractSpec:
-    start_ts = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(minutes=3)
-    return ContractSpec(
-        contract_id="btc-updown-5m-1780387800:UP",
-        venue="polymarket",
-        market_id="btc-updown-5m-1780387800",
-        condition_id="0xbtc",
-        slug="btc-updown-5m-1780387800",
-        asset="BTC",
-        side="UP",
-        token_id="up-token",
-        threshold_type="start_price",
-        threshold_price=None,
-        comparison_operator=">=",
-        start_ts=start_ts,
-        expiry_ts=start_ts + timedelta(minutes=5),
-        settlement_source_name="chainlink_data_streams",
-        settlement_source_url="https://data.chain.link/streams/btc-usd",
-        settlement_symbol="BTC/USD",
-        rule_text="fixture",
-        rule_hash="hash",
-        parser_version="test",
-    )
-
-
-def _probability_state() -> DecisionState:
-    contract = _probability_contract()
-    asof_ts = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(seconds=10)
-    return DecisionState(
-        state_id="state-btc-up",
-        asof_ts=asof_ts,
-        contract=contract,
-        threshold=100.0,
-        threshold_source_key="polymarket_rtds_chainlink",
-        threshold_event_ts=contract.start_ts,
-        threshold_observed_ts=contract.start_ts + timedelta(seconds=1),
-        seconds_left=228.0,
-        settlement_price=101.0,
-        settlement_source_key="polymarket_rtds_chainlink",
-        settlement_event_ts=asof_ts,
-        settlement_observed_ts=asof_ts,
-        proxy_prices={"coinbase_advanced_ws": 101.0},
-        source_disagreement_bps=0.0,
-        best_bid=0.52,
-        best_ask=0.54,
-        executable_price=0.54,
-        spread=0.02,
-        book_event_ts=asof_ts,
-        book_observed_ts=asof_ts,
-        quote_age_ms=200,
-        source_age_ms=200,
-        source_observed_lag_ms=0,
-        book_age_ms=200,
-        book_observed_lag_ms=0,
-        realized_returns=(0.001, -0.0005),
-        short_realized_vol=0.01,
-        medium_realized_vol=0.012,
-        long_realized_vol=0.015,
-        sigma_tau=0.01,
-        volatility_regime="normal",
-        data_quality_flags=(),
     )

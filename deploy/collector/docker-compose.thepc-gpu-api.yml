@@ -1,0 +1,17 @@
+services:
+  collector:
+    profiles: ["disabled-on-thepc"]
+  normalizer:
+    profiles: ["disabled-on-thepc"]
+  outcome-refresh:
+    profiles: ["disabled-on-thepc"]
+  gpu-probability-worker:
+    depends_on: !reset []
+    environment:
+      POLYMARKET_PROBABILITY_INPUTS_PATH: /var/lib/polymarket/live/probability_inputs.json
+      POLYMARKET_PROBABILITY_FRAGMENTS_PATH: /var/lib/polymarket/live/probability_fragments.json
+  api:
+    depends_on: !reset []
+    environment:
+      POLYMARKET_PROBABILITY_INPUTS_PATH: /var/lib/polymarket/live/probability_inputs.json
+      POLYMARKET_PROBABILITY_FRAGMENTS_PATH: /var/lib/polymarket/live/probability_fragments.json

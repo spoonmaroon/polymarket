@@ -1,197 +1,186 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
 
-from polymarket_engine.probability.ensemble_weights import DynamicWeightSet
-from polymarket_engine.probability.generator_contracts import (
-    DynamicWeightScope,
-    GeneratorId,
-    GeneratorWeight,
-)
+from polymarket_engine.probability.generator_contracts import GeneratorId
+
+_LOG_LOSS_EPSILON = 1e-9
 
 
-def generator_weight_snapshot_payload(
-    weight_set: DynamicWeightSet,
-    *,
-    scope: DynamicWeightScope,
-    snapshot_id: str | None = None,
-    scores: Mapping[GeneratorId, float] | None = None,
-    label_counts: Mapping[GeneratorId, int] | None = None,
-    created_at: datetime | None = None,
-) -> dict[str, Any]:
-    if not isinstance(weight_set, DynamicWeightSet):
-        raise ValueError("weight_set must be a DynamicWeightSet")
-    if not isinstance(scope, DynamicWeightScope):
-        raise ValueError("scope must be a DynamicWeightScope")
-    if snapshot_id is not None and (not isinstance(snapshot_id, str) or not snapshot_id):
-        raise ValueError("snapshot_id must be a non-empty string")
-    if created_at is not None:
-        _require_timezone_aware(created_at, "created_at")
+@dataclass(frozen=True)
+class GeneratorPrediction:
+    state_id: str
+    asof_ts: datetime
+    generator_id: GeneratorId
+    p_finish: float
+    p_no_touch: float
 
-    payload = {
-        "snapshot_id": snapshot_id,
-        "runtime_asof_ts": _isoformat_utc(weight_set.runtime_asof_ts),
-        "evaluated_through_ts": _isoformat_utc(
-            weight_set.validation_window.evaluated_through_ts
-        ),
-        "label_window_seconds": weight_set.validation_window.label_window_seconds,
-        "source": weight_set.source,
-        "scope": scope_json_dict(scope),
-        "weights": _generator_float_mapping(weight_set.weights, "weights"),
-        "scores": _generator_float_mapping(scores or {}, "scores"),
-        "label_counts": _generator_int_mapping(label_counts or {}, "label_counts"),
-    }
-    if created_at is not None:
-        payload["created_at"] = _isoformat_utc(created_at)
-    payload["uses_future_labels"] = _uses_future_labels(payload)
-    return payload
+    def __post_init__(self) -> None:
+        _require_nonempty_string(self.state_id, "state_id")
+        _require_utc(self.asof_ts, "asof_ts")
+        if not isinstance(self.generator_id, GeneratorId):
+            raise ValueError("generator_id must be a GeneratorId")
+        _require_probability(self.p_finish, "p_finish")
+        _require_probability(self.p_no_touch, "p_no_touch")
 
 
-def generator_weight_snapshot_payload_from_weights(
-    generator_weights: Sequence[GeneratorWeight],
-    *,
-    runtime_asof_ts: datetime,
-    snapshot_id: str | None = None,
-    created_at: datetime | None = None,
-) -> dict[str, Any]:
-    _require_timezone_aware(runtime_asof_ts, "runtime_asof_ts")
-    if not generator_weights:
-        raise ValueError("generator_weights must not be empty")
+@dataclass(frozen=True)
+class GeneratorLabel:
+    state_id: str
+    label_ts: datetime
+    did_finish_win: bool
+    did_no_touch: bool
 
-    first = generator_weights[0]
-    if not isinstance(first, GeneratorWeight):
-        raise ValueError("generator_weights must contain GeneratorWeight values")
-    scope = first.scope
-    validation_window = first.validation_window
-    source = first.source
-    weights: dict[GeneratorId, float] = {}
-    scores: dict[GeneratorId, float] = {}
-    label_counts: dict[GeneratorId, int] = {}
-    for generator_weight in generator_weights:
-        if not isinstance(generator_weight, GeneratorWeight):
-            raise ValueError("generator_weights must contain GeneratorWeight values")
-        if generator_weight.generator_id in weights:
-            raise ValueError("duplicate generator_id in generator_weights")
-        if generator_weight.scope != scope:
-            raise ValueError("generator_weights must share one scope")
-        if generator_weight.validation_window != validation_window:
-            raise ValueError("generator_weights must share one validation_window")
-        if generator_weight.source != source:
-            raise ValueError("generator_weights must share one source")
-        weights[generator_weight.generator_id] = generator_weight.weight
-        label_counts[generator_weight.generator_id] = generator_weight.label_count
-        if generator_weight.score is not None:
-            scores[generator_weight.generator_id] = generator_weight.score
+    def __post_init__(self) -> None:
+        _require_nonempty_string(self.state_id, "state_id")
+        _require_utc(self.label_ts, "label_ts")
+        if not isinstance(self.did_finish_win, bool):
+            raise ValueError("did_finish_win must be a bool")
+        if not isinstance(self.did_no_touch, bool):
+            raise ValueError("did_no_touch must be a bool")
 
-    return generator_weight_snapshot_payload(
-        DynamicWeightSet(
-            weights=weights,
-            validation_window=validation_window,
-            runtime_asof_ts=runtime_asof_ts,
-            source=source,
-        ),
-        scope=scope,
-        snapshot_id=snapshot_id,
-        scores=scores,
-        label_counts=label_counts,
-        created_at=created_at,
+
+@dataclass(frozen=True)
+class WeightCandidate:
+    weights: dict[GeneratorId, float]
+    label_count: int
+    trained_through_ts: datetime | None
+    sparse: bool
+
+
+def build_weight_candidate(
+    predictions: tuple[GeneratorPrediction, ...],
+    labels: tuple[GeneratorLabel, ...],
+    decision_asof_ts: datetime,
+    min_labels: int,
+    eta: float,
+) -> WeightCandidate:
+    _require_utc(decision_asof_ts, "decision_asof_ts")
+    _require_positive_int(min_labels, "min_labels")
+    _require_positive_finite(eta, "eta")
+
+    labels_by_state = _eligible_labels_by_state(labels, decision_asof_ts)
+    losses: dict[GeneratorId, list[float]] = {}
+    matched_label_timestamps: dict[str, datetime] = {}
+
+    for prediction in predictions:
+        if prediction.asof_ts >= decision_asof_ts:
+            continue
+
+        label = labels_by_state.get(prediction.state_id)
+        if label is None:
+            continue
+        if prediction.asof_ts >= label.label_ts:
+            continue
+
+        loss = (
+            0.70 * _log_loss(prediction.p_finish, label.did_finish_win)
+            + 0.30 * _log_loss(prediction.p_no_touch, label.did_no_touch)
+        )
+        losses.setdefault(prediction.generator_id, []).append(loss)
+        matched_label_timestamps[prediction.state_id] = label.label_ts
+
+    label_count = len(matched_label_timestamps)
+    trained_through_ts = (
+        max(matched_label_timestamps.values()) if matched_label_timestamps else None
+    )
+
+    if label_count < min_labels or not losses:
+        return WeightCandidate(
+            weights=_seed_weights(),
+            label_count=label_count,
+            trained_through_ts=trained_through_ts,
+            sparse=True,
+        )
+
+    raw_weights: dict[GeneratorId, float] = {}
+    for generator_id, generator_losses in losses.items():
+        mean_loss = sum(generator_losses) / len(generator_losses)
+        raw_weights[generator_id] = math.exp(-eta * mean_loss)
+
+    for generator_id, seed_weight in _seed_weights().items():
+        raw_weights.setdefault(generator_id, seed_weight)
+
+    return WeightCandidate(
+        weights=_normalize_weights(raw_weights),
+        label_count=label_count,
+        trained_through_ts=trained_through_ts,
+        sparse=False,
     )
 
 
-def generator_weight_snapshot_report(payload: Mapping[str, Any]) -> dict[str, Any]:
-    uses_future_labels = _uses_future_labels(payload)
-    unsafe_reasons = ("FUTURE_LABELS",) if uses_future_labels else ()
+def _eligible_labels_by_state(
+    labels: tuple[GeneratorLabel, ...],
+    decision_asof_ts: datetime,
+) -> dict[str, GeneratorLabel]:
+    labels_by_state: dict[str, GeneratorLabel] = {}
+    for label in labels:
+        if label.label_ts >= decision_asof_ts:
+            continue
+        prior_label = labels_by_state.get(label.state_id)
+        if prior_label is None or label.label_ts > prior_label.label_ts:
+            labels_by_state[label.state_id] = label
+    return labels_by_state
+
+
+def _normalize_weights(raw_weights: dict[GeneratorId, float]) -> dict[GeneratorId, float]:
+    total = sum(raw_weights.values())
+    if total <= 0.0 or not math.isfinite(total):
+        raise ValueError("weight total must be positive and finite")
     return {
-        "snapshot_id": payload.get("snapshot_id"),
-        "source": payload["source"],
-        "runtime_asof_ts": payload["runtime_asof_ts"],
-        "validation_cutoff": payload["evaluated_through_ts"],
-        "label_window_seconds": payload["label_window_seconds"],
-        "scope": payload["scope"],
-        "effective_weights": payload["weights"],
-        "label_counts": payload["label_counts"],
-        "scores": payload["scores"],
-        "uses_future_labels": uses_future_labels,
-        "unsafe_reasons": unsafe_reasons,
+        generator_id: weight / total for generator_id, weight in raw_weights.items()
     }
 
 
-def scope_json_dict(scope: DynamicWeightScope) -> dict[str, Any]:
-    if not isinstance(scope, DynamicWeightScope):
-        raise ValueError("scope must be a DynamicWeightScope")
+def _log_loss(probability: float, label: bool) -> float:
+    clipped = min(1.0 - _LOG_LOSS_EPSILON, max(_LOG_LOSS_EPSILON, probability))
+    return -math.log(clipped if label else 1.0 - clipped)
+
+
+def _seed_weights() -> dict[GeneratorId, float]:
     return {
-        "asset": scope.asset,
-        "horizon_seconds": scope.horizon_seconds,
-        "seconds_left_bucket": scope.seconds_left_bucket,
-        "z_path_bucket": scope.z_path_bucket,
-        "vol_regime": scope.vol_regime,
-        "vol_trend": scope.vol_trend,
-        "wick_regime": scope.wick_regime,
-        "source_quality_state": scope.source_quality_state,
+        GeneratorId.EMPIRICAL_CONDITIONAL: 0.40,
+        GeneratorId.BLOCK_BOOTSTRAP: 0.25,
+        GeneratorId.FILTERED_HISTORICAL: 0.25,
+        GeneratorId.STRESS_OVERLAY: 0.10,
     }
 
 
-def _generator_float_mapping(
-    values: Mapping[GeneratorId, float],
-    field_name: str,
-) -> dict[str, float]:
-    result: dict[str, float] = {}
-    for raw_generator_id, value in values.items():
-        generator_id = _coerce_generator_id(raw_generator_id, field_name)
-        if not _is_finite_number(value):
-            raise ValueError(f"{field_name} values must be finite")
-        result[generator_id.value] = float(value)
-    return dict(sorted(result.items()))
+def _require_probability(value: float, field_name: str) -> None:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or value < 0.0
+        or value > 1.0
+    ):
+        raise ValueError(f"{field_name} must be finite and between 0 and 1")
 
 
-def _generator_int_mapping(
-    values: Mapping[GeneratorId, int],
-    field_name: str,
-) -> dict[str, int]:
-    result: dict[str, int] = {}
-    for raw_generator_id, value in values.items():
-        generator_id = _coerce_generator_id(raw_generator_id, field_name)
-        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-            raise ValueError(f"{field_name} values must be nonnegative integers")
-        result[generator_id.value] = value
-    return dict(sorted(result.items()))
+def _require_positive_int(value: int, field_name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{field_name} must be a positive integer")
 
 
-def _coerce_generator_id(value: GeneratorId, field_name: str) -> GeneratorId:
-    try:
-        return GeneratorId(value)
-    except ValueError as exc:
-        raise ValueError(f"{field_name} keys must be supported GeneratorId values") from exc
+def _require_positive_finite(value: float, field_name: str) -> None:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or value <= 0.0
+    ):
+        raise ValueError(f"{field_name} must be positive and finite")
 
 
-def _uses_future_labels(payload: Mapping[str, Any]) -> bool:
-    evaluated_through_ts = _parse_iso_datetime(payload["evaluated_through_ts"])
-    runtime_asof_ts = _parse_iso_datetime(payload["runtime_asof_ts"])
-    return evaluated_through_ts > runtime_asof_ts
-
-
-def _parse_iso_datetime(value: object) -> datetime:
+def _require_nonempty_string(value: str, field_name: str) -> None:
     if not isinstance(value, str) or not value:
-        raise ValueError("timestamp values must be non-empty ISO strings")
-    parsed = datetime.fromisoformat(value)
-    _require_timezone_aware(parsed, "timestamp")
-    return parsed
+        raise ValueError(f"{field_name} must be a non-empty string")
 
 
-def _isoformat_utc(value: datetime) -> str:
-    _require_timezone_aware(value, "timestamp")
-    return value.astimezone(timezone.utc).isoformat()
-
-
-def _require_timezone_aware(value: datetime, field_name: str) -> None:
+def _require_utc(value: datetime, field_name: str) -> None:
     if not isinstance(value, datetime):
         raise ValueError(f"{field_name} must be a datetime")
-    if value.tzinfo is None or value.utcoffset() is None:
-        raise ValueError(f"{field_name} must be timezone-aware")
-
-
-def _is_finite_number(value: object) -> bool:
-    return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value)
+    if value.tzinfo is None or value.utcoffset() != timezone.utc.utcoffset(value):
+        raise ValueError(f"{field_name} must be normalized to UTC")

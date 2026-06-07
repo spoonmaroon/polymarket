@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timezone
 from pathlib import Path
 from typing import Any, NoReturn
 import json
+import os
 import subprocess
 
 import duckdb
+from fastapi import FastAPI
 import pytest
 from fastapi.testclient import TestClient
 
@@ -16,11 +18,13 @@ from polymarket_engine.app import create_app_from_env
 from polymarket_engine.domain.contracts import ContractSpec
 from polymarket_engine.domain.market_state import DataQualityFlag
 from polymarket_engine.domain.market_state import DecisionState
-from polymarket_engine.probability.grid_cache import grid_entry_from_probability_input
-from polymarket_engine.probability.grid_cache import upsert_probability_grid_entry
-from polymarket_engine.probability.runtime import latest_probability_output_rows
+from polymarket_engine.probability.generator_fragments import GeneratorFragment
+from polymarket_engine.probability.generator_fragments import write_probability_fragments
+from polymarket_engine.probability.hot_inputs import write_hot_probability_inputs
 from polymarket_engine.probability.schema import ProbabilityInput, ProbabilityOutput
-from polymarket_engine.runtime_api import _volatility_flags
+from polymarket_engine import runtime_api as runtime_api_module
+from polymarket_engine.runtime_api import _probability_events_payload
+from polymarket_engine.runtime_api import build_runtime_router
 from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
 
 
@@ -62,28 +66,6 @@ def _write_status(path: Path) -> None:
     )
 
 
-def test_runtime_volatility_flags_filter_orderbook_decision_flags() -> None:
-    raw_flags = [
-        "stale_source",
-        "missing_orderbook",
-        "incomplete_orderbook",
-        "stale_orderbook",
-        "source_disagreement",
-    ]
-
-    flags = _volatility_flags(raw_flags, sigma_tau=0.0012)
-
-    assert flags == ["stale_source"]
-
-
-def test_runtime_volatility_flags_keep_missing_volatility_without_orderbook_noise() -> None:
-    raw_flags = ["incomplete_orderbook"]
-
-    flags = _volatility_flags(raw_flags, sigma_tau=None)
-
-    assert flags == ["missing_volatility"]
-
-
 def test_runtime_status_reads_state_manager_file(tmp_path: Path) -> None:
     status_path = tmp_path / "status.json"
     _write_status(status_path)
@@ -121,46 +103,94 @@ def test_create_app_from_env_uses_runtime_paths(
     assert response.json()["status_path"] == str(status_path)
 
 
-def test_create_app_serves_ui_dist_without_masking_api_routes(tmp_path: Path) -> None:
-    ui_dist_path = tmp_path / "ui" / "dist"
-    assets_path = ui_dist_path / "assets"
-    assets_path.mkdir(parents=True)
-    (ui_dist_path / "index.html").write_text(
-        '<div id="root">runtime monitor</div>',
-        encoding="utf-8",
+def test_create_app_from_env_uses_probability_inputs_path_for_runtime_probabilities(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    status_path = tmp_path / "live" / "status.json"
+    status_path.parent.mkdir()
+    _write_status(status_path)
+    probability_inputs_path = tmp_path / "live" / "probability_inputs.json"
+    probability_fragments_path = tmp_path / "live" / "probability_fragments.json"
+    state = _decision_state()
+    write_hot_probability_inputs(
+        out_path=probability_inputs_path,
+        states=(state,),
+        generated_at=datetime.now(UTC),
     )
-    (assets_path / "app.js").write_text("console.log('runtime monitor')", encoding="utf-8")
-    app = create_app(
-        status_path=tmp_path / "missing-status.json",
-        ui_dist_path=ui_dist_path,
+    write_probability_fragments(
+        out_path=probability_fragments_path,
+        fragments=(
+            GeneratorFragment(
+                fragment_id="btc-prior-one",
+                asset="BTC",
+                asof_ts=state.asof_ts,
+                prices=(70_000.0, 70_050.0, 70_100.0),
+                horizon_seconds=300,
+                z_path_bucket="near",
+                quality_bucket="OK",
+            ),
+            GeneratorFragment(
+                fragment_id="btc-prior-two",
+                asset="BTC",
+                asof_ts=state.asof_ts,
+                prices=(70_000.0, 70_020.0, 70_080.0),
+                horizon_seconds=300,
+                z_path_bucket="near",
+                quality_bucket="OK",
+            ),
+        ),
+        generated_at=datetime.now(UTC),
     )
-    client = TestClient(app)
-
-    api_response = client.get("/api/runtime/probabilities?limit=4")
-    root_response = client.get("/")
-    asset_response = client.get("/assets/app.js")
-
-    assert api_response.status_code == 200
-    assert api_response.json()["state"] == "DISABLED"
-    assert root_response.status_code == 200
-    assert "runtime monitor" in root_response.text
-    assert asset_response.status_code == 200
-    assert "runtime monitor" in asset_response.text
-
-
-def test_create_app_skips_ui_mount_when_dist_missing(tmp_path: Path) -> None:
-    app = create_app(
-        status_path=tmp_path / "missing-status.json",
-        ui_dist_path=tmp_path / "missing-dist",
+    monkeypatch.setenv("POLYMARKET_STATUS_PATH", str(status_path))
+    monkeypatch.setenv("POLYMARKET_DUCKDB_PATH", str(tmp_path / "missing.duckdb"))
+    monkeypatch.setenv("POLYMARKET_ENABLE_RUNTIME_PROBABILITIES", "1")
+    monkeypatch.setenv("POLYMARKET_PROBABILITY_INPUTS_PATH", str(probability_inputs_path))
+    monkeypatch.setenv(
+        "POLYMARKET_PROBABILITY_FRAGMENTS_PATH",
+        str(probability_fragments_path),
     )
-    client = TestClient(app)
 
-    health_response = client.get("/health")
-    root_response = client.get("/")
+    response = TestClient(create_app_from_env()).get("/api/runtime/probabilities?limit=4")
 
-    assert health_response.status_code == 200
-    assert health_response.json() == {"status": "ok"}
-    assert root_response.status_code == 404
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["state"] == "OK"
+    assert payload["errors"] == []
+    assert payload["rows"][0]["contract"] == "BTC 5m UP"
+    assert payload["rows"][0]["prior_fragment_count"] == 2
+    assert payload["rows"][0]["prior_fragment_reason"] == "exact"
+
+
+def test_runtime_router_defaults_to_live_probability_inputs_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    probability_inputs_path = tmp_path / "data" / "live" / "probability_inputs.json"
+    write_hot_probability_inputs(
+        out_path=probability_inputs_path,
+        states=(_decision_state(),),
+        generated_at=datetime.now(UTC),
+    )
+    app = FastAPI()
+    app.include_router(
+        build_runtime_router(
+            status_path=tmp_path / "missing-status.json",
+            duckdb_path=tmp_path / "missing.duckdb",
+            enable_runtime_probabilities=True,
+            allow_probability_compute_fallback=True,
+        )
+    )
+
+    response = TestClient(app).get("/api/runtime/probabilities?limit=4")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["state"] == "OK"
+    assert payload["rows"][0]["contract"] == "BTC 5m UP"
 
 
 def test_create_app_from_env_uses_status_sibling_target_cache_by_default(
@@ -616,179 +646,6 @@ def test_runtime_live_stream_emits_sse_payload(tmp_path: Path) -> None:
     assert '"monitor"' in body
 
 
-def test_runtime_probability_events_stream_emits_jsonl_probability_events(
-    tmp_path: Path,
-) -> None:
-    probability_status_path = tmp_path / "live" / "probabilities.json"
-    probability_status_path.parent.mkdir()
-    event_path = probability_status_path.with_name("probability-events.jsonl")
-    event_path.write_text(
-        "\n".join(
-            [
-                json.dumps(
-                    {
-                        "event_id": "evt-1",
-                        "contract_id": "btc-up",
-                        "asset": "BTC",
-                        "side": "UP",
-                        "start_ts": "2026-06-05T13:20:00Z",
-                        "expiry_ts": "2026-06-05T13:25:00Z",
-                        "asof_ts": "2026-06-05T13:20:01Z",
-                        "probability_kind": "MC",
-                        "p_finish": 0.51,
-                        "p_no_touch": 0.74,
-                        "generated_at": "2026-06-05T13:20:01Z",
-                    }
-                ),
-                "{bad-json",
-                json.dumps(
-                    {
-                        "event_id": "evt-2",
-                        "contract_id": "btc-up",
-                        "asset": "BTC",
-                        "side": "UP",
-                        "start_ts": "2026-06-05T13:20:00Z",
-                        "expiry_ts": "2026-06-05T13:25:00Z",
-                        "asof_ts": "2026-06-05T13:20:02Z",
-                        "probability_kind": "NOWCAST",
-                        "p_finish": 0.62,
-                        "p_no_touch": 0.81,
-                        "generated_at": "2026-06-05T13:20:02Z",
-                    }
-                ),
-            ]
-        ),
-        encoding="utf-8",
-    )
-    app = create_app(
-        status_path=tmp_path / "missing-status.json",
-        probability_status_path=probability_status_path,
-    )
-
-    with TestClient(app).stream(
-        "GET",
-        "/api/runtime/probability-events/stream?limit=4&interval_ms=1&max_events=1&after_event_id=evt-1",
-    ) as response:
-        body = "".join(response.iter_text())
-
-    assert response.status_code == 200
-    assert "event: probability" in body
-    assert '"schema_version":"polymarket-probability-events-v1"' in body
-    assert '"event_id":"evt-2"' in body
-    assert '"event_id":"evt-1"' not in body
-    assert '"probability_kind":"NOWCAST"' in body
-    assert "JSONL parse failed" in body
-
-
-def test_runtime_probability_events_stream_reads_newest_drain_file(
-    tmp_path: Path,
-) -> None:
-    probability_status_path = tmp_path / "live" / "probabilities.json"
-    probability_status_path.parent.mkdir()
-    event_path = probability_status_path.with_name("probability-events.jsonl")
-    drain_path = event_path.with_name("probability-events.jsonl.7.123.drain")
-    drain_path.write_text(
-        json.dumps(
-            {
-                "event_id": "evt-drain",
-                "contract_id": "btc-up",
-                "asset": "BTC",
-                "side": "UP",
-                "start_ts": "2026-06-05T13:20:00Z",
-                "expiry_ts": "2026-06-05T13:25:00Z",
-                "asof_ts": "2026-06-05T13:20:02Z",
-                "probability_kind": "MC",
-                "p_finish": 0.62,
-                "p_no_touch": 0.81,
-                "generated_at": "2026-06-05T13:20:02Z",
-            }
-        ),
-        encoding="utf-8",
-    )
-    app = create_app(
-        status_path=tmp_path / "missing-status.json",
-        probability_status_path=probability_status_path,
-    )
-
-    with TestClient(app).stream(
-        "GET",
-        "/api/runtime/probability-events/stream?limit=4&interval_ms=1&max_events=1",
-    ) as response:
-        body = "".join(response.iter_text())
-
-    assert response.status_code == 200
-    assert "event: probability" in body
-    assert '"event_id":"evt-drain"' in body
-    assert '"state":"OK"' in body
-
-
-def test_runtime_probability_events_stream_falls_back_to_status_payload(
-    tmp_path: Path,
-) -> None:
-    probability_status_path = tmp_path / "live" / "probabilities.json"
-    probability_status_path.parent.mkdir()
-    probability_status_path.write_text(
-        json.dumps(
-            {
-                "schema_version": "polymarket-probability-runtime-v1",
-                "ok": True,
-                "state": "OK",
-                "generated_at": "2026-06-05T13:20:02Z",
-                "rows": [
-                    {
-                        "contract_id": "btc-up",
-                        "asset": "BTC",
-                        "side": "UP",
-                        "start_ts": "2026-06-05T13:20:00Z",
-                        "expiry_ts": "2026-06-05T13:25:00Z",
-                        "asof_ts": "2026-06-05T13:20:01Z",
-                        "probability_kind": "MC",
-                        "p_finish": 0.51,
-                        "p_no_touch": 0.74,
-                        "generated_at": "2026-06-05T13:20:01Z",
-                    }
-                ],
-                "nowcast_rows": [
-                    {
-                        "contract_id": "btc-down",
-                        "asset": "BTC",
-                        "side": "DOWN",
-                        "start_ts": "2026-06-05T13:20:00Z",
-                        "expiry_ts": "2026-06-05T13:25:00Z",
-                        "asof_ts": "2026-06-05T13:20:02Z",
-                        "probability_kind": "NOWCAST",
-                        "p_finish": 0.62,
-                        "p_no_touch": 0.81,
-                        "generated_at": "2026-06-05T13:20:02Z",
-                    }
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
-    app = create_app(
-        status_path=tmp_path / "missing-status.json",
-        probability_status_path=probability_status_path,
-    )
-
-    with TestClient(app).stream(
-        "GET",
-        "/api/runtime/probability-events/stream?limit=4&interval_ms=1&max_events=1",
-    ) as response:
-        body = "".join(response.iter_text())
-
-    assert response.status_code == 200
-    assert "event: probability" in body
-    assert '"state":"OK"' in body
-    assert '"event_source":"status"' in body
-    assert '"contract_id":"btc-up"' in body
-    assert '"probability_kind":"MC"' in body
-    assert '"contract_id":"btc-down"' in body
-    assert '"probability_kind":"NOWCAST"' in body
-    assert '"event_id":"status-' in body
-    assert "probability-events.jsonl missing" not in body
-
-
 def test_runtime_outcomes_returns_market_level_history(tmp_path: Path) -> None:
     store = _seeded_store_with_outcome(tmp_path, official_winner="UP")
     app = create_app(status_path=tmp_path / "missing-status.json", duckdb_path=store.db_path)
@@ -1168,47 +1025,43 @@ def test_runtime_probabilities_disabled_by_default_returns_empty_envelope(
     assert payload["errors"] == []
 
 
-def test_runtime_probabilities_disabled_runtime_reads_gpu_status_file(
+def test_runtime_probabilities_skips_compute_when_fallback_disabled(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    probability_status_path = tmp_path / "live" / "probabilities.json"
-    probability_status_path.parent.mkdir()
-    probability_status_path.write_text(
-        json.dumps(
-            {
-                "schema_version": "polymarket-probability-runtime-v1",
-                "ok": True,
-                "state": "OK",
-                "generated_at": datetime.now(UTC).isoformat(),
-                "cached": False,
-                "model_version": "cached-grid-v1",
-                "rows": [
-                    {"contract": "BTC 5m UP", "asset": "BTC", "side": "UP"},
-                    {"contract": "BTC 5m DOWN", "asset": "BTC", "side": "DOWN"},
-                ],
-                "skipped": 0,
-                "errors": [],
-            }
-        ),
-        encoding="utf-8",
+    db_path = tmp_path / "polymarket.duckdb"
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    state = _decision_state()
+    store.upsert_contract_spec(state.contract)
+    store.upsert_asof_state_input(state)
+
+    def fail_compute(*_: object, **__: object) -> NoReturn:
+        raise AssertionError("runtime probability display should not compute CPU fallback")
+
+    monkeypatch.setattr(
+        "polymarket_engine.probability.runtime._compute_and_persist_rows",
+        fail_compute,
     )
     app = create_app(
         status_path=tmp_path / "missing-status.json",
-        duckdb_path=tmp_path / "missing.duckdb",
-        probability_status_path=probability_status_path,
-        enable_runtime_probabilities=False,
+        duckdb_path=db_path,
+        enable_runtime_probabilities=True,
     )
 
-    response = TestClient(app).get("/api/runtime/probabilities?limit=1")
+    response = TestClient(app).get("/api/runtime/probabilities?limit=4")
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["ok"] is True
-    assert payload["state"] == "OK"
-    assert payload["rows"] == [{"contract": "BTC 5m UP", "asset": "BTC", "side": "UP"}]
+    assert payload["ok"] is False
+    assert payload["state"] == "COMPUTE_DISABLED"
+    assert payload["rows"] == []
+    assert payload["errors"] == [
+        "probability status missing and runtime probability compute fallback disabled"
+    ]
 
 
-def test_runtime_probabilities_runs_cached_read_only_mc_and_persists_output(
+def test_runtime_probabilities_runs_cached_read_only_mc_when_compute_fallback_allowed(
     tmp_path: Path,
 ) -> None:
     db_path = tmp_path / "polymarket.duckdb"
@@ -1221,6 +1074,7 @@ def test_runtime_probabilities_runs_cached_read_only_mc_and_persists_output(
         status_path=tmp_path / "missing-status.json",
         duckdb_path=db_path,
         enable_runtime_probabilities=True,
+        allow_runtime_probability_compute=True,
     )
     client = TestClient(app)
 
@@ -1243,269 +1097,6 @@ def test_runtime_probabilities_runs_cached_read_only_mc_and_persists_output(
     assert row["flags"] == ["OK"]
     with duckdb.connect(str(db_path)) as conn:
         assert conn.execute("select count(*) from features.probability_outputs").fetchone() == (1,)
-        assert conn.execute("select count(*) from features.probability_event_log").fetchone() == (2,)
-    assert first_payload["lanes"] == {"MC": 1, "NOWCAST": 1}
-    assert first_payload["latency"]["max_total_lag_ms"] is not None
-    assert len(first_payload["nowcast_rows"]) == 1
-    assert first_payload["nowcast_rows"][0]["probability_kind"] == "NOWCAST"
-
-
-def test_runtime_probabilities_computed_rows_include_p_no_touch_gate(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    db_path = tmp_path / "polymarket.duckdb"
-    store = DuckDbIngestStore(db_path)
-    store.apply_schema()
-    state = _decision_state()
-    store.upsert_contract_spec(state.contract)
-    store.upsert_asof_state_input(state)
-    probability_input = ProbabilityInput.from_decision_state(state)
-
-    def fake_mc(*_: object, **__: object) -> ProbabilityOutput:
-        return ProbabilityOutput(
-            state_id=probability_input.state_id,
-            asof_ts=probability_input.asof_ts,
-            p_finish=0.80,
-            p_no_touch=0.60,
-            z_path=probability_input.z_path,
-            model_version="fixture-mc-v1",
-            seed=123,
-            diagnostics={"path_count": 10_000, "steps": 2},
-        )
-
-    monkeypatch.setattr(
-        "polymarket_engine.probability.runtime.run_seeded_monte_carlo",
-        fake_mc,
-    )
-    app = create_app(
-        status_path=tmp_path / "missing-status.json",
-        duckdb_path=db_path,
-        enable_runtime_probabilities=True,
-    )
-
-    row = TestClient(app).get("/api/runtime/probabilities?limit=4").json()["rows"][0]
-
-    assert row["edge_after_costs"] == pytest.approx(0.16)
-    assert row["path_risk_buffer"] == pytest.approx(0.015)
-    assert row["required_edge"] == pytest.approx(0.065)
-    assert row["decision_hint"] == "WAIT"
-    assert row["gate_reasons"] == ["P_NO_TOUCH_BELOW_FLOOR"]
-
-
-def test_runtime_probabilities_uses_safe_grid_cache_before_mc(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    db_path = tmp_path / "polymarket.duckdb"
-    store = DuckDbIngestStore(db_path)
-    store.apply_schema()
-    state = _decision_state()
-    probability_input = ProbabilityInput.from_decision_state(state)
-    store.upsert_contract_spec(state.contract)
-    store.upsert_asof_state_input(state)
-    entry = grid_entry_from_probability_input(
-        probability_input,
-        market_slug=state.contract.slug,
-        start_ts=state.contract.start_ts,
-        expiry_ts=state.contract.expiry_ts,
-        p_finish=0.674,
-        p_no_touch=0.718,
-        u_gen=0.046,
-        path_count=10_000,
-        seed=20260605,
-        volatility_regime=state.volatility_regime,
-        training_cutoff_ts=state.asof_ts - timedelta(minutes=5),
-        max_event_ts=state.asof_ts,
-        max_observed_ts=state.asof_ts,
-        generated_at=datetime.now(UTC),
-        valid_from=datetime.now(UTC) - timedelta(seconds=1),
-        valid_until=datetime.now(UTC) + timedelta(seconds=30),
-        diagnostics={
-            "ensemble": {
-                "mc_dispersion": 0.073,
-                "uncertainty_buffer": 0.046,
-                "path_diagnosis": ["NEAR_THRESHOLD"],
-                "effective_weights": {
-                    "lognormal_baseline": 0.55,
-                    "empirical_conditional": 0.30,
-                    "stress_overlay": 0.15,
-                },
-            }
-        },
-    )
-    upsert_probability_grid_entry(store, entry)
-
-    def fail_compute(*_: object, **__: object) -> NoReturn:
-        raise AssertionError("probability API should use safe probability grid cache")
-
-    monkeypatch.setattr(
-        "polymarket_engine.probability.runtime._compute_and_persist_rows",
-        fail_compute,
-    )
-    app = create_app(
-        status_path=tmp_path / "missing-status.json",
-        duckdb_path=db_path,
-        enable_runtime_probabilities=True,
-    )
-
-    response = TestClient(app).get("/api/runtime/probabilities?limit=4")
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["ok"] is True
-    assert payload["state"] == "OK"
-    assert payload["rows"][0]["contract"] == "BTC 5m UP"
-    assert payload["rows"][0]["market_slug"] == state.contract.slug
-    assert payload["rows"][0]["p_finish"] == pytest.approx(0.674)
-    assert payload["rows"][0]["cache_key"] == entry.cache_key
-    assert payload["rows"][0]["cache_status"] == "HIT"
-    assert payload["rows"][0]["cache_market_slug"] == state.contract.slug
-    assert payload["rows"][0]["cache_expiry_ts"] == state.contract.expiry_ts.isoformat()
-    assert payload["rows"][0]["cache_asof_ts"] == state.asof_ts.isoformat()
-    assert payload["rows"][0]["grid_cache"]["market_slug"] == state.contract.slug
-    assert payload["rows"][0]["grid_cache"]["expiry_ts"] == state.contract.expiry_ts.isoformat()
-    assert payload["rows"][0]["grid_cache"]["asof_ts"] == state.asof_ts.isoformat()
-    assert payload["rows"][0]["generated_at"] == entry.generated_at.isoformat()
-    assert payload["rows"][0]["asof_ts"] == state.asof_ts.isoformat()
-    assert payload["rows"][0]["valid_from"] == entry.valid_from.isoformat()
-    assert payload["rows"][0]["valid_until"] == entry.valid_until.isoformat()
-    assert payload["rows"][0]["time_bucket"] == "0-30"
-    assert payload["rows"][0]["z_path_bucket"] == "0.75-1.00"
-    assert payload["rows"][0]["sigma_bucket"] == "0.010-0.015"
-    assert payload["rows"][0]["volatility_regime"] == "normal"
-    assert payload["rows"][0]["path_count"] == 10_000
-    assert payload["lanes"] == {"CACHE": 1, "NOWCAST": 1}
-    assert payload["nowcast_rows"][0]["probability_kind"] == "NOWCAST"
-    with duckdb.connect(str(db_path)) as conn:
-        assert conn.execute("select count(*) from features.probability_outputs").fetchone() == (0,)
-        assert conn.execute("select count(*) from features.probability_event_log").fetchone() == (2,)
-
-
-def test_runtime_probabilities_adds_wave_signal_to_grid_rows(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    db_path = tmp_path / "polymarket.duckdb"
-    store = DuckDbIngestStore(db_path)
-    store.apply_schema()
-    state = replace(_decision_state(), best_bid=0.89, best_ask=0.90, executable_price=0.90)
-    probability_input = ProbabilityInput.from_decision_state(state)
-    store.upsert_contract_spec(state.contract)
-    store.upsert_asof_state_input(state)
-    entry = grid_entry_from_probability_input(
-        probability_input,
-        market_slug=state.contract.slug,
-        start_ts=state.contract.start_ts,
-        expiry_ts=state.contract.expiry_ts,
-        p_finish=0.97,
-        p_no_touch=0.86,
-        u_gen=0.046,
-        path_count=10_000,
-        seed=20260605,
-        volatility_regime=state.volatility_regime,
-        training_cutoff_ts=state.asof_ts,
-        max_event_ts=state.asof_ts,
-        max_observed_ts=state.asof_ts,
-        generated_at=datetime.now(UTC),
-        valid_from=datetime.now(UTC) - timedelta(seconds=1),
-        valid_until=datetime.now(UTC) + timedelta(seconds=30),
-        diagnostics={
-            "gate": {
-                "edge_after_costs": 0.045,
-                "required_edge": 0.030,
-                "decision_hint": "TRADE_CANDIDATE",
-            }
-        },
-    )
-    upsert_probability_grid_entry(store, entry)
-
-    def fail_compute(*_: object, **__: object) -> NoReturn:
-        raise AssertionError("probability API should use safe probability grid cache")
-
-    monkeypatch.setattr(
-        "polymarket_engine.probability.runtime._compute_and_persist_rows",
-        fail_compute,
-    )
-    app = create_app(
-        status_path=tmp_path / "missing-status.json",
-        duckdb_path=db_path,
-        enable_runtime_probabilities=True,
-    )
-
-    response = TestClient(app).get("/api/runtime/probabilities?limit=4")
-
-    assert response.status_code == 200
-    row = response.json()["rows"][0]
-    assert row["wave_phase"] == "breaking"
-    assert row["wave_markers"] == ["P90"]
-    assert row["wave_score"] == pytest.approx(1.0)
-    assert row["dynamic_edge"] == pytest.approx(0.045)
-    assert row["dynamic_required_edge"] == pytest.approx(0.030)
-    assert "EDGE_OK" in row["wave_reasons"]
-
-
-def test_runtime_probabilities_adds_wave_signal_to_grid_rows(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    db_path = tmp_path / "polymarket.duckdb"
-    store = DuckDbIngestStore(db_path)
-    store.apply_schema()
-    state = replace(_decision_state(), best_bid=0.89, best_ask=0.90, executable_price=0.90)
-    probability_input = ProbabilityInput.from_decision_state(state)
-    store.upsert_contract_spec(state.contract)
-    store.upsert_asof_state_input(state)
-    entry = grid_entry_from_probability_input(
-        probability_input,
-        market_slug=state.contract.slug,
-        start_ts=state.contract.start_ts,
-        expiry_ts=state.contract.expiry_ts,
-        p_finish=0.97,
-        p_no_touch=0.86,
-        u_gen=0.046,
-        path_count=10_000,
-        seed=20260605,
-        volatility_regime=state.volatility_regime,
-        training_cutoff_ts=state.asof_ts,
-        max_event_ts=state.asof_ts,
-        max_observed_ts=state.asof_ts,
-        generated_at=datetime.now(UTC),
-        valid_from=datetime.now(UTC) - timedelta(seconds=1),
-        valid_until=datetime.now(UTC) + timedelta(seconds=30),
-        diagnostics={
-            "gate": {
-                "edge_after_costs": 0.045,
-                "required_edge": 0.030,
-                "decision_hint": "TRADE_CANDIDATE",
-            }
-        },
-    )
-    upsert_probability_grid_entry(store, entry)
-
-    def fail_compute(*_: object, **__: object) -> NoReturn:
-        raise AssertionError("probability API should use safe probability grid cache")
-
-    monkeypatch.setattr(
-        "polymarket_engine.probability.runtime._compute_and_persist_rows",
-        fail_compute,
-    )
-    app = create_app(
-        status_path=tmp_path / "missing-status.json",
-        duckdb_path=db_path,
-        enable_runtime_probabilities=True,
-    )
-
-    response = TestClient(app).get("/api/runtime/probabilities?limit=4")
-
-    assert response.status_code == 200
-    row = response.json()["rows"][0]
-    assert row["wave_phase"] == "breaking"
-    assert row["wave_markers"] == ["P90"]
-    assert row["wave_score"] == pytest.approx(1.0)
-    assert row["dynamic_edge"] == pytest.approx(0.045)
-    assert row["dynamic_required_edge"] == pytest.approx(0.030)
-    assert "EDGE_OK" in row["wave_reasons"]
 
 
 def test_runtime_probabilities_returns_empty_envelope_for_missing_duckdb(
@@ -1537,6 +1128,7 @@ def test_runtime_probabilities_skips_quality_blocked_asof_states(tmp_path: Path)
         status_path=tmp_path / "missing-status.json",
         duckdb_path=db_path,
         enable_runtime_probabilities=True,
+        allow_runtime_probability_compute=True,
     )
 
     response = TestClient(app).get("/api/runtime/probabilities")
@@ -1549,86 +1141,7 @@ def test_runtime_probabilities_skips_quality_blocked_asof_states(tmp_path: Path)
     assert payload["skipped"] == 1
 
 
-def test_runtime_probabilities_uses_grid_before_live_probability_status_file(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    db_path = tmp_path / "polymarket.duckdb"
-    probability_status_path = tmp_path / "live" / "probabilities.json"
-    probability_status_path.parent.mkdir()
-    probability_status_path.write_text(
-        json.dumps(
-            {
-                "schema_version": "polymarket-probability-runtime-v1",
-                "ok": True,
-                "state": "OK",
-                "generated_at": datetime.now(UTC).isoformat(),
-                "cached": False,
-                "model_version": "fixture-mc-v1",
-                "rows": [
-                    {"contract": "BTC 5m UP", "output_id": "btc-up"},
-                    {"contract": "BTC 5m DOWN", "output_id": "btc-down"},
-                ],
-                "skipped": 0,
-                "errors": [],
-            }
-        ),
-        encoding="utf-8",
-    )
-    store = DuckDbIngestStore(db_path)
-    store.apply_schema()
-    state = _decision_state()
-    probability_input = ProbabilityInput.from_decision_state(state)
-    store.upsert_contract_spec(state.contract)
-    store.upsert_asof_state_input(state)
-    entry = grid_entry_from_probability_input(
-        probability_input,
-        market_slug=state.contract.slug,
-        start_ts=state.contract.start_ts,
-        expiry_ts=state.contract.expiry_ts,
-        p_finish=0.674,
-        p_no_touch=0.718,
-        u_gen=0.046,
-        path_count=10_000,
-        seed=20260605,
-        volatility_regime=state.volatility_regime,
-        training_cutoff_ts=state.asof_ts,
-        max_event_ts=state.asof_ts,
-        max_observed_ts=state.asof_ts,
-        generated_at=datetime.now(UTC),
-        valid_from=datetime.now(UTC) - timedelta(seconds=1),
-        valid_until=datetime.now(UTC) + timedelta(seconds=30),
-        diagnostics={"ensemble": {"path_diagnosis": ["CACHE_FIRST"]}},
-    )
-    upsert_probability_grid_entry(store, entry)
-
-    def fail_compute(*_: object, **__: object) -> NoReturn:
-        raise AssertionError("probability API should use grid before status file")
-
-    monkeypatch.setattr(
-        "polymarket_engine.probability.runtime._compute_and_persist_rows",
-        fail_compute,
-    )
-    app = create_app(
-        status_path=tmp_path / "missing-status.json",
-        duckdb_path=db_path,
-        probability_status_path=probability_status_path,
-        enable_runtime_probabilities=True,
-    )
-
-    response = TestClient(app).get("/api/runtime/probabilities?limit=1")
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["ok"] is True
-    assert payload["rows"][0]["cache_status"] == "HIT"
-    assert payload["rows"][0]["cache_key"] == entry.cache_key
-    assert payload["rows"][0]["p_finish"] == pytest.approx(0.674)
-
-
-def test_runtime_probabilities_reads_live_probability_status_file_when_duckdb_missing(
-    tmp_path: Path,
-) -> None:
+def test_runtime_probabilities_reads_live_probability_status_file(tmp_path: Path) -> None:
     probability_status_path = tmp_path / "live" / "probabilities.json"
     probability_status_path.parent.mkdir()
     probability_status_path.write_text(
@@ -1665,13 +1178,55 @@ def test_runtime_probabilities_reads_live_probability_status_file_when_duckdb_mi
     assert payload["rows"] == [{"contract": "BTC 5m UP", "output_id": "btc-up"}]
 
 
-def test_runtime_probabilities_reads_live_probability_status_file_when_duckdb_locked(
+def test_runtime_probabilities_uses_last_good_rows_when_status_rows_empty(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    db_path = tmp_path / "polymarket.duckdb"
-    db_path.touch()
     probability_status_path = tmp_path / "live" / "probabilities.json"
+    probability_status_path.parent.mkdir()
+    probability_status_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "polymarket-probability-runtime-v1",
+                "ok": False,
+                "state": "PARTIAL",
+                "generated_at": datetime.now(UTC).isoformat(),
+                "cached": False,
+                "model_version": None,
+                "rows": [],
+                "last_good_rows": [
+                    {"contract": "BTC 5m UP", "output_id": "retained-up"},
+                    {"contract": "BTC 5m DOWN", "output_id": "retained-down"},
+                ],
+                "skipped": 4,
+                "errors": ["probability input unavailable"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    app = create_app(
+        status_path=tmp_path / "missing-status.json",
+        duckdb_path=tmp_path / "missing.duckdb",
+        probability_status_path=probability_status_path,
+        enable_runtime_probabilities=True,
+    )
+
+    response = TestClient(app).get("/api/runtime/probabilities?limit=1")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["state"] == "PARTIAL"
+    assert payload["rows"] == [{"contract": "BTC 5m UP", "output_id": "retained-up"}]
+    assert payload["last_good_rows"] == [
+        {"contract": "BTC 5m UP", "output_id": "retained-up"},
+        {"contract": "BTC 5m DOWN", "output_id": "retained-down"},
+    ]
+
+
+def test_runtime_probabilities_prefers_non_empty_status_file_over_empty_hot_inputs(
+    tmp_path: Path,
+) -> None:
+    probability_status_path = tmp_path / "live" / "probabilities.json"
+    probability_inputs_path = tmp_path / "live" / "probability_inputs.json"
     probability_status_path.parent.mkdir()
     probability_status_path.write_text(
         json.dumps(
@@ -1679,30 +1234,32 @@ def test_runtime_probabilities_reads_live_probability_status_file_when_duckdb_lo
                 "schema_version": "polymarket-probability-runtime-v1",
                 "ok": True,
                 "state": "OK",
-                "generated_at": datetime.now(UTC).isoformat(),
+                "generated_at": datetime(2026, 6, 1, tzinfo=UTC).isoformat(),
                 "cached": False,
-                "model_version": "cached-grid-v1",
-                "rows": [
-                    {"contract": "BTC 5m UP", "asset": "BTC", "side": "UP"},
-                    {"contract": "BTC 5m DOWN", "asset": "BTC", "side": "DOWN"},
-                    {"contract": "ETH 5m UP", "asset": "ETH", "side": "UP"},
-                    {"contract": "ETH 5m DOWN", "asset": "ETH", "side": "DOWN"},
-                ],
+                "model_version": "fixture-mc-v1",
+                "rows": [{"contract": "BTC 5m UP", "output_id": "gpu-row"}],
                 "skipped": 0,
                 "errors": [],
             }
         ),
         encoding="utf-8",
     )
-
-    def locked_connect(*_: object, **__: object) -> NoReturn:
-        raise duckdb.IOException("Could not set lock on file")
-
-    monkeypatch.setattr(duckdb, "connect", locked_connect)
+    probability_inputs_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "polymarket-hot-probability-inputs-v1",
+                "generated_at": datetime.now(UTC).isoformat(),
+                "inputs": [],
+                "skipped": 4,
+            }
+        ),
+        encoding="utf-8",
+    )
     app = create_app(
         status_path=tmp_path / "missing-status.json",
-        duckdb_path=db_path,
+        duckdb_path=tmp_path / "missing.duckdb",
         probability_status_path=probability_status_path,
+        probability_inputs_path=probability_inputs_path,
         enable_runtime_probabilities=True,
     )
 
@@ -1710,17 +1267,158 @@ def test_runtime_probabilities_reads_live_probability_status_file_when_duckdb_lo
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["ok"] is True
-    assert payload["state"] == "OK"
-    assert [row["contract"] for row in payload["rows"]] == [
-        "BTC 5m UP",
-        "BTC 5m DOWN",
-        "ETH 5m UP",
-        "ETH 5m DOWN",
+    assert payload["model_version"] == "fixture-mc-v1"
+    assert payload["rows"] == [{"contract": "BTC 5m UP", "output_id": "gpu-row"}]
+
+
+def test_runtime_probabilities_uses_hot_inputs_when_rows_exist_and_no_status_file(
+    tmp_path: Path,
+) -> None:
+    probability_inputs_path = tmp_path / "live" / "probability_inputs.json"
+    write_hot_probability_inputs(
+        out_path=probability_inputs_path,
+        states=(_decision_state(),),
+        generated_at=datetime.now(UTC),
+    )
+    app = create_app(
+        status_path=tmp_path / "missing-status.json",
+        duckdb_path=tmp_path / "missing.duckdb",
+        probability_status_path=tmp_path / "live" / "probabilities.json",
+        probability_inputs_path=probability_inputs_path,
+        enable_runtime_probabilities=True,
+    )
+
+    response = TestClient(app).get("/api/runtime/probabilities?limit=4")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["source"] == "hot_inputs"
+    row = payload["rows"][0]
+    assert row["contract"] == "BTC 5m UP"
+    assert row["model_version"] == "ensemble-v1"
+    assert row["backend"] == "ensemble"
+    assert row["generator_version"] == "four-generator-ensemble-v1"
+    assert row["generator_summary"]
+    assert row["effective_weights"]
+
+
+def test_probability_events_stream_reads_newest_drain_when_jsonl_missing(
+    tmp_path: Path,
+) -> None:
+    probability_status_path = tmp_path / "live" / "probabilities.json"
+    probability_status_path.parent.mkdir()
+    older_drain = probability_status_path.with_name("probability-events.jsonl.older.drain")
+    newer_drain = probability_status_path.with_name("probability-events.jsonl.newer.drain")
+    older_drain.write_text(
+        json.dumps({"event_id": "old", "state_id": "state-old"}) + "\n",
+        encoding="utf-8",
+    )
+    newer_drain.write_text(
+        json.dumps({"event_id": "new", "state_id": "state-new"}) + "\n",
+        encoding="utf-8",
+    )
+    newer_mtime_ns = older_drain.stat().st_mtime_ns + 1_000_000
+    os.utime(newer_drain, ns=(newer_mtime_ns, newer_mtime_ns))
+    app = create_app(
+        status_path=tmp_path / "missing-status.json",
+        duckdb_path=tmp_path / "missing.duckdb",
+        probability_status_path=probability_status_path,
+        enable_runtime_probabilities=True,
+    )
+
+    response = TestClient(app).get(
+        "/api/runtime/probability-events/stream?limit=4&max_events=1"
+    )
+
+    assert response.status_code == 200
+    body = response.text
+    assert "event: probability" in body
+    assert '"event_id":"new"' in body
+    assert '"event_id":"old"' not in body
+
+
+def test_probability_events_payload_reuses_unchanged_event_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    probability_event_path = tmp_path / "live" / "probability-events.jsonl"
+    probability_event_path.parent.mkdir()
+    probability_event_path.write_text(
+        json.dumps({"event_id": "event-1", "state_id": "state-btc-up"}) + "\n",
+        encoding="utf-8",
+    )
+    read_count = 0
+    real_tail_text_lines = runtime_api_module._tail_text_lines
+
+    def counting_tail_text_lines(
+        path: Path,
+        *,
+        max_lines: int,
+        block_size: int = 64 * 1024,
+    ) -> list[str]:
+        nonlocal read_count
+        if path == probability_event_path:
+            read_count += 1
+        return real_tail_text_lines(
+            path,
+            max_lines=max_lines,
+            block_size=block_size,
+        )
+
+    monkeypatch.setattr(runtime_api_module, "_tail_text_lines", counting_tail_text_lines)
+
+    first = _probability_events_payload(
+        probability_event_path=probability_event_path,
+        limit=4,
+        after_event_id=None,
+    )
+    second = _probability_events_payload(
+        probability_event_path=probability_event_path,
+        limit=4,
+        after_event_id=None,
+    )
+
+    assert first["events"] == second["events"]
+    assert read_count == 1
+
+
+def test_probability_events_payload_tails_large_event_file_without_full_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    probability_event_path = tmp_path / "live" / "probability-events.jsonl"
+    probability_event_path.parent.mkdir()
+    with probability_event_path.open("w", encoding="utf-8") as handle:
+        for index in range(10_000):
+            handle.write(
+                json.dumps({"event_id": f"event-{index}", "state_id": f"state-{index}"})
+                + "\n"
+            )
+
+    real_read_text = Path.read_text
+
+    def fail_full_read(path: Path, *args: Any, **kwargs: Any) -> str:
+        if path == probability_event_path:
+            raise AssertionError("probability event reader must not read the full JSONL file")
+        return real_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", fail_full_read)
+
+    payload = _probability_events_payload(
+        probability_event_path=probability_event_path,
+        limit=4,
+        after_event_id=None,
+    )
+
+    assert [event["event_id"] for event in payload["events"]] == [
+        "event-9996",
+        "event-9997",
+        "event-9998",
+        "event-9999",
     ]
 
 
-def test_runtime_probabilities_prefers_grid_cache_over_persisted_outputs(
+def test_runtime_probabilities_prefers_persisted_outputs_without_recomputing(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1733,9 +1431,23 @@ def test_runtime_probabilities_prefers_grid_cache_over_persisted_outputs(
         p_finish=0.62,
         p_no_touch=0.58,
         z_path=probability_input.z_path,
-        model_version="fixture-mc-v1",
+        model_version="ensemble-v1",
         seed=123,
-        diagnostics={"path_count": 1, "steps": 1},
+        diagnostics={
+            "backend": "ensemble",
+            "generator_version": "four-generator-ensemble-v1",
+            "path_count": 1,
+            "steps": 1,
+            "effective_weights": {"empirical_conditional": 0.4},
+            "generator_summary": {
+                "empirical_conditional": {
+                    "p_finish": 0.62,
+                    "p_no_touch": 0.58,
+                    "weight": 0.4,
+                    "sparse": False,
+                }
+            },
+        },
     )
     store = DuckDbIngestStore(db_path)
     store.apply_schema()
@@ -1746,29 +1458,9 @@ def test_runtime_probabilities_prefers_grid_cache_over_persisted_outputs(
         probability_input=probability_input,
         output=output,
     )
-    entry = grid_entry_from_probability_input(
-        probability_input,
-        market_slug=state.contract.slug,
-        start_ts=state.contract.start_ts,
-        expiry_ts=state.contract.expiry_ts,
-        p_finish=0.674,
-        p_no_touch=0.718,
-        u_gen=0.046,
-        path_count=10_000,
-        seed=20260605,
-        volatility_regime=state.volatility_regime,
-        training_cutoff_ts=state.asof_ts,
-        max_event_ts=state.asof_ts,
-        max_observed_ts=state.asof_ts,
-        generated_at=datetime.now(UTC),
-        valid_from=datetime.now(UTC) - timedelta(seconds=1),
-        valid_until=datetime.now(UTC) + timedelta(seconds=30),
-        diagnostics={"ensemble": {"path_diagnosis": ["CACHE_FIRST"]}},
-    )
-    upsert_probability_grid_entry(store, entry)
 
     def fail_compute(*_: object, **__: object) -> NoReturn:
-        raise AssertionError("probability API should not recompute when safe grid cache exists")
+        raise AssertionError("probability API should read persisted rows first")
 
     monkeypatch.setattr(
         "polymarket_engine.probability.runtime._compute_and_persist_rows",
@@ -1785,14 +1477,89 @@ def test_runtime_probabilities_prefers_grid_cache_over_persisted_outputs(
     payload = response.json()
     assert payload["ok"] is True
     assert payload["state"] == "OK"
-    assert "output_id" not in payload["rows"][0]
-    assert payload["rows"][0]["cache_status"] == "HIT"
-    assert payload["rows"][0]["cache_key"] == entry.cache_key
-    assert payload["rows"][0]["p_finish"] == pytest.approx(0.674)
+    assert payload["rows"][0]["output_id"] == "prob-fixture"
+    assert payload["rows"][0]["p_finish"] == pytest.approx(0.62)
 
 
-def test_runtime_probabilities_refreshes_grid_on_miss_even_with_persisted_output(
+def test_runtime_probabilities_reads_persisted_outputs_without_decision_table(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "polymarket.duckdb"
+    state = _decision_state()
+    probability_input = ProbabilityInput.from_decision_state(state)
+    output = ProbabilityOutput(
+        state_id=probability_input.state_id,
+        asof_ts=probability_input.asof_ts,
+        p_finish=0.62,
+        p_no_touch=0.58,
+        z_path=probability_input.z_path,
+        model_version="ensemble-v1",
+        seed=123,
+        diagnostics={
+            "backend": "ensemble",
+            "generator_version": "four-generator-ensemble-v1",
+            "path_count": 1,
+            "steps": 1,
+            "effective_weights": {"empirical_conditional": 0.4},
+            "generator_summary": {
+                "empirical_conditional": {
+                    "p_finish": 0.62,
+                    "p_no_touch": 0.58,
+                    "weight": 0.4,
+                    "sparse": False,
+                }
+            },
+        },
+    )
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    store.upsert_contract_spec(state.contract)
+    store.upsert_asof_state_input(state)
+    store.insert_probability_output(
+        output_id="prob-fixture",
+        probability_input=probability_input,
+        output=output,
+    )
+    with duckdb.connect(str(db_path)) as conn:
+        conn.execute("drop table features.ensemble_decisions")
+
+    def fail_compute(*_: object, **__: object) -> NoReturn:
+        raise AssertionError("probability API should read persisted rows first")
+
+    monkeypatch.setattr(
+        "polymarket_engine.probability.runtime._compute_and_persist_rows",
+        fail_compute,
+    )
+    app = create_app(
+        status_path=tmp_path / "missing-status.json",
+        duckdb_path=db_path,
+        enable_runtime_probabilities=True,
+    )
+
+    response = TestClient(app).get("/api/runtime/probabilities?limit=4")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["state"] == "OK"
+    row = payload["rows"][0]
+    assert row["output_id"] == "prob-fixture"
+    assert row["p_finish"] == pytest.approx(0.62)
+    assert row["model_version"] == "ensemble-v1"
+    assert row["backend"] == "ensemble"
+    assert row["generator_version"] == "four-generator-ensemble-v1"
+    assert row["path_count"] == 1
+    assert row["steps"] == 1
+    assert row["effective_weights"] == {"empirical_conditional": 0.4}
+    assert row["generator_summary"]["empirical_conditional"]["weight"] == 0.4
+    assert "decision_hint" not in row
+    assert "skip_reasons" not in row
+
+
+def test_runtime_probabilities_include_optional_ensemble_decision_fields(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     db_path = tmp_path / "polymarket.duckdb"
     state = _decision_state()
@@ -1816,32 +1583,57 @@ def test_runtime_probabilities_refreshes_grid_on_miss_even_with_persisted_output
         probability_input=probability_input,
         output=output,
     )
-
-    app = create_app(
-        status_path=tmp_path / "missing-status.json",
-        duckdb_path=db_path,
-        enable_runtime_probabilities=True,
+    older_decision_ts = probability_input.asof_ts.replace(minute=2)
+    store.insert_ensemble_decisions(
+        (
+            {
+                "decision_id": "decision-old",
+                "state_id": probability_input.state_id,
+                "contract_id": state.contract.contract_id,
+                "asof_ts": older_decision_ts,
+                "execution_mode": "paper",
+                "decision_hint": "SKIP",
+                "p_finish": 0.51,
+                "p_no_touch": 0.49,
+                "z_path": 0.1,
+                "edge_after_costs": 0.01,
+                "required_edge": 0.05,
+                "skip_reasons_json": '["old"]',
+                "edge_components_json": "{}",
+                "generator_summary_json": '{"winner":"old"}',
+                "execution_summary_json": '{"book":"old"}',
+                "supervised_live_json": '{"action":"DISABLED","reason":"old"}',
+                "created_at": older_decision_ts,
+            },
+            {
+                "decision_id": "decision-latest",
+                "state_id": probability_input.state_id,
+                "contract_id": state.contract.contract_id,
+                "asof_ts": probability_input.asof_ts,
+                "execution_mode": "paper",
+                "decision_hint": "PAPER_TRADE",
+                "p_finish": 0.62,
+                "p_no_touch": 0.58,
+                "z_path": probability_input.z_path,
+                "edge_after_costs": 0.074,
+                "required_edge": 0.05,
+                "skip_reasons_json": '["thin_book","latency_guard"]',
+                "edge_components_json": '{"base_edge":0.09,"fees":0.016}',
+                "generator_summary_json": '{"winner":"bootstrap","count":4}',
+                "execution_summary_json": '{"target_size":12.5,"spread":0.03}',
+                "supervised_live_json": '{"action":"DISABLED","reason":"read_only"}',
+                "created_at": probability_input.asof_ts,
+            },
+        )
     )
-    response = TestClient(app).get("/api/runtime/probabilities?limit=4")
 
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["ok"] is True
-    assert payload["state"] == "OK"
-    assert "output_id" not in payload["rows"][0]
-    assert payload["rows"][0]["cache_status"] == "REFRESH"
-    assert payload["rows"][0]["grid_cache"]["market_slug"] == state.contract.slug
-    with duckdb.connect(str(db_path), read_only=True) as conn:
-        assert conn.execute("select count(*) from features.probability_grid_cache").fetchone() == (1,)
+    def fail_compute(*_: object, **__: object) -> NoReturn:
+        raise AssertionError("probability API should read persisted rows first")
 
-
-def test_runtime_probabilities_adds_wave_signal_to_refresh_rows(tmp_path: Path) -> None:
-    db_path = tmp_path / "polymarket.duckdb"
-    store = DuckDbIngestStore(db_path)
-    store.apply_schema()
-    state = replace(_decision_state(), best_bid=0.93, best_ask=0.94, executable_price=0.94)
-    store.upsert_contract_spec(state.contract)
-    store.upsert_asof_state_input(state)
+    monkeypatch.setattr(
+        "polymarket_engine.probability.runtime._compute_and_persist_rows",
+        fail_compute,
+    )
     app = create_app(
         status_path=tmp_path / "missing-status.json",
         duckdb_path=db_path,
@@ -1852,115 +1644,17 @@ def test_runtime_probabilities_adds_wave_signal_to_refresh_rows(tmp_path: Path) 
 
     assert response.status_code == 200
     row = response.json()["rows"][0]
-    assert row["cache_status"] == "REFRESH"
-    assert "wave_phase" in row
-    assert "wave_score" in row
-    assert "dynamic_edge" in row
-    assert "dynamic_required_edge" in row
-    assert row["wave_markers"] == ["P90"]
-
-
-def test_persisted_probability_rows_expose_ensemble_and_gate_diagnostics(
-    tmp_path: Path,
-) -> None:
-    db_path = tmp_path / "polymarket.duckdb"
-    state = _decision_state()
-    probability_input = ProbabilityInput.from_decision_state(state)
-    output = ProbabilityOutput(
-        state_id=probability_input.state_id,
-        asof_ts=probability_input.asof_ts,
-        p_finish=0.67,
-        p_no_touch=0.72,
-        z_path=0.81,
-        model_version="fixture-ensemble-v1",
-        seed=456,
-        diagnostics={
-            "ensemble": {
-                "mc_dispersion": 0.073,
-                "uncertainty_buffer": 0.046,
-                "path_diagnosis": ["FRAGILE", "NEAR_THRESHOLD"],
-                "effective_weights": {
-                    "lognormal_baseline": 0.55,
-                    "empirical_conditional": 0.30,
-                    "stress_overlay": 0.15,
-                },
-            },
-            "gate": {
-                "decision_hint": "WAIT",
-                "edge_after_costs": 0.019,
-                "required_edge": 0.086,
-                "path_risk_buffer": 0.021,
-                "reasons": ["NEAR_THRESHOLD"],
-            },
-            "generator": {
-                "snapshot_id": "weights-2026-06-05T20:00Z",
-                "source": "fixture_losses",
-            },
-            "simulation_preview": {
-                "path_count": 1000,
-                "steps": 20,
-                "start_price": 100.0,
-                "threshold": 100.0,
-                "comparison_operator": ">=",
-                "terminal_win_count": 670,
-                "no_touch_win_count": 720,
-                "sampled_paths": [
-                    {
-                        "index": 0,
-                        "terminal_win": True,
-                        "no_touch_win": True,
-                        "points": [100.0, 100.2, 100.5],
-                    }
-                ],
-                "terminal_histogram": [
-                    {"lower": 99.5, "upper": 100.0, "count": 330},
-                    {"lower": 100.0, "upper": 100.5, "count": 670},
-                ],
-            },
-        },
-    )
-    store = DuckDbIngestStore(db_path)
-    store.apply_schema()
-    store.upsert_contract_spec(state.contract)
-    store.upsert_asof_state_input(state)
-    store.insert_probability_output(
-        output_id="prob-ensemble",
-        probability_input=probability_input,
-        output=output,
-    )
-
-    row = latest_probability_output_rows(
-        duckdb_path=db_path,
-        limit=4,
-        max_state_age_seconds=600,
-        active_only=True,
-    )[0]
-
-    assert row["output_id"] == "prob-ensemble"
-    assert row["mc_dispersion"] == pytest.approx(0.073)
-    assert row["uncertainty_buffer"] == pytest.approx(0.046)
-    assert row["path_diagnosis"] == ["FRAGILE", "NEAR_THRESHOLD"]
-    assert row["effective_weights"]["stress_overlay"] == pytest.approx(0.15)
-    assert row["decision_hint"] == "WAIT"
-    assert row["edge_after_costs"] == pytest.approx(0.019)
-    assert row["required_edge"] == pytest.approx(0.086)
-    assert row["path_risk_buffer"] == pytest.approx(0.021)
-    assert row["gate_reasons"] == ["NEAR_THRESHOLD"]
-    assert row["generator_metadata"] == {
-        "snapshot_id": "weights-2026-06-05T20:00Z",
-        "source": "fixture_losses",
-    }
-    assert row["simulation_preview"]["path_count"] == 1000
-    assert row["simulation_preview"]["sampled_paths"][0]["points"] == [
-        100.0,
-        100.2,
-        100.5,
-    ]
-    assert row["simulation_preview"]["terminal_histogram"][1]["count"] == 670
+    assert row["output_id"] == "prob-fixture"
+    assert row["decision_hint"] == "PAPER_TRADE"
+    assert row["edge_after_costs"] == pytest.approx(0.074)
+    assert row["required_edge"] == pytest.approx(0.05)
+    assert row["skip_reasons"] == ["thin_book", "latency_guard"]
+    assert row["generator_summary"] == {"winner": "bootstrap", "count": 4}
+    assert row["execution_summary"] == {"target_size": 12.5, "spread": 0.03}
+    assert row["supervised_live"] == {"action": "DISABLED", "reason": "read_only"}
 
 
 def _contract() -> ContractSpec:
-    start_ts = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(minutes=3)
     return ContractSpec(
         contract_id="btc-market:UP",
         venue="polymarket",
@@ -1973,8 +1667,8 @@ def _contract() -> ContractSpec:
         threshold_type="start_price",
         threshold_price=None,
         comparison_operator=">=",
-        start_ts=start_ts,
-        expiry_ts=start_ts + timedelta(minutes=5),
+        start_ts=datetime(2026, 6, 3, 20, 0, tzinfo=timezone.utc),
+        expiry_ts=datetime(2026, 6, 3, 20, 5, tzinfo=timezone.utc),
         settlement_source_name="chainlink_data_streams",
         settlement_source_url="https://data.chain.link/streams/btc-usd",
         settlement_symbol="BTC/USD",
@@ -1989,7 +1683,7 @@ def _decision_state(
     data_quality_flags: tuple[DataQualityFlag, ...] = (),
 ) -> DecisionState:
     contract = _contract()
-    asof_ts = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(seconds=10)
+    asof_ts = datetime(2026, 6, 3, 20, 3, tzinfo=timezone.utc)
     return DecisionState(
         state_id="state-btc-up",
         asof_ts=asof_ts,
