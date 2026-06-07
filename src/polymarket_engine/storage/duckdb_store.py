@@ -16,6 +16,8 @@ from polymarket_engine.domain.contracts import ContractSpec
 from polymarket_engine.domain.contract_rules import NormalizedContractRule
 from polymarket_engine.domain.market_state import DecisionState, OrderBookObservation, PriceObservation
 from polymarket_engine.probability.ensemble_weights import DynamicWeightSet
+from polymarket_engine.probability.event_log import ProbabilityEventLogRow
+from polymarket_engine.probability.event_log import SimulationArtifactRow
 from polymarket_engine.probability.generator_contracts import DynamicWeightScope, GeneratorId
 from polymarket_engine.probability.schema import ProbabilityInput, ProbabilityOutput
 from polymarket_engine.research.generator_validation import generator_weight_snapshot_payload
@@ -857,6 +859,135 @@ class DuckDbIngestStore:
                 ],
             )
 
+    def insert_probability_event(self, row: ProbabilityEventLogRow) -> None:
+        with self._connection() as conn:
+            if (
+                conn.execute(
+                    """
+                    select 1
+                    from features.probability_event_log
+                    where event_id = ?
+                    limit 1
+                    """,
+                    [row.event_id],
+                ).fetchone()
+                is not None
+            ):
+                return
+            conn.execute(
+                """
+                insert into features.probability_event_log
+                (event_id, output_id, state_id, contract_id, market_slug, asset, side,
+                 start_ts, expiry_ts, asof_ts, probability_kind, backend, model_version,
+                 generator_version, cache_key, cache_status, p_finish, p_no_touch,
+                 z_path, sigma_tau, executable_price, spread, seconds_left, wave_phase,
+                 wave_score, path_count, seed, queue_ms, runtime_ms, state_to_status_ms,
+                 total_lag_ms, generated_at, valid_from, valid_until, diagnostics_json,
+                 created_at)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    row.event_id,
+                    row.output_id,
+                    row.state_id,
+                    row.contract_id,
+                    row.market_slug,
+                    row.asset,
+                    row.side,
+                    row.start_ts,
+                    row.expiry_ts,
+                    row.asof_ts,
+                    row.probability_kind,
+                    row.backend,
+                    row.model_version,
+                    row.generator_version,
+                    row.cache_key,
+                    row.cache_status,
+                    row.p_finish,
+                    row.p_no_touch,
+                    row.z_path,
+                    row.sigma_tau,
+                    row.executable_price,
+                    row.spread,
+                    row.seconds_left,
+                    row.wave_phase,
+                    row.wave_score,
+                    row.path_count,
+                    row.seed,
+                    row.queue_ms,
+                    row.runtime_ms,
+                    row.state_to_status_ms,
+                    row.total_lag_ms,
+                    row.generated_at,
+                    row.valid_from,
+                    row.valid_until,
+                    _strict_json(row.diagnostics),
+                    datetime.now(timezone.utc),
+                ],
+            )
+
+    def insert_simulation_artifact(
+        self,
+        *,
+        artifact_id: str,
+        output_id: str | None,
+        state_id: str,
+        asof_ts: datetime,
+        model_version: str,
+        backend: str,
+        path_count: int,
+        terminal_win_count: int,
+        no_touch_win_count: int,
+        terminal_price_quantiles: dict[str, float],
+        crossing_count_quantiles: dict[str, float],
+        sampled_paths: list[dict[str, object]],
+        diagnostics: dict[str, object],
+    ) -> None:
+        row = SimulationArtifactRow(
+            artifact_id=artifact_id,
+            output_id=output_id,
+            state_id=state_id,
+            asof_ts=asof_ts,
+            model_version=model_version,
+            backend=backend,
+            path_count=path_count,
+            terminal_win_count=terminal_win_count,
+            no_touch_win_count=no_touch_win_count,
+            terminal_price_quantiles=terminal_price_quantiles,
+            crossing_count_quantiles=crossing_count_quantiles,
+            sampled_paths=sampled_paths,
+            diagnostics=diagnostics,
+        )
+        payload = row.to_json_dict()
+        with self._connection() as conn:
+            conn.execute(
+                """
+                insert or replace into features.simulation_artifacts
+                (artifact_id, output_id, state_id, asof_ts, model_version, backend,
+                 path_count, terminal_win_count, no_touch_win_count,
+                 terminal_price_quantiles_json, crossing_count_quantiles_json,
+                 sampled_paths_json, diagnostics_json, created_at)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    row.artifact_id,
+                    row.output_id,
+                    row.state_id,
+                    row.asof_ts,
+                    row.model_version,
+                    row.backend,
+                    row.path_count,
+                    row.terminal_win_count,
+                    row.no_touch_win_count,
+                    _strict_json(payload["terminal_price_quantiles"]),
+                    _strict_json(payload["crossing_count_quantiles"]),
+                    _strict_json(payload["sampled_paths"]),
+                    _strict_json(row.diagnostics),
+                    datetime.now(timezone.utc),
+                ],
+            )
+
     def insert_generator_weight_snapshot(
         self,
         *,
@@ -961,7 +1092,15 @@ class DuckDbIngestStore:
                            count(*) as rows, max(created_at) as latest_ts
                     from features.probability_outputs
                     union all
-                    select 8 as sort_order, 'validation.market_outcome_history' as table_name,
+                    select 8 as sort_order, 'features.probability_event_log' as table_name,
+                           count(*) as rows, max(created_at) as latest_ts
+                    from features.probability_event_log
+                    union all
+                    select 9 as sort_order, 'features.simulation_artifacts' as table_name,
+                           count(*) as rows, max(created_at) as latest_ts
+                    from features.simulation_artifacts
+                    union all
+                    select 10 as sort_order, 'validation.market_outcome_history' as table_name,
                            count(*) as rows, max(updated_at) as latest_ts
                     from validation.market_outcome_history
                 ) as health_rows

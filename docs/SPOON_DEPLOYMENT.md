@@ -254,6 +254,28 @@ and `/var/lib/polymarket/live/probabilities.json` with NVIDIA CUDA/CuPy. Keep
 `POLYMARKET_ENABLE_RUNTIME_PROBABILITIES=0` unless intentionally moving Monte
 Carlo load back onto the CPU path.
 
+### Probability Persistence And Latency
+
+The live probability display can update from
+`/home/ender/polymarket-data/live/probabilities.json` before historical DuckDB
+tables are checkpointed. The normalizer remains the DuckDB writer owner.
+External GPU probability workers should write compact forward-only event rows to
+`/home/ender/polymarket-data/live/probability-events.jsonl`; the normalizer
+drains that file into `features.probability_event_log`. This avoids DuckDB
+writer-lock contention while preserving probability evidence for calibration.
+
+The status payload separates lanes with `lanes`, `rows`, and `nowcast_rows`.
+`NOWCAST` is the fast operator lane and must not be scored as Monte Carlo
+history. `MC` and `CACHE` rows remain the confirmed probability lanes. Check
+status freshness with:
+
+```bash
+python3 scripts/check_probability_latency.py \
+  --path /home/ender/polymarket-data/live/probabilities.json \
+  --max-total-lag-ms 1000 \
+  --require-lane NOWCAST
+```
+
 Live data changes should appear through the runtime API polling path. TUI code,
 layout, or parser changes require a fresh THEPC deploy and reopening the
 desktop shortcut so the new binary is loaded.

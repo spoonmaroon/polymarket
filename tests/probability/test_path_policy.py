@@ -5,6 +5,7 @@ import math
 import pytest
 
 from polymarket_engine.probability.path_policy import runtime_path_count_for_seconds_left
+from polymarket_engine.probability.path_policy import runtime_path_count_for_state
 from polymarket_engine.probability.path_policy import runtime_paths_per_seed_for_seconds_left
 from polymarket_engine.probability.path_policy import runtime_seed_count_for_seconds_left
 from polymarket_engine.probability.path_policy import runtime_total_path_count_for_seconds_left
@@ -70,3 +71,51 @@ def test_runtime_total_path_count_policy_rejects_non_finite_inputs(
 ) -> None:
     with pytest.raises(ValueError, match="seconds_left must be finite"):
         runtime_total_path_count_for_seconds_left(seconds_left)
+
+
+def test_runtime_path_count_for_state_keeps_calm_far_case_light() -> None:
+    assert (
+        runtime_path_count_for_state(
+            seconds_left=260.0,
+            z_path=2.1,
+            executable_price=0.18,
+            wave_phase="none",
+        )
+        == 30_000
+    )
+
+
+def test_runtime_path_count_for_state_increases_near_threshold() -> None:
+    assert (
+        runtime_path_count_for_state(
+            seconds_left=140.0,
+            z_path=0.18,
+            executable_price=0.51,
+            wave_phase="forming",
+        )
+        == 80_000
+    )
+
+
+def test_runtime_path_count_for_state_uses_high_count_for_breaking_wave() -> None:
+    assert (
+        runtime_path_count_for_state(
+            seconds_left=38.0,
+            z_path=0.72,
+            executable_price=0.94,
+            wave_phase="breaking",
+        )
+        == 250_000
+    )
+
+
+def test_runtime_path_count_for_state_caps_late_missed_wave() -> None:
+    assert (
+        runtime_path_count_for_state(
+            seconds_left=22.0,
+            z_path=2.8,
+            executable_price=0.985,
+            wave_phase="missed",
+        )
+        == 30_000
+    )
