@@ -341,6 +341,19 @@ def test_pc_deploy_installs_duckdb_ui_snapshot_launcher() -> None:
     assert "up -d --no-deps normalizer" in script
 
 
+def test_pc_deploy_escapes_duckdb_ui_js_templates_for_outer_heredoc() -> None:
+    script = (ROOT / "scripts" / "deploy_pc.sh").read_text(encoding="utf-8")
+    offending_lines = [
+        line
+        for line in script.splitlines()
+        if "${{" in line and "\\${{" not in line
+    ]
+
+    assert offending_lines == []
+    assert "\\${{offset + 1}}" in script
+    assert "\\${{encodeURIComponent(selected.schema)}}" in script
+
+
 def test_prebuilt_image_deploy_script_loads_images_and_uses_deploy_fast_path() -> None:
     script = (ROOT / "scripts" / "deploy_prebuilt_images.sh").read_text(
         encoding="utf-8"

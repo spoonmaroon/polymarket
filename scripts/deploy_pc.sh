@@ -437,8 +437,8 @@ class Viewer(BaseHTTPRequestHandler):
     async function loadRows() {{
       document.querySelectorAll('button.table').forEach(b => b.classList.toggle('active', selected && b.textContent === selected.name));
       document.getElementById('current').textContent = selected.schema + '.' + selected.name;
-      document.getElementById('meta').textContent = `rows ${{offset + 1}}-${{offset + limit}}`;
-      const url = `/api/table?schema=${{encodeURIComponent(selected.schema)}}&table=${{encodeURIComponent(selected.name)}}&limit=${{limit}}&offset=${{offset}}`;
+      document.getElementById('meta').textContent = `rows \${{offset + 1}}-\${{offset + limit}}`;
+      const url = `/api/table?schema=\${{encodeURIComponent(selected.schema)}}&table=\${{encodeURIComponent(selected.name)}}&limit=\${{limit}}&offset=\${{offset}}`;
       const payload = await getJson(url);
       const cols = payload.columns;
       const rows = payload.rows;
@@ -446,16 +446,16 @@ class Viewer(BaseHTTPRequestHandler):
         document.getElementById('rows').innerHTML = '<div class="empty">No rows at this offset.</div>';
         return;
       }}
-      let out = '<table><thead><tr>' + cols.map(c => `<th>${{esc(c)}}</th>`).join('') + '</tr></thead><tbody>';
+      let out = '<table><thead><tr>' + cols.map(c => `<th>\${{esc(c)}}</th>`).join('') + '</tr></thead><tbody>';
       for (const row of rows) {{
-        out += '<tr>' + cols.map(c => row[c] == null ? '<td class="null">NULL</td>' : `<td title="${{esc(row[c])}}">${{esc(row[c])}}</td>`).join('') + '</tr>';
+        out += '<tr>' + cols.map(c => row[c] == null ? '<td class="null">NULL</td>' : `<td title="\${{esc(row[c])}}">\${{esc(row[c])}}</td>`).join('') + '</tr>';
       }}
       out += '</tbody></table>';
       document.getElementById('rows').innerHTML = out;
     }}
     document.getElementById('prev').onclick = () => {{ if (selected) {{ offset = Math.max(0, offset - limit); loadRows(); }} }};
     document.getElementById('next').onclick = () => {{ if (selected) {{ offset += limit; loadRows(); }} }};
-    loadTables().catch(e => document.getElementById('tables').innerHTML = `<div class="empty">${{esc(e.message)}}</div>`);
+    loadTables().catch(e => document.getElementById('tables').innerHTML = `<div class="empty">\${{esc(e.message)}}</div>`);
   </script>
 </body>
 </html>"""
