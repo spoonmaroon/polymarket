@@ -250,6 +250,7 @@ def test_build_writes_probability_fragments_from_asof_price_history(
     asof_ts = datetime(2026, 6, 2, 6, 2, tzinfo=timezone.utc)
     _write_status(status_path, start_ts=start_ts, asof_ts=asof_ts)
     for offset_seconds, price in (
+        (-300, 69_930.0),
         (-120, 69_950.0),
         (-60, 69_980.0),
         (0, 70_000.0),
@@ -301,7 +302,7 @@ def test_build_writes_probability_fragments_from_asof_price_history(
     assert all(fragment.asset == "BTC" for fragment in payload.fragments)
     assert all(fragment.asof_ts <= asof_ts for fragment in payload.fragments)
     assert all(fragment.source_key == "polymarket_rtds_chainlink" for fragment in payload.fragments)
-    assert all(fragment.horizon_seconds >= 120 for fragment in payload.fragments)
+    assert all(fragment.horizon_seconds >= 300 for fragment in payload.fragments)
     assert all(min(fragment.prices) > 0 for fragment in payload.fragments)
     assert len(payload.fragments) <= 10
 

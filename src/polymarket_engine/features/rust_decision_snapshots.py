@@ -28,6 +28,7 @@ from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
 SETTLEMENT_SOURCE_KEY = "polymarket_rtds_chainlink"
 LIVE_HEALTH_FRESHNESS_MS = 30_000
 VOLATILITY_LOOKBACK_LIMIT = 180
+PROBABILITY_FRAGMENT_LOOKBACK_LIMIT = 420
 DEFAULT_FRAGMENT_MAX_ROWS = 250_000
 
 
@@ -253,7 +254,7 @@ def _probability_fragments_for_states(
             source_key=SETTLEMENT_SOURCE_KEY,
             symbol=state.contract.settlement_symbol,
             asof_ts=state.asof_ts,
-            limit=VOLATILITY_LOOKBACK_LIMIT,
+            limit=PROBABILITY_FRAGMENT_LOOKBACK_LIMIT,
         )
         if len(history) < 2:
             continue
