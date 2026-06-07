@@ -102,7 +102,7 @@ def test_generator_result_defensively_freezes_diagnostics() -> None:
     ),
 )
 def test_generator_result_rejects_non_json_diagnostics(
-    invalid_diagnostics: object,
+    invalid_diagnostics: Any,
 ) -> None:
     with pytest.raises(ValueError, match="diagnostics"):
         GeneratorResult(
@@ -212,7 +212,7 @@ def test_generator_run_defensively_freezes_conditioning_and_diagnostics() -> Non
 )
 def test_generator_run_rejects_non_json_conditioning_or_diagnostics(
     field_name: str,
-    invalid_value: object,
+    invalid_value: Any,
 ) -> None:
     values: dict[str, Any] = {
         "generator_id": GeneratorId.BLOCK_BOOTSTRAP,
@@ -314,7 +314,7 @@ def test_historical_validation_window_can_describe_post_asof_label_period() -> N
 )
 def test_historical_validation_window_rejects_invalid_fields(
     field_name: str,
-    invalid_value: object,
+    invalid_value: Any,
 ) -> None:
     values: dict[str, Any] = {
         "asof_ts": datetime(2026, 6, 5, 16, 0, tzinfo=timezone.utc),

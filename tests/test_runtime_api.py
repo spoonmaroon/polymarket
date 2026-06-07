@@ -1445,6 +1445,69 @@ def test_runtime_probabilities_adds_wave_signal_to_grid_rows(
     assert "EDGE_OK" in row["wave_reasons"]
 
 
+def test_runtime_probabilities_adds_wave_signal_to_grid_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "polymarket.duckdb"
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    state = replace(_decision_state(), best_bid=0.89, best_ask=0.90, executable_price=0.90)
+    probability_input = ProbabilityInput.from_decision_state(state)
+    store.upsert_contract_spec(state.contract)
+    store.upsert_asof_state_input(state)
+    entry = grid_entry_from_probability_input(
+        probability_input,
+        market_slug=state.contract.slug,
+        start_ts=state.contract.start_ts,
+        expiry_ts=state.contract.expiry_ts,
+        p_finish=0.97,
+        p_no_touch=0.86,
+        u_gen=0.046,
+        path_count=10_000,
+        seed=20260605,
+        volatility_regime=state.volatility_regime,
+        training_cutoff_ts=state.asof_ts,
+        max_event_ts=state.asof_ts,
+        max_observed_ts=state.asof_ts,
+        generated_at=datetime.now(UTC),
+        valid_from=datetime.now(UTC) - timedelta(seconds=1),
+        valid_until=datetime.now(UTC) + timedelta(seconds=30),
+        diagnostics={
+            "gate": {
+                "edge_after_costs": 0.045,
+                "required_edge": 0.030,
+                "decision_hint": "TRADE_CANDIDATE",
+            }
+        },
+    )
+    upsert_probability_grid_entry(store, entry)
+
+    def fail_compute(*_: object, **__: object) -> NoReturn:
+        raise AssertionError("probability API should use safe probability grid cache")
+
+    monkeypatch.setattr(
+        "polymarket_engine.probability.runtime._compute_and_persist_rows",
+        fail_compute,
+    )
+    app = create_app(
+        status_path=tmp_path / "missing-status.json",
+        duckdb_path=db_path,
+        enable_runtime_probabilities=True,
+    )
+
+    response = TestClient(app).get("/api/runtime/probabilities?limit=4")
+
+    assert response.status_code == 200
+    row = response.json()["rows"][0]
+    assert row["wave_phase"] == "breaking"
+    assert row["wave_markers"] == ["P90"]
+    assert row["wave_score"] == pytest.approx(1.0)
+    assert row["dynamic_edge"] == pytest.approx(0.045)
+    assert row["dynamic_required_edge"] == pytest.approx(0.030)
+    assert "EDGE_OK" in row["wave_reasons"]
+
+
 def test_runtime_probabilities_returns_empty_envelope_for_missing_duckdb(
     tmp_path: Path,
 ) -> None:

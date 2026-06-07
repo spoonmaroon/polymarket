@@ -789,7 +789,8 @@ svg {
   color: var(--text-muted, #9ba4a9);
 }
 
-.gate-pill {
+.gate-pill,
+.chip {
   display: inline-flex;
   align-items: center;
   min-height: 22px;
@@ -884,6 +885,57 @@ svg {
 .wave-none {
   border-color: #3a4147;
   background: #1d2226;
+}
+
+.weight-bars {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.weight-row {
+  display: grid;
+  gap: 6px;
+}
+
+.weight-label {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: #d9ded9;
+  font-size: 12px;
+  font-weight: 740;
+}
+
+.weight-label span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.weight-label strong {
+  color: #a6e8df;
+}
+
+.bar-track {
+  height: 8px;
+  overflow: hidden;
+  border: 1px solid #31393d;
+  border-radius: 999px;
+  background: #101214;
+}
+
+.bar-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #37c0ac, #d5a853);
+}
+
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
 }
 
 .volatility-strip {

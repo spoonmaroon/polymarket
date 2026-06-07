@@ -1083,6 +1083,17 @@ function MonteCarloInputsPanel({
               ["wave_reasons", compactList(row.wave_reasons)],
             ]}
           />
+          <WeightBars weights={row.effective_weights ?? {}} />
+          <ChipRow
+            values={[
+              ...unknownList(row.wave_reasons),
+              ...unknownList(row.wave_markers),
+              ...unknownList(row.gate_reasons),
+              ...unknownList(row.path_diagnosis),
+              ...unknownList(row.flags),
+            ]}
+            fallback="CLEAR"
+          />
         </section>
       </div>
       <section className="mc-input-section cache-key-section">
@@ -1340,6 +1351,30 @@ function Metric({
   );
 }
 
+function WeightBars({ weights }: { weights: Record<string, number> }) {
+  const entries = Object.entries(weights)
+    .filter(([, value]) => Number.isFinite(value))
+    .sort(([left], [right]) => left.localeCompare(right));
+  if (entries.length === 0) {
+    return <p className="quiet">No generator weights attached.</p>;
+  }
+  return (
+    <div className="weight-bars">
+      {entries.map(([name, value]) => (
+        <div className="weight-row" key={name}>
+          <div className="weight-label">
+            <span>{shortWeightLabel(name)}</span>
+            <strong>{Math.round(value * 100)}%</strong>
+          </div>
+          <div className="bar-track" aria-hidden="true">
+            <div className="bar-fill" style={{ width: `${clamp01(value) * 100}%` }} />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function GatePill({ value }: { value?: string | null }) {
   const label = formatGate(value);
   return <span className={`gate-pill gate-${gateTone(label)}`}>{label}</span>;
@@ -1355,6 +1390,19 @@ function WaveBadge({ row }: { row: ProbabilityRow }) {
       <strong>{score}</strong>
       {markers ? <small>{markers}</small> : null}
     </span>
+  );
+}
+
+function ChipRow({ values, fallback }: { values: unknown[]; fallback: string }) {
+  const chips = values.map(compactValue).filter(Boolean);
+  return (
+    <div className="chip-row">
+      {(chips.length > 0 ? chips : [fallback]).map((value) => (
+        <span className="chip" key={value}>
+          {sanitizeOperatorLabel(value)}
+        </span>
+      ))}
+    </div>
   );
 }
 
@@ -2465,6 +2513,19 @@ function statusLabel(status: ApiState<unknown>["status"]) {
     return "ERROR";
   }
   return "OK";
+}
+
+function shortWeightLabel(value: string) {
+  if (value === "empirical_conditional") {
+    return "empirical";
+  }
+  if (value === "lognormal_baseline") {
+    return "lognormal";
+  }
+  if (value === "stress_overlay") {
+    return "stress";
+  }
+  return value.replaceAll("_", " ");
 }
 
 function clamp01(value: number) {

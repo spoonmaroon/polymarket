@@ -1229,7 +1229,6 @@ def _apply_wave_signal(row: dict[str, Any], probability_input: ProbabilityInput)
         )
     )
 
-
 def _with_probability_aliases(row: dict[str, Any]) -> dict[str, Any]:
     if row.get("p_hat") is None and row.get("p_finish") is not None:
         row["p_hat"] = row["p_finish"]
