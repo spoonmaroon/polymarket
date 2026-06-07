@@ -187,7 +187,7 @@ def test_runtime_api_service_is_deployed_with_engine_compose() -> None:
     assert "MKL_NUM_THREADS" in compose
     assert "NUMEXPR_NUM_THREADS" in compose
     assert "cpus: \"${POLYMARKET_GPU_WORKER_CPUS:-1.0}\"" in compose
-    assert "mem_limit: \"${POLYMARKET_GPU_WORKER_MEM_LIMIT:-768m}\"" in compose
+    assert "mem_limit: \"${POLYMARKET_GPU_WORKER_MEM_LIMIT:-1536m}\"" in compose
     assert "${POLYMARKET_API_PORT:-8000}:8000" in compose
     assert "POLYMARKET_API_PORT=8000" in env_example
     assert "POLYMARKET_ENABLE_CONTAINER_STATUS=1" in env_example
@@ -241,7 +241,7 @@ def test_compose_and_env_support_prebuilt_image_overrides() -> None:
     assert "POLYMARKET_PROBABILITY_CPU_TARGET_PERCENT=20.0" in env_example
     assert "POLYMARKET_PROBABILITY_MAX_RSS_MB=512" in env_example
     assert "POLYMARKET_PROBABILITY_MAX_CYCLE_RUNTIME_MS=750" in env_example
-    assert "POLYMARKET_PROBABILITY_MAX_TOTAL_PATHS=80000" in env_example
+    assert "POLYMARKET_PROBABILITY_MAX_TOTAL_PATHS=40000" in env_example
     assert "POLYMARKET_PROBABILITY_SUSTAINED_BREACH_CYCLES=3" in env_example
     assert "POLYMARKET_CUDA_PROBABILITY_MAX_INPUT_SNAPSHOT_AGE_SECONDS=30.0" in env_example
     assert (
@@ -424,8 +424,10 @@ def test_pc_deploy_script_runs_prebuilt_deploy_gate_with_pc_cadence() -> None:
 
     assert 'PC_NORMALIZER_INTERVAL_SECONDS="${PC_NORMALIZER_INTERVAL_SECONDS:-0.1}"' in script
     assert 'PC_REST_BACKUP_INTERVAL_MS="${PC_REST_BACKUP_INTERVAL_MS:-1000}"' in script
-    assert 'PC_PROBABILITY_MAX_TOTAL_PATHS="${PC_PROBABILITY_MAX_TOTAL_PATHS:-80000}"' in script
+    assert 'PC_PROBABILITY_MAX_TOTAL_PATHS="${PC_PROBABILITY_MAX_TOTAL_PATHS:-40000}"' in script
+    assert 'PC_GPU_WORKER_MEM_LIMIT="${PC_GPU_WORKER_MEM_LIMIT:-1536m}"' in script
     assert 'PC_PROBABILITY_MAX_TOTAL_PATHS=$(shell_quote "$PC_PROBABILITY_MAX_TOTAL_PATHS")' in script
+    assert 'PC_GPU_WORKER_MEM_LIMIT=$(shell_quote "$PC_GPU_WORKER_MEM_LIMIT")' in script
     assert "export POLYMARKET_DEPLOY_USE_PREBUILT=1" in script
     assert 'POLYMARKET_DEPLOY_REF="\\$FULL_SHA"' in script
     assert 'POLYMARKET_EXPECTED_DEPLOY_SHA="\\$FULL_SHA"' in script
@@ -443,6 +445,7 @@ def test_pc_deploy_script_runs_prebuilt_deploy_gate_with_pc_cadence() -> None:
         'set_env POLYMARKET_PROBABILITY_MAX_TOTAL_PATHS "\\$PC_PROBABILITY_MAX_TOTAL_PATHS"'
         in script
     )
+    assert 'set_env POLYMARKET_GPU_WORKER_MEM_LIMIT "\\$PC_GPU_WORKER_MEM_LIMIT"' in script
     assert "set_env POLYMARKET_ENABLE_RUNTIME_PROBABILITIES 1 deploy/collector/.env" in script
     assert "set_env POLYMARKET_ALLOW_RUNTIME_PROBABILITY_COMPUTE 0 deploy/collector/.env" in script
     assert 'POLYMARKET_REST_BACKUP_INTERVAL_MS="\\$PC_REST_BACKUP_INTERVAL_MS"' in script

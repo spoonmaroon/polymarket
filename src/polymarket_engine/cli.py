@@ -140,7 +140,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     cuda_probability_worker.add_argument("--cpu-target-percent", type=float, default=20.0)
     cuda_probability_worker.add_argument("--max-rss-mb", type=int, default=512)
     cuda_probability_worker.add_argument("--max-cycle-runtime-ms", type=int, default=750)
-    cuda_probability_worker.add_argument("--max-total-paths", type=int, default=80_000)
+    cuda_probability_worker.add_argument("--max-total-paths", type=int, default=40_000)
     cuda_probability_worker.add_argument("--sustained-breach-cycles", type=int, default=3)
     cuda_probability_worker.add_argument("--fragment-max-rows", type=int, default=250_000)
     cuda_probability_worker.add_argument("--cpu-threads", type=int, default=1)
