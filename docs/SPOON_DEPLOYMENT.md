@@ -41,6 +41,8 @@ BTC/ETH current and next 5m windows.
 On THEPC, the current normalizer cadence is
 `POLYMARKET_NORMALIZER_INTERVAL_SECONDS=0.1`. The older spoon sidecar used
 `POLYMARKET_NORMALIZER_INTERVAL_SECONDS=0.25` as a home-server CPU compromise.
+If CPU pressure is too high on a smaller host, revisit
+`POLYMARKET_NORMALIZER_INTERVAL_SECONDS=1.0` as the conservative fallback.
 After VPS migration, re-test the normalizer on the new host and keep or return
 to `POLYMARKET_NORMALIZER_INTERVAL_SECONDS=0.1` only if CPU headroom, DuckDB
 freshness, and status latency stay healthy.
@@ -59,6 +61,8 @@ WSL environment, runs the existing prebuilt-image deploy gate, and finishes with
 the collector status check. The same deploy also installs the matching
 `polymarket-cockpit-tui` binary to `/home/ender/bin/polymarket-cockpit-tui`, so
 the Windows desktop shortcut opens the TUI for the deployed commit.
+`./scripts/deploy_pc.sh` is the only supported CUDA runtime deployment path; the
+generic spoon deploy path does not start gpu-probability-worker by default.
 
 ```bash
 cd /Users/goon/polymarket
@@ -374,6 +378,23 @@ probability outputs, probability events, and the browser/TUI API surface. This
 is active-active because both hosts run useful services at the same time; it is
 not multi-writer.
 
+Spoon CPU authority is the default deploy role. `scripts/deploy.sh` uses
+`POLYMARKET_DEPLOY_ROLE=spoon-cpu-authority` unless an operator explicitly sets
+`POLYMARKET_DEPLOY_ROLE=full`.
+
+THEPC GPU/API authority is the default PC deploy role. `scripts/deploy_pc.sh`
+uses `PC_DEPLOY_ROLE=thepc-gpu-api`, starts only `api` and
+`gpu-probability-worker`, stops THEPC `collector`, `normalizer`, and
+`outcome-refresh`, and installs the artifact sync loop that pulls Spoon-owned
+live artifacts.
+
+THEPC probability CPU control is a soft CPU target, not a hard Docker CPU cap.
+The default is `POLYMARKET_PROBABILITY_CPU_TARGET_PERCENT=15.0` with
+`POLYMARKET_PROBABILITY_CPU_SOFT_MAX_PERCENT=20.0`. The worker measures
+per-cycle process CPU and adapts its next total path budget between
+`POLYMARKET_PROBABILITY_MIN_TOTAL_PATHS=4000` and
+`POLYMARKET_PROBABILITY_MAX_TOTAL_PATHS=40000`.
+
 The manifest in `deploy/cluster/cluster.local.example.json` is the source of
 truth for ownership and mirrors:
 
@@ -391,9 +412,15 @@ deploys require SHA-tagged image artifacts under `dist/docker`, including
 `polymarket-cockpit-tui-<sha>`. In the default `remote-build` mode, the script
 ships a git bundle to THEPC and builds those images inside WSL.
 
-Use the compose overrides to keep each host in its lane:
+Use the deploy defaults or compose overrides to keep each host in its lane:
 
 ```bash
+# Default Spoon CPU authority deploy.
+POLYMARKET_DEPLOY_ROLE=spoon-cpu-authority ./scripts/deploy.sh
+
+# Default THEPC GPU/API authority deploy.
+PC_DEPLOY_ROLE=thepc-gpu-api ./scripts/deploy_pc.sh
+
 # Spoon CPU authority: no local GPU probability worker or API.
 docker compose --env-file deploy/collector/.env \
   -f deploy/collector/docker-compose.yml \

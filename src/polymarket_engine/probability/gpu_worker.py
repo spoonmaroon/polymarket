@@ -4,7 +4,7 @@ import hashlib
 import json
 import time
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -15,6 +15,8 @@ from polymarket_engine.probability.cuda_monte_carlo import (
     run_cuda_monte_carlo_batch as _run_cuda_monte_carlo_batch_impl,
 )
 from polymarket_engine.probability.cuda_monte_carlo import run_cuda_monte_carlo_multi_seed
+from polymarket_engine.probability.cpu_budget import adjust_total_path_budget
+from polymarket_engine.probability.cpu_budget import cycle_cpu_percent
 from polymarket_engine.probability.ensemble_runtime import (
     run_four_generator_ensemble,
 )
@@ -52,10 +54,12 @@ DEFAULT_INPUT_SNAPSHOT_MAX_AGE_SECONDS = 30.0
 PROBABILITY_INPUTS_SCHEMA_VERSION = "polymarket-probability-inputs-v1"
 DEFAULT_WORKER_MODE = "ensemble"
 DEFAULT_GENERATOR_POLICY = "all_four_every_cycle"
-DEFAULT_CPU_TARGET_PERCENT = 20.0
+DEFAULT_CPU_TARGET_PERCENT = 15.0
+DEFAULT_CPU_SOFT_MAX_PERCENT = 20.0
 DEFAULT_MAX_RSS_MB = 512
 DEFAULT_MAX_CYCLE_RUNTIME_MS = 750
 DEFAULT_MAX_TOTAL_PATHS = 40_000
+DEFAULT_MIN_TOTAL_PATHS = 4_000
 DEFAULT_SUSTAINED_BREACH_CYCLES = 3
 DEFAULT_FRAGMENT_MAX_ROWS = 250_000
 DEFAULT_MIN_FRAGMENT_COUNT = 2
@@ -67,9 +71,12 @@ class ProbabilityWorkerBudget:
     worker_mode: str = DEFAULT_WORKER_MODE
     generator_policy: str = DEFAULT_GENERATOR_POLICY
     cpu_target_percent: float = DEFAULT_CPU_TARGET_PERCENT
+    cpu_soft_max_percent: float = DEFAULT_CPU_SOFT_MAX_PERCENT
     max_rss_mb: int = DEFAULT_MAX_RSS_MB
     max_cycle_runtime_ms: int = DEFAULT_MAX_CYCLE_RUNTIME_MS
     max_total_paths: int = DEFAULT_MAX_TOTAL_PATHS
+    configured_max_total_paths: int | None = None
+    min_total_paths: int = DEFAULT_MIN_TOTAL_PATHS
     sustained_breach_cycles: int = DEFAULT_SUSTAINED_BREACH_CYCLES
     fragment_max_rows: int = DEFAULT_FRAGMENT_MAX_ROWS
     cpu_threads: int = DEFAULT_CPU_THREADS
@@ -81,12 +88,21 @@ class ProbabilityWorkerBudget:
             raise ValueError("generator_policy must not be empty")
         if self.cpu_target_percent <= 0:
             raise ValueError("cpu_target_percent must be positive")
+        if self.cpu_soft_max_percent < self.cpu_target_percent:
+            raise ValueError("cpu_soft_max_percent must be >= cpu_target_percent")
         if self.max_rss_mb <= 0:
             raise ValueError("max_rss_mb must be positive")
         if self.max_cycle_runtime_ms <= 0:
             raise ValueError("max_cycle_runtime_ms must be positive")
         if self.max_total_paths <= 0:
             raise ValueError("max_total_paths must be positive")
+        if self.configured_max_total_paths is not None:
+            if self.configured_max_total_paths <= 0:
+                raise ValueError("configured_max_total_paths must be positive")
+            if self.configured_max_total_paths < self.max_total_paths:
+                raise ValueError("configured_max_total_paths must be >= max_total_paths")
+        if self.min_total_paths <= 0 or self.min_total_paths > self.max_total_paths:
+            raise ValueError("min_total_paths must be positive and <= max_total_paths")
         if self.sustained_breach_cycles <= 0:
             raise ValueError("sustained_breach_cycles must be positive")
         if self.fragment_max_rows <= 0:
@@ -141,6 +157,7 @@ def run_cuda_probability_worker_cycle(
         raise ValueError("valid_seconds must be positive")
 
     cycle_started_monotonic = time.monotonic()
+    cycle_started_process = time.process_time()
     budget = budget or ProbabilityWorkerBudget()
     requested_total_paths = 0
     allocated_total_paths = 0
@@ -194,6 +211,7 @@ def run_cuda_probability_worker_cycle(
                 budget=_budget_diagnostics(
                     budget=budget,
                     cycle_started_monotonic=cycle_started_monotonic,
+                    cycle_started_process=cycle_started_process,
                     requested_total_paths=requested_total_paths,
                     allocated_total_paths=allocated_total_paths,
                     clamped_inputs=clamped_inputs,
@@ -215,6 +233,7 @@ def run_cuda_probability_worker_cycle(
             budget=_budget_diagnostics(
                 budget=budget,
                 cycle_started_monotonic=cycle_started_monotonic,
+                cycle_started_process=cycle_started_process,
                 requested_total_paths=requested_total_paths,
                 allocated_total_paths=allocated_total_paths,
                 clamped_inputs=clamped_inputs,
@@ -258,6 +277,7 @@ def run_cuda_probability_worker_cycle(
                 budget=_budget_diagnostics(
                     budget=budget,
                     cycle_started_monotonic=cycle_started_monotonic,
+                    cycle_started_process=cycle_started_process,
                     requested_total_paths=requested_total_paths,
                     allocated_total_paths=allocated_total_paths,
                     clamped_inputs=clamped_inputs,
@@ -304,6 +324,7 @@ def run_cuda_probability_worker_cycle(
                 budget=_budget_diagnostics(
                     budget=budget,
                     cycle_started_monotonic=cycle_started_monotonic,
+                    cycle_started_process=cycle_started_process,
                     requested_total_paths=requested_total_paths,
                     allocated_total_paths=allocated_total_paths,
                     clamped_inputs=clamped_inputs,
@@ -417,6 +438,7 @@ def run_cuda_probability_worker_cycle(
         budget=_budget_diagnostics(
             budget=budget,
             cycle_started_monotonic=cycle_started_monotonic,
+            cycle_started_process=cycle_started_process,
             requested_total_paths=requested_total_paths,
             allocated_total_paths=allocated_total_paths,
             clamped_inputs=clamped_inputs,
@@ -520,10 +542,17 @@ def run_cuda_probability_worker_loop(
     if snapshot_poll_seconds <= 0:
         raise ValueError("snapshot_poll_seconds must be positive")
     budget = budget or ProbabilityWorkerBudget()
+    effective_max_total_paths = budget.max_total_paths
     last_snapshot_fingerprint = _snapshot_fingerprint(probability_inputs_path)
     while True:
         generated_at = datetime.now(timezone.utc)
         cycle_started_monotonic = time.monotonic()
+        cycle_started_process = time.process_time()
+        loop_budget = replace(
+            budget,
+            max_total_paths=effective_max_total_paths,
+            configured_max_total_paths=budget.max_total_paths,
+        )
         try:
             payload = run_cuda_probability_worker_cycle(
                 duckdb_path=duckdb_path,
@@ -535,7 +564,7 @@ def run_cuda_probability_worker_loop(
                 max_state_age_seconds=max_state_age_seconds,
                 max_input_snapshot_age_seconds=max_input_snapshot_age_seconds,
                 probability_event_path=probability_event_path,
-                budget=budget,
+                budget=loop_budget,
             )
         except duckdb.Error as exc:
             payload = _status_payload(
@@ -547,8 +576,9 @@ def run_cuda_probability_worker_loop(
                 rows_written=0,
                 last_good_rows=_read_status_rows(probability_status_path),
                 budget=_budget_diagnostics(
-                    budget=budget,
+                    budget=loop_budget,
                     cycle_started_monotonic=cycle_started_monotonic,
+                    cycle_started_process=cycle_started_process,
                     requested_total_paths=0,
                     allocated_total_paths=0,
                     clamped_inputs=0,
@@ -556,6 +586,29 @@ def run_cuda_probability_worker_loop(
                     path_budget_per_input=0,
                 ),
             )
+            _write_status(probability_status_path, payload)
+        budget_payload = payload.get("budget")
+        cpu_percent: float | None = None
+        if isinstance(budget_payload, Mapping):
+            allocated_paths = int(budget_payload.get("allocated_total_paths") or 0)
+            raw_cpu_percent = budget_payload.get("cpu_percent")
+            if allocated_paths > 0 and raw_cpu_percent is not None:
+                cpu_percent = float(raw_cpu_percent)
+        adjustment = adjust_total_path_budget(
+            current_total_paths=effective_max_total_paths,
+            configured_max_total_paths=budget.max_total_paths,
+            min_total_paths=budget.min_total_paths,
+            cpu_percent=cpu_percent,
+            target_percent=budget.cpu_target_percent,
+            soft_max_percent=budget.cpu_soft_max_percent,
+        )
+        effective_max_total_paths = adjustment.next_total_paths
+        if isinstance(budget_payload, Mapping):
+            payload["budget"] = {
+                **dict(budget_payload),
+                "next_max_total_paths": adjustment.next_total_paths,
+                "cpu_budget_adjustment_reason": adjustment.reason,
+            }
             _write_status(probability_status_path, payload)
         print(json.dumps(payload, sort_keys=True, separators=(",", ":")), flush=True)
         last_snapshot_fingerprint = _sleep_until_next_refresh(
@@ -877,20 +930,38 @@ def _budget_diagnostics(
     *,
     budget: ProbabilityWorkerBudget,
     cycle_started_monotonic: float,
+    cycle_started_process: float,
     requested_total_paths: int,
     allocated_total_paths: int,
     clamped_inputs: int,
     mc_input_skipped: int,
     path_budget_per_input: int,
 ) -> dict[str, Any]:
-    elapsed_ms = round((time.monotonic() - cycle_started_monotonic) * 1000.0, 3)
+    end_monotonic = time.monotonic()
+    end_process = time.process_time()
+    elapsed_ms = round((end_monotonic - cycle_started_monotonic) * 1000.0, 3)
+    cpu_percent = cycle_cpu_percent(
+        start_process_seconds=cycle_started_process,
+        end_process_seconds=end_process,
+        start_monotonic_seconds=cycle_started_monotonic,
+        end_monotonic_seconds=end_monotonic,
+    )
+    configured_max_total_paths = (
+        budget.configured_max_total_paths
+        if budget.configured_max_total_paths is not None
+        else budget.max_total_paths
+    )
     return {
         "worker_mode": budget.worker_mode,
         "generator_policy": budget.generator_policy,
         "cpu_target_percent": budget.cpu_target_percent,
+        "cpu_soft_max_percent": budget.cpu_soft_max_percent,
+        "cpu_percent": cpu_percent,
         "max_rss_mb": budget.max_rss_mb,
         "max_cycle_runtime_ms": budget.max_cycle_runtime_ms,
-        "max_total_paths": budget.max_total_paths,
+        "max_total_paths": configured_max_total_paths,
+        "effective_max_total_paths": budget.max_total_paths,
+        "min_total_paths": budget.min_total_paths,
         "sustained_breach_cycles": budget.sustained_breach_cycles,
         "fragment_max_rows": budget.fragment_max_rows,
         "cpu_threads": budget.cpu_threads,

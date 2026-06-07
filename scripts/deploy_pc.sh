@@ -15,7 +15,11 @@ PC_DIST_DIR="${PC_DIST_DIR:-/home/ender/polymarket-image-artifacts}"
 PC_BIN_DIR="${PC_BIN_DIR:-/home/ender/bin}"
 PC_NORMALIZER_INTERVAL_SECONDS="${PC_NORMALIZER_INTERVAL_SECONDS:-0.1}"
 PC_REST_BACKUP_INTERVAL_MS="${PC_REST_BACKUP_INTERVAL_MS:-1000}"
+PC_DEPLOY_ROLE="${PC_DEPLOY_ROLE:-thepc-gpu-api}"
+PC_PROBABILITY_CPU_TARGET_PERCENT="${PC_PROBABILITY_CPU_TARGET_PERCENT:-15.0}"
+PC_PROBABILITY_CPU_SOFT_MAX_PERCENT="${PC_PROBABILITY_CPU_SOFT_MAX_PERCENT:-20.0}"
 PC_PROBABILITY_MAX_TOTAL_PATHS="${PC_PROBABILITY_MAX_TOTAL_PATHS:-40000}"
+PC_PROBABILITY_MIN_TOTAL_PATHS="${PC_PROBABILITY_MIN_TOTAL_PATHS:-4000}"
 PC_GPU_WORKER_MEM_LIMIT="${PC_GPU_WORKER_MEM_LIMIT:-1536m}"
 PC_API_PORT="${PC_API_PORT:-8000}"
 PC_DEPLOY_MODE="${PC_DEPLOY_MODE:-remote-build}"
@@ -148,7 +152,11 @@ PC_BIN_DIR=$(shell_quote "$PC_BIN_DIR")
 PC_WSL_DISTRO=$(shell_quote "$PC_WSL_DISTRO")
 PC_NORMALIZER_INTERVAL_SECONDS=$(shell_quote "$PC_NORMALIZER_INTERVAL_SECONDS")
 PC_REST_BACKUP_INTERVAL_MS=$(shell_quote "$PC_REST_BACKUP_INTERVAL_MS")
+PC_DEPLOY_ROLE=$(shell_quote "$PC_DEPLOY_ROLE")
+PC_PROBABILITY_CPU_TARGET_PERCENT=$(shell_quote "$PC_PROBABILITY_CPU_TARGET_PERCENT")
+PC_PROBABILITY_CPU_SOFT_MAX_PERCENT=$(shell_quote "$PC_PROBABILITY_CPU_SOFT_MAX_PERCENT")
 PC_PROBABILITY_MAX_TOTAL_PATHS=$(shell_quote "$PC_PROBABILITY_MAX_TOTAL_PATHS")
+PC_PROBABILITY_MIN_TOTAL_PATHS=$(shell_quote "$PC_PROBABILITY_MIN_TOTAL_PATHS")
 PC_GPU_WORKER_MEM_LIMIT=$(shell_quote "$PC_GPU_WORKER_MEM_LIMIT")
 PC_API_PORT=$(shell_quote "$PC_API_PORT")
 PC_DEPLOY_MODE=$(shell_quote "$PC_DEPLOY_MODE")
@@ -212,7 +220,10 @@ set_env POLYMARKET_GID "\$(id -g)" deploy/collector/.env
 set_env POLYMARKET_DATA_DIR "\$PC_DATA_DIR" deploy/collector/.env
 set_env POLYMARKET_NORMALIZER_INTERVAL_SECONDS "\$PC_NORMALIZER_INTERVAL_SECONDS" deploy/collector/.env
 set_env POLYMARKET_REST_BACKUP_INTERVAL_MS "\$PC_REST_BACKUP_INTERVAL_MS" deploy/collector/.env
+set_env POLYMARKET_PROBABILITY_CPU_TARGET_PERCENT "\$PC_PROBABILITY_CPU_TARGET_PERCENT" deploy/collector/.env
+set_env POLYMARKET_PROBABILITY_CPU_SOFT_MAX_PERCENT "\$PC_PROBABILITY_CPU_SOFT_MAX_PERCENT" deploy/collector/.env
 set_env POLYMARKET_PROBABILITY_MAX_TOTAL_PATHS "\$PC_PROBABILITY_MAX_TOTAL_PATHS" deploy/collector/.env
+set_env POLYMARKET_PROBABILITY_MIN_TOTAL_PATHS "\$PC_PROBABILITY_MIN_TOTAL_PATHS" deploy/collector/.env
 set_env POLYMARKET_GPU_WORKER_MEM_LIMIT "\$PC_GPU_WORKER_MEM_LIMIT" deploy/collector/.env
 set_env POLYMARKET_API_PORT "\$PC_API_PORT" deploy/collector/.env
 set_env POLYMARKET_ENABLE_RUNTIME_PROBABILITIES 1 deploy/collector/.env
@@ -251,8 +262,8 @@ install -m 755 "\$TUI_BIN" "\$PC_BIN_DIR/polymarket-cockpit-tui"
   printf '%s\n' "  echo 'Runtime already live.'"
   printf '%s\n' 'else'
   printf '%s\n' "  echo 'Runtime not live; starting containers...'"
-  printf '%s\n' '  docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml stop outcome-refresh >/dev/null 2>&1 || true'
-  printf '%s\n' '  docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml up -d --no-recreate collector normalizer api gpu-probability-worker >/dev/null 2>&1 || true'
+  printf '%s\n' '  docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml -f deploy/collector/docker-compose.thepc-gpu-api.yml stop collector normalizer outcome-refresh >/dev/null 2>&1 || true'
+  printf '%s\n' '  docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml -f deploy/collector/docker-compose.thepc-gpu-api.yml up -d --no-recreate api gpu-probability-worker >/dev/null 2>&1 || true'
   printf '%s\n' 'fi'
   printf '%s\n' "echo 'Waiting for runtime API and live market rows...'"
   printf '%s\n' 'for _ in \$(seq 1 45); do'
@@ -308,6 +319,7 @@ LOG_DIR="\$DATA_DIR/logs"
 LOG_FILE="\$LOG_DIR/duckdb-ui.log"
 VIEWER_SCRIPT="\$SNAPSHOT_DIR/polymarket_duckdb_viewer.py"
 DUCKDB_BIN="\${DUCKDB_BIN:-\$HOME/.duckdb/cli/latest/duckdb}"
+PC_DEPLOY_ROLE="\${PC_DEPLOY_ROLE:-thepc-gpu-api}"
 
 mkdir -p "\$SNAPSHOT_DIR" "\$LOG_DIR" "\$HOME/bin"
 
@@ -335,14 +347,28 @@ quote_sql_string() {
 
 restart_refresh_services() {
   (
-    cd "\$PC_REPO" &&
+    cd "\$PC_REPO" || exit 1
+    if [ "\$PC_DEPLOY_ROLE" = "full" ]; then
       docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml up -d --no-deps normalizer >/dev/null
+    else
+      docker compose --env-file deploy/collector/.env \\
+        -f deploy/collector/docker-compose.yml \\
+        -f deploy/collector/docker-compose.thepc-gpu-api.yml \\
+        up -d --no-deps api gpu-probability-worker >/dev/null
+    fi
   ) || true
 }
 
 cd "\$PC_REPO"
 trap restart_refresh_services EXIT
-docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml stop normalizer outcome-refresh >/dev/null
+if [ "\$PC_DEPLOY_ROLE" = "full" ]; then
+  docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml stop normalizer outcome-refresh >/dev/null
+else
+  docker compose --env-file deploy/collector/.env \\
+    -f deploy/collector/docker-compose.yml \\
+    -f deploy/collector/docker-compose.thepc-gpu-api.yml \\
+    stop collector normalizer outcome-refresh >/dev/null
+fi
 rm -f "\$SNAPSHOT_TMP" "\$SNAPSHOT_TMP.wal"
 "\$DUCKDB_BIN" "\$SNAPSHOT_TMP" -batch -c "ATTACH \$(quote_sql_string "\$SOURCE_DB") AS source_db (READ_ONLY); COPY FROM DATABASE source_db TO snapshot;"
 mv "\$SNAPSHOT_TMP" "\$SNAPSHOT_DB"
@@ -682,30 +708,50 @@ export POLYMARKET_DATA_DIR="\$PC_DATA_DIR"
 export POLYMARKET_NORMALIZER_INTERVAL_SECONDS="\$PC_NORMALIZER_INTERVAL_SECONDS"
 export POLYMARKET_REST_BACKUP_INTERVAL_MS="\$PC_REST_BACKUP_INTERVAL_MS"
 export DEPLOY_FORCE=1
-./scripts/deploy.sh
 
-collector_status_ok=0
-for attempt in \$(seq 1 45); do
-  if python3 scripts/check_collector_status.py \\
-    --status-path "\$PC_DATA_DIR/live/status.json" \\
-    --max-status-age-seconds 30 \\
-    --max-price-age-ms 30000 \\
-    --max-orderbook-age-ms 30000 \\
-    --max-websocket-event-age-ms 30000 \\
-    --raw-root "\$PC_DATA_DIR/raw" \\
-    --max-raw-event-age-ms 30000 \\
-    --normalized-health-path "\$PC_DATA_DIR/live/normalized_health.json" \\
-    --max-normalized-health-age-ms 30000 \\
-    --expected-prewarm-windows 2; then
-    collector_status_ok=1
-    break
-  fi
-  sleep 1
-done
-if [ "\$collector_status_ok" -ne 1 ]; then
-  echo "collector status did not become ready after deploy" >&2
-  exit 1
-fi
+case "\$PC_DEPLOY_ROLE" in
+  thepc-gpu-api)
+    ./scripts/install_thepc_spoon_artifact_sync.sh
+    docker compose --env-file deploy/collector/.env \\
+      -f deploy/collector/docker-compose.yml \\
+      -f deploy/collector/docker-compose.thepc-gpu-api.yml \\
+      stop collector normalizer outcome-refresh >/dev/null 2>&1 || true
+    docker compose --env-file deploy/collector/.env \\
+      -f deploy/collector/docker-compose.yml \\
+      -f deploy/collector/docker-compose.thepc-gpu-api.yml \\
+      up -d --no-build api gpu-probability-worker
+    ;;
+  full)
+    export POLYMARKET_DEPLOY_ROLE=full
+    ./scripts/deploy.sh
+    collector_status_ok=0
+    for attempt in \$(seq 1 45); do
+      if python3 scripts/check_collector_status.py \\
+        --status-path "\$PC_DATA_DIR/live/status.json" \\
+        --max-status-age-seconds 30 \\
+        --max-price-age-ms 30000 \\
+        --max-orderbook-age-ms 30000 \\
+        --max-websocket-event-age-ms 30000 \\
+        --raw-root "\$PC_DATA_DIR/raw" \\
+        --max-raw-event-age-ms 30000 \\
+        --normalized-health-path "\$PC_DATA_DIR/live/normalized_health.json" \\
+        --max-normalized-health-age-ms 30000 \\
+        --expected-prewarm-windows 2; then
+        collector_status_ok=1
+        break
+      fi
+      sleep 1
+    done
+    if [ "\$collector_status_ok" -ne 1 ]; then
+      echo "collector status did not become ready after deploy" >&2
+      exit 1
+    fi
+    ;;
+  *)
+    echo "unsupported PC_DEPLOY_ROLE=\$PC_DEPLOY_ROLE" >&2
+    exit 2
+    ;;
+esac
 
 POLYMARKET_API_PORT="\$PC_API_PORT" python3 - <<'PY'
 import json
@@ -835,7 +881,13 @@ if "event: live" not in body or "data: " not in body:
     raise SystemExit("runtime SSE smoke failed")
 PY
 
-docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml ps
+if [ "\$PC_DEPLOY_ROLE" = "full" ]; then
+  docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml ps
+else
+  docker compose --env-file deploy/collector/.env \\
+    -f deploy/collector/docker-compose.yml \\
+    -f deploy/collector/docker-compose.thepc-gpu-api.yml ps
+fi
 printf 'THEPC TUI installed %s\\n' "\$PC_BIN_DIR/polymarket-cockpit-tui"
 printf 'THEPC TUI launcher installed %s\\n' "\$PC_BIN_DIR/open-polymarket-tui.sh"
 printf 'THEPC deployed %s\\n' "\$FULL_SHA"

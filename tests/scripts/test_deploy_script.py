@@ -158,7 +158,9 @@ def test_normalizer_sidecar_is_deployed_and_health_checked() -> None:
     assert "polymarket-engine" in compose
     assert "--normalized-health-path" in compose
     assert "/var/lib/polymarket/live/normalized_health.json" in compose
-    assert "up -d --build collector normalizer api gpu-probability-worker" in script
+    assert 'DEPLOY_ROLE="${POLYMARKET_DEPLOY_ROLE:-spoon-cpu-authority}"' in script
+    assert 'printf \'%s\\n\' "collector normalizer"' in script
+    assert "compose_for_role up -d --build $START_SERVICES" in script
     assert "outcome_refresh_stopped()" in script
     assert "outcome_status_fresh()" in script
     assert "--normalized-health-path" in script
@@ -191,12 +193,15 @@ def test_runtime_api_service_is_deployed_with_engine_compose() -> None:
     assert "${POLYMARKET_API_PORT:-8000}:8000" in compose
     assert "POLYMARKET_API_PORT=8000" in env_example
     assert "POLYMARKET_ENABLE_CONTAINER_STATUS=1" in env_example
-    assert "POLYMARKET_ENABLE_RUNTIME_PROBABILITIES=1" in env_example
+    assert "POLYMARKET_ENABLE_RUNTIME_PROBABILITIES=0" in env_example
     assert "POLYMARKET_ALLOW_RUNTIME_PROBABILITY_COMPUTE=0" in env_example
-    assert "up -d collector normalizer api gpu-probability-worker" in script
-    assert "up -d --build collector normalizer api gpu-probability-worker" in script
-    assert "logs --tail=80 collector normalizer api gpu-probability-worker" in script
-    assert "docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml ps" in pc_script
+    assert "set_env POLYMARKET_ENABLE_RUNTIME_PROBABILITIES 1 deploy/collector/.env" in pc_script
+    assert 'DEPLOY_ROLE="${POLYMARKET_DEPLOY_ROLE:-spoon-cpu-authority}"' in script
+    assert "docker-compose.spoon-cpu-authority.yml" in script
+    assert 'printf \'%s\\n\' "collector normalizer api gpu-probability-worker"' in script
+    assert "compose_for_role logs --tail=80 $START_SERVICES" in script
+    assert "docker compose --env-file deploy/collector/.env" in pc_script
+    assert "-f deploy/collector/docker-compose.thepc-gpu-api.yml ps" in pc_script
     assert 'get_json("/health")' in pc_script
     assert 'get_json("/api/runtime/live?limit=8")' in pc_script
     assert "has_orderbooks" in pc_script
@@ -217,6 +222,66 @@ def test_runtime_api_service_is_deployed_with_engine_compose() -> None:
     assert 'get_json("/api/runtime/outcomes?limit=8")' in pc_script
     assert 'outcomes.get("state") == "LOCKED"' in pc_script
     assert "/api/runtime/live/stream?limit=8&interval_ms=250&max_events=1" in pc_script
+
+
+def test_spoon_deploy_defaults_to_cpu_authority_overlay() -> None:
+    script = (ROOT / "scripts" / "deploy.sh").read_text(encoding="utf-8")
+
+    assert 'DEPLOY_ROLE="${POLYMARKET_DEPLOY_ROLE:-spoon-cpu-authority}"' in script
+    assert "docker-compose.spoon-cpu-authority.yml" in script
+    assert 'printf \'%s\\n\' "collector normalizer"' in script
+    assert "stop_services_excluded_by_role" in script
+    assert 'compose -f "$COMPOSE_FILE" stop api gpu-probability-worker' in script
+
+
+def test_spoon_deploy_fast_path_stops_role_excluded_services_before_exit() -> None:
+    script = (ROOT / "scripts" / "deploy.sh").read_text(encoding="utf-8")
+
+    fast_path_index = script.index(
+        'if [ "$USE_PREBUILT" != "1" ] && [ "$LOCAL" = "$REMOTE" ]'
+    )
+    stop_index = script.index("stop_services_excluded_by_role", fast_path_index)
+    exit_index = script.index("exit 0", fast_path_index)
+
+    assert stop_index < exit_index
+
+
+def test_pc_deploy_defaults_to_gpu_api_overlay_and_sync() -> None:
+    script = (ROOT / "scripts" / "deploy_pc.sh").read_text(encoding="utf-8")
+
+    assert 'PC_DEPLOY_ROLE="${PC_DEPLOY_ROLE:-thepc-gpu-api}"' in script
+    assert "docker-compose.thepc-gpu-api.yml" in script
+    assert "stop collector normalizer outcome-refresh" in script
+    assert "up -d --no-build api gpu-probability-worker" in script
+    assert "install_thepc_spoon_artifact_sync.sh" in script
+    assert (
+        'set_env POLYMARKET_PROBABILITY_CPU_TARGET_PERCENT "\\$PC_PROBABILITY_CPU_TARGET_PERCENT"'
+        in script
+    )
+    assert (
+        'set_env POLYMARKET_PROBABILITY_CPU_SOFT_MAX_PERCENT '
+        '"\\$PC_PROBABILITY_CPU_SOFT_MAX_PERCENT"'
+    ) in script
+
+
+def test_thepc_spoon_artifact_sync_installer_is_role_safe() -> None:
+    script = (ROOT / "scripts" / "install_thepc_spoon_artifact_sync.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        "status.json normalized_health.json probability_inputs.json "
+        "probability_fragments.json outcomes.json volatility.json"
+    ) in script
+    assert "Host spoon" in script
+    assert 'SPOON_HOSTNAME="${SPOON_HOSTNAME:-100.126.126.1}"' in script
+    assert "HostName {hostname}" in script
+    assert 'SPOON_USER="${SPOON_USER:-spoon}"' in script
+    assert "User {user}" in script
+    assert "polymarket-spoon-artifact-sync.service" in script
+    assert "systemctl --user enable --now polymarket-spoon-artifact-sync.service" in script
+    assert "nohup bash -lc" in script
+    assert "artifact sync skipped" in script
 
 
 def test_compose_and_env_support_prebuilt_image_overrides() -> None:
@@ -245,10 +310,12 @@ def test_compose_and_env_support_prebuilt_image_overrides() -> None:
     assert "POLYMARKET_NORMALIZER_INTERVAL_SECONDS=0.25" in env_example
     assert "POLYMARKET_PROBABILITY_WORKER_MODE=ensemble" in env_example
     assert "POLYMARKET_ENSEMBLE_GENERATOR_POLICY=all_four_every_cycle" in env_example
-    assert "POLYMARKET_PROBABILITY_CPU_TARGET_PERCENT=20.0" in env_example
+    assert "POLYMARKET_PROBABILITY_CPU_TARGET_PERCENT=15.0" in env_example
+    assert "POLYMARKET_PROBABILITY_CPU_SOFT_MAX_PERCENT=20.0" in env_example
     assert "POLYMARKET_PROBABILITY_MAX_RSS_MB=512" in env_example
     assert "POLYMARKET_PROBABILITY_MAX_CYCLE_RUNTIME_MS=750" in env_example
     assert "POLYMARKET_PROBABILITY_MAX_TOTAL_PATHS=40000" in env_example
+    assert "POLYMARKET_PROBABILITY_MIN_TOTAL_PATHS=4000" in env_example
     assert "POLYMARKET_PROBABILITY_SUSTAINED_BREACH_CYCLES=3" in env_example
     assert "POLYMARKET_CUDA_PROBABILITY_MAX_INPUT_SNAPSHOT_AGE_SECONDS=30.0" in env_example
     assert (
@@ -257,10 +324,13 @@ def test_compose_and_env_support_prebuilt_image_overrides() -> None:
     )
     assert "POLYMARKET_ENSEMBLE_FRAGMENT_MAX_ROWS=250000" in env_example
     assert "POLYMARKET_ENSEMBLE_CPU_THREADS=1" in env_example
+    assert "POLYMARKET_ENSEMBLE_CPU_THREADS:" in compose
     assert "POLYMARKET_GPU_WORKER_CPUS" in env_example
     assert "POLYMARKET_GPU_WORKER_MEM_LIMIT" in env_example
     assert "POLYMARKET_PROBABILITY_CPU_TARGET_PERCENT:" in compose
+    assert "POLYMARKET_PROBABILITY_CPU_SOFT_MAX_PERCENT:" in compose
     assert "POLYMARKET_PROBABILITY_MAX_TOTAL_PATHS:" in compose
+    assert "POLYMARKET_PROBABILITY_MIN_TOTAL_PATHS:" in compose
     assert "POLYMARKET_PROBABILITY_FRAGMENTS_PATH:" in compose
     assert "POLYMARKET_CUDA_PROBABILITY_MAX_INPUT_SNAPSHOT_AGE_SECONDS:-30.0" in compose
     assert '--worker-mode "$WORKER_MODE"' in entrypoint
@@ -275,9 +345,11 @@ def test_compose_and_env_support_prebuilt_image_overrides() -> None:
     assert '--probability-fragments-path "$PROBABILITY_FRAGMENTS_PATH"' in entrypoint
     assert '--generator-policy "$GENERATOR_POLICY"' in entrypoint
     assert '--cpu-target-percent "$CPU_TARGET_PERCENT"' in entrypoint
+    assert '--cpu-soft-max-percent "$CPU_SOFT_MAX_PERCENT"' in entrypoint
     assert '--max-rss-mb "$MAX_RSS_MB"' in entrypoint
     assert '--max-cycle-runtime-ms "$MAX_CYCLE_RUNTIME_MS"' in entrypoint
     assert '--max-total-paths "$MAX_TOTAL_PATHS"' in entrypoint
+    assert '--min-total-paths "$MIN_TOTAL_PATHS"' in entrypoint
     assert '--sustained-breach-cycles "$SUSTAINED_BREACH_CYCLES"' in entrypoint
     assert '--fragment-max-rows "$FRAGMENT_MAX_ROWS"' in entrypoint
     assert '--cpu-threads "$CPU_THREADS"' in entrypoint
@@ -357,8 +429,10 @@ def test_pc_deploy_installs_duckdb_ui_snapshot_launcher() -> None:
     assert "COPY FROM DATABASE source_db TO snapshot" in script
     assert 'subprocess.run(' in script
     assert '"-readonly", self.db_path, "-json", "-c", sql' in script
-    assert "stop normalizer outcome-refresh" in script
+    assert 'PC_DEPLOY_ROLE="\\${PC_DEPLOY_ROLE:-thepc-gpu-api}"' in script
+    assert "stop collector normalizer outcome-refresh" in script
     assert "up -d --no-deps normalizer" in script
+    assert "up -d --no-deps api gpu-probability-worker" in script
 
 
 def test_pc_deploy_duckdb_ui_avoids_js_templates_in_outer_heredoc() -> None:
@@ -431,9 +505,26 @@ def test_pc_deploy_script_runs_prebuilt_deploy_gate_with_pc_cadence() -> None:
 
     assert 'PC_NORMALIZER_INTERVAL_SECONDS="${PC_NORMALIZER_INTERVAL_SECONDS:-0.1}"' in script
     assert 'PC_REST_BACKUP_INTERVAL_MS="${PC_REST_BACKUP_INTERVAL_MS:-1000}"' in script
+    assert 'PC_DEPLOY_ROLE="${PC_DEPLOY_ROLE:-thepc-gpu-api}"' in script
+    assert 'PC_PROBABILITY_CPU_TARGET_PERCENT="${PC_PROBABILITY_CPU_TARGET_PERCENT:-15.0}"' in script
+    assert (
+        'PC_PROBABILITY_CPU_SOFT_MAX_PERCENT="${PC_PROBABILITY_CPU_SOFT_MAX_PERCENT:-20.0}"'
+        in script
+    )
     assert 'PC_PROBABILITY_MAX_TOTAL_PATHS="${PC_PROBABILITY_MAX_TOTAL_PATHS:-40000}"' in script
+    assert 'PC_PROBABILITY_MIN_TOTAL_PATHS="${PC_PROBABILITY_MIN_TOTAL_PATHS:-4000}"' in script
     assert 'PC_GPU_WORKER_MEM_LIMIT="${PC_GPU_WORKER_MEM_LIMIT:-1536m}"' in script
+    assert 'PC_DEPLOY_ROLE=$(shell_quote "$PC_DEPLOY_ROLE")' in script
+    assert (
+        'PC_PROBABILITY_CPU_TARGET_PERCENT=$(shell_quote "$PC_PROBABILITY_CPU_TARGET_PERCENT")'
+        in script
+    )
+    assert (
+        'PC_PROBABILITY_CPU_SOFT_MAX_PERCENT=$(shell_quote "$PC_PROBABILITY_CPU_SOFT_MAX_PERCENT")'
+        in script
+    )
     assert 'PC_PROBABILITY_MAX_TOTAL_PATHS=$(shell_quote "$PC_PROBABILITY_MAX_TOTAL_PATHS")' in script
+    assert 'PC_PROBABILITY_MIN_TOTAL_PATHS=$(shell_quote "$PC_PROBABILITY_MIN_TOTAL_PATHS")' in script
     assert 'PC_GPU_WORKER_MEM_LIMIT=$(shell_quote "$PC_GPU_WORKER_MEM_LIMIT")' in script
     assert "export POLYMARKET_DEPLOY_USE_PREBUILT=1" in script
     assert 'POLYMARKET_DEPLOY_REF="\\$FULL_SHA"' in script
@@ -452,12 +543,28 @@ def test_pc_deploy_script_runs_prebuilt_deploy_gate_with_pc_cadence() -> None:
         'set_env POLYMARKET_PROBABILITY_MAX_TOTAL_PATHS "\\$PC_PROBABILITY_MAX_TOTAL_PATHS"'
         in script
     )
+    assert (
+        'set_env POLYMARKET_PROBABILITY_CPU_TARGET_PERCENT "\\$PC_PROBABILITY_CPU_TARGET_PERCENT"'
+        in script
+    )
+    assert (
+        'set_env POLYMARKET_PROBABILITY_CPU_SOFT_MAX_PERCENT "\\$PC_PROBABILITY_CPU_SOFT_MAX_PERCENT"'
+        in script
+    )
+    assert (
+        'set_env POLYMARKET_PROBABILITY_MIN_TOTAL_PATHS "\\$PC_PROBABILITY_MIN_TOTAL_PATHS"'
+        in script
+    )
     assert 'set_env POLYMARKET_GPU_WORKER_MEM_LIMIT "\\$PC_GPU_WORKER_MEM_LIMIT"' in script
     assert "set_env POLYMARKET_ENABLE_RUNTIME_PROBABILITIES 1 deploy/collector/.env" in script
     assert "set_env POLYMARKET_ALLOW_RUNTIME_PROBABILITY_COMPUTE 0 deploy/collector/.env" in script
     assert 'POLYMARKET_REST_BACKUP_INTERVAL_MS="\\$PC_REST_BACKUP_INTERVAL_MS"' in script
     assert "scripts/check_collector_status.py" in script
     assert "collector_status_ok=0" in script
+    assert "install_thepc_spoon_artifact_sync.sh" in script
+    assert "docker-compose.thepc-gpu-api.yml" in script
+    assert "stop collector normalizer outcome-refresh" in script
+    assert "up -d --no-build api gpu-probability-worker" in script
     assert "for _ in \\$(seq 1 30); do" in script
     assert "--expected-prewarm-windows 2" in script
 
@@ -473,8 +580,10 @@ def test_pc_deploy_script_refreshes_tui_desktop_launcher() -> None:
     assert "Runtime already live." in script
     assert "Runtime not live; starting containers..." in script
     assert (
-        "docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml "
-        "up -d --no-recreate collector normalizer api gpu-probability-worker"
+        "docker compose --env-file deploy/collector/.env "
+        "-f deploy/collector/docker-compose.yml "
+        "-f deploy/collector/docker-compose.thepc-gpu-api.yml "
+        "up -d --no-recreate api gpu-probability-worker"
     ) in script
     assert "python3 -c %q" in script
     assert 'm=p.get("monitor") or {}' in script
@@ -534,14 +643,8 @@ def test_deploy_script_supports_prebuilt_images_with_build_fallback() -> None:
     assert 'export POLYMARKET_COLLECTOR_IMAGE="$COLLECTOR_IMAGE"' in script
     assert 'export POLYMARKET_NORMALIZER_IMAGE="$NORMALIZER_IMAGE"' in script
     assert 'export POLYMARKET_CUDA_PROBABILITY_IMAGE="$CUDA_PROBABILITY_IMAGE"' in script
-    assert (
-        'compose -f "$COMPOSE_FILE" up -d collector normalizer '
-        "api gpu-probability-worker"
-    ) in script
-    assert (
-        'compose -f "$COMPOSE_FILE" up -d --build '
-        "collector normalizer api gpu-probability-worker"
-    ) in script
+    assert "compose_for_role up -d $START_SERVICES" in script
+    assert "compose_for_role up -d --build $START_SERVICES" in script
     assert 'export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-1}"' in script
 
 
@@ -651,7 +754,7 @@ def test_deploy_script_rejects_old_normalize_rust_events_normalizer() -> None:
 
     assert "normalizer_uses_sidecar()" in script
     assert "run-rust-normalizer-sidecar" in script
-    assert 'compose -f "$COMPOSE_FILE" top normalizer' in script
+    assert "compose_for_role top normalizer" in script
     assert "ps -eo args" not in script
     assert "&& outcome_refresh_stopped \\" in script
     assert "&& outcome_status_fresh \\" in script

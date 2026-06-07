@@ -641,6 +641,101 @@ def test_sidecar_loop_throttles_market_outcome_refresh(
     assert outcome_refreshes == [health_path.with_name("outcomes.json")]
 
 
+def test_sidecar_outcome_refresh_rewrites_status_when_no_rows_change(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_root = tmp_path / "raw"
+    db_path = tmp_path / "state.duckdb"
+    status_path = tmp_path / "live" / "status.json"
+    health_path = tmp_path / "live" / "normalized_health.json"
+    outcome_path = tmp_path / "live" / "outcomes.json"
+    start_ts = datetime(2026, 6, 2, 6, 0, tzinfo=timezone.utc)
+    asof_ts = start_ts + timedelta(minutes=2)
+    raw_root.mkdir()
+    (raw_root / ".polymarket_archive_root").write_text("", encoding="utf-8")
+    _write_status(status_path, start_ts=start_ts, asof_ts=asof_ts)
+    outcome_path.parent.mkdir(parents=True, exist_ok=True)
+    outcome_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "polymarket-outcome-runtime-v1",
+                "ok": True,
+                "state": "OK",
+                "generated_at": "2026-06-06T00:00:00+00:00",
+                "rows": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        rust_normalizer_sidecar,
+        "normalize_rust_event_tree",
+        lambda **_: (),
+    )
+    monkeypatch.setattr(
+        rust_normalizer_sidecar,
+        "refresh_market_outcomes",
+        lambda **_: 0,
+    )
+    latest_calls = 0
+
+    def fake_latest_rows_from_connection(
+        *,
+        conn: duckdb.DuckDBPyConnection,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        nonlocal latest_calls
+        assert conn is not None
+        assert limit == 5000
+        latest_calls += 1
+        return [
+            {
+                "asset": "BTC",
+                "market_id": "btc-updown-5m-1780502400",
+                "market_slug": "btc-updown-5m-1780502400",
+                "interval": "5m",
+                "start_ts": "2026-06-06T00:00:00+00:00",
+                "expiry_ts": "2026-06-06T00:05:00+00:00",
+                "threshold_price": 70000.0,
+                "threshold_event_ts": None,
+                "threshold_observed_ts": None,
+                "end_price": 70010.0,
+                "end_event_ts": None,
+                "end_observed_ts": None,
+                "computed_winner": None,
+                "official_winner": None,
+                "winning_token_id": None,
+                "official_resolution_status": "pending",
+                "mismatch": None,
+            }
+        ]
+
+    monkeypatch.setattr(
+        rust_normalizer_sidecar,
+        "latest_market_outcome_rows_from_connection",
+        fake_latest_rows_from_connection,
+    )
+
+    result = run_rust_normalizer_cycle(
+        raw_root=raw_root,
+        db_path=db_path,
+        status_path=status_path,
+        normalized_health_path=health_path,
+        outcome_status_path=outcome_path,
+        refresh_outcomes=True,
+    )
+
+    payload = json.loads(outcome_path.read_text(encoding="utf-8"))
+    assert result.market_outcomes_written == 0
+    assert latest_calls == 1
+    assert payload["generated_at"] != "2026-06-06T00:00:00+00:00"
+    assert [row["market_id"] for row in payload["rows"]] == [
+        "btc-updown-5m-1780502400"
+    ]
+
+
 def test_sidecar_loop_skips_market_outcome_refresh_by_default(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -10,13 +10,13 @@ from pathlib import Path
 
 import duckdb
 
-from polymarket_engine.storage.atomic import durable_replace
 from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
 from polymarket_engine.validation.outcomes import OUTCOME_HISTORY_SCHEMA_VERSION
 from polymarket_engine.validation.outcomes import PolymarketClobMarketPayloadSource
 from polymarket_engine.validation.outcomes import latest_market_outcome_rows_from_connection
 from polymarket_engine.validation.outcomes import upsert_official_market_outcomes
 from polymarket_engine.validation.outcomes import write_outcome_history_status
+from polymarket_engine.validation.outcomes import write_locked_outcome_status
 
 
 OUTCOME_OUTPUT_LIMIT = 5000
@@ -52,7 +52,11 @@ def run_outcome_refresh_loop(
                     file=sys.stderr,
                     flush=True,
                 )
-                _write_locked_outcome_status(out_path=outcome_status_path, exc=exc)
+                write_locked_outcome_status(
+                    out_path=outcome_status_path,
+                    rows=_existing_outcome_status_rows(outcome_status_path),
+                    error=f"DuckDB lock unavailable: {exc}",
+                )
             cycles += 1
             if max_cycles is not None and cycles >= max_cycles:
                 return
@@ -90,40 +94,6 @@ def _validate_loop_cadence(
 def _is_transient_duckdb_lock_error(exc: duckdb.Error) -> bool:
     message = str(exc).lower()
     return "conflicting lock" in message or "could not set lock" in message
-
-
-def _write_locked_outcome_status(*, out_path: Path, exc: duckdb.Error) -> None:
-    rows = _existing_outcome_status_rows(out_path)
-    generated_at = datetime.now(timezone.utc).isoformat()
-    error = f"DuckDB lock unavailable: {exc}"
-    if rows:
-        payload = {
-            "schema_version": OUTCOME_HISTORY_SCHEMA_VERSION,
-            "ok": True,
-            "state": "OK",
-            "generated_at": generated_at,
-            "rows": rows,
-            "refresh_ok": False,
-            "refresh_state": "LOCKED",
-            "refresh_error": error,
-            "served_from": "last_good_rows",
-        }
-    else:
-        payload = {
-            "schema_version": OUTCOME_HISTORY_SCHEMA_VERSION,
-            "ok": False,
-            "state": "LOCKED",
-            "error": error,
-            "generated_at": generated_at,
-            "rows": [],
-        }
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = out_path.with_suffix(f"{out_path.suffix}.tmp")
-    tmp_path.write_text(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
-        encoding="utf-8",
-    )
-    durable_replace(tmp_path, out_path)
 
 
 def _existing_outcome_status_rows(out_path: Path) -> list[object]:

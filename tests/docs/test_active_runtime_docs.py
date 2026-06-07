@@ -173,3 +173,19 @@ def test_active_active_cpu_authority_runbook_documents_split() -> None:
     assert "polymarket-engine sync-cluster-artifacts" in text
     assert "probability_fragments.json" in text
     assert "single-writer" in text
+
+
+def test_docs_describe_default_soft_cpu_split() -> None:
+    deployment = (ROOT / "docs" / "SPOON_DEPLOYMENT.md").read_text(encoding="utf-8")
+    part_two = (ROOT / "docs" / "PART_TWO_LIVE_COLLECTORS.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "Spoon CPU authority is the default deploy role" in deployment
+    assert "THEPC GPU/API authority is the default PC deploy role" in deployment
+    assert "soft CPU target" in deployment
+    assert "POLYMARKET_PROBABILITY_CPU_TARGET_PERCENT=15.0" in deployment
+    assert "POLYMARKET_PROBABILITY_CPU_SOFT_MAX_PERCENT=20.0" in deployment
+    assert "not a hard Docker CPU cap" in deployment
+    assert "artifact sync loop" in deployment
+    assert "THEPC probability path count is adaptive under the soft CPU target" in part_two

@@ -31,6 +31,8 @@ from polymarket_engine.validation.outcome_sidecar import (
     has_expired_pending_official_outcomes,
 )
 from polymarket_engine.validation.outcome_sidecar import refresh_market_outcomes
+from polymarket_engine.validation.outcomes import latest_market_outcome_rows_from_connection
+from polymarket_engine.validation.outcomes import write_outcome_history_status
 
 
 FULL_RAW_TREE_SCAN_INTERVAL_CYCLES = 240
@@ -38,6 +40,8 @@ IDLE_NORMALIZED_HEALTH_WRITE_INTERVAL_SECONDS = 5.0
 PROBABILITY_OUTPUT_LIMIT = 8
 PROBABILITY_MAX_STATE_AGE_SECONDS = 600.0
 DEFAULT_FRAGMENT_MAX_ROWS = 250_000
+OUTCOME_OUTPUT_LIMIT = 5000
+OUTCOME_OUTPUT_LIMIT_ENV = "POLYMARKET_OUTCOME_OUTPUT_LIMIT"
 OUTCOME_REFRESH_INTERVAL_SECONDS = 30.0
 OUTCOME_PENDING_REFRESH_INTERVAL_SECONDS = 5.0
 VOLATILITY_STATUS_SCHEMA_VERSION = "polymarket-volatility-runtime-v1"
@@ -281,7 +285,7 @@ def _run_rust_normalizer_cycle_with_store(
                     out_path=probability_status_path,
                 )
     market_outcomes_written = (
-        refresh_market_outcomes(
+        _refresh_market_outcomes_and_rewrite_status_if_unchanged(
             store=store,
             out_path=outcome_status_path,
         )
@@ -729,7 +733,7 @@ def _run_changed_rust_normalizer_cycle_with_store(
                     out_path=probability_status_path,
                 )
     market_outcomes_written = (
-        refresh_market_outcomes(
+        _refresh_market_outcomes_and_rewrite_status_if_unchanged(
             store=store,
             out_path=outcome_status_path,
         )
@@ -863,7 +867,7 @@ def _run_idle_rust_normalizer_cycle_with_store(
                     out_path=probability_status_path,
                 )
     market_outcomes_written = (
-        refresh_market_outcomes(
+        _refresh_market_outcomes_and_rewrite_status_if_unchanged(
             store=store,
             out_path=outcome_status_path,
         )
@@ -978,6 +982,29 @@ def _compute_probability_outputs(*, store: DuckDbIngestStore, out_path: Path) ->
             flush=True,
         )
     return written
+
+
+def _refresh_market_outcomes_and_rewrite_status_if_unchanged(
+    *,
+    store: DuckDbIngestStore,
+    out_path: Path,
+) -> int:
+    rows_written = refresh_market_outcomes(store=store, out_path=out_path)
+    if rows_written == 0:
+        with store._connection() as conn:
+            rows = latest_market_outcome_rows_from_connection(
+                conn=conn,
+                limit=_outcome_output_limit_from_env(),
+            )
+        write_outcome_history_status(out_path=out_path, rows=rows)
+    return rows_written
+
+
+def _outcome_output_limit_from_env() -> int:
+    raw_limit = os.environ.get(OUTCOME_OUTPUT_LIMIT_ENV)
+    if raw_limit is None or raw_limit.strip() == "":
+        return OUTCOME_OUTPUT_LIMIT
+    return max(20, int(raw_limit))
 
 
 def _state_build_unavailable(exc: ValueError) -> UnavailableDecisionState:

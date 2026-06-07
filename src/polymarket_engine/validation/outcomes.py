@@ -403,6 +403,41 @@ def write_outcome_history_status(
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "rows": [_runtime_row(row) for row in rows],
     }
+    _write_outcome_status_payload(out_path=out_path, payload=payload)
+
+
+def write_locked_outcome_status(
+    *,
+    out_path: Path,
+    rows: list[object],
+    error: str,
+) -> None:
+    generated_at = datetime.now(timezone.utc).isoformat()
+    if rows:
+        payload = {
+            "schema_version": OUTCOME_HISTORY_SCHEMA_VERSION,
+            "ok": True,
+            "state": "OK",
+            "generated_at": generated_at,
+            "rows": rows,
+            "refresh_ok": False,
+            "refresh_state": "LOCKED",
+            "refresh_error": error,
+            "served_from": "last_good_rows",
+        }
+    else:
+        payload = {
+            "schema_version": OUTCOME_HISTORY_SCHEMA_VERSION,
+            "ok": False,
+            "state": "LOCKED",
+            "error": error,
+            "generated_at": generated_at,
+            "rows": [],
+        }
+    _write_outcome_status_payload(out_path=out_path, payload=payload)
+
+
+def _write_outcome_status_payload(*, out_path: Path, payload: dict[str, Any]) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = out_path.with_suffix(f"{out_path.suffix}.tmp")
     tmp_path.write_text(

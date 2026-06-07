@@ -137,10 +137,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--generator-policy",
         default="all_four_every_cycle",
     )
-    cuda_probability_worker.add_argument("--cpu-target-percent", type=float, default=20.0)
+    cuda_probability_worker.add_argument("--cpu-target-percent", type=float, default=15.0)
+    cuda_probability_worker.add_argument("--cpu-soft-max-percent", type=float, default=20.0)
     cuda_probability_worker.add_argument("--max-rss-mb", type=int, default=512)
     cuda_probability_worker.add_argument("--max-cycle-runtime-ms", type=int, default=750)
     cuda_probability_worker.add_argument("--max-total-paths", type=int, default=40_000)
+    cuda_probability_worker.add_argument("--min-total-paths", type=int, default=4_000)
     cuda_probability_worker.add_argument("--sustained-breach-cycles", type=int, default=3)
     cuda_probability_worker.add_argument("--fragment-max-rows", type=int, default=250_000)
     cuda_probability_worker.add_argument("--cpu-threads", type=int, default=1)
@@ -389,9 +391,11 @@ def _run_cuda_probability_worker(args: argparse.Namespace) -> int:
         worker_mode=args.worker_mode,
         generator_policy=args.generator_policy,
         cpu_target_percent=args.cpu_target_percent,
+        cpu_soft_max_percent=args.cpu_soft_max_percent,
         max_rss_mb=args.max_rss_mb,
         max_cycle_runtime_ms=args.max_cycle_runtime_ms,
         max_total_paths=args.max_total_paths,
+        min_total_paths=args.min_total_paths,
         sustained_breach_cycles=args.sustained_breach_cycles,
         fragment_max_rows=args.fragment_max_rows,
         cpu_threads=args.cpu_threads,

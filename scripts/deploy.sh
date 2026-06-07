@@ -7,6 +7,7 @@ export PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 REPO="${REPO:-$HOME/polymarket}"
 DATA_DIR="${POLYMARKET_DATA_DIR:-$HOME/polymarket-data}"
 COMPOSE_FILE="$REPO/deploy/collector/docker-compose.yml"
+SPOON_OVERLAY="$REPO/deploy/collector/docker-compose.spoon-cpu-authority.yml"
 STATUS_PATH="$DATA_DIR/live/status.json"
 OUTCOME_STATUS_PATH="$DATA_DIR/live/outcomes.json"
 LOCK_DIR="/tmp/polymarket-deploy.lock.d"
@@ -20,6 +21,7 @@ EXPECTED_DEPLOY_SHA="${POLYMARKET_EXPECTED_DEPLOY_SHA:-}"
 COLLECTOR_IMAGE="${POLYMARKET_COLLECTOR_IMAGE:-polymarket-rust-collector:latest}"
 NORMALIZER_IMAGE="${POLYMARKET_NORMALIZER_IMAGE:-polymarket-normalizer:latest}"
 CUDA_PROBABILITY_IMAGE="${POLYMARKET_CUDA_PROBABILITY_IMAGE:-polymarket-cuda-probability:latest}"
+DEPLOY_ROLE="${POLYMARKET_DEPLOY_ROLE:-spoon-cpu-authority}"
 LOG() { echo "[$(date -Iseconds)] $*" | tee -a "$LOG_FILE"; }
 
 mkdir -p "$REPO/logs" "$DATA_DIR/raw" "$DATA_DIR/db" "$DATA_DIR/live" "$DATA_DIR/logs" "$(dirname "$DEPLOYED_MARKER")"
@@ -41,19 +43,60 @@ compose() {
   fi
 }
 
+compose_for_role() {
+  case "$DEPLOY_ROLE" in
+    spoon-cpu-authority)
+      compose -f "$COMPOSE_FILE" -f "$SPOON_OVERLAY" "$@"
+      ;;
+    full)
+      compose -f "$COMPOSE_FILE" "$@"
+      ;;
+    *)
+      LOG "unsupported POLYMARKET_DEPLOY_ROLE=$DEPLOY_ROLE"
+      exit 2
+      ;;
+  esac
+}
+
+deploy_start_services() {
+  case "$DEPLOY_ROLE" in
+    spoon-cpu-authority)
+      printf '%s\n' "collector normalizer"
+      ;;
+    full)
+      printf '%s\n' "collector normalizer api gpu-probability-worker"
+      ;;
+    *)
+      LOG "unsupported POLYMARKET_DEPLOY_ROLE=$DEPLOY_ROLE"
+      exit 2
+      ;;
+  esac
+}
+
 normalizer_running() {
-  compose -f "$COMPOSE_FILE" ps --services --status running normalizer 2>> "$LOG_FILE" \
+  compose_for_role ps --services --status running normalizer 2>> "$LOG_FILE" \
     | grep -qx normalizer
 }
 
 normalizer_uses_sidecar() {
-  compose -f "$COMPOSE_FILE" top normalizer 2>> "$LOG_FILE" \
+  compose_for_role top normalizer 2>> "$LOG_FILE" \
     | grep "$NORMALIZER_SIDECAR_COMMAND" >> "$LOG_FILE" 2>&1
 }
 
 outcome_refresh_stopped() {
-  ! compose -f "$COMPOSE_FILE" ps --services --status running outcome-refresh 2>> "$LOG_FILE" \
+  ! compose_for_role ps --services --status running outcome-refresh 2>> "$LOG_FILE" \
     | grep -qx outcome-refresh
+}
+
+stop_services_excluded_by_role() {
+  case "$DEPLOY_ROLE" in
+    spoon-cpu-authority)
+      LOG "stopping Spoon-excluded API/GPU services if present"
+      compose -f "$COMPOSE_FILE" stop api gpu-probability-worker >> "$LOG_FILE" 2>&1 || true
+      ;;
+    full)
+      ;;
+  esac
 }
 
 outcome_status_fresh() {
@@ -137,6 +180,7 @@ if [ "$USE_PREBUILT" = "1" ]; then
 fi
 DEPLOYED_SHA="$(cat "$DEPLOYED_MARKER" 2>/dev/null || true)"
 if [ "$USE_PREBUILT" != "1" ] && [ "$LOCAL" = "$REMOTE" ] && [ "$DEPLOYED_SHA" = "$REMOTE" ] && [ "${DEPLOY_FORCE:-0}" != "1" ]; then
+  stop_services_excluded_by_role
   if normalizer_running \
     && normalizer_uses_sidecar \
     && outcome_refresh_stopped \
@@ -175,7 +219,10 @@ fi
 LOG "stopping legacy Python collector containers if present"
 docker rm -f polymarket-collector-collector-1 polymarket-python-collector-retired-retired-python-collector-1 >> "$LOG_FILE" 2>&1 || true
 LOG "stopping retired outcome-refresh sidecar if present"
-compose -f "$COMPOSE_FILE" stop outcome-refresh >> "$LOG_FILE" 2>&1 || true
+compose_for_role stop outcome-refresh >> "$LOG_FILE" 2>&1 || true
+stop_services_excluded_by_role
+
+START_SERVICES="$(deploy_start_services)"
 
 if [ "$USE_PREBUILT" = "1" ]; then
   if ! required_image_available "$COLLECTOR_IMAGE"; then
@@ -195,7 +242,7 @@ if [ "$USE_PREBUILT" = "1" ]; then
     export POLYMARKET_COLLECTOR_IMAGE="$COLLECTOR_IMAGE"
     export POLYMARKET_NORMALIZER_IMAGE="$NORMALIZER_IMAGE"
     export POLYMARKET_CUDA_PROBABILITY_IMAGE="$CUDA_PROBABILITY_IMAGE"
-    compose -f "$COMPOSE_FILE" up -d collector normalizer api gpu-probability-worker
+    compose_for_role up -d $START_SERVICES
   ) >> "$LOG_FILE" 2>&1; then
     LOG "docker compose failed"
     exit 1
@@ -206,7 +253,7 @@ else
     exit 1
   fi
   export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-1}"
-  if ! compose -f "$COMPOSE_FILE" up -d --build collector normalizer api gpu-probability-worker >> "$LOG_FILE" 2>&1; then
+  if ! compose_for_role up -d --build $START_SERVICES >> "$LOG_FILE" 2>&1; then
     LOG "docker compose failed"
     exit 1
   fi
@@ -236,5 +283,5 @@ for _ in $(seq 1 "$DEPLOY_SMOKE_ATTEMPTS"); do
 done
 
 LOG "collector smoke failed; leaving container logs in docker compose"
-compose -f "$COMPOSE_FILE" logs --tail=80 collector normalizer api gpu-probability-worker >> "$LOG_FILE" 2>&1 || true
+compose_for_role logs --tail=80 $START_SERVICES >> "$LOG_FILE" 2>&1 || true
 exit 1

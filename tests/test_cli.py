@@ -305,10 +305,12 @@ def test_parse_run_cuda_probability_worker_defaults() -> None:
     assert args.max_input_snapshot_age_seconds == 30.0
     assert args.worker_mode == "ensemble"
     assert args.generator_policy == "all_four_every_cycle"
-    assert args.cpu_target_percent == 20.0
+    assert args.cpu_target_percent == 15.0
+    assert args.cpu_soft_max_percent == 20.0
     assert args.max_rss_mb == 512
     assert args.max_cycle_runtime_ms == 750
     assert args.max_total_paths == 40_000
+    assert args.min_total_paths == 4_000
     assert args.sustained_breach_cycles == 3
     assert args.fragment_max_rows == 250_000
     assert args.cpu_threads == 1

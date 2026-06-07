@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -15,12 +16,46 @@ from polymarket_engine.validation.outcomes import backfill_outcome_history
 from polymarket_engine.validation.outcomes import official_resolution_from_polymarket_market
 from polymarket_engine.validation.outcomes import latest_market_outcome_rows
 from polymarket_engine.validation.outcomes import upsert_official_market_outcomes
+from polymarket_engine.validation.outcomes import write_outcome_history_status
 
 
 UTC_START = datetime(2026, 6, 3, 20, 0, tzinfo=timezone.utc)
 UTC_EXPIRY = UTC_START + timedelta(minutes=5)
 UTC_EXPIRY_PLUS_ONE = UTC_EXPIRY + timedelta(seconds=1)
 UTC_BEFORE_EXPIRY = UTC_EXPIRY - timedelta(seconds=1)
+
+
+def test_write_outcome_history_status_rewrites_generated_at_when_rows_unchanged(
+    tmp_path: Path,
+) -> None:
+    out_path = tmp_path / "live" / "outcomes.json"
+    rows = [
+        {
+            "asset": "BTC",
+            "market_id": "btc-updown-5m-1780502400",
+            "market_slug": "btc-updown-5m-1780502400",
+            "market": "BTC 5m",
+            "interval": "5m",
+            "start_ts": "2026-06-06T00:00:00+00:00",
+            "expiry_ts": "2026-06-06T00:05:00+00:00",
+            "threshold_price": 70000.0,
+            "end_price": 70010.0,
+            "computed_winner": None,
+            "official_winner": None,
+            "official_resolution_status": "pending",
+            "winning_token_id": None,
+            "mismatch": None,
+        }
+    ]
+
+    write_outcome_history_status(out_path=out_path, rows=rows)
+    first = json.loads(out_path.read_text(encoding="utf-8"))
+    time.sleep(0.001)
+    write_outcome_history_status(out_path=out_path, rows=rows)
+    second = json.loads(out_path.read_text(encoding="utf-8"))
+
+    assert second["generated_at"] != first["generated_at"]
+    assert second["rows"] == first["rows"]
 
 
 def test_official_resolution_maps_winning_up_token_from_polymarket_payload() -> None:

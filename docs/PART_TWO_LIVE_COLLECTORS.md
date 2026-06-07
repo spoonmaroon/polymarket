@@ -118,6 +118,8 @@ Runtime probabilities remain paper/display-only: cache refreshes write
 probability status file, but no order path is created. Normalizer/API CPU
 probability generation defaults off; the PC-only `gpu-probability-worker`
 container owns CUDA Monte Carlo refreshes for active current and next rows.
+THEPC probability path count is adaptive under the soft CPU target; the target
+changes path budget, not model authority or artifact ownership.
 
 ## Runtime API And Cockpit Display
 

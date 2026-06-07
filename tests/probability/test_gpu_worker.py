@@ -8,10 +8,12 @@ import pytest
 
 from polymarket_engine.probability.gpu_worker import ProbabilityWorkerBudget
 from polymarket_engine.probability.gpu_worker import PROBABILITY_INPUTS_SCHEMA_VERSION
+from polymarket_engine.probability.gpu_worker import _budget_diagnostics
 from polymarket_engine.probability.gpu_worker import _clamp_path_count
 from polymarket_engine.probability.gpu_worker import _event_payload_from_row
 from polymarket_engine.probability.gpu_worker import _path_budget_per_input
 from polymarket_engine.probability.gpu_worker import run_cuda_probability_worker_cycle
+from polymarket_engine.probability.gpu_worker import run_cuda_probability_worker_loop
 from polymarket_engine.probability.generator_fragments import GeneratorFragment
 from polymarket_engine.probability.generator_fragments import write_probability_fragments
 from polymarket_engine.probability.runtime_inputs import ProbabilityRuntimeInput
@@ -91,6 +93,164 @@ def test_worker_budget_caps_paths_per_runtime_input() -> None:
 def test_worker_budget_rejects_non_positive_limits() -> None:
     with pytest.raises(ValueError, match="max_total_paths"):
         ProbabilityWorkerBudget(max_total_paths=0)
+
+
+def test_worker_budget_includes_soft_cpu_limits() -> None:
+    budget = ProbabilityWorkerBudget(
+        cpu_target_percent=15.0,
+        cpu_soft_max_percent=20.0,
+        min_total_paths=4_000,
+        max_total_paths=40_000,
+    )
+
+    assert budget.cpu_target_percent == 15.0
+    assert budget.cpu_soft_max_percent == 20.0
+    assert budget.min_total_paths == 4_000
+
+
+def test_worker_budget_rejects_soft_max_below_target() -> None:
+    with pytest.raises(ValueError, match="cpu_soft_max_percent"):
+        ProbabilityWorkerBudget(
+            cpu_target_percent=20.0,
+            cpu_soft_max_percent=15.0,
+        )
+
+
+def test_worker_budget_rejects_min_paths_above_max_paths() -> None:
+    with pytest.raises(ValueError, match="min_total_paths"):
+        ProbabilityWorkerBudget(
+            min_total_paths=50_000,
+            max_total_paths=40_000,
+        )
+
+
+def test_probability_loop_adapts_next_cycle_path_budget_from_cpu(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed_budgets: list[int] = []
+
+    def fake_cycle(**kwargs: object) -> dict[str, object]:
+        budget = kwargs["budget"]
+        assert isinstance(budget, ProbabilityWorkerBudget)
+        observed_budgets.append(budget.max_total_paths)
+        if len(observed_budgets) >= 2:
+            raise KeyboardInterrupt
+        return {
+            "ok": True,
+            "schema_version": "polymarket-probability-runtime-v1",
+            "rows": [],
+            "budget": {
+                "cpu_percent": 25.0,
+                "allocated_total_paths": 28_000,
+                "effective_max_total_paths": budget.max_total_paths,
+            },
+        }
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(
+        "polymarket_engine.probability.gpu_worker.run_cuda_probability_worker_cycle",
+        fake_cycle,
+    )
+    monkeypatch.setattr(
+        "polymarket_engine.probability.gpu_worker.time.sleep",
+        sleeps.append,
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        run_cuda_probability_worker_loop(
+            duckdb_path=tmp_path / "unused.duckdb",
+            probability_status_path=tmp_path / "probabilities.json",
+            interval_seconds=0.01,
+            budget=ProbabilityWorkerBudget(
+                max_total_paths=40_000,
+                min_total_paths=4_000,
+                cpu_target_percent=15.0,
+                cpu_soft_max_percent=20.0,
+            ),
+        )
+
+    assert observed_budgets == [40_000, 28_000]
+    assert sleeps == [0.01]
+    status_payload = json.loads((tmp_path / "probabilities.json").read_text())
+    assert status_payload["budget"]["next_max_total_paths"] == 28_000
+    assert (
+        status_payload["budget"]["cpu_budget_adjustment_reason"]
+        == "cpu_above_soft_max"
+    )
+
+
+def test_probability_loop_does_not_adapt_on_zero_allocated_path_cycle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed_budgets: list[int] = []
+
+    def fake_cycle(**kwargs: object) -> dict[str, object]:
+        budget = kwargs["budget"]
+        assert isinstance(budget, ProbabilityWorkerBudget)
+        observed_budgets.append(budget.max_total_paths)
+        if len(observed_budgets) >= 2:
+            raise KeyboardInterrupt
+        return {
+            "ok": True,
+            "schema_version": "polymarket-probability-runtime-v1",
+            "rows": [],
+            "budget": {
+                "cpu_percent": 2.0,
+                "allocated_total_paths": 0,
+                "effective_max_total_paths": budget.max_total_paths,
+            },
+        }
+
+    monkeypatch.setattr(
+        "polymarket_engine.probability.gpu_worker.run_cuda_probability_worker_cycle",
+        fake_cycle,
+    )
+    monkeypatch.setattr(
+        "polymarket_engine.probability.gpu_worker.time.sleep",
+        lambda _: None,
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        run_cuda_probability_worker_loop(
+            duckdb_path=tmp_path / "unused.duckdb",
+            probability_status_path=tmp_path / "probabilities.json",
+            interval_seconds=0.01,
+            budget=ProbabilityWorkerBudget(
+                max_total_paths=40_000,
+                min_total_paths=4_000,
+                cpu_target_percent=15.0,
+                cpu_soft_max_percent=20.0,
+            ),
+        )
+
+    assert observed_budgets == [40_000, 40_000]
+    status_payload = json.loads((tmp_path / "probabilities.json").read_text())
+    assert status_payload["budget"]["next_max_total_paths"] == 40_000
+    assert status_payload["budget"]["cpu_budget_adjustment_reason"] == "cpu_unmeasured"
+
+
+def test_budget_diagnostics_preserve_configured_and_effective_path_budgets() -> None:
+    budget = ProbabilityWorkerBudget(
+        max_total_paths=28_000,
+        configured_max_total_paths=40_000,
+        min_total_paths=4_000,
+    )
+
+    diagnostics = _budget_diagnostics(
+        budget=budget,
+        cycle_started_monotonic=100.0,
+        cycle_started_process=10.0,
+        requested_total_paths=40_000,
+        allocated_total_paths=28_000,
+        clamped_inputs=4,
+        mc_input_skipped=0,
+        path_budget_per_input=7_000,
+    )
+
+    assert diagnostics["max_total_paths"] == 40_000
+    assert diagnostics["effective_max_total_paths"] == 28_000
 
 
 def test_worker_serves_retained_mc_rows_when_input_snapshot_is_stale(
