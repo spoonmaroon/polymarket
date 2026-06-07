@@ -735,7 +735,12 @@ if live.get("ok") is not True or not live.get("monitor", {}).get("orderbooks"):
 
 probabilities = {}
 for _ in range(30):
-    probabilities = get_json("/api/runtime/probabilities?limit=8")
+    try:
+        probabilities = get_json("/api/runtime/probabilities?limit=8")
+    except Exception as exc:
+        probabilities = {"error": repr(exc)}
+        time.sleep(1)
+        continue
     probability_rows = probabilities.get("rows")
     now = datetime.now(timezone.utc)
     has_fresh_ensemble_row = any(

@@ -201,6 +201,8 @@ def test_runtime_api_service_is_deployed_with_engine_compose() -> None:
     assert 'get_json("/api/runtime/live?limit=8")' in pc_script
     assert 'get_json("/api/runtime/probabilities?limit=8")' in pc_script
     assert "for _ in range(30):" in pc_script
+    assert "except Exception as exc:" in pc_script
+    assert 'probabilities = {"error": repr(exc)}' in pc_script
     assert 'probabilities.get("rows")' in pc_script
     assert 'row.get("model_version") == "ensemble-v1"' in pc_script
     assert 'required_generators.issubset(set(row.get("prior_fragment_generators") or []))' in pc_script
