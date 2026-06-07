@@ -344,17 +344,13 @@ def test_pc_deploy_installs_duckdb_ui_snapshot_launcher() -> None:
     assert "up -d --no-deps normalizer" in script
 
 
-def test_pc_deploy_escapes_duckdb_ui_js_templates_for_outer_heredoc() -> None:
+def test_pc_deploy_duckdb_ui_avoids_js_templates_in_outer_heredoc() -> None:
     script = (ROOT / "scripts" / "deploy_pc.sh").read_text(encoding="utf-8")
-    offending_lines = [
-        line
-        for line in script.splitlines()
-        if "${{" in line and "\\${{" not in line
-    ]
 
-    assert offending_lines == []
-    assert "\\${{offset + 1}}" in script
-    assert "\\${{encodeURIComponent(selected.schema)}}" in script
+    assert "${{" not in script
+    assert "`" not in script
+    assert "'rows ' + (offset + 1) + '-' + (offset + limit)" in script
+    assert "'/api/table?schema=' + encodeURIComponent(selected.schema)" in script
 
 
 def test_prebuilt_image_deploy_script_loads_images_and_uses_deploy_fast_path() -> None:
@@ -403,6 +399,9 @@ def test_pc_deploy_script_streams_bundle_and_images_into_wsl() -> None:
     assert "copying git bundle to THEPC WSL; images will build on THEPC" in script
     assert 'if [ "$PC_DEPLOY_MODE" = "image-tar" ]; then' in script
     assert 'set_env POLYMARKET_CUDA_PROBABILITY_IMAGE "\\$CUDA_PROBABILITY_IMAGE"' in script
+    assert 'DOCKER_CONFIG="\\$PC_DATA_DIR/docker-config"' in script
+    assert "printf '%s\\n' '{\"auths\":{}}'" in script
+    assert "export DOCKER_CONFIG" in script
     assert 'POLYMARKET_BUILD_SAVE_TARS="\\$PC_REMOTE_BUILD_SAVE_TARS"' in script
     assert 'POLYMARKET_DEPLOY_REF="\\$FULL_SHA"' in script
     assert './scripts/build_images_pc.sh' in script

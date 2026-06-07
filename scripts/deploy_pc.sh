@@ -212,6 +212,10 @@ set_env POLYMARKET_NORMALIZER_IMAGE "\$NORMALIZER_IMAGE" deploy/collector/.env
 set_env POLYMARKET_CUDA_PROBABILITY_IMAGE "\$CUDA_PROBABILITY_IMAGE" deploy/collector/.env
 
 if [ "\$PC_DEPLOY_MODE" = "remote-build" ]; then
+  DOCKER_CONFIG="\$PC_DATA_DIR/docker-config"
+  mkdir -p "\$DOCKER_CONFIG"
+  printf '%s\n' '{"auths":{}}' > "\$DOCKER_CONFIG/config.json"
+  export DOCKER_CONFIG
   POLYMARKET_BUILD_SAVE_TARS="\$PC_REMOTE_BUILD_SAVE_TARS" \\
     TARGET_PLATFORM="\$TARGET_PLATFORM" \\
     POLYMARKET_DEPLOY_REF="\$FULL_SHA" \\
@@ -471,8 +475,8 @@ class Viewer(BaseHTTPRequestHandler):
     async function loadRows() {{
       document.querySelectorAll('button.table').forEach(b => b.classList.toggle('active', selected && b.textContent === selected.name));
       document.getElementById('current').textContent = selected.schema + '.' + selected.name;
-      document.getElementById('meta').textContent = `rows \${{offset + 1}}-\${{offset + limit}}`;
-      const url = `/api/table?schema=\${{encodeURIComponent(selected.schema)}}&table=\${{encodeURIComponent(selected.name)}}&limit=\${{limit}}&offset=\${{offset}}`;
+      document.getElementById('meta').textContent = 'rows ' + (offset + 1) + '-' + (offset + limit);
+      const url = '/api/table?schema=' + encodeURIComponent(selected.schema) + '&table=' + encodeURIComponent(selected.name) + '&limit=' + limit + '&offset=' + offset;
       const payload = await getJson(url);
       const cols = payload.columns;
       const rows = payload.rows;
@@ -480,16 +484,16 @@ class Viewer(BaseHTTPRequestHandler):
         document.getElementById('rows').innerHTML = '<div class="empty">No rows at this offset.</div>';
         return;
       }}
-      let out = '<table><thead><tr>' + cols.map(c => `<th>\${{esc(c)}}</th>`).join('') + '</tr></thead><tbody>';
+      let out = '<table><thead><tr>' + cols.map(c => '<th>' + esc(c) + '</th>').join('') + '</tr></thead><tbody>';
       for (const row of rows) {{
-        out += '<tr>' + cols.map(c => row[c] == null ? '<td class="null">NULL</td>' : `<td title="\${{esc(row[c])}}">\${{esc(row[c])}}</td>`).join('') + '</tr>';
+        out += '<tr>' + cols.map(c => row[c] == null ? '<td class="null">NULL</td>' : '<td title="' + esc(row[c]) + '">' + esc(row[c]) + '</td>').join('') + '</tr>';
       }}
       out += '</tbody></table>';
       document.getElementById('rows').innerHTML = out;
     }}
     document.getElementById('prev').onclick = () => {{ if (selected) {{ offset = Math.max(0, offset - limit); loadRows(); }} }};
     document.getElementById('next').onclick = () => {{ if (selected) {{ offset += limit; loadRows(); }} }};
-    loadTables().catch(e => document.getElementById('tables').innerHTML = `<div class="empty">\${{esc(e.message)}}</div>`);
+    loadTables().catch(e => document.getElementById('tables').innerHTML = '<div class="empty">' + esc(e.message) + '</div>');
   </script>
 </body>
 </html>"""
