@@ -680,17 +680,27 @@ export POLYMARKET_REST_BACKUP_INTERVAL_MS="\$PC_REST_BACKUP_INTERVAL_MS"
 export DEPLOY_FORCE=1
 ./scripts/deploy.sh
 
-python3 scripts/check_collector_status.py \\
-  --status-path "\$PC_DATA_DIR/live/status.json" \\
-  --max-status-age-seconds 30 \\
-  --max-price-age-ms 30000 \\
-  --max-orderbook-age-ms 30000 \\
-  --max-websocket-event-age-ms 30000 \\
-  --raw-root "\$PC_DATA_DIR/raw" \\
-  --max-raw-event-age-ms 30000 \\
-  --normalized-health-path "\$PC_DATA_DIR/live/normalized_health.json" \\
-  --max-normalized-health-age-ms 30000 \\
-  --expected-prewarm-windows 2
+collector_status_ok=0
+for _ in \$(seq 1 30); do
+  if python3 scripts/check_collector_status.py \\
+    --status-path "\$PC_DATA_DIR/live/status.json" \\
+    --max-status-age-seconds 30 \\
+    --max-price-age-ms 30000 \\
+    --max-orderbook-age-ms 30000 \\
+    --max-websocket-event-age-ms 30000 \\
+    --raw-root "\$PC_DATA_DIR/raw" \\
+    --max-raw-event-age-ms 30000 \\
+    --normalized-health-path "\$PC_DATA_DIR/live/normalized_health.json" \\
+    --max-normalized-health-age-ms 30000 \\
+    --expected-prewarm-windows 2; then
+    collector_status_ok=1
+    break
+  fi
+  sleep 1
+done
+if [ "\$collector_status_ok" -ne 1 ]; then
+  exit 1
+fi
 
 POLYMARKET_API_PORT="\$PC_API_PORT" python3 - <<'PY'
 import json

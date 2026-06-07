@@ -452,6 +452,8 @@ def test_pc_deploy_script_runs_prebuilt_deploy_gate_with_pc_cadence() -> None:
     assert "set_env POLYMARKET_ALLOW_RUNTIME_PROBABILITY_COMPUTE 0 deploy/collector/.env" in script
     assert 'POLYMARKET_REST_BACKUP_INTERVAL_MS="\\$PC_REST_BACKUP_INTERVAL_MS"' in script
     assert "scripts/check_collector_status.py" in script
+    assert "collector_status_ok=0" in script
+    assert "for _ in \\$(seq 1 30); do" in script
     assert "--expected-prewarm-windows 2" in script
 
 
