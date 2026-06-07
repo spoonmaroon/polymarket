@@ -305,6 +305,51 @@ def test_build_writes_probability_fragments_from_asof_price_history(
     assert all(min(fragment.prices) > 0 for fragment in payload.fragments)
     assert len(payload.fragments) <= 10
 
+    second_asof_ts = asof_ts + timedelta(seconds=30)
+    _write_status(status_path, start_ts=start_ts, asof_ts=second_asof_ts)
+    store.insert_price_tick(
+        PriceObservation(
+            "polymarket_rtds_chainlink",
+            "BTC/USD",
+            second_asof_ts,
+            second_asof_ts,
+            70_160.0,
+        )
+    )
+    for token_id, bid, ask in (("up-token", 0.62, 0.65), ("down-token", 0.35, 0.38)):
+        store.insert_orderbook_snapshot(
+            OrderBookObservation(
+                venue="polymarket",
+                contract_id="0xcondition",
+                token_id=token_id,
+                event_ts=second_asof_ts,
+                observed_ts=second_asof_ts,
+                best_bid=bid,
+                best_ask=ask,
+                bid_size_top=50.0,
+                ask_size_top=40.0,
+                spread=ask - bid,
+                depth_json="{}",
+            )
+        )
+
+    build_current_decision_state_snapshots(
+        status_path=status_path,
+        store=store,
+        probability_fragments_path=probability_fragments_path,
+        fragment_max_rows=10,
+    )
+    retained_payload = read_probability_fragments(
+        out_path=probability_fragments_path,
+        max_age_seconds=10_000_000,
+    )
+
+    assert retained_payload.generated_at == second_asof_ts
+    assert any(fragment.asof_ts == asof_ts for fragment in retained_payload.fragments)
+    assert any(fragment.asof_ts == second_asof_ts for fragment in retained_payload.fragments)
+    assert len(retained_payload.fragments) > len(payload.fragments)
+    assert len(retained_payload.fragments) <= 10
+
 
 def test_reports_unavailable_current_state_when_threshold_tick_is_missing(
     tmp_path: Path,

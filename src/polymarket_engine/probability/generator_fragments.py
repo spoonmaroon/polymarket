@@ -4,7 +4,7 @@ import json
 import math
 import tempfile
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence, cast
 
@@ -13,6 +13,7 @@ from polymarket_engine.storage.atomic import durable_replace
 
 GENERATOR_FRAGMENTS_SCHEMA_VERSION = "polymarket-probability-fragments-v1"
 MAX_FUTURE_GENERATED_AT_SECONDS = 5.0
+DEFAULT_RETAINED_FRAGMENT_AGE_SECONDS = 15 * 60
 
 
 @dataclass(frozen=True)
@@ -96,9 +97,21 @@ def write_probability_fragments(
     out_path: Path,
     fragments: Sequence[GeneratorFragment],
     generated_at: datetime,
+    *,
+    retain_existing: bool = False,
+    max_retained_fragments: int | None = None,
+    max_retained_age_seconds: float = DEFAULT_RETAINED_FRAGMENT_AGE_SECONDS,
 ) -> None:
     generated_at_utc = _require_aware_datetime_utc(generated_at, "generated_at")
-    rows = [_fragment_to_json_dict(fragment) for fragment in fragments]
+    retained_fragments = _retained_fragments(
+        out_path=out_path,
+        fragments=fragments,
+        generated_at=generated_at_utc,
+        retain_existing=retain_existing,
+        max_retained_fragments=max_retained_fragments,
+        max_retained_age_seconds=max_retained_age_seconds,
+    )
+    rows = [_fragment_to_json_dict(fragment) for fragment in retained_fragments]
     payload = {
         "schema_version": GENERATOR_FRAGMENTS_SCHEMA_VERSION,
         "generated_at": generated_at_utc.isoformat(),
@@ -123,6 +136,83 @@ def write_probability_fragments(
     finally:
         if tmp_path is not None and tmp_path.exists():
             tmp_path.unlink()
+
+
+def _retained_fragments(
+    *,
+    out_path: Path,
+    fragments: Sequence[GeneratorFragment],
+    generated_at: datetime,
+    retain_existing: bool,
+    max_retained_fragments: int | None,
+    max_retained_age_seconds: float,
+) -> tuple[GeneratorFragment, ...]:
+    if max_retained_fragments is not None:
+        if isinstance(max_retained_fragments, bool) or max_retained_fragments <= 0:
+            raise ValueError("max_retained_fragments must be positive when set")
+    if (
+        isinstance(max_retained_age_seconds, bool)
+        or not isinstance(max_retained_age_seconds, (int, float))
+        or not math.isfinite(max_retained_age_seconds)
+        or max_retained_age_seconds < 0
+    ):
+        raise ValueError("max_retained_age_seconds must be finite and nonnegative")
+
+    new_fragments = tuple(fragments)
+    if not retain_existing:
+        return new_fragments
+
+    cutoff = generated_at - timedelta(seconds=float(max_retained_age_seconds))
+    latest_allowed = generated_at + timedelta(seconds=MAX_FUTURE_GENERATED_AT_SECONDS)
+    retained = [
+        fragment
+        for fragment in _read_existing_fragments(out_path)
+        if cutoff <= fragment.asof_ts <= latest_allowed
+    ]
+    merged = sorted(
+        (*new_fragments, *retained),
+        key=lambda fragment: fragment.asof_ts,
+        reverse=True,
+    )
+    deduped = _dedupe_fragments_by_id(merged)
+    if max_retained_fragments is not None:
+        return deduped[:max_retained_fragments]
+    return deduped
+
+
+def _read_existing_fragments(out_path: Path) -> tuple[GeneratorFragment, ...]:
+    try:
+        raw = json.loads(
+            out_path.read_text(encoding="utf-8"),
+            parse_constant=_reject_json_constant,
+        )
+    except (FileNotFoundError, json.JSONDecodeError, ValueError):
+        return ()
+    if not isinstance(raw, dict):
+        return ()
+    raw_fragments = raw.get("fragments")
+    if not isinstance(raw_fragments, list):
+        return ()
+    fragments: list[GeneratorFragment] = []
+    for row in raw_fragments:
+        try:
+            fragments.append(_fragment_from_json_dict(row))
+        except (TypeError, ValueError):
+            continue
+    return tuple(fragments)
+
+
+def _dedupe_fragments_by_id(
+    fragments: Iterable[GeneratorFragment],
+) -> tuple[GeneratorFragment, ...]:
+    selected: list[GeneratorFragment] = []
+    seen: set[str] = set()
+    for fragment in fragments:
+        if fragment.fragment_id in seen:
+            continue
+        seen.add(fragment.fragment_id)
+        selected.append(fragment)
+    return tuple(selected)
 
 
 def read_probability_fragments(

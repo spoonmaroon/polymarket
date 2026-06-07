@@ -196,6 +196,8 @@ def build_current_decision_state_snapshots(
                 max_rows=fragment_max_rows,
             ),
             generated_at=asof_ts,
+            retain_existing=True,
+            max_retained_fragments=fragment_max_rows,
         )
     return CurrentDecisionStateSnapshotResult(
         asof_ts=asof_ts,

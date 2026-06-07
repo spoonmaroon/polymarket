@@ -79,6 +79,63 @@ def test_probability_fragments_snapshot_round_trips_and_filters_asof(
     assert selected.reason == "exact"
 
 
+def test_probability_fragments_retention_keeps_bounded_asof_safe_history(
+    tmp_path: Path,
+) -> None:
+    out_path = tmp_path / "probability_fragments.json"
+    retained = GeneratorFragment(
+        fragment_id="btc-retained",
+        asset="BTC",
+        asof_ts=datetime(2026, 6, 7, 12, 1, tzinfo=UTC),
+        prices=(100.0, 100.5, 101.0),
+        horizon_seconds=180,
+        z_path_bucket="near",
+        quality_bucket="OK",
+    )
+    stale = GeneratorFragment(
+        fragment_id="btc-stale",
+        asset="BTC",
+        asof_ts=datetime(2026, 6, 7, 11, 55, tzinfo=UTC),
+        prices=(100.0, 99.5, 99.0),
+        horizon_seconds=180,
+        z_path_bucket="near",
+        quality_bucket="OK",
+    )
+    current = GeneratorFragment(
+        fragment_id="btc-current",
+        asset="BTC",
+        asof_ts=datetime(2026, 6, 7, 12, 3, tzinfo=UTC),
+        prices=(100.0, 101.5, 102.0),
+        horizon_seconds=180,
+        z_path_bucket="near",
+        quality_bucket="OK",
+    )
+
+    write_probability_fragments(
+        out_path=out_path,
+        fragments=(retained, stale),
+        generated_at=datetime(2026, 6, 7, 12, 1, tzinfo=UTC),
+    )
+    write_probability_fragments(
+        out_path=out_path,
+        fragments=(current,),
+        generated_at=datetime(2026, 6, 7, 12, 3, tzinfo=UTC),
+        retain_existing=True,
+        max_retained_fragments=4,
+        max_retained_age_seconds=180,
+    )
+
+    payload = read_probability_fragments(
+        out_path=out_path,
+        max_age_seconds=60 * 60 * 24 * 365,
+    )
+
+    assert [fragment.fragment_id for fragment in payload.fragments] == [
+        "btc-current",
+        "btc-retained",
+    ]
+
+
 def test_select_fragments_marks_sparse_when_bucket_is_thin() -> None:
     selected = select_fragments_for_input(
         (),
