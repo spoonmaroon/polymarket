@@ -301,6 +301,7 @@ def test_pc_image_build_script_exports_docker_tarballs_and_manifest() -> None:
     assert 'if [ "$HEAD_SHA" != "$FULL_SHA" ]; then' in script
     assert 'SHORT_SHA="${FULL_SHA:0:12}"' in script
     assert 'TARGET_PLATFORM="${TARGET_PLATFORM:-linux/amd64}"' in script
+    assert 'SAVE_TARS="${POLYMARKET_BUILD_SAVE_TARS:-1}"' in script
     assert "DIST_DIR=\"${DIST_DIR:-$ROOT/dist/docker}\"" in script
     assert "polymarket-rust-collector:${SHORT_SHA}" in script
     assert "polymarket-normalizer:${SHORT_SHA}" in script
@@ -310,6 +311,7 @@ def test_pc_image_build_script_exports_docker_tarballs_and_manifest() -> None:
     assert '--platform "$TARGET_PLATFORM"' in script
     assert "--load" in script
     assert "docker save" in script
+    assert 'if [ "$SAVE_TARS" = "1" ]; then' in script
     assert "manifest-${SHORT_SHA}.txt" in script
     assert "full_sha=" in script
     assert "short_sha=" in script
@@ -319,6 +321,7 @@ def test_pc_image_build_script_exports_docker_tarballs_and_manifest() -> None:
     assert "normalizer_image_id=" in script
     assert "cuda_probability_image_id=" in script
     assert "cuda_probability_tar=" in script
+    assert "saved_tars=" in script
 
 
 def test_pc_deploy_installs_duckdb_ui_snapshot_launcher() -> None:
@@ -383,6 +386,9 @@ def test_prebuilt_image_deploy_script_loads_images_and_uses_deploy_fast_path() -
 def test_pc_deploy_script_streams_bundle_and_images_into_wsl() -> None:
     script = (ROOT / "scripts" / "deploy_pc.sh").read_text(encoding="utf-8")
 
+    assert 'PC_DEPLOY_MODE="${PC_DEPLOY_MODE:-remote-build}"' in script
+    assert 'PC_REMOTE_BUILD_SAVE_TARS="${PC_REMOTE_BUILD_SAVE_TARS:-0}"' in script
+    assert "remote-build | image-tar)" in script
     assert 'PC_HOST="${PC_HOST:-ender@100.72.104.49}"' in script
     assert 'PC_WSL_DISTRO="${PC_WSL_DISTRO:-Ubuntu}"' in script
     assert 'PC_REPO="${PC_REPO:-/home/ender/polymarket}"' in script
@@ -394,7 +400,13 @@ def test_pc_deploy_script_streams_bundle_and_images_into_wsl() -> None:
     assert 'polymarket-rust-collector-${SHORT_SHA}.tar' in script
     assert 'polymarket-normalizer-${SHORT_SHA}.tar' in script
     assert 'polymarket-cuda-probability-${SHORT_SHA}.tar' in script
+    assert "copying git bundle to THEPC WSL; images will build on THEPC" in script
+    assert 'if [ "$PC_DEPLOY_MODE" = "image-tar" ]; then' in script
     assert 'set_env POLYMARKET_CUDA_PROBABILITY_IMAGE "\\$CUDA_PROBABILITY_IMAGE"' in script
+    assert 'POLYMARKET_BUILD_SAVE_TARS="\\$PC_REMOTE_BUILD_SAVE_TARS"' in script
+    assert 'POLYMARKET_DEPLOY_REF="\\$FULL_SHA"' in script
+    assert './scripts/build_images_pc.sh' in script
+    assert 'TUI_BIN="\\$PC_REPO/dist/docker/polymarket-cockpit-tui-\\$SHORT_SHA"' in script
     assert 'docker load -i "\\$CUDA_PROBABILITY_TAR"' in script
 
 

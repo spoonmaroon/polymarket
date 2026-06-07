@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="${DIST_DIR:-$ROOT/dist/docker}"
 DEPLOY_REF="${POLYMARKET_DEPLOY_REF:-HEAD}"
 TARGET_PLATFORM="${TARGET_PLATFORM:-linux/amd64}"
+SAVE_TARS="${POLYMARKET_BUILD_SAVE_TARS:-1}"
 
 if ! git -C "$ROOT" diff --quiet; then
   echo "working tree has unstaged changes; commit or stash before building images" >&2
@@ -72,20 +73,22 @@ docker buildx build \
   -t "$CUDA_PROBABILITY_LATEST_TAG" \
   "$ROOT"
 
-docker save \
-  -o "$COLLECTOR_TAR" \
-  "$COLLECTOR_SHA_TAG" \
-  "$COLLECTOR_LATEST_TAG"
+if [ "$SAVE_TARS" = "1" ]; then
+  docker save \
+    -o "$COLLECTOR_TAR" \
+    "$COLLECTOR_SHA_TAG" \
+    "$COLLECTOR_LATEST_TAG"
 
-docker save \
-  -o "$NORMALIZER_TAR" \
-  "$NORMALIZER_SHA_TAG" \
-  "$NORMALIZER_LATEST_TAG"
+  docker save \
+    -o "$NORMALIZER_TAR" \
+    "$NORMALIZER_SHA_TAG" \
+    "$NORMALIZER_LATEST_TAG"
 
-docker save \
-  -o "$CUDA_PROBABILITY_TAR" \
-  "$CUDA_PROBABILITY_SHA_TAG" \
-  "$CUDA_PROBABILITY_LATEST_TAG"
+  docker save \
+    -o "$CUDA_PROBABILITY_TAR" \
+    "$CUDA_PROBABILITY_SHA_TAG" \
+    "$CUDA_PROBABILITY_LATEST_TAG"
+fi
 
 CONTAINER_ID="$(docker create --platform "$TARGET_PLATFORM" "$COLLECTOR_SHA_TAG")"
 trap 'docker rm -f "$CONTAINER_ID" >/dev/null 2>&1 || true' EXIT
@@ -116,6 +119,7 @@ cuda_probability_image=${CUDA_PROBABILITY_SHA_TAG}
 cuda_probability_latest=${CUDA_PROBABILITY_LATEST_TAG}
 cuda_probability_tar=${CUDA_PROBABILITY_TAR}
 cuda_probability_image_id=${CUDA_PROBABILITY_IMAGE_ID}
+saved_tars=${SAVE_TARS}
 tui_bin=${TUI_BIN}
 EOF
 

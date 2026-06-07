@@ -16,13 +16,24 @@ PC_BIN_DIR="${PC_BIN_DIR:-/home/ender/bin}"
 PC_NORMALIZER_INTERVAL_SECONDS="${PC_NORMALIZER_INTERVAL_SECONDS:-0.1}"
 PC_REST_BACKUP_INTERVAL_MS="${PC_REST_BACKUP_INTERVAL_MS:-1000}"
 PC_API_PORT="${PC_API_PORT:-8000}"
+PC_DEPLOY_MODE="${PC_DEPLOY_MODE:-remote-build}"
 PC_DEPLOY_BUILD_IMAGES="${PC_DEPLOY_BUILD_IMAGES:-1}"
+PC_REMOTE_BUILD_SAVE_TARS="${PC_REMOTE_BUILD_SAVE_TARS:-0}"
 PC_BRANCH="${PC_BRANCH:-$(git -C "$ROOT" branch --show-current)}"
 
 if [ -z "$PC_BRANCH" ]; then
   echo "could not infer current git branch; set PC_BRANCH explicitly" >&2
   exit 1
 fi
+
+case "$PC_DEPLOY_MODE" in
+  remote-build | image-tar)
+    ;;
+  *)
+    echo "unsupported PC_DEPLOY_MODE=$PC_DEPLOY_MODE; expected remote-build or image-tar" >&2
+    exit 2
+    ;;
+esac
 
 if ! git -C "$ROOT" diff --quiet; then
   echo "working tree has unstaged changes; commit or stash before deploying to THEPC" >&2
@@ -56,28 +67,30 @@ CUDA_PROBABILITY_TAR="$DIST_DIR/polymarket-cuda-probability-${SHORT_SHA}.tar"
 TUI_BIN="$DIST_DIR/polymarket-cockpit-tui-${SHORT_SHA}"
 LOCAL_BUNDLE="$DIST_DIR/polymarket-${SHORT_SHA}.bundle"
 
-if [ "$PC_DEPLOY_BUILD_IMAGES" = "1" ]; then
+if [ "$PC_DEPLOY_MODE" = "image-tar" ] && [ "$PC_DEPLOY_BUILD_IMAGES" = "1" ]; then
   TARGET_PLATFORM="$TARGET_PLATFORM" POLYMARKET_DEPLOY_REF="$DEPLOY_REF" "$ROOT/scripts/build_images_pc.sh"
 fi
 
-if [ ! -f "$COLLECTOR_TAR" ]; then
-  echo "missing collector image tarball: $COLLECTOR_TAR" >&2
-  exit 1
-fi
+if [ "$PC_DEPLOY_MODE" = "image-tar" ]; then
+  if [ ! -f "$COLLECTOR_TAR" ]; then
+    echo "missing collector image tarball: $COLLECTOR_TAR" >&2
+    exit 1
+  fi
 
-if [ ! -f "$NORMALIZER_TAR" ]; then
-  echo "missing normalizer image tarball: $NORMALIZER_TAR" >&2
-  exit 1
-fi
+  if [ ! -f "$NORMALIZER_TAR" ]; then
+    echo "missing normalizer image tarball: $NORMALIZER_TAR" >&2
+    exit 1
+  fi
 
-if [ ! -f "$CUDA_PROBABILITY_TAR" ]; then
-  echo "missing CUDA probability image tarball: $CUDA_PROBABILITY_TAR" >&2
-  exit 1
-fi
+  if [ ! -f "$CUDA_PROBABILITY_TAR" ]; then
+    echo "missing CUDA probability image tarball: $CUDA_PROBABILITY_TAR" >&2
+    exit 1
+  fi
 
-if [ ! -f "$TUI_BIN" ]; then
-  echo "missing TUI binary: $TUI_BIN" >&2
-  exit 1
+  if [ ! -f "$TUI_BIN" ]; then
+    echo "missing TUI binary: $TUI_BIN" >&2
+    exit 1
+  fi
 fi
 
 mkdir -p "$DIST_DIR"
@@ -102,12 +115,18 @@ wsl_put_file() {
   ssh "$PC_HOST" "wsl.exe -d $PC_WSL_DISTRO -- bash -lc \"mkdir -p $dest_dir_q && cat > $dest_q\"" < "$src"
 }
 
-echo "copying git bundle and image tarballs to THEPC WSL"
+if [ "$PC_DEPLOY_MODE" = "remote-build" ]; then
+  echo "copying git bundle to THEPC WSL; images will build on THEPC"
+else
+  echo "copying git bundle and image tarballs to THEPC WSL"
+fi
 wsl_put_file "$LOCAL_BUNDLE" "$PC_BUNDLE"
-wsl_put_file "$COLLECTOR_TAR" "$PC_DIST_DIR/$(basename "$COLLECTOR_TAR")"
-wsl_put_file "$NORMALIZER_TAR" "$PC_DIST_DIR/$(basename "$NORMALIZER_TAR")"
-wsl_put_file "$CUDA_PROBABILITY_TAR" "$PC_DIST_DIR/$(basename "$CUDA_PROBABILITY_TAR")"
-wsl_put_file "$TUI_BIN" "$PC_DIST_DIR/$(basename "$TUI_BIN")"
+if [ "$PC_DEPLOY_MODE" = "image-tar" ]; then
+  wsl_put_file "$COLLECTOR_TAR" "$PC_DIST_DIR/$(basename "$COLLECTOR_TAR")"
+  wsl_put_file "$NORMALIZER_TAR" "$PC_DIST_DIR/$(basename "$NORMALIZER_TAR")"
+  wsl_put_file "$CUDA_PROBABILITY_TAR" "$PC_DIST_DIR/$(basename "$CUDA_PROBABILITY_TAR")"
+  wsl_put_file "$TUI_BIN" "$PC_DIST_DIR/$(basename "$TUI_BIN")"
+fi
 
 ssh "$PC_HOST" "wsl.exe -d $PC_WSL_DISTRO -- bash -s" <<EOF
 set -euo pipefail
@@ -124,6 +143,9 @@ PC_WSL_DISTRO=$(shell_quote "$PC_WSL_DISTRO")
 PC_NORMALIZER_INTERVAL_SECONDS=$(shell_quote "$PC_NORMALIZER_INTERVAL_SECONDS")
 PC_REST_BACKUP_INTERVAL_MS=$(shell_quote "$PC_REST_BACKUP_INTERVAL_MS")
 PC_API_PORT=$(shell_quote "$PC_API_PORT")
+PC_DEPLOY_MODE=$(shell_quote "$PC_DEPLOY_MODE")
+PC_REMOTE_BUILD_SAVE_TARS=$(shell_quote "$PC_REMOTE_BUILD_SAVE_TARS")
+TARGET_PLATFORM=$(shell_quote "$TARGET_PLATFORM")
 COLLECTOR_IMAGE=$(shell_quote "$COLLECTOR_IMAGE")
 NORMALIZER_IMAGE=$(shell_quote "$NORMALIZER_IMAGE")
 CUDA_PROBABILITY_IMAGE=$(shell_quote "$CUDA_PROBABILITY_IMAGE")
@@ -189,9 +211,21 @@ set_env POLYMARKET_COLLECTOR_IMAGE "\$COLLECTOR_IMAGE" deploy/collector/.env
 set_env POLYMARKET_NORMALIZER_IMAGE "\$NORMALIZER_IMAGE" deploy/collector/.env
 set_env POLYMARKET_CUDA_PROBABILITY_IMAGE "\$CUDA_PROBABILITY_IMAGE" deploy/collector/.env
 
-docker load -i "\$COLLECTOR_TAR"
-docker load -i "\$NORMALIZER_TAR"
-docker load -i "\$CUDA_PROBABILITY_TAR"
+if [ "\$PC_DEPLOY_MODE" = "remote-build" ]; then
+  POLYMARKET_BUILD_SAVE_TARS="\$PC_REMOTE_BUILD_SAVE_TARS" \\
+    TARGET_PLATFORM="\$TARGET_PLATFORM" \\
+    POLYMARKET_DEPLOY_REF="\$FULL_SHA" \\
+    ./scripts/build_images_pc.sh
+  TUI_BIN="\$PC_REPO/dist/docker/polymarket-cockpit-tui-\$SHORT_SHA"
+else
+  docker load -i "\$COLLECTOR_TAR"
+  docker load -i "\$NORMALIZER_TAR"
+  docker load -i "\$CUDA_PROBABILITY_TAR"
+fi
+if [ ! -f "\$TUI_BIN" ]; then
+  echo "missing TUI binary after deploy image prep: \$TUI_BIN" >&2
+  exit 1
+fi
 install -m 755 "\$TUI_BIN" "\$PC_BIN_DIR/polymarket-cockpit-tui"
 
 {
