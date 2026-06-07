@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import {
   probabilityDisplayValue,
   probabilityMetadata,
+  probabilityDisplayStatus,
+  probabilityKind,
   probabilityRowKey,
   probabilitySelectionKey,
 } from "../../ui/src/probabilityRows";
@@ -15,9 +17,16 @@ const upRow = {
   asof_ts: "2026-06-05T13:20:00Z",
   p_finish: 0.55,
   p_hat: 0.56,
+  p_no_touch: 0.71,
+  generator_version: "cuda-lognormal-chainlink-sigma-batch-v1",
   path_count: 120000,
   paths_per_seed: 30000,
   seed_count: 4,
+  cache_status: "REFRESH",
+  latency: {
+    runtime_ms: 412.5,
+    total_lag_ms: 933.25,
+  },
   simulation_preview: {
     path_count: 120000,
     sampled_paths: new Array(24).fill({ points: [1, 2, 3] }),
@@ -38,11 +47,34 @@ assert.equal(probabilityDisplayValue({ ...upRow, p_hat: undefined }), 0.55);
 assert.equal(probabilityDisplayValue({ p_hat: 0, p_finish: 0.55 }), 0);
 assert.notEqual(probabilityRowKey(upRow), probabilityRowKey(downRow));
 assert.deepEqual(probabilityMetadata(upRow), {
-  totalPaths: 120000,
-  pathsPerSeed: 30000,
-  seedCount: 4,
-  previewPathCount: 24,
-});
+    totalPaths: 120000,
+    pathsPerSeed: 30000,
+    seedCount: 4,
+    previewPathCount: 24,
+    runtimeMs: 412.5,
+    totalLagMs: 933.25,
+    generatorVersion: "cuda-lognormal-chainlink-sigma-batch-v1",
+    cacheStatus: "REFRESH",
+    lane: "MC",
+    displayStatus: "live",
+  });
+assert.equal(probabilityKind(upRow), "MC");
+assert.equal(probabilityKind({ ...upRow, probability_kind: "NOWCAST" }), "NOWCAST");
+assert.equal(probabilityDisplayStatus(upRow), "live");
+assert.equal(
+  probabilityDisplayStatus({
+    ...upRow,
+    mc_display_status: "held",
+  }),
+  "held",
+);
+assert.equal(
+  probabilityDisplayStatus({
+    ...upRow,
+    refresh_display_until: "2099-06-05T13:20:30Z",
+  }),
+  "held",
+);
 
 assert.notEqual(
   probabilityRowKey({ ...upRow, output_id: undefined }),

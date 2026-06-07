@@ -5,7 +5,9 @@ use polymarket_client_sdk_v2::clob::types::request::OrderBookSummaryRequest;
 use polymarket_client_sdk_v2::clob::types::response::OrderBookSummaryResponse;
 use polymarket_client_sdk_v2::clob::{Client as ClobClient, Config as ClobConfig};
 use polymarket_client_sdk_v2::gamma::Client as GammaClient;
-use polymarket_client_sdk_v2::gamma::types::request::MarketsRequest;
+use polymarket_client_sdk_v2::gamma::types::request::{
+    EventBySlugRequest, MarketBySlugRequest, MarketsRequest,
+};
 use polymarket_client_sdk_v2::gamma::types::response::Market;
 use polymarket_client_sdk_v2::types::U256;
 use polymarket_runtime_types::{
@@ -191,17 +193,8 @@ pub async fn discover_current_markets(
     interval: &str,
     windows: u8,
 ) -> Result<Vec<MarketToken>> {
-    let gamma = GammaClient::new(GAMMA_HOST)?;
     let slugs = current_window_slugs(now, assets, interval, windows)?;
-    let request = MarketsRequest::builder().slug(slugs).closed(false).build();
-    let markets = gamma.markets(&request).await?;
-    let mut tokens = Vec::new();
-
-    for market in markets {
-        tokens.extend(market_tokens_from_gamma_market(&market)?);
-    }
-
-    Ok(tokens)
+    discover_slug_tokens(&slugs, GAMMA_HOST).await
 }
 
 #[allow(dead_code)]
@@ -211,10 +204,83 @@ pub async fn discover_windows(windows: &[ContractWindow]) -> Result<Vec<WarmedCo
 }
 
 pub async fn discover_window_tokens(windows: &[ContractWindow]) -> Result<Vec<MarketToken>> {
-    let gamma = GammaClient::new(GAMMA_HOST)?;
     let slugs = windows.iter().map(ContractWindow::slug).collect::<Vec<_>>();
-    let request = MarketsRequest::builder().slug(slugs).closed(false).build();
-    let markets = gamma.markets(&request).await?;
+    discover_slug_tokens(&slugs, GAMMA_HOST).await
+}
+
+async fn discover_slug_tokens(slugs: &[String], gamma_host: &str) -> Result<Vec<MarketToken>> {
+    let gamma = GammaClient::new(gamma_host)?;
+    let request = MarketsRequest::builder()
+        .slug(slugs.to_vec())
+        .closed(false)
+        .build();
+    let markets = match gamma.markets(&request).await {
+        Ok(markets) => markets,
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                slugs = ?slugs,
+                "batch Gamma market discovery failed; falling back to per-slug discovery"
+            );
+            discover_markets_by_slug_fallback(&gamma, slugs).await?
+        }
+    };
+    market_tokens_from_gamma_markets(markets)
+}
+
+async fn discover_markets_by_slug_fallback(
+    gamma: &GammaClient,
+    slugs: &[String],
+) -> Result<Vec<Market>> {
+    let mut markets = Vec::new();
+    let mut errors = Vec::new();
+
+    for slug in slugs {
+        match gamma
+            .market_by_slug(&MarketBySlugRequest::builder().slug(slug.clone()).build())
+            .await
+        {
+            Ok(market) => {
+                markets.push(market);
+                continue;
+            }
+            Err(market_error) => match gamma
+                .event_by_slug(&EventBySlugRequest::builder().slug(slug.clone()).build())
+                .await
+            {
+                Ok(event) => {
+                    let mut event_markets = event
+                        .markets
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(|market| market.slug.as_deref() == Some(slug.as_str()))
+                        .collect::<Vec<_>>();
+                    if event_markets.is_empty() {
+                        errors.push(format!("{slug}: event fallback returned no matching market"));
+                    }
+                    markets.append(&mut event_markets);
+                }
+                Err(event_error) => errors.push(format!(
+                    "{slug}: market_by_slug failed ({market_error}); event_by_slug failed ({event_error})"
+                )),
+            },
+        }
+    }
+
+    for error in &errors {
+        tracing::warn!(error, "Gamma per-slug discovery fallback skipped a market");
+    }
+    if markets.is_empty() && !errors.is_empty() {
+        bail!(
+            "Gamma per-slug discovery fallback failed for all slugs: {}",
+            errors.join("; ")
+        );
+    }
+
+    Ok(markets)
+}
+
+fn market_tokens_from_gamma_markets(markets: Vec<Market>) -> Result<Vec<MarketToken>> {
     let mut tokens = Vec::new();
 
     for market in markets {
@@ -297,6 +363,9 @@ mod tests {
     use super::*;
     use polymarket_client_sdk_v2::gamma::types::response::Market;
     use rust_decimal::Decimal;
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::thread;
 
     #[test]
     fn current_window_slugs_use_polymarket_epoch_pattern() {
@@ -332,6 +401,33 @@ mod tests {
         let market = gamma_market_fixture();
 
         let tokens = market_tokens_from_gamma_market(&market).unwrap();
+
+        assert_eq!(
+            tokens,
+            vec![
+                MarketToken {
+                    slug: "btc-updown-5m-1780262100".to_owned(),
+                    asset: "BTC".to_owned(),
+                    side: "UP".to_owned(),
+                    token_id: U256::from(111_u64),
+                },
+                MarketToken {
+                    slug: "btc-updown-5m-1780262100".to_owned(),
+                    asset: "BTC".to_owned(),
+                    side: "DOWN".to_owned(),
+                    token_id: U256::from(222_u64),
+                },
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn discovers_tokens_with_market_by_slug_when_batch_gamma_fails() {
+        let host = one_market_gamma_server();
+
+        let tokens = discover_slug_tokens(&["btc-updown-5m-1780262100".to_owned()], &host)
+            .await
+            .unwrap();
 
         assert_eq!(
             tokens,
@@ -436,5 +532,47 @@ mod tests {
             "enableOrderBook": true
         }))
         .unwrap()
+    }
+
+    fn one_market_gamma_server() -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        thread::spawn(move || {
+            for _ in 0..2 {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                handle_gamma_test_request(&mut stream);
+            }
+        });
+        format!("http://{address}")
+    }
+
+    fn handle_gamma_test_request(stream: &mut TcpStream) {
+        let mut buffer = [0_u8; 2048];
+        let read = stream.read(&mut buffer).unwrap_or(0);
+        let request = String::from_utf8_lossy(&buffer[..read]);
+        let first_line = request.lines().next().unwrap_or_default();
+        if first_line.starts_with("GET /markets?") {
+            write_response(stream, "500 Internal Server Error", r#"{"error":"boom"}"#);
+            return;
+        }
+        if first_line.starts_with("GET /markets/slug/btc-updown-5m-1780262100") {
+            write_response(
+                stream,
+                "200 OK",
+                r#"{"id":"123","slug":"btc-updown-5m-1780262100","question":"Bitcoin Up or Down","outcomes":"[\"Up\",\"Down\"]","clobTokenIds":"[\"111\",\"222\"]","active":true,"closed":false,"enableOrderBook":true}"#,
+            );
+            return;
+        }
+        write_response(stream, "404 Not Found", r#"{"error":"not found"}"#);
+    }
+
+    fn write_response(stream: &mut TcpStream, status: &str, body: &str) {
+        let response = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).unwrap();
     }
 }

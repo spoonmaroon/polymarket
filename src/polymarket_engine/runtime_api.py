@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import asdict
 from datetime import datetime, timezone
+import hashlib
 from pathlib import Path
 from typing import Any, Sequence
 import json
@@ -227,6 +228,7 @@ def build_runtime_router(
             while max_events is None or emitted < max_events:
                 payload = _probability_events_payload(
                     probability_event_path=probability_event_path,
+                    probability_status_path=probability_status_path,
                     limit=limit,
                     after_event_id=last_event_id,
                 )
@@ -354,6 +356,7 @@ def _probability_status_payload(
 def _probability_events_payload(
     *,
     probability_event_path: Path,
+    probability_status_path: Path,
     limit: int,
     after_event_id: str | None,
 ) -> dict[str, Any]:
@@ -361,6 +364,13 @@ def _probability_events_payload(
         probability_event_path,
         limit=max(limit, 1),
     )
+    event_source = "jsonl"
+    if not rows and errors == [f"{probability_event_path} missing"]:
+        rows, errors = _probability_event_rows_from_status(
+            probability_status_path,
+            limit=max(limit, 1),
+        )
+        event_source = "status"
     if after_event_id:
         rows = _probability_events_after(rows, after_event_id)
     return {
@@ -370,6 +380,7 @@ def _probability_events_payload(
         "error": None if not errors else errors[0],
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "path": str(probability_event_path),
+        "event_source": event_source,
         "events": rows[-limit:] if limit > 0 else [],
         "errors": errors,
     }
@@ -380,10 +391,11 @@ def _read_probability_event_rows(
     *,
     limit: int,
 ) -> tuple[list[dict[str, Any]], list[str]]:
-    if not path.exists():
+    read_path = path if path.exists() else _newest_probability_event_drain(path)
+    if read_path is None:
         return [], [f"{path} missing"]
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        lines = read_path.read_text(encoding="utf-8").splitlines()
     except OSError as exc:
         return [], [f"file read failed: {_format_error(exc)}"]
 
@@ -402,6 +414,60 @@ def _read_probability_event_rows(
             continue
         rows.append(payload)
     return rows[-limit:], errors
+
+
+def _newest_probability_event_drain(path: Path) -> Path | None:
+    newest: tuple[int, Path] | None = None
+    for candidate in path.parent.glob(f"{path.name}.*.drain"):
+        try:
+            mtime_ns = candidate.stat().st_mtime_ns
+        except OSError:
+            continue
+        if newest is None or mtime_ns > newest[0]:
+            newest = (mtime_ns, candidate)
+    return None if newest is None else newest[1]
+
+
+def _probability_event_rows_from_status(
+    path: Path,
+    *,
+    limit: int,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    payload, read_error = _read_json_or_error(path)
+    if payload is None:
+        return [], [read_error["error"]]
+
+    rows: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for lane_key, default_kind in (("rows", "MC"), ("nowcast_rows", "NOWCAST")):
+        lane_rows = payload.get(lane_key, [])
+        if not isinstance(lane_rows, list):
+            errors.append(f"probability status shape invalid: {lane_key} must be a list")
+            continue
+        for row in lane_rows:
+            if not isinstance(row, dict):
+                errors.append(f"probability status shape invalid: {lane_key} row must be an object")
+                continue
+            event = dict(row)
+            event.setdefault("probability_kind", default_kind)
+            event.setdefault("generated_at", payload.get("generated_at"))
+            event["event_id"] = _status_probability_event_id(event)
+            rows.append(event)
+    return rows[-limit:], errors
+
+
+def _status_probability_event_id(row: dict[str, Any]) -> str:
+    identity = {
+        "asof_ts": row.get("asof_ts"),
+        "contract_id": row.get("contract_id") or row.get("contract"),
+        "generated_at": row.get("generated_at"),
+        "output_id": row.get("output_id"),
+        "probability_kind": row.get("probability_kind"),
+        "side": row.get("side"),
+        "state_id": row.get("state_id"),
+    }
+    encoded = json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return f"status-{hashlib.sha1(encoded).hexdigest()[:20]}"
 
 
 def _probability_events_after(

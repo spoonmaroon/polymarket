@@ -2,7 +2,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   filterGraphableProbabilityRows,
   mergeProbabilityEventsIntoPayload,
+  probabilityDisplayStatus,
   probabilityDisplayValue,
+  probabilityKind,
   probabilityMetadata,
   probabilityRowKey,
   probabilitySelectionKey,
@@ -11,6 +13,7 @@ import {
 const LIVE_LIMIT = 12;
 const PROBABILITY_LIMIT = 24;
 const POLL_INTERVAL_MS = 2500;
+const MC_REFRESH_HOLD_MS = 15000;
 
 type JsonRecord = Record<string, unknown>;
 
@@ -20,6 +23,7 @@ type ApiState<T> = {
   error: string | null;
   notice: string | null;
   updatedAt: number | null;
+  source?: "poll" | "stream";
 };
 
 type RuntimeStatus = {
@@ -145,9 +149,13 @@ type ProbabilityRow = {
   p_hat_ci_low?: number;
   p_hat_ci_high?: number;
   p_no_touch?: number;
+  probability_kind?: string;
+  mc_display_status?: string;
   z_path?: number;
   sigma_tau?: number;
   age_ms?: number;
+  source_age_ms?: number | null;
+  book_age_ms?: number | null;
   flags?: string[];
   model_version?: string;
   seed?: number | null;
@@ -176,6 +184,11 @@ type ProbabilityRow = {
   generated_at?: string;
   valid_from?: string;
   valid_until?: string;
+  refresh_display_until?: string;
+  latency?: {
+    runtime_ms?: number | null;
+    total_lag_ms?: number | null;
+  };
   time_bucket?: string;
   z_path_bucket?: string;
   sigma_bucket?: string;
@@ -211,6 +224,7 @@ type ProbabilityPayload = {
   cached?: boolean;
   model_version?: string | null;
   rows?: ProbabilityRow[];
+  last_good_rows?: ProbabilityRow[];
   nowcast_rows?: ProbabilityRow[];
   skipped?: number;
   errors?: unknown[];
@@ -328,13 +342,7 @@ export function App() {
         if (events.length === 0) {
           return;
         }
-        setProbabilities((previous) => ({
-          status: "ready",
-          payload: mergeProbabilityEventsIntoPayload(previous.payload, events),
-          error: null,
-          notice: null,
-          updatedAt: Date.now(),
-        }));
+        setProbabilities((previous) => toProbabilityEventApiState(events, previous));
       } catch (error) {
         setProbabilities((previous) => ({
           ...previous,
@@ -406,6 +414,7 @@ export function App() {
             marketRows={marketRows}
             onSelectProbability={setSelectedId}
           />
+          <CompactVolatility volatility={live.payload?.volatility ?? null} />
           <ProbabilityTable
             rows={rows}
             selectedKey={selectedRow ? selectionKey(selectedRow) : null}
@@ -419,9 +428,6 @@ export function App() {
           />
           <RuntimeLogPanel live={live} probabilities={probabilities} selectedRow={selectedRow} />
         </section>
-        <aside className="side-stack">
-          <CompactVolatility volatility={live.payload?.volatility ?? null} />
-        </aside>
       </section>
     </main>
   );
@@ -438,14 +444,18 @@ function CompactLiveHealth({
 }) {
   const payload = live.payload;
   const orderbookCount = arrayLength(payload?.monitor?.orderbooks);
+  const nowcastCount = safeNowcastRows(probabilities.payload).length;
+  const latestMetadata = latestProbabilityMetadata(rows);
   return (
     <div className="topbar-health" aria-label="Compact live health">
       <span>{payload?.status?.state ?? statusLabel(live.status)}</span>
       <span>{formatInteger(orderbookCount)} books</span>
-      <span>{payload?.volatility?.state ?? "vol -"}</span>
       <span>{probabilities.payload?.state ?? statusLabel(probabilities.status)}</span>
-      <span>{formatInteger(rows.length)} MC rows</span>
-      <span>{formatLatency(payload?.latency)}</span>
+      <span>{formatInteger(rows.length)} MC</span>
+      <span>{formatInteger(nowcastCount)} NOW</span>
+      <span>{formatInteger(latestMetadata?.totalPaths)} paths</span>
+      <span>{formatAge(latestMetadata?.runtimeMs)}</span>
+      <span>{probabilities.source ?? "poll"}</span>
     </div>
   );
 }
@@ -471,18 +481,24 @@ function StatusStrip({
     probabilityPayload?.generated_at ??
     livePayload?.status?.generated_at ??
     livePayload?.server_sent_at;
+  const nowcastCount = safeNowcastRows(probabilityPayload).length;
+  const latestMetadata = latestProbabilityMetadata(rows);
   return (
     <section className="status-strip" aria-label="Runtime status">
       <Metric label="Live state" value={liveState} tone={liveTone(livePayload?.ok, live.status)} />
-      <Metric label="Generated" value={formatTimestamp(generatedAt)} />
       <Metric
-        label="Monte Carlo"
+        label="MC state"
         value={probabilityPayload?.state ?? statusLabel(probabilities.status)}
         tone={probabilityTone(probabilityPayload)}
       />
-      <Metric label="Rows" value={formatInteger(rowCount)} />
+      <Metric label="MC rows" value={formatInteger(rowCount)} />
+      <Metric label="NOWCAST rows" value={formatInteger(nowcastCount)} />
+      <Metric label="CUDA paths" value={formatInteger(latestMetadata?.totalPaths)} />
+      <Metric label="GPU runtime" value={formatAge(latestMetadata?.runtimeMs)} />
+      <Metric label="Total lag" value={formatAge(latestMetadata?.totalLagMs)} />
+      <Metric label="Source" value={probabilities.source ?? "poll"} />
+      <Metric label="Generated" value={formatTimestamp(generatedAt)} />
       <Metric label="Cache" value={formatCacheState(probabilityPayload, rows)} />
-      <Metric label="API build" value={formatLatency(livePayload?.latency)} />
       {live.error ? <div className="status-note">Live API: {live.error}</div> : null}
       {probabilities.error ? (
         <div className="status-note">Monte Carlo API: {probabilities.error}</div>
@@ -518,9 +534,9 @@ function MarketMonitor({
             <span>Expiry</span>
             <span>K</span>
             <span>UP bid/ask</span>
-            <span>MC UP</span>
+            <span>UP MC</span>
             <span>DOWN bid/ask</span>
-            <span>MC DOWN</span>
+            <span>DOWN MC</span>
             <span>Vol</span>
           </div>
           {rows.map((row) => (
@@ -565,6 +581,7 @@ function ProbabilityButton({
     return <span>-</span>;
   }
   const key = selectionKey(row);
+  const metadata = probabilityMetadata(row);
   return (
     <button
       className={
@@ -573,7 +590,11 @@ function ProbabilityButton({
       onClick={() => onSelect(key)}
       type="button"
     >
-      {formatProbability(probabilityDisplayValue(row))}
+      <strong>{formatProbability(probabilityDisplayValue(row))}</strong>
+      <small>{compactList([formatLaneStatus(row), formatNoTouch(row)])}</small>
+      <small>
+        {compactList([formatCompactPathCount(metadata.totalPaths), formatAgeIfPresent(metadata.totalLagMs)])}
+      </small>
     </button>
   );
 }
@@ -629,7 +650,10 @@ function ProbabilityTable({
                   <strong>{contractLabel(row)}</strong>
                   <small>{compactList([row.asset, row.side, row.contract_id])}</small>
                 </span>
-                <span>{formatProbability(probabilityDisplayValue(row))}</span>
+                <span className="probability-value-cell">
+                  <strong>{formatProbability(probabilityDisplayValue(row))}</strong>
+                  <small>{compactList([formatLaneStatus(row), formatNoTouch(row)])}</small>
+                </span>
                 <span>
                   <GatePill value={row.decision_hint} />
                 </span>
@@ -671,6 +695,7 @@ function SelectedDetails({
   const pairRows = currentMarketRows(marketRows, Date.now());
   const selectedMarketRow = marketRowForProbability(row, marketRows);
   const timingLabel = contractTimingLabel(row, Date.now());
+  const metadata = probabilityMetadata(row);
   return (
     <section className="panel detail-panel">
       <div className="simulation-head">
@@ -683,13 +708,16 @@ function SelectedDetails({
       </div>
 
       <div className="hero-metrics">
-        <Metric label="Monte Carlo" value={formatProbability(probabilityDisplayValue(row))} />
+        <Metric label="MC p_finish" value={formatProbability(probabilityDisplayValue(row))} />
+        <Metric label="p no touch" value={formatProbability(row.p_no_touch)} />
         <Metric label={timingLabel} value={formatTimestamp(row.expiry_ts)} />
         <Metric label="edge / required" value={formatEdge(row)} />
-        <Metric label="wave" value={formatWave(row)} />
+        <Metric label="Total CUDA paths" value={formatInteger(metadata.totalPaths)} />
+        <Metric label="GPU runtime" value={formatAge(metadata.runtimeMs)} />
+        <Metric label="Total lag" value={formatAge(metadata.totalLagMs)} />
+        <Metric label="Lane" value={formatLaneStatus(row)} />
         <Metric label="dynamic edge" value={formatDynamicEdge(row)} />
-        <Metric label="sigma_tau" value={formatSmall(row.sigma_tau)} />
-        <Metric label="Total CUDA paths" value={formatInteger(probabilityMetadata(row).totalPaths)} />
+        <Metric label="wave" value={formatWave(row)} />
       </div>
 
       <ContractPairSelector
@@ -796,7 +824,7 @@ function PairProbabilityButton({
     >
       <strong>{label}</strong>
       <span>{formatProbability(probabilityDisplayValue(row))}</span>
-      <small>{quote}</small>
+      <small>{compactList([formatNoTouch(row), quote])}</small>
     </button>
   );
 }
@@ -876,6 +904,7 @@ function MonteCarloComparisonCard({
   }
   const key = selectionKey(row);
   const preview = parseSimulationPreview(row.simulation_preview);
+  const metadata = probabilityMetadata(row);
   const className = compactList([
     "comparison-card",
     key === selectedKey ? "selected-comparison" : undefined,
@@ -890,11 +919,23 @@ function MonteCarloComparisonCard({
       >
         <div>
           <h3>{label} Monte Carlo</h3>
-          <span>{compactList([formatProbability(probabilityDisplayValue(row)), quote, isLeader ? "leading" : undefined])}</span>
+          <span>
+            {compactList([
+              `p_finish ${formatProbability(probabilityDisplayValue(row))}`,
+              formatNoTouch(row),
+              quote,
+              isLeader ? "leading" : undefined,
+            ])}
+          </span>
         </div>
         <GatePill value={row.decision_hint} />
       </button>
       <MonteCarloCanvas preview={preview} row={row} />
+      <div className="comparison-stats">
+        <Metric label="status" value={formatLaneStatus(row)} />
+        <Metric label="CUDA paths" value={formatInteger(metadata.totalPaths)} />
+        <Metric label="runtime / lag" value={formatRuntimeAndLag(metadata)} />
+      </div>
     </section>
   );
 }
@@ -940,8 +981,8 @@ function MonteCarloInputsPanel({
     return (
       <section className="panel mc-input-panel">
         <PanelHeader
-          title="Monte Carlo Inputs + Cache"
-          subtitle="Selected cached-grid state and path-count targets."
+          title="Monte Carlo Conditioning + CUDA Cache"
+          subtitle="Prior-driven state, cache identity, and GPU path-count targets."
         />
         <EmptyState title="No selected row" body="Select a Monte Carlo row to inspect inputs." />
       </section>
@@ -955,18 +996,22 @@ function MonteCarloInputsPanel({
   return (
     <section className="panel mc-input-panel">
       <PanelHeader
-        title="Monte Carlo Inputs + Cache"
-        subtitle="Selected cached-grid state and path-count targets."
+        title="Monte Carlo Conditioning + CUDA Cache"
+        subtitle="Prior-driven state, cache identity, and GPU path-count targets."
       />
       <div className="mc-metric-grid">
         <Metric label="UI updated" value={formatLocalTimestamp(probabilities.updatedAt)} />
         <Metric label="row generated" value={formatTimestamp(row.generated_at)} />
         <Metric label="valid until" value={formatTimestamp(row.valid_until)} />
+        <Metric label="lane" value={formatLaneStatus(row)} />
         <Metric label="cache" value={formatRowCache(row)} />
         <Metric label="Total CUDA paths" value={formatInteger(metadata.totalPaths)} />
         <Metric label="Paths / seed" value={formatInteger(metadata.pathsPerSeed)} />
         <Metric label="Seeds" value={formatInteger(metadata.seedCount)} />
         <Metric label="Preview paths" value={formatInteger(metadata.previewPathCount)} />
+        <Metric label="GPU runtime" value={formatAge(metadata.runtimeMs)} />
+        <Metric label="Total lag" value={formatAge(metadata.totalLagMs)} />
+        <Metric label="UI source" value={probabilities.source ?? "poll"} />
       </div>
       <div className="mc-input-grid">
         <section className="mc-input-section">
@@ -979,6 +1024,8 @@ function MonteCarloInputsPanel({
               ["threshold_k", formatThreshold(marketRow?.threshold ?? preview?.threshold)],
               ["settlement_start", preview?.start_price ? formatPrice(preview.start_price) : undefined],
               ["comparison", preview?.comparison_operator],
+              ["p_finish", formatProbability(probabilityDisplayValue(row))],
+              ["p_no_touch", formatProbability(row.p_no_touch)],
               ["z_path", formatSigned(row.z_path)],
               ["sigma_tau", formatSmall(row.sigma_tau)],
             ]}
@@ -994,6 +1041,8 @@ function MonteCarloInputsPanel({
               ["selected_quote", formatQuote(selectedBook)],
               ["book_event_ts", selectedBook?.event_ts],
               ["book_observed_ts", selectedBook?.observed_ts],
+              ["source_age", formatAge(row.source_age_ms ?? undefined)],
+              ["book_age", formatAge(row.book_age_ms ?? undefined)],
               ["row_age", formatAge(row.age_ms)],
               ["flags", compactList(row.flags)],
             ]}
@@ -1005,6 +1054,8 @@ function MonteCarloInputsPanel({
             entries={[
               ["model", row.model_version ?? probabilities.payload?.model_version],
               ["generator", row.generator_version],
+              ["cache_status", row.cache_status],
+              ["display_status", probabilityDisplayStatus(row)],
               ["seed", row.seed],
               ["time_bucket", row.time_bucket],
               ["z_bucket", row.z_path_bucket],
@@ -1021,6 +1072,7 @@ function MonteCarloInputsPanel({
               ["preview_paths", metadata.previewPathCount],
               ["steps", preview?.steps],
               ["wins", preview?.terminal_win_count],
+              ["no_touch_wins", preview?.no_touch_win_count],
               ["mc_dispersion", row.mc_dispersion],
               ["uncertainty", row.uncertainty_buffer],
               ["decision_check", formatGate(row.decision_hint)],
@@ -1041,6 +1093,8 @@ function MonteCarloInputsPanel({
             ["cache_asof", row.cache_asof_ts],
             ["cache_start", row.cache_start_ts],
             ["cache_expiry", row.cache_expiry_ts],
+            ["valid_from", row.valid_from],
+            ["refresh_display_until", row.refresh_display_until],
           ]}
         />
       </section>
@@ -1346,17 +1400,62 @@ function toApiState<T>(result: { payload: T | null; error: string | null }): Api
     error: result.error,
     notice: null,
     updatedAt: Date.now(),
+    source: "poll",
   };
 }
 
-function toProbabilityApiState(
+export function toProbabilityApiState(
   result: { payload: ProbabilityPayload | null; error: string | null },
   previous: ApiState<ProbabilityPayload>,
 ): ApiState<ProbabilityPayload> {
-  const next = toApiState(result);
+  const next = toApiState({
+    ...result,
+    payload: materializeLastGoodProbabilityRows(result.payload),
+  });
+  if (result.error || !next.payload) {
+    return next;
+  }
+  return retainPreviousProbabilityRows(next, previous);
+}
+
+export function toProbabilityEventApiState(
+  events: ProbabilityRow[],
+  previous: ApiState<ProbabilityPayload>,
+): ApiState<ProbabilityPayload> {
+  const next: ApiState<ProbabilityPayload> = {
+    status: "ready",
+    payload: mergeProbabilityEventsIntoPayload(previous.payload, events),
+    error: null,
+    notice: null,
+    updatedAt: Date.now(),
+    source: "stream",
+  };
+  return retainPreviousProbabilityRows(next, previous);
+}
+
+function retainPreviousProbabilityRows(
+  next: ApiState<ProbabilityPayload>,
+  previous: ApiState<ProbabilityPayload>,
+): ApiState<ProbabilityPayload> {
   const previousRows = safeRows(previous.payload);
   const nextRows = safeRows(next.payload);
-  if (!result.error && next.payload && previousRows.length > 0 && nextRows.length > 0) {
+  const previousRawRows = Array.isArray(previous.payload?.rows) ? previous.payload.rows : [];
+  const nowMs = Date.now();
+  const holdUntilMs = (previous.updatedAt ?? nowMs) + MC_REFRESH_HOLD_MS;
+  if (
+    next.payload &&
+    previousRawRows.length > 0 &&
+    nextRows.length === 0 &&
+    holdUntilMs > nowMs
+  ) {
+    return {
+      ...next,
+      payload: markProbabilityRowsHeldForRefresh(previous.payload, holdUntilMs),
+      notice: "Monte Carlo refresh pending; keeping last populated grid.",
+      updatedAt: previous.updatedAt,
+    };
+  }
+  if (next.payload && previousRows.length > 0 && nextRows.length > 0) {
     return {
       ...next,
       payload: mergeProbabilityPreviews(previous.payload, next.payload),
@@ -1365,8 +1464,56 @@ function toProbabilityApiState(
   return next;
 }
 
+function materializeLastGoodProbabilityRows(
+  payload: ProbabilityPayload | null,
+): ProbabilityPayload | null {
+  if (!payload || (Array.isArray(payload.rows) && payload.rows.length > 0)) {
+    return payload;
+  }
+  const lastGoodRows = Array.isArray(payload.last_good_rows) ? payload.last_good_rows : [];
+  if (lastGoodRows.length === 0) {
+    return payload;
+  }
+  return {
+    ...payload,
+    rows: lastGoodRows.map((row) => ({
+      ...row,
+      mc_display_status: "held",
+    })),
+  };
+}
+
+function markProbabilityRowsHeldForRefresh(
+  payload: ProbabilityPayload | null,
+  holdUntilMs: number,
+): ProbabilityPayload | null {
+  if (!payload || !Array.isArray(payload.rows)) {
+    return payload;
+  }
+  const refreshDisplayUntil = new Date(holdUntilMs).toISOString();
+  return {
+    ...payload,
+    rows: payload.rows.map((row) => ({
+      ...row,
+      refresh_display_until: refreshDisplayUntil,
+    })),
+  };
+}
+
 function safeRows(payload: ProbabilityPayload | null, nowMs = Date.now()): ProbabilityRow[] {
   return filterGraphableProbabilityRows(payload, nowMs);
+}
+
+function safeNowcastRows(payload: ProbabilityPayload | null, nowMs = Date.now()): ProbabilityRow[] {
+  if (!Array.isArray(payload?.nowcast_rows)) {
+    return [];
+  }
+  return filterGraphableProbabilityRows({ rows: payload.nowcast_rows }, nowMs);
+}
+
+function latestProbabilityMetadata(rows: ProbabilityRow[]) {
+  const row = rows.find((candidate) => isFiniteNumber(candidate.path_count)) ?? rows[0];
+  return row ? probabilityMetadata(row) : null;
 }
 
 function selectProbabilityRow(
@@ -1433,13 +1580,7 @@ function mergeProbabilityPreviews(
       }
       const previousRow = probabilityPreviewKeys(row)
         .map((key) => previousRowsByKey.get(key))
-        .find(
-          (candidate) =>
-            candidate?.simulation_preview &&
-            candidate.asof_ts &&
-            row.asof_ts &&
-            candidate.asof_ts === row.asof_ts,
-        );
+        .find((candidate) => candidate?.simulation_preview);
       if (!previousRow?.simulation_preview) {
         return row;
       }
@@ -1474,7 +1615,7 @@ function currentNextIdentityKey(row: ProbabilityRow) {
   return `window|${asset}|${side}|${startTs ?? ""}|${expiryTs}`;
 }
 
-function buildMarketMonitorRows(
+export function buildMarketMonitorRows(
   orderbooks: RuntimeOrderbookRow[] | undefined,
   probabilities: ProbabilityRow[],
   volatilityRows: RuntimeVolatilityRow[] | undefined,
@@ -1836,9 +1977,12 @@ function buildRuntimeLogEntries(
       compactList([
         selectedRow.asset,
         selectedRow.side,
-        `MC ${formatProbability(probabilityDisplayValue(selectedRow))}`,
+        `${formatLaneStatus(selectedRow)} ${formatProbability(probabilityDisplayValue(selectedRow))}`,
+        formatNoTouch(selectedRow),
         `wave ${formatWave(selectedRow)}`,
         `total paths=${formatInteger(selectedRow.path_count)}`,
+        `runtime=${formatAge(probabilityMetadata(selectedRow).runtimeMs)}`,
+        `lag=${formatAge(probabilityMetadata(selectedRow).totalLagMs)}`,
       ]),
       { at: selectedRow.asof_ts },
     );
@@ -2044,8 +2188,8 @@ function marketSideKey(
   if (!normalizedSide) {
     return null;
   }
-  const normalizedExpiry = expiryTs?.trim();
-  const normalizedStart = startTs?.trim();
+  const normalizedExpiry = identityTimestamp(expiryTs);
+  const normalizedStart = identityTimestamp(startTs);
   if (marketSlug?.trim()) {
     return `${marketSlug.trim().toLowerCase()}|${normalizedStart ?? ""}|${
       normalizedExpiry ?? ""
@@ -2065,8 +2209,8 @@ function marketGroupKey(
   startTs?: string,
 ) {
   const normalizedAsset = normalizeAsset(asset);
-  const normalizedExpiry = expiryTs?.trim();
-  const normalizedStart = startTs?.trim();
+  const normalizedExpiry = identityTimestamp(expiryTs);
+  const normalizedStart = identityTimestamp(startTs);
   if (marketSlug?.trim()) {
     return `${marketSlug.trim().toLowerCase()}|${normalizedStart ?? ""}|${
       normalizedExpiry ?? ""
@@ -2084,6 +2228,15 @@ function normalizeAsset(value?: string) {
 
 function normalizeSide(value?: string) {
   return value?.trim().toUpperCase() ?? "";
+}
+
+function identityTimestamp(value?: string) {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  const parsed = timestampMs(trimmed);
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : trimmed;
 }
 
 function assetFromSlug(value?: string) {
@@ -2177,6 +2330,15 @@ function formatDynamicEdge(row: ProbabilityRow) {
   return `${row.dynamic_edge.toFixed(3)} / ${row.dynamic_required_edge.toFixed(3)}`;
 }
 
+function formatLaneStatus(row: ProbabilityRow) {
+  const lane = probabilityKind(row);
+  return probabilityDisplayStatus(row) === "held" ? `held ${lane}` : lane;
+}
+
+function formatNoTouch(row: ProbabilityRow) {
+  return `pNT ${formatProbability(row.p_no_touch)}`;
+}
+
 function formatAge(ageMs?: number) {
   if (!isFiniteNumber(ageMs)) {
     return "-";
@@ -2185,6 +2347,22 @@ function formatAge(ageMs?: number) {
     return `${(ageMs / 1000).toFixed(1)}s`;
   }
   return `${ageMs}ms`;
+}
+
+function formatAgeIfPresent(ageMs?: number) {
+  return isFiniteNumber(ageMs) ? formatAge(ageMs) : undefined;
+}
+
+function formatCompactPathCount(value?: number) {
+  return isFiniteNumber(value) ? `${formatInteger(value)} paths` : undefined;
+}
+
+function formatRuntimeAndLag(metadata: ReturnType<typeof probabilityMetadata>) {
+  const value = compactList([
+    formatAgeIfPresent(metadata.runtimeMs),
+    metadata.totalLagMs !== undefined ? `lag ${formatAge(metadata.totalLagMs)}` : undefined,
+  ]);
+  return value || "-";
 }
 
 function formatCacheState(payload: ProbabilityPayload | null, rows: ProbabilityRow[]) {

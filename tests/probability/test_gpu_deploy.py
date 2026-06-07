@@ -31,14 +31,33 @@ def test_pc_deploy_probability_smoke_requires_fresh_cuda_rows() -> None:
     script = (ROOT / "scripts/deploy_pc.sh").read_text(encoding="utf-8")
 
     assert "deploy_started_at = time.time()" in script
-    assert 'row.get("generator_version") != "cuda-lognormal-chainlink-sigma-multiseed-v1"' in script
+    assert "cuda_generator_versions" in script
+    assert '"cuda-lognormal-chainlink-sigma-batch-v1"' in script
+    assert '"cuda-lognormal-chainlink-sigma-multiseed-v1"' in script
+    assert 'row.get("generator_version") not in cuda_generator_versions' in script
     assert 'int(row.get("path_count") or 0) < 10_000' in script
     assert "required_contracts" in script
+    assert "last_good_rows" in script
     assert '("BTC", "UP")' in script
     assert '("BTC", "DOWN")' in script
     assert '("ETH", "UP")' in script
     assert '("ETH", "DOWN")' in script
     assert "generated_at.timestamp() < deploy_started_at" in script
+
+
+def test_pc_deploy_copies_artifacts_atomically() -> None:
+    script = (ROOT / "scripts/deploy_pc.sh").read_text(encoding="utf-8")
+
+    assert 'dest_tmp="$dest.tmp.$$"' in script
+    assert "cat > $dest_tmp_q && mv -f $dest_tmp_q $dest_q" in script
+
+
+def test_pc_deploy_retries_collector_status_after_restart() -> None:
+    script = (ROOT / "scripts/deploy_pc.sh").read_text(encoding="utf-8")
+
+    assert "collector_status_ok=0" in script
+    assert "for attempt in \\$(seq 1 45); do" in script
+    assert 'echo "collector status did not become ready after deploy"' in script
 
 
 def test_pc_deploy_docs_list_cuda_probability_artifact_for_skip_builds() -> None:

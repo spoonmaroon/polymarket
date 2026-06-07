@@ -87,7 +87,7 @@ h3 {
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 4px;
-  max-width: 620px;
+  max-width: 560px;
 }
 
 .topbar-health span {
@@ -106,7 +106,7 @@ h3 {
 
 .status-strip {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(10, minmax(0, 1fr));
   gap: 4px;
 }
 
@@ -125,13 +125,12 @@ h3 {
 
 .runtime-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 230px;
+  grid-template-columns: minmax(0, 1fr);
   gap: 6px;
   align-items: start;
 }
 
-.main-stack,
-.side-stack {
+.main-stack {
   display: grid;
   gap: 6px;
   min-width: 0;
@@ -348,11 +347,11 @@ h3 {
   display: grid;
   grid-template-columns:
     minmax(150px, 1.2fr) minmax(78px, 0.6fr) minmax(92px, 0.7fr)
-    minmax(86px, 0.65fr) minmax(66px, 0.45fr) minmax(100px, 0.75fr)
-    minmax(76px, 0.48fr) minmax(76px, 0.5fr);
+    minmax(86px, 0.65fr) minmax(98px, 0.55fr) minmax(100px, 0.75fr)
+    minmax(98px, 0.55fr) minmax(76px, 0.5fr);
   gap: 8px;
   align-items: center;
-  min-width: 840px;
+  min-width: 940px;
   border-bottom: 1px solid #2a2f34;
   padding: 6px 8px;
   color: #eef1ef;
@@ -391,14 +390,42 @@ h3 {
 }
 
 .probability-chip {
+  display: grid;
+  align-content: center;
+  gap: 1px;
   min-height: 21px;
   border: 1px solid rgba(55, 192, 172, 0.35);
   border-radius: 5px;
+  padding: 3px 5px;
   color: #a6e8df;
   background: rgba(55, 192, 172, 0.08);
+  cursor: pointer;
+  text-align: left;
+}
+
+.probability-chip strong,
+.probability-chip small,
+.probability-value-cell strong,
+.probability-value-cell small {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.probability-chip strong,
+.probability-value-cell strong {
+  color: #a6e8df;
   font-size: 11px;
   font-weight: 850;
-  cursor: pointer;
+}
+
+.probability-chip small,
+.probability-value-cell small {
+  color: #879096;
+  font-size: 9px;
+  font-weight: 750;
 }
 
 .probability-chip:hover,
@@ -523,7 +550,6 @@ button.probability-row:hover,
   display: block;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .comparison-card-head span {
@@ -531,6 +557,7 @@ button.probability-row:hover,
   color: #9aa3a8;
   font-size: 10px;
   font-weight: 750;
+  line-height: 1.25;
 }
 
 .comparison-card .path-chart {
@@ -541,6 +568,14 @@ button.probability-row:hover,
 
 .comparison-card svg {
   min-height: 166px;
+}
+
+.comparison-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+  border-top: 1px solid #2a2f34;
+  padding: 5px 8px 7px;
 }
 
 .path-chart,
@@ -853,6 +888,7 @@ svg {
 
 .volatility-strip {
   display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 220px));
   gap: 5px;
   padding: 6px;
 }

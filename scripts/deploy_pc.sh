@@ -93,13 +93,17 @@ wsl_put_file() {
   local dest="$2"
   local dest_dir
   local dest_dir_q
+  local dest_tmp
+  local dest_tmp_q
   local dest_q
 
   dest_dir="$(dirname "$dest")"
+  dest_tmp="$dest.tmp.$$"
   dest_dir_q="$(shell_quote "$dest_dir")"
+  dest_tmp_q="$(shell_quote "$dest_tmp")"
   dest_q="$(shell_quote "$dest")"
 
-  ssh "$PC_HOST" "wsl.exe -d $PC_WSL_DISTRO -- bash -lc \"mkdir -p $dest_dir_q && cat > $dest_q\"" < "$src"
+  ssh "$PC_HOST" "wsl.exe -d $PC_WSL_DISTRO -- bash -lc \"set -euo pipefail; mkdir -p $dest_dir_q && cat > $dest_tmp_q && mv -f $dest_tmp_q $dest_q\"" < "$src"
 }
 
 echo "copying git bundle and image tarballs to THEPC WSL"
@@ -377,17 +381,28 @@ export DEPLOY_FORCE=1
 
 docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml up -d gpu-probability-worker
 
-python3 scripts/check_collector_status.py \\
-  --status-path "\$PC_DATA_DIR/live/status.json" \\
-  --max-status-age-seconds 30 \\
-  --max-price-age-ms 30000 \\
-  --max-orderbook-age-ms 30000 \\
-  --max-websocket-event-age-ms 30000 \\
-  --raw-root "\$PC_DATA_DIR/raw" \\
-  --max-raw-event-age-ms 30000 \\
-  --normalized-health-path "\$PC_DATA_DIR/live/normalized_health.json" \\
-  --max-normalized-health-age-ms 30000 \\
-  --expected-prewarm-windows 2
+collector_status_ok=0
+for attempt in \$(seq 1 45); do
+  if python3 scripts/check_collector_status.py \\
+    --status-path "\$PC_DATA_DIR/live/status.json" \\
+    --max-status-age-seconds 30 \\
+    --max-price-age-ms 30000 \\
+    --max-orderbook-age-ms 30000 \\
+    --max-websocket-event-age-ms 30000 \\
+    --raw-root "\$PC_DATA_DIR/raw" \\
+    --max-raw-event-age-ms 30000 \\
+    --normalized-health-path "\$PC_DATA_DIR/live/normalized_health.json" \\
+    --max-normalized-health-age-ms 30000 \\
+    --expected-prewarm-windows 2; then
+    collector_status_ok=1
+    break
+  fi
+  sleep 1
+done
+if [ "\$collector_status_ok" != "1" ]; then
+  echo "collector status did not become ready after deploy" >&2
+  exit 1
+fi
 
 if ! docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml ps --services --status running gpu-probability-worker | grep -qx gpu-probability-worker; then
   echo "gpu-probability-worker is not running" >&2
@@ -447,9 +462,15 @@ def cuda_probability_payload_ready(payload):
         return False
     rows = payload.get("rows")
     if not isinstance(rows, list) or not rows:
+        rows = payload.get("last_good_rows")
+    if not isinstance(rows, list) or not rows:
         return False
     now = datetime.now(timezone.utc)
     required_contracts = {("BTC", "UP"), ("BTC", "DOWN"), ("ETH", "UP"), ("ETH", "DOWN")}
+    cuda_generator_versions = {
+        "cuda-lognormal-chainlink-sigma-batch-v1",
+        "cuda-lognormal-chainlink-sigma-multiseed-v1",
+    }
     seen = set()
     for row in rows:
         if not isinstance(row, dict):
@@ -463,7 +484,7 @@ def cuda_probability_payload_ready(payload):
             expiry_ts = expiry_ts.replace(tzinfo=timezone.utc)
         if expiry_ts <= now:
             continue
-        if row.get("generator_version") != "cuda-lognormal-chainlink-sigma-multiseed-v1":
+        if row.get("generator_version") not in cuda_generator_versions:
             continue
         if int(row.get("path_count") or 0) < 10_000:
             continue
