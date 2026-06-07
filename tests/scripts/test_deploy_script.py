@@ -718,6 +718,7 @@ def test_outcome_refresh_is_owned_by_hot_normalizer_with_sidecar_fallback() -> N
         "/var/lib/polymarket/live/probability_inputs.json"
         in env_example
     )
+    assert "POLYMARKET_ENABLE_OUTCOME_REFRESH=1" in env_example
     assert "POLYMARKET_OUTCOME_REFRESH_INTERVAL_SECONDS=30" in env_example
     assert "POLYMARKET_DUCKDB_THREADS=1" in env_example
     assert "POLYMARKET_DUCKDB_MEMORY_LIMIT=512MiB" in env_example
@@ -730,6 +731,11 @@ def test_outcome_refresh_is_owned_by_hot_normalizer_with_sidecar_fallback() -> N
     assert (
         "POLYMARKET_PROBABILITY_INPUTS_PATH: "
         "/var/lib/polymarket/live/probability_inputs.json"
+        in compose
+    )
+    assert (
+        "POLYMARKET_ENABLE_OUTCOME_REFRESH: "
+        "${POLYMARKET_ENABLE_OUTCOME_REFRESH:-1}"
         in compose
     )
     assert "--enable-outcome-refresh" not in compose
