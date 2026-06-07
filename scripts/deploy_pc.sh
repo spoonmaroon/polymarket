@@ -694,13 +694,32 @@ import json
 import os
 import time
 import urllib.request
+from datetime import datetime, timezone
 
 base = f"http://127.0.0.1:{os.environ['POLYMARKET_API_PORT']}"
+required_generators = {
+    "empirical_conditional",
+    "block_bootstrap",
+    "filtered_historical",
+    "stress_overlay",
+}
 
 
 def get_json(path: str) -> dict[str, object]:
     with urllib.request.urlopen(base + path, timeout=15) as response:
         return json.loads(response.read().decode("utf-8"))
+
+
+def parse_ts(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 health = get_json("/health")
@@ -715,14 +734,18 @@ probabilities = {}
 for _ in range(30):
     probabilities = get_json("/api/runtime/probabilities?limit=8")
     probability_rows = probabilities.get("rows")
-    has_ensemble_row = any(
-        isinstance(row, dict) and row.get("model_version") == "ensemble-v1"
+    now = datetime.now(timezone.utc)
+    has_fresh_ensemble_row = any(
+        isinstance(row, dict)
+        and row.get("model_version") == "ensemble-v1"
+        and (parse_ts(row.get("valid_until")) or datetime.min.replace(tzinfo=timezone.utc)) > now
+        and required_generators.issubset(set(row.get("prior_fragment_generators") or []))
         for row in probability_rows
     ) if isinstance(probability_rows, list) else False
     if (
         probabilities.get("ok") is True
-        and probabilities.get("state") == "OK"
-        and has_ensemble_row
+        and probabilities.get("state") in {"OK", "NOWCAST"}
+        and has_fresh_ensemble_row
     ):
         break
     time.sleep(1)
