@@ -202,6 +202,7 @@ def test_runtime_api_service_is_deployed_with_engine_compose() -> None:
     assert 'get_json("/api/runtime/probabilities?limit=8")' in pc_script
     assert "for _ in range(30):" in pc_script
     assert 'probabilities.get("rows")' in pc_script
+    assert 'row.get("model_version") == "ensemble-v1"' in pc_script
     assert "runtime probabilities smoke failed" in pc_script
     assert 'get_json("/api/runtime/outcomes?limit=8")' in pc_script
     assert 'outcomes.get("state") == "LOCKED"' in pc_script
@@ -239,6 +240,7 @@ def test_compose_and_env_support_prebuilt_image_overrides() -> None:
     assert "POLYMARKET_PROBABILITY_MAX_CYCLE_RUNTIME_MS=750" in env_example
     assert "POLYMARKET_PROBABILITY_MAX_TOTAL_PATHS=320000" in env_example
     assert "POLYMARKET_PROBABILITY_SUSTAINED_BREACH_CYCLES=3" in env_example
+    assert "POLYMARKET_CUDA_PROBABILITY_MAX_INPUT_SNAPSHOT_AGE_SECONDS=30.0" in env_example
     assert (
         "POLYMARKET_PROBABILITY_FRAGMENTS_PATH=/var/lib/polymarket/live/probability_fragments.json"
         in env_example
@@ -250,9 +252,14 @@ def test_compose_and_env_support_prebuilt_image_overrides() -> None:
     assert "POLYMARKET_PROBABILITY_CPU_TARGET_PERCENT:" in compose
     assert "POLYMARKET_PROBABILITY_MAX_TOTAL_PATHS:" in compose
     assert "POLYMARKET_PROBABILITY_FRAGMENTS_PATH:" in compose
+    assert "POLYMARKET_CUDA_PROBABILITY_MAX_INPUT_SNAPSHOT_AGE_SECONDS:-30.0" in compose
     assert '--worker-mode "$WORKER_MODE"' in entrypoint
     assert (
         'PROBABILITY_FRAGMENTS_PATH="${POLYMARKET_PROBABILITY_FRAGMENTS_PATH:-/var/lib/polymarket/live/probability_fragments.json}"'
+        in entrypoint
+    )
+    assert (
+        'MAX_INPUT_SNAPSHOT_AGE_SECONDS="${POLYMARKET_CUDA_PROBABILITY_MAX_INPUT_SNAPSHOT_AGE_SECONDS:-30.0}"'
         in entrypoint
     )
     assert '--probability-fragments-path "$PROBABILITY_FRAGMENTS_PATH"' in entrypoint

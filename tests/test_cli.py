@@ -302,7 +302,7 @@ def test_parse_run_cuda_probability_worker_defaults() -> None:
     assert args.interval_seconds == 1.0
     assert args.limit == 24
     assert args.valid_seconds == 30
-    assert args.max_input_snapshot_age_seconds == 10.0
+    assert args.max_input_snapshot_age_seconds == 30.0
     assert args.worker_mode == "ensemble"
     assert args.generator_policy == "all_four_every_cycle"
     assert args.cpu_target_percent == 20.0

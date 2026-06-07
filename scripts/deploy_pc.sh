@@ -711,10 +711,15 @@ if live.get("ok") is not True or not live.get("monitor", {}).get("orderbooks"):
 probabilities = {}
 for _ in range(30):
     probabilities = get_json("/api/runtime/probabilities?limit=8")
+    probability_rows = probabilities.get("rows")
+    has_ensemble_row = any(
+        isinstance(row, dict) and row.get("model_version") == "ensemble-v1"
+        for row in probability_rows
+    ) if isinstance(probability_rows, list) else False
     if (
         probabilities.get("ok") is True
         and probabilities.get("state") == "OK"
-        and probabilities.get("rows")
+        and has_ensemble_row
     ):
         break
     time.sleep(1)

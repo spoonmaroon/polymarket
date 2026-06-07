@@ -130,7 +130,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     cuda_probability_worker.add_argument(
         "--max-input-snapshot-age-seconds",
         type=float,
-        default=10.0,
+        default=30.0,
     )
     cuda_probability_worker.add_argument("--worker-mode", default="ensemble")
     cuda_probability_worker.add_argument(
