@@ -203,11 +203,14 @@ def test_runtime_api_service_is_deployed_with_engine_compose() -> None:
     assert "for _ in range(30):" in pc_script
     assert "except Exception as exc:" in pc_script
     assert 'probabilities = {"error": repr(exc)}' in pc_script
-    assert 'probabilities.get("rows")' in pc_script
+    assert 'for key in ("rows", "last_good_rows"):' in pc_script
+    assert "probability_candidate_rows(probabilities)" in pc_script
+    assert "row_is_recent(row, now)" in pc_script
     assert 'row.get("model_version") == "ensemble-v1"' in pc_script
     assert 'required_generators.issubset(set(row.get("prior_fragment_generators") or []))' in pc_script
     assert 'probabilities.get("state") in {"OK", "NOWCAST"}' in pc_script
     assert 'parse_ts(row.get("valid_until"))' in pc_script
+    assert 'parse_ts(row.get("generated_at"))' in pc_script
     assert "runtime probabilities smoke failed" in pc_script
     assert 'get_json("/api/runtime/outcomes?limit=8")' in pc_script
     assert 'outcomes.get("state") == "LOCKED"' in pc_script

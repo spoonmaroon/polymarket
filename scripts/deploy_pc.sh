@@ -735,6 +735,25 @@ def parse_ts(value: object) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
+def probability_candidate_rows(payload: dict[str, object]) -> list[object]:
+    candidates: list[object] = []
+    for key in ("rows", "last_good_rows"):
+        rows = payload.get(key)
+        if isinstance(rows, list):
+            candidates.extend(rows)
+    return candidates
+
+
+def row_is_recent(row: dict[str, object], now: datetime) -> bool:
+    valid_until = parse_ts(row.get("valid_until"))
+    if valid_until is not None and valid_until > now:
+        return True
+    generated_at = parse_ts(row.get("generated_at"))
+    if generated_at is None:
+        return False
+    return (now - generated_at).total_seconds() <= 90
+
+
 health = get_json("/health")
 if health.get("status") != "ok":
     raise SystemExit(f"health smoke failed: {health}")
@@ -751,19 +770,19 @@ for _ in range(30):
         probabilities = {"error": repr(exc)}
         time.sleep(1)
         continue
-    probability_rows = probabilities.get("rows")
+    probability_rows = probability_candidate_rows(probabilities)
     now = datetime.now(timezone.utc)
-    has_fresh_ensemble_row = any(
+    has_recent_ensemble_row = any(
         isinstance(row, dict)
         and row.get("model_version") == "ensemble-v1"
-        and (parse_ts(row.get("valid_until")) or datetime.min.replace(tzinfo=timezone.utc)) > now
+        and row_is_recent(row, now)
         and required_generators.issubset(set(row.get("prior_fragment_generators") or []))
         for row in probability_rows
-    ) if isinstance(probability_rows, list) else False
+    )
     if (
         probabilities.get("ok") is True
         and probabilities.get("state") in {"OK", "NOWCAST"}
-        and has_fresh_ensemble_row
+        and has_recent_ensemble_row
     ):
         break
     time.sleep(1)
