@@ -447,12 +447,17 @@ export function App() {
             selectedProbabilityKey={selectedRow ? selectionKey(selectedRow) : null}
             onSelectProbability={setSelectedId}
           />
-          <SelectedDetails
-            row={selectedRow}
-            probabilities={probabilities.payload}
-            marketRows={marketRows}
-            onSelectProbability={setSelectedId}
-          />
+        </section>
+        <aside className="side-stack">
+          <CompactVolatility volatility={live.payload?.volatility ?? null} />
+        </aside>
+        <SelectedDetails
+          row={selectedRow}
+          probabilities={probabilities.payload}
+          marketRows={marketRows}
+          onSelectProbability={setSelectedId}
+        />
+        <section className="wide-stack">
           <ProbabilityTable
             rows={rows}
             selectedKey={selectedRow ? selectionKey(selectedRow) : null}
@@ -466,9 +471,6 @@ export function App() {
           />
           <RuntimeLogPanel live={live} probabilities={probabilities} selectedRow={selectedRow} />
         </section>
-        <aside className="side-stack">
-          <CompactVolatility volatility={live.payload?.volatility ?? null} />
-        </aside>
       </section>
     </main>
   );
@@ -1315,7 +1317,10 @@ function MonteCarloCanvas({
       {legendRows.length > 0 ? (
         <div className="ensemble-legend">
           {legendRows.map((generator) => (
-            <span className="ensemble-chip" key={generator.id}>
+            <span
+              className={compactList(["ensemble-chip", generatorClassName(generator.id)])}
+              key={generator.id}
+            >
               <span>{shortGeneratorLabel(generator.id)}</span>
               <strong>{formatSmall(generator.weight)}</strong>
             </span>
@@ -2210,17 +2215,22 @@ function buildPathGeometry(preview: SimulationPreview) {
   const height = 246;
   const left = 28;
   const top = 28;
-  const allPrices = [
+  const primaryPaths = preview.sampled_paths.filter(
+    (path) => path.generator_id !== "stress_overlay",
+  );
+  const domainPaths = primaryPaths.length > 0 ? primaryPaths : preview.sampled_paths;
+  const domainPrices = [
     preview.threshold,
     preview.start_price,
-    ...preview.sampled_paths.flatMap((path) => path.points),
+    ...domainPaths.flatMap((path) => path.points),
   ];
-  const low = Math.min(...allPrices);
-  const high = Math.max(...allPrices);
+  const low = Math.min(...domainPrices);
+  const high = Math.max(...domainPrices);
   const padding = Math.max((high - low) * 0.12, 0.0001);
   const min = low - padding;
   const max = high + padding;
-  const yFor = (price: number) => top + height - ((price - min) / (max - min)) * height;
+  const yFor = (price: number) =>
+    clampNumber(top + height - ((price - min) / (max - min)) * height, top, top + height);
   return {
     thresholdY: yFor(preview.threshold),
     startY: yFor(preview.start_price),
@@ -2245,6 +2255,10 @@ function buildPathGeometry(preview: SimulationPreview) {
 
 function isRecord(value: unknown): value is JsonRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function clampNumber(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value));
 }
 
 function isFiniteNumber(value: unknown): value is number {

@@ -131,10 +131,16 @@ h3 {
 }
 
 .main-stack,
-.side-stack {
+.side-stack,
+.wide-stack {
   display: grid;
   gap: 6px;
   min-width: 0;
+}
+
+.wide-stack,
+.detail-panel {
+  grid-column: 1 / -1;
 }
 
 .panel {
@@ -589,16 +595,17 @@ svg {
 
 .mc-path {
   fill: none;
-  opacity: 0.64;
-  stroke-width: 1.55;
+  opacity: 0.72;
+  stroke-width: 1.45;
 }
 
 .path-win {
-  stroke: #37c0ac;
+  opacity: 0.82;
 }
 
 .path-loss {
-  stroke: #dd7668;
+  opacity: 0.5;
+  stroke-dasharray: 3 4;
 }
 
 .ensemble-legend {
@@ -619,6 +626,17 @@ svg {
   font-size: 0.72rem;
 }
 
+.ensemble-chip::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  margin-right: 6px;
+  border-radius: 999px;
+  background: var(--generator-color, #879096);
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.04);
+}
+
 .ensemble-chip span,
 .ensemble-chip strong {
   overflow: hidden;
@@ -630,6 +648,27 @@ svg {
   margin-left: 6px;
   color: #eef1ef;
   font-weight: 800;
+}
+
+.ensemble-chip.generator-empirical-conditional {
+  --generator-color: #4f8cff;
+  border-color: rgba(79, 140, 255, 0.5);
+}
+
+.ensemble-chip.generator-block-bootstrap {
+  --generator-color: #00a878;
+  border-color: rgba(0, 168, 120, 0.5);
+}
+
+.ensemble-chip.generator-filtered-historical {
+  --generator-color: #d89100;
+  border-color: rgba(216, 145, 0, 0.55);
+}
+
+.ensemble-chip.generator-stress-overlay {
+  --generator-color: #d64f5f;
+  border-color: rgba(214, 79, 95, 0.45);
+  opacity: 0.82;
 }
 
 .mc-path.generator-empirical-conditional {
@@ -646,6 +685,9 @@ svg {
 
 .mc-path.generator-stress-overlay {
   stroke: #d64f5f;
+  opacity: 0.34;
+  stroke-dasharray: 6 5;
+  stroke-width: 1.2;
 }
 
 .start-dot {
