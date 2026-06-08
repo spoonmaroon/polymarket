@@ -7,9 +7,12 @@ import pytest
 
 from polymarket_engine.probability.generator_contracts import GeneratorId
 from polymarket_engine.research.generator_validation import (
+    CalibrationBucket,
     GeneratorLabel,
     GeneratorPrediction,
+    ProbabilityCalibrationRow,
     build_weight_candidate,
+    build_calibration_buckets,
 )
 
 
@@ -44,6 +47,55 @@ def test_weight_candidate_uses_only_labels_before_decision_time() -> None:
     assert candidate.trained_through_ts == datetime(2026, 6, 2, tzinfo=UTC)
     assert candidate.sparse is False
     assert math.isclose(sum(candidate.weights.values()), 1.0)
+
+
+def test_build_calibration_buckets_reports_underconfidence_near_certain_market() -> None:
+    rows = build_calibration_buckets(
+        (
+            ProbabilityCalibrationRow(
+                state_id="state-down-1",
+                asof_ts=datetime(2026, 6, 7, 21, 44, tzinfo=UTC),
+                side="DOWN",
+                model_probability=0.889,
+                market_probability=0.99,
+                did_finish_win=True,
+                seconds_left=8.0,
+            ),
+            ProbabilityCalibrationRow(
+                state_id="state-down-2",
+                asof_ts=datetime(2026, 6, 7, 21, 49, tzinfo=UTC),
+                side="DOWN",
+                model_probability=0.91,
+                market_probability=0.98,
+                did_finish_win=True,
+                seconds_left=12.0,
+            ),
+        ),
+        bucket_count=10,
+    )
+
+    assert rows == (
+        CalibrationBucket(
+            lower=0.8,
+            upper=0.9,
+            count=1,
+            win_rate=1.0,
+            mean_model_probability=0.889,
+            mean_market_probability=0.99,
+            mean_market_model_gap=0.101,
+            brier=pytest.approx((1.0 - 0.889) ** 2),
+        ),
+        CalibrationBucket(
+            lower=0.9,
+            upper=1.0,
+            count=1,
+            win_rate=1.0,
+            mean_model_probability=0.91,
+            mean_market_probability=0.98,
+            mean_market_model_gap=0.07,
+            brier=pytest.approx((1.0 - 0.91) ** 2),
+        ),
+    )
 
 
 def test_weight_candidate_marks_sparse_when_labels_are_insufficient() -> None:

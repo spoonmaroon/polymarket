@@ -50,6 +50,40 @@ class WeightCandidate:
     sparse: bool
 
 
+@dataclass(frozen=True)
+class ProbabilityCalibrationRow:
+    state_id: str
+    asof_ts: datetime
+    side: str
+    model_probability: float
+    market_probability: float
+    did_finish_win: bool
+    seconds_left: float
+
+    def __post_init__(self) -> None:
+        _require_nonempty_string(self.state_id, "state_id")
+        _require_utc(self.asof_ts, "asof_ts")
+        if self.side not in {"UP", "DOWN"}:
+            raise ValueError("side must be UP or DOWN")
+        _require_probability(self.model_probability, "model_probability")
+        _require_probability(self.market_probability, "market_probability")
+        if not isinstance(self.did_finish_win, bool):
+            raise ValueError("did_finish_win must be a bool")
+        _require_nonnegative_finite(self.seconds_left, "seconds_left")
+
+
+@dataclass(frozen=True)
+class CalibrationBucket:
+    lower: float
+    upper: float
+    count: int
+    win_rate: float
+    mean_model_probability: float
+    mean_market_probability: float
+    mean_market_model_gap: float
+    brier: float
+
+
 def build_weight_candidate(
     predictions: tuple[GeneratorPrediction, ...],
     labels: tuple[GeneratorLabel, ...],
@@ -109,6 +143,46 @@ def build_weight_candidate(
         trained_through_ts=trained_through_ts,
         sparse=False,
     )
+
+
+def build_calibration_buckets(
+    rows: tuple[ProbabilityCalibrationRow, ...],
+    *,
+    bucket_count: int,
+) -> tuple[CalibrationBucket, ...]:
+    _require_positive_int(bucket_count, "bucket_count")
+    buckets: list[list[ProbabilityCalibrationRow]] = [[] for _ in range(bucket_count)]
+    for row in rows:
+        index = min(bucket_count - 1, int(row.model_probability * bucket_count))
+        buckets[index].append(row)
+
+    output: list[CalibrationBucket] = []
+    for index, bucket_rows in enumerate(buckets):
+        if not bucket_rows:
+            continue
+        lower = index / bucket_count
+        upper = (index + 1) / bucket_count
+        count = len(bucket_rows)
+        win_rate = sum(1 for row in bucket_rows if row.did_finish_win) / count
+        mean_model = sum(row.model_probability for row in bucket_rows) / count
+        mean_market = sum(row.market_probability for row in bucket_rows) / count
+        brier = sum(
+            (float(row.did_finish_win) - row.model_probability) ** 2
+            for row in bucket_rows
+        ) / count
+        output.append(
+            CalibrationBucket(
+                lower=lower,
+                upper=upper,
+                count=count,
+                win_rate=win_rate,
+                mean_model_probability=mean_model,
+                mean_market_probability=mean_market,
+                mean_market_model_gap=round(mean_market - mean_model, 12),
+                brier=brier,
+            )
+        )
+    return tuple(output)
 
 
 def _eligible_labels_by_state(
@@ -172,6 +246,16 @@ def _require_positive_finite(value: float, field_name: str) -> None:
         or value <= 0.0
     ):
         raise ValueError(f"{field_name} must be positive and finite")
+
+
+def _require_nonnegative_finite(value: float, field_name: str) -> None:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or value < 0.0
+    ):
+        raise ValueError(f"{field_name} must be nonnegative and finite")
 
 
 def _require_nonempty_string(value: str, field_name: str) -> None:
