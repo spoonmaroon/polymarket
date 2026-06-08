@@ -14,20 +14,20 @@ from polymarket_engine.probability.path_policy import runtime_total_path_count_f
 @pytest.mark.parametrize(
     ("seconds_left", "expected_path_count"),
     (
-        (1_200.0, 30_000),
-        (901.0, 30_000),
-        (900.0, 30_000),
-        (750.0, 30_000),
-        (601.0, 30_000),
-        (600.0, 30_000),
-        (450.0, 30_000),
-        (301.0, 30_000),
+        (1_200.0, 200_000),
+        (901.0, 200_000),
+        (900.0, 200_000),
+        (750.0, 200_000),
+        (601.0, 200_000),
+        (600.0, 150_000),
+        (450.0, 150_000),
+        (301.0, 150_000),
         (300.0, 80_000),
         (121.0, 80_000),
-        (120.0, 120_000),
-        (31.0, 120_000),
-        (30.0, 250_000),
-        (1.0, 250_000),
+        (120.0, 45_000),
+        (31.0, 45_000),
+        (30.0, 30_000),
+        (1.0, 30_000),
     ),
 )
 def test_runtime_path_count_policy_reports_total_paths(
@@ -44,14 +44,20 @@ def test_runtime_path_count_policy_never_drops_below_ten_thousand(
     assert runtime_path_count_for_seconds_left(seconds_left) >= 10_000
 
 
+def test_runtime_path_count_policy_increases_with_more_time_left() -> None:
+    assert runtime_path_count_for_seconds_left(900.0) > runtime_path_count_for_seconds_left(
+        30.0
+    )
+
+
 @pytest.mark.parametrize(
     ("seconds_left", "expected_paths_per_seed", "expected_seed_count", "expected_total"),
     (
-        (1_200.0, 10_000, 3, 30_000),
-        (600.0, 10_000, 3, 30_000),
+        (1_200.0, 40_000, 5, 200_000),
+        (600.0, 30_000, 5, 150_000),
         (300.0, 20_000, 4, 80_000),
-        (120.0, 30_000, 4, 120_000),
-        (30.0, 50_000, 5, 250_000),
+        (120.0, 15_000, 3, 45_000),
+        (30.0, 10_000, 3, 30_000),
     ),
 )
 def test_runtime_seed_policy_reports_total_paths(
@@ -118,4 +124,16 @@ def test_runtime_path_count_for_state_caps_late_missed_wave() -> None:
             wave_phase="missed",
         )
         == 30_000
+    )
+
+
+def test_runtime_path_count_for_state_throttles_near_certain_contract() -> None:
+    assert (
+        runtime_path_count_for_state(
+            seconds_left=260.0,
+            z_path=0.05,
+            executable_price=0.995,
+            wave_phase="forming",
+        )
+        == 10_000
     )

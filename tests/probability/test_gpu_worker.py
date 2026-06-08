@@ -77,23 +77,23 @@ def test_event_payload_includes_simulation_preview_for_mc_rows() -> None:
 
 
 def test_worker_budget_caps_total_generator_paths_for_ensemble() -> None:
-    budget = ProbabilityWorkerBudget(max_total_paths=500_000, worker_mode="ensemble")
+    budget = ProbabilityWorkerBudget(max_total_paths=320_000, worker_mode="ensemble")
 
-    assert _path_budget_per_input(input_count=4, budget=budget) == 31_250
-    assert _clamp_path_count(80_000, path_budget_per_input=31_250) == (
-        31_250,
+    assert _path_budget_per_input(input_count=4, budget=budget) == 20_000
+    assert _clamp_path_count(80_000, path_budget_per_input=20_000) == (
+        20_000,
         True,
     )
-    assert _clamp_path_count(10_000, path_budget_per_input=31_250) == (
+    assert _clamp_path_count(10_000, path_budget_per_input=20_000) == (
         10_000,
         False,
     )
 
 
 def test_worker_budget_keeps_single_generator_modes_divided_by_inputs_only() -> None:
-    budget = ProbabilityWorkerBudget(max_total_paths=500_000, worker_mode="cuda")
+    budget = ProbabilityWorkerBudget(max_total_paths=320_000, worker_mode="cuda")
 
-    assert _path_budget_per_input(input_count=4, budget=budget) == 125_000
+    assert _path_budget_per_input(input_count=4, budget=budget) == 80_000
 
 
 def test_worker_budget_rejects_non_positive_limits() -> None:

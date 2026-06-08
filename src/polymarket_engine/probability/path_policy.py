@@ -6,21 +6,23 @@ import math
 def runtime_paths_per_seed_for_seconds_left(seconds_left: float) -> int:
     value = _finite_seconds_left(seconds_left)
     if value <= 30:
-        return 50_000
+        return 10_000
     if value <= 120:
-        return 30_000
+        return 15_000
     if value <= 300:
         return 20_000
-    return 10_000
+    if value <= 600:
+        return 30_000
+    return 40_000
 
 
 def runtime_seed_count_for_seconds_left(seconds_left: float) -> int:
     value = _finite_seconds_left(seconds_left)
-    if value <= 30:
-        return 5
+    if value <= 120:
+        return 3
     if value <= 300:
         return 4
-    return 3
+    return 5
 
 
 def runtime_total_path_count_for_seconds_left(seconds_left: float) -> int:
@@ -47,6 +49,8 @@ def runtime_path_count_for_state(
         raise ValueError("executable_price must be finite")
     phase = wave_phase.lower()
 
+    if price >= 0.99 or price <= 0.01:
+        return 10_000
     if phase == "missed" and price >= 0.96:
         return 30_000
     if phase in {"breaking", "late"} and 0.90 <= price < 0.96:

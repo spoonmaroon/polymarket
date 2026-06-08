@@ -445,6 +445,8 @@ fn runtime_update_from_stream_error(error: &str) -> RuntimeUpdate {
     let normalized = error.to_ascii_lowercase();
     let transient = normalized.contains("read live stream")
         || normalized.contains("live stream closed")
+        || normalized.contains("failure to send url")
+        || normalized.contains("failed to send url")
         || normalized.contains("connection reset")
         || normalized.contains("unexpected eof")
         || normalized.contains("operation timed out");
@@ -727,6 +729,12 @@ mod tests {
     #[test]
     fn transient_live_stream_errors_do_not_become_runtime_errors() {
         let update = runtime_update_from_stream_error("read live stream: connection reset");
+
+        assert_eq!(update.error, None);
+        assert!(update.status.is_none());
+        assert!(update.monitor.is_none());
+
+        let update = runtime_update_from_stream_error("failure to send URL");
 
         assert_eq!(update.error, None);
         assert!(update.status.is_none());
