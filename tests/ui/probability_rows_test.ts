@@ -219,6 +219,30 @@ assert.equal(retainedFromPartialRefresh.rows?.[1]?.p_finish, 0.37);
 assert.equal(retainedFromPartialRefresh.previous_mc_retained, true);
 assert.equal(retainedFromPartialRefresh.retained_mc_rows, 1);
 
+const rolloverRows = visibleProbabilityDiagnosticRows(
+  [
+    {
+      asset: "BTC",
+      side: "UP",
+      market_slug: "btc-current",
+      expiry_ts: "2026-06-07T21:44:59Z",
+      p_finish: 0.99,
+    },
+    {
+      asset: "BTC",
+      side: "UP",
+      market_slug: "btc-next",
+      expiry_ts: "2026-06-07T21:50:00Z",
+      probability_kind: "NOWCAST",
+      p_finish: 0.51,
+    },
+  ],
+  Date.parse("2026-06-07T21:45:00Z"),
+);
+
+assert.equal(rolloverRows.length, 1);
+assert.equal(rolloverRows[0].market_slug, "btc-next");
+
 const retainedAsofPreview = {
   sampled_paths: [
     {

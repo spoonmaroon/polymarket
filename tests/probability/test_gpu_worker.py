@@ -114,6 +114,84 @@ def test_worker_budget_includes_soft_cpu_limits() -> None:
     assert budget.min_total_paths == 4_000
 
 
+def test_worker_publishes_nowcast_rows_for_new_contracts_before_mc_finishes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asof_ts = datetime.now(UTC)
+    probability_status_path = tmp_path / "probabilities.json"
+    probability_inputs_path = tmp_path / "probability_inputs.json"
+    probability_event_path = tmp_path / "probability-events.jsonl"
+
+    def input_row(state_id: str, side: str, start_offset_minutes: int) -> dict[str, object]:
+        probability_input = ProbabilityInput(
+            state_id=state_id,
+            asof_ts=asof_ts,
+            asset="BTC",
+            side=side,
+            comparison_operator=">=" if side == "UP" else "<",
+            seconds_left=300.0 + start_offset_minutes * 60.0,
+            settlement_price=70_100.0,
+            threshold=70_000.0,
+            sigma_tau=0.012,
+            executable_price=0.52 if side == "UP" else 0.48,
+            source_age_ms=100,
+            book_age_ms=100,
+            z_path=0.12,
+        )
+        return {
+            "contract": f"BTC 5m {side}",
+            "contract_id": f"btc-{start_offset_minutes}-{side.lower()}",
+            "market_slug": f"btc-updown-5m-{start_offset_minutes}",
+            "start_ts": (asof_ts + timedelta(minutes=start_offset_minutes)).isoformat(),
+            "expiry_ts": (asof_ts + timedelta(minutes=start_offset_minutes + 5)).isoformat(),
+            "flags": ["OK"],
+            "probability_input": probability_input.to_json_dict(),
+            "volatility_regime": "normal",
+        }
+
+    probability_inputs_path.write_text(
+        json.dumps(
+            {
+                "schema_version": PROBABILITY_INPUTS_SCHEMA_VERSION,
+                "generated_at": asof_ts.isoformat(),
+                "rows": [
+                    input_row("state-current-up", "UP", 0),
+                    input_row("state-current-down", "DOWN", 0),
+                    input_row("state-next-up", "UP", 5),
+                    input_row("state-next-down", "DOWN", 5),
+                ],
+                "skipped": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fail_mc(*_: object, **__: object) -> ProbabilityOutput:
+        raise RuntimeError("mc intentionally unavailable")
+
+    monkeypatch.setattr(
+        "polymarket_engine.probability.gpu_worker.run_four_generator_ensemble",
+        fail_mc,
+    )
+
+    payload = run_cuda_probability_worker_cycle(
+        duckdb_path=tmp_path / "unused.duckdb",
+        probability_status_path=probability_status_path,
+        probability_inputs_path=probability_inputs_path,
+        probability_event_path=probability_event_path,
+        budget=ProbabilityWorkerBudget(max_total_paths=80_000),
+    )
+
+    assert payload["state"] == "NOWCAST"
+    assert len(payload["rows"]) == 4
+    assert {row["probability_kind"] for row in payload["rows"]} == {"NOWCAST"}
+    assert {row["market_slug"] for row in payload["rows"]} == {
+        "btc-updown-5m-0",
+        "btc-updown-5m-5",
+    }
+
+
 def test_worker_budget_rejects_soft_max_below_target() -> None:
     with pytest.raises(ValueError, match="cpu_soft_max_percent"):
         ProbabilityWorkerBudget(

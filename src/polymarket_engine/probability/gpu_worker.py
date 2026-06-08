@@ -428,6 +428,18 @@ def run_cuda_probability_worker_cycle(
             rows.append(row)
             mc_output_ids_by_state_id[output.state_id] = output_id
 
+    mc_rows = rows
+    rows_by_contract_id: dict[str, dict[str, Any]] = {}
+    for row in nowcast_rows:
+        contract_id = str(row.get("contract_id") or "")
+        if contract_id:
+            rows_by_contract_id[contract_id] = row
+    for row in mc_rows:
+        contract_id = str(row.get("contract_id") or "")
+        if contract_id:
+            rows_by_contract_id[contract_id] = row
+    rows = list(rows_by_contract_id.values())
+
     rows, partial_retained_mc_rows = _merge_missing_retained_mc_rows(
         fresh_rows=rows,
         previous_rows=previous_rows,
@@ -435,6 +447,10 @@ def run_cuda_probability_worker_cycle(
         enabled=quality_skipped > 0 and bool(rows),
     )
     rows = normalize_binary_probability_pairs(rows)
+    has_nowcast_rows = any(
+        str(row.get("probability_kind") or "MC") == "NOWCAST"
+        for row in rows
+    )
     for row in rows:
         state_id = str(row.get("state_id") or "")
         output_id = mc_output_ids_by_state_id.get(state_id)
@@ -458,6 +474,7 @@ def run_cuda_probability_worker_cycle(
         rows_seen=len(inputs),
         rows_written=len(rows) - partial_retained_mc_rows,
         last_good_rows=previous_rows if errors and not rows else None,
+        state_override="NOWCAST" if has_nowcast_rows else None,
         retained_mc_rows=partial_retained_mc_rows,
         budget=_budget_diagnostics(
             budget=budget,
