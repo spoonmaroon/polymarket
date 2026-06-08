@@ -35,6 +35,7 @@ def adjust_total_path_budget(
     cpu_percent: float | None,
     target_percent: float,
     soft_max_percent: float,
+    cycle_runtime_breached: bool = True,
 ) -> CpuBudgetAdjustment:
     _validate_budget_inputs(
         configured_max_total_paths=configured_max_total_paths,
@@ -55,7 +56,7 @@ def adjust_total_path_budget(
             soft_max_percent=soft_max_percent,
         )
 
-    if cpu_percent > soft_max_percent:
+    if cpu_percent > soft_max_percent and cycle_runtime_breached:
         next_total_paths = _bound(
             int(current * 0.70),
             min_total_paths,
@@ -69,7 +70,9 @@ def adjust_total_path_budget(
             soft_max_percent=soft_max_percent,
         )
 
-    if cpu_percent < target_percent * 0.80 and current < configured_max_total_paths:
+    if current < configured_max_total_paths and (
+        cpu_percent < target_percent * 0.80 or not cycle_runtime_breached
+    ):
         next_total_paths = _bound(
             int(current * 1.15),
             min_total_paths,
@@ -77,7 +80,11 @@ def adjust_total_path_budget(
         )
         return CpuBudgetAdjustment(
             next_total_paths=next_total_paths,
-            reason="cpu_below_target",
+            reason=(
+                "cpu_below_target"
+                if cpu_percent < target_percent * 0.80
+                else "cycle_runtime_inside_budget"
+            ),
             cpu_percent=cpu_percent,
             target_percent=target_percent,
             soft_max_percent=soft_max_percent,

@@ -49,6 +49,21 @@ def test_adjust_total_path_budget_increases_when_cpu_below_target() -> None:
     assert adjustment.reason == "cpu_below_target"
 
 
+def test_adjust_total_path_budget_recovers_when_runtime_is_inside_budget() -> None:
+    adjustment = adjust_total_path_budget(
+        current_total_paths=4_000,
+        configured_max_total_paths=40_000,
+        min_total_paths=4_000,
+        cpu_percent=99.0,
+        target_percent=15.0,
+        soft_max_percent=20.0,
+        cycle_runtime_breached=False,
+    )
+
+    assert adjustment.next_total_paths == 4_600
+    assert adjustment.reason == "cycle_runtime_inside_budget"
+
+
 def test_adjust_total_path_budget_stays_when_cpu_inside_band() -> None:
     adjustment = adjust_total_path_budget(
         current_total_paths=10_000,

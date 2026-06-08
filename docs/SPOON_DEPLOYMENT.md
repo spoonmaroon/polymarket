@@ -393,7 +393,7 @@ The default is `POLYMARKET_PROBABILITY_CPU_TARGET_PERCENT=15.0` with
 `POLYMARKET_PROBABILITY_CPU_SOFT_MAX_PERCENT=20.0`. The worker measures
 per-cycle process CPU and adapts its next total path budget between
 `POLYMARKET_PROBABILITY_MIN_TOTAL_PATHS=4000` and
-`POLYMARKET_PROBABILITY_MAX_TOTAL_PATHS=320000`.
+`POLYMARKET_PROBABILITY_MAX_TOTAL_PATHS=500000`.
 
 The manifest in `deploy/cluster/cluster.local.example.json` is the source of
 truth for ownership and mirrors:

@@ -58,7 +58,7 @@ DEFAULT_CPU_TARGET_PERCENT = 15.0
 DEFAULT_CPU_SOFT_MAX_PERCENT = 20.0
 DEFAULT_MAX_RSS_MB = 512
 DEFAULT_MAX_CYCLE_RUNTIME_MS = 750
-DEFAULT_MAX_TOTAL_PATHS = 320_000
+DEFAULT_MAX_TOTAL_PATHS = 500_000
 DEFAULT_MIN_TOTAL_PATHS = 4_000
 DEFAULT_SUSTAINED_BREACH_CYCLES = 3
 DEFAULT_FRAGMENT_MAX_ROWS = 250_000
@@ -590,11 +590,15 @@ def run_cuda_probability_worker_loop(
             _write_status(probability_status_path, payload)
         budget_payload = payload.get("budget")
         cpu_percent: float | None = None
+        cycle_runtime_breached = True
         if isinstance(budget_payload, Mapping):
             allocated_paths = int(budget_payload.get("allocated_total_paths") or 0)
             raw_cpu_percent = budget_payload.get("cpu_percent")
             if allocated_paths > 0 and raw_cpu_percent is not None:
                 cpu_percent = float(raw_cpu_percent)
+            raw_cycle_runtime_breached = budget_payload.get("cycle_runtime_breached")
+            if isinstance(raw_cycle_runtime_breached, bool):
+                cycle_runtime_breached = raw_cycle_runtime_breached
         adjustment = adjust_total_path_budget(
             current_total_paths=effective_max_total_paths,
             configured_max_total_paths=budget.max_total_paths,
@@ -602,6 +606,7 @@ def run_cuda_probability_worker_loop(
             cpu_percent=cpu_percent,
             target_percent=budget.cpu_target_percent,
             soft_max_percent=budget.cpu_soft_max_percent,
+            cycle_runtime_breached=cycle_runtime_breached,
         )
         effective_max_total_paths = adjustment.next_total_paths
         if isinstance(budget_payload, Mapping):
