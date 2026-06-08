@@ -601,6 +601,53 @@ svg {
   stroke: #dd7668;
 }
 
+.ensemble-legend {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.ensemble-chip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 6px;
+  padding: 5px 7px;
+  font-size: 0.72rem;
+}
+
+.ensemble-chip span,
+.ensemble-chip strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ensemble-chip strong {
+  margin-left: 6px;
+  color: #eef1ef;
+  font-weight: 800;
+}
+
+.mc-path.generator-empirical-conditional {
+  stroke: #4f8cff;
+}
+
+.mc-path.generator-block-bootstrap {
+  stroke: #00a878;
+}
+
+.mc-path.generator-filtered-historical {
+  stroke: #d89100;
+}
+
+.mc-path.generator-stress-overlay {
+  stroke: #d64f5f;
+}
+
 .start-dot {
   fill: #f7f8f4;
 }
@@ -966,7 +1013,8 @@ svg {
   .hero-metrics,
   .simulation-footer,
   .detail-grid,
-  .mc-metric-grid {
+  .mc-metric-grid,
+  .ensemble-legend {
     grid-template-columns: 1fr 1fr;
   }
 

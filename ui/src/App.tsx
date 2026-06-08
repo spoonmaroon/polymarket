@@ -119,7 +119,8 @@ type RuntimeLivePayload = {
 };
 
 type SimulationPath = {
-  index: number;
+  index: number | string;
+  generator_id?: string;
   terminal_win: boolean;
   no_touch_win: boolean;
   points: number[];
@@ -133,6 +134,8 @@ type HistogramBucket = {
 
 type SimulationPreview = {
   path_count: number;
+  paths_per_generator?: number;
+  generator_count?: number;
   steps: number;
   start_price: number;
   threshold: number;
@@ -197,6 +200,8 @@ type ProbabilityRow = {
   volatility_regime?: string;
   generator_version?: string;
   path_count?: number;
+  paths_per_generator?: number;
+  generator_count?: number;
   paths_per_seed?: number;
   seed_count?: number;
   prior_fragment_count?: number;
@@ -711,6 +716,7 @@ function SelectedDetails({
   }
 
   const preview = parseSimulationPreview(row.simulation_preview);
+  const metadata = probabilityMetadata(row);
   const pairRows = currentMarketRows(marketRows, Date.now());
   const timingLabel = contractTimingLabel(row, Date.now());
   return (
@@ -733,7 +739,9 @@ function SelectedDetails({
         <Metric label="wave" value={formatWave(row)} />
         <Metric label="dynamic edge" value={formatDynamicEdge(row)} />
         <Metric label="sigma_tau" value={formatSmall(row.sigma_tau)} />
-        <Metric label="Total CUDA paths" value={formatInteger(probabilityMetadata(row).totalPaths)} />
+        <Metric label="Total paths" value={formatInteger(metadata.totalPaths)} />
+        <Metric label="Paths / generator" value={formatInteger(metadata.pathsPerGenerator)} />
+        <Metric label="Generators" value={formatInteger(metadata.generatorCount)} />
       </div>
 
       <ContractPairSelector
@@ -1038,6 +1046,8 @@ function MonteCarloInputsPanel({
         <Metric label="valid until" value={formatTimestamp(row.valid_until)} />
         <Metric label="cache" value={formatRowCache(row)} />
         <Metric label="Total CUDA paths" value={formatInteger(metadata.totalPaths)} />
+        <Metric label="Paths / generator" value={formatInteger(metadata.pathsPerGenerator)} />
+        <Metric label="Generators" value={formatInteger(metadata.generatorCount)} />
         <Metric label="Paths / seed" value={formatInteger(metadata.pathsPerSeed)} />
         <Metric label="Seeds" value={formatInteger(metadata.seedCount)} />
         <Metric label="Preview paths" value={formatInteger(metadata.previewPathCount)} />
@@ -1255,6 +1265,10 @@ function MonteCarloCanvas({
   row: ProbabilityRow;
 }) {
   const geometry = useMemo(() => (preview ? buildPathGeometry(preview) : null), [preview]);
+  const legendRows = useMemo(
+    () => generatorLegendRows(row, preview),
+    [row, preview],
+  );
   if (!preview || !geometry) {
     return <ProbabilityFallbackChart row={row} />;
   }
@@ -1275,7 +1289,13 @@ function MonteCarloCanvas({
         />
         {geometry.paths.map((path) => (
           <path
-            className={path.terminalWin ? "mc-path path-win" : "mc-path path-loss"}
+            className={[
+              "mc-path",
+              path.terminalWin ? "path-win" : "path-loss",
+              generatorClassName(path.generatorId),
+            ]
+              .filter(Boolean)
+              .join(" ")}
             d={path.d}
             key={path.index}
           />
@@ -1292,6 +1312,16 @@ function MonteCarloCanvas({
         <span>{formatPreviewWinCounts(preview)}</span>
         <span>z {formatSigned(row.z_path)}</span>
       </div>
+      {legendRows.length > 0 ? (
+        <div className="ensemble-legend">
+          {legendRows.map((generator) => (
+            <span className="ensemble-chip" key={generator.id}>
+              <span>{shortGeneratorLabel(generator.id)}</span>
+              <strong>{formatSmall(generator.weight)}</strong>
+            </span>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -2139,6 +2169,10 @@ function parseSimulationPreview(value: unknown): SimulationPreview | null {
   }
   return {
     path_count: pathCount,
+    paths_per_generator: isFiniteNumber(value.paths_per_generator)
+      ? value.paths_per_generator
+      : undefined,
+    generator_count: isFiniteNumber(value.generator_count) ? value.generator_count : undefined,
     steps,
     start_price: startPrice,
     threshold,
@@ -2153,11 +2187,12 @@ function parseSimulationPreview(value: unknown): SimulationPreview | null {
 function isSimulationPath(value: unknown): value is SimulationPath {
   return (
     isRecord(value) &&
-    typeof value.index === "number" &&
+    (typeof value.index === "number" || typeof value.index === "string") &&
     typeof value.terminal_win === "boolean" &&
     typeof value.no_touch_win === "boolean" &&
     Array.isArray(value.points) &&
-    value.points.every(isFiniteNumber)
+    value.points.every(isFiniteNumber) &&
+    (value.generator_id === undefined || typeof value.generator_id === "string")
   );
 }
 
@@ -2198,7 +2233,12 @@ function buildPathGeometry(preview: SimulationPreview) {
           return `${index === 0 ? "M" : "L"}${x.toFixed(2)} ${y.toFixed(2)}`;
         })
         .join(" ");
-      return { d, index: path.index, terminalWin: path.terminal_win };
+      return {
+        d,
+        index: path.index,
+        terminalWin: path.terminal_win,
+        generatorId: path.generator_id,
+      };
     }),
   };
 }
@@ -2291,6 +2331,62 @@ function generatorLabel(id: string) {
     .filter(Boolean)
     .map((part) => `${part.slice(0, 1).toUpperCase()}${part.slice(1)}`)
     .join(" ");
+}
+
+function shortGeneratorLabel(value: string) {
+  switch (value) {
+    case "empirical_conditional":
+      return "Empirical";
+    case "block_bootstrap":
+      return "Bootstrap";
+    case "filtered_historical":
+      return "Filtered";
+    case "stress_overlay":
+      return "Stress";
+    default:
+      return sanitizeOperatorLabel(value);
+  }
+}
+
+function generatorLegendRows(row: ProbabilityRow, preview: SimulationPreview | null) {
+  const breakdown = generatorBreakdownRows(row);
+  const byId = new Map(breakdown.map((generator) => [generator.id, generator]));
+  const previewIds = new Set(
+    preview
+      ? preview.sampled_paths
+          .map((path) => path.generator_id)
+          .filter((id): id is string => typeof id === "string" && id.length > 0)
+      : [],
+  );
+  return orderedGeneratorIds([...new Set([...byId.keys(), ...previewIds])]).map((id) => ({
+    id,
+    weight: byId.get(id)?.weight,
+  }));
+}
+
+function orderedGeneratorIds(ids: string[]) {
+  const preferred = [
+    "empirical_conditional",
+    "block_bootstrap",
+    "filtered_historical",
+    "stress_overlay",
+  ];
+  return [...ids].sort((left, right) => {
+    const leftIndex = preferred.indexOf(left);
+    const rightIndex = preferred.indexOf(right);
+    if (leftIndex !== -1 || rightIndex !== -1) {
+      return (leftIndex === -1 ? preferred.length : leftIndex) -
+        (rightIndex === -1 ? preferred.length : rightIndex);
+    }
+    return left.localeCompare(right);
+  });
+}
+
+function generatorClassName(generatorId?: string) {
+  if (!generatorId) {
+    return "";
+  }
+  return `generator-${generatorId.replace(/_/g, "-")}`;
 }
 
 function formatGeneratorBreakdown(generator: ReturnType<typeof generatorBreakdownRows>[number]) {

@@ -32,6 +32,8 @@ export type ProbabilityValueRow = ProbabilityRowForGraph & {
   p_no_touch?: number;
   probability_kind?: string;
   path_count?: number;
+  paths_per_generator?: number;
+  generator_count?: number;
   paths_per_seed?: number;
   seed_count?: number;
   prior_fragment_count?: number;
@@ -55,6 +57,13 @@ export type GeneratorBreakdownRow = {
   weight?: number;
   sparse?: boolean;
 };
+
+const ENSEMBLE_GENERATOR_ORDER = [
+  "empirical_conditional",
+  "block_bootstrap",
+  "filtered_historical",
+  "stress_overlay",
+];
 
 export type ProbabilityPayloadForEvents<Row extends ProbabilityValueRow> =
   ProbabilityPayloadForGraph<Row> & {
@@ -140,6 +149,10 @@ export function probabilityMetadata(row: ProbabilityValueRow) {
   const preview = parsePreview(row.simulation_preview);
   return {
     totalPaths: isFiniteNumber(row.path_count) ? row.path_count : undefined,
+    pathsPerGenerator: isFiniteNumber(row.paths_per_generator)
+      ? row.paths_per_generator
+      : undefined,
+    generatorCount: isFiniteNumber(row.generator_count) ? row.generator_count : undefined,
     pathsPerSeed: isFiniteNumber(row.paths_per_seed) ? row.paths_per_seed : undefined,
     seedCount: isFiniteNumber(row.seed_count) ? row.seed_count : undefined,
     previewPathCount: Array.isArray(preview?.sampled_paths)
@@ -178,9 +191,12 @@ export function generatorBreakdownRows(row: ProbabilityValueRow): GeneratorBreak
     : isRecord(metadata.effective_weights)
       ? metadata.effective_weights
       : {};
-  const generatorIds = new Set([...Object.keys(summarySource), ...Object.keys(weightsSource)]);
+  const generatorIds = orderedGeneratorIds([
+    ...Object.keys(summarySource),
+    ...Object.keys(weightsSource),
+  ]);
 
-  return [...generatorIds].flatMap((id) => {
+  return generatorIds.flatMap((id) => {
     const summary = summarySource[id];
     const summaryRow = isRecord(summary) ? summary : {};
     const weight = isFiniteNumber(summaryRow.weight)
@@ -200,6 +216,18 @@ export function generatorBreakdownRows(row: ProbabilityValueRow): GeneratorBreak
         sparse: typeof summaryRow.sparse === "boolean" ? summaryRow.sparse : undefined,
       },
     ];
+  });
+}
+
+function orderedGeneratorIds(ids: string[]) {
+  return [...new Set(ids)].sort((left, right) => {
+    const leftIndex = ENSEMBLE_GENERATOR_ORDER.indexOf(left);
+    const rightIndex = ENSEMBLE_GENERATOR_ORDER.indexOf(right);
+    if (leftIndex !== -1 || rightIndex !== -1) {
+      return (leftIndex === -1 ? ENSEMBLE_GENERATOR_ORDER.length : leftIndex) -
+        (rightIndex === -1 ? ENSEMBLE_GENERATOR_ORDER.length : rightIndex);
+    }
+    return left.localeCompare(right);
   });
 }
 
@@ -297,8 +325,23 @@ export function mergeGraphableProbabilityPayloadRows<Row extends ProbabilityValu
   if (next.state === "DISABLED") {
     return next;
   }
+  const nextRows = Array.isArray(next.rows)
+    ? next.rows.filter((row): row is Row => isRecord(row))
+    : [];
+  const previousRowsForPreview = Array.isArray(previous?.rows)
+    ? previous.rows.filter((row): row is Row => isRecord(row))
+    : [];
   if (!shouldRetainPreviousProbabilityRows(next)) {
-    return next;
+    if (nextRows.length === 0 || previousRowsForPreview.length === 0) {
+      return next;
+    }
+    return {
+      ...next,
+      rows: mergeCurrentProbabilityRowsWithPreviousPreview(
+        previousRowsForPreview,
+        nextRows,
+      ),
+    };
   }
   const previousRows = Array.isArray(previous?.rows)
     ? previous.rows
@@ -308,9 +351,6 @@ export function mergeGraphableProbabilityPayloadRows<Row extends ProbabilityValu
   if (previousRows.length === 0) {
     return next;
   }
-  const nextRows = Array.isArray(next.rows)
-    ? next.rows.filter((row): row is Row => isRecord(row))
-    : [];
   const previousKeys = new Set(previousRows.map(stableProbabilityMergeKey));
   const nextKeys = new Set(nextRows.map(stableProbabilityMergeKey));
   const rows = mergeProbabilityLaneRows(previousRows, nextRows);
@@ -372,6 +412,26 @@ function mergeProbabilityLaneRows<Row extends ProbabilityValueRow>(
     byKey.set(key, { ...previous, ...event });
   }
   return [...byKey.values()];
+}
+
+function mergeCurrentProbabilityRowsWithPreviousPreview<Row extends ProbabilityValueRow>(
+  previousRows: Row[],
+  nextRows: Row[],
+) {
+  const previousByKey = new Map<string, Row>();
+  for (const row of previousRows) {
+    previousByKey.set(stableProbabilityMergeKey(row), row);
+  }
+  return nextRows.map((row) => {
+    const previous = previousByKey.get(stableProbabilityMergeKey(row));
+    if (!previous?.simulation_preview || row.simulation_preview) {
+      return row;
+    }
+    return {
+      ...row,
+      simulation_preview: previous.simulation_preview,
+    };
+  });
 }
 
 function isOlderProbabilityRow(candidate: ProbabilityValueRow, existing: ProbabilityValueRow) {

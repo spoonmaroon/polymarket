@@ -264,6 +264,22 @@ def test_pc_deploy_defaults_to_gpu_api_overlay_and_sync() -> None:
     ) in script
 
 
+def test_pc_deploy_fetches_exact_main_sha_from_github_ssh() -> None:
+    script = (ROOT / "scripts" / "deploy_pc.sh").read_text(encoding="utf-8")
+
+    assert 'PC_GIT_REMOTE="${PC_GIT_REMOTE:-git@github.com:AnimeWeeb9000/polymarket.git}"' in script
+    assert 'PC_BRANCH="${PC_BRANCH:-main}"' in script
+    assert 'git -C "$ROOT" fetch --quiet origin main' in script
+    assert 'LOCAL_MAIN_SHA="$(git -C "$ROOT" rev-parse origin/main^{commit})"' in script
+    assert 'origin/main is $LOCAL_MAIN_SHA but deploy ref is $FULL_SHA' in script
+    assert 'git ls-remote "\\$PC_GIT_REMOTE" HEAD' in script
+    assert 'git clone "\\$PC_GIT_REMOTE" "\\$PC_REPO"' in script
+    assert 'git fetch --quiet --prune origin "\\$PC_BRANCH"' in script
+    assert 'git checkout -B "\\$PC_BRANCH" "\\$FULL_SHA"' in script
+    assert "git bundle create" not in script
+    assert "PC_BUNDLE" not in script
+
+
 def test_thepc_spoon_artifact_sync_installer_is_role_safe() -> None:
     script = (ROOT / "scripts" / "install_thepc_spoon_artifact_sync.sh").read_text(
         encoding="utf-8"
@@ -314,7 +330,7 @@ def test_compose_and_env_support_prebuilt_image_overrides() -> None:
     assert "POLYMARKET_PROBABILITY_CPU_SOFT_MAX_PERCENT=20.0" in env_example
     assert "POLYMARKET_PROBABILITY_MAX_RSS_MB=512" in env_example
     assert "POLYMARKET_PROBABILITY_MAX_CYCLE_RUNTIME_MS=750" in env_example
-    assert "POLYMARKET_PROBABILITY_MAX_TOTAL_PATHS=40000" in env_example
+    assert "POLYMARKET_PROBABILITY_MAX_TOTAL_PATHS=320000" in env_example
     assert "POLYMARKET_PROBABILITY_MIN_TOTAL_PATHS=4000" in env_example
     assert "POLYMARKET_PROBABILITY_SUSTAINED_BREACH_CYCLES=3" in env_example
     assert "POLYMARKET_CUDA_PROBABILITY_MAX_INPUT_SNAPSHOT_AGE_SECONDS=30.0" in env_example
@@ -470,7 +486,7 @@ def test_prebuilt_image_deploy_script_loads_images_and_uses_deploy_fast_path() -
     assert "--build" not in script
 
 
-def test_pc_deploy_script_streams_bundle_and_images_into_wsl() -> None:
+def test_pc_deploy_script_fetches_github_main_and_streams_image_artifacts_into_wsl() -> None:
     script = (ROOT / "scripts" / "deploy_pc.sh").read_text(encoding="utf-8")
 
     assert 'PC_DEPLOY_MODE="${PC_DEPLOY_MODE:-remote-build}"' in script
@@ -479,16 +495,18 @@ def test_pc_deploy_script_streams_bundle_and_images_into_wsl() -> None:
     assert 'PC_HOST="${PC_HOST:-ender@100.72.104.49}"' in script
     assert 'PC_WSL_DISTRO="${PC_WSL_DISTRO:-Ubuntu}"' in script
     assert 'PC_REPO="${PC_REPO:-/home/ender/polymarket}"' in script
-    assert 'PC_BUNDLE="${PC_BUNDLE:-/home/ender/polymarket.bundle}"' in script
+    assert 'PC_GIT_REMOTE="${PC_GIT_REMOTE:-git@github.com:AnimeWeeb9000/polymarket.git}"' in script
     assert 'PC_DATA_DIR="${PC_DATA_DIR:-/home/ender/polymarket-data}"' in script
-    assert 'git -C "$ROOT" bundle create' in script
-    assert "wsl_put_file()" in script
+    assert "wsl_put_artifact_file()" in script
     assert "cat >" in script
     assert 'polymarket-rust-collector-${SHORT_SHA}.tar' in script
     assert 'polymarket-normalizer-${SHORT_SHA}.tar' in script
     assert 'polymarket-cuda-probability-${SHORT_SHA}.tar' in script
-    assert "copying git bundle to THEPC WSL; images will build on THEPC" in script
+    assert "THEPC WSL will fetch GitHub main and build images locally" in script
+    assert "THEPC WSL will fetch GitHub main; copying image tarballs" in script
     assert 'if [ "$PC_DEPLOY_MODE" = "image-tar" ]; then' in script
+    assert 'git ls-remote "\\$PC_GIT_REMOTE" HEAD' in script
+    assert 'git clone "\\$PC_GIT_REMOTE" "\\$PC_REPO"' in script
     assert 'set_env POLYMARKET_CUDA_PROBABILITY_IMAGE "\\$CUDA_PROBABILITY_IMAGE"' in script
     assert 'DOCKER_CONFIG="\\$PC_DATA_DIR/docker-config"' in script
     assert "printf '%s\\n' '{\"auths\":{}}'" in script
@@ -511,7 +529,7 @@ def test_pc_deploy_script_runs_prebuilt_deploy_gate_with_pc_cadence() -> None:
         'PC_PROBABILITY_CPU_SOFT_MAX_PERCENT="${PC_PROBABILITY_CPU_SOFT_MAX_PERCENT:-20.0}"'
         in script
     )
-    assert 'PC_PROBABILITY_MAX_TOTAL_PATHS="${PC_PROBABILITY_MAX_TOTAL_PATHS:-40000}"' in script
+    assert 'PC_PROBABILITY_MAX_TOTAL_PATHS="${PC_PROBABILITY_MAX_TOTAL_PATHS:-320000}"' in script
     assert 'PC_PROBABILITY_MIN_TOTAL_PATHS="${PC_PROBABILITY_MIN_TOTAL_PATHS:-4000}"' in script
     assert 'PC_GPU_WORKER_MEM_LIMIT="${PC_GPU_WORKER_MEM_LIMIT:-1536m}"' in script
     assert 'PC_DEPLOY_ROLE=$(shell_quote "$PC_DEPLOY_ROLE")' in script

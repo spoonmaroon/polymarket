@@ -213,24 +213,13 @@ impl RuntimeLiveTask {
             });
 
             loop {
-                if stream_runtime_updates(&client, poll_interval_ms, &runtime_tx)
-                    .await
-                    .is_err_and(|error| {
-                        runtime_tx
-                            .send(RuntimeUpdate {
-                                status: None,
-                                gates: None,
-                                monitor: None,
-                                volatility: None,
-                                probabilities: None,
-                                outcomes: None,
-                                display_lag: None,
-                                error: Some(format!("stream: {error}")),
-                            })
-                            .is_err()
-                    })
+                if let Err(error) =
+                    stream_runtime_updates(&client, poll_interval_ms, &runtime_tx).await
                 {
-                    break;
+                    let update = runtime_update_from_stream_error(&error.to_string());
+                    if update.error.is_some() && runtime_tx.send(update).is_err() {
+                        break;
+                    }
                 }
                 let update = poll_runtime(&client).await;
                 if runtime_tx.send(update).is_err() {
@@ -452,6 +441,30 @@ fn runtime_update_from_live(live: RuntimeLive) -> RuntimeUpdate {
     }
 }
 
+fn runtime_update_from_stream_error(error: &str) -> RuntimeUpdate {
+    let normalized = error.to_ascii_lowercase();
+    let transient = normalized.contains("read live stream")
+        || normalized.contains("live stream closed")
+        || normalized.contains("connection reset")
+        || normalized.contains("unexpected eof")
+        || normalized.contains("operation timed out");
+
+    RuntimeUpdate {
+        status: None,
+        gates: None,
+        monitor: None,
+        volatility: None,
+        probabilities: None,
+        outcomes: None,
+        display_lag: None,
+        error: if transient {
+            None
+        } else {
+            Some(format!("stream: {error}"))
+        },
+    }
+}
+
 async fn poll_probability_runtime(client: &EngineClient) -> RuntimeUpdate {
     let probabilities_result = client.probabilities(8).await;
     let mut errors = Vec::new();
@@ -537,7 +550,7 @@ mod tests {
     use super::{
         OUTCOME_HISTORY_LIMIT, OUTCOME_POLL_INTERVAL, PROBABILITY_POLL_INTERVAL, RuntimeUpdate,
         apply_key, apply_runtime_update, drain_runtime_updates, poll_interval_duration,
-        poll_runtime,
+        poll_runtime, runtime_update_from_stream_error,
     };
     use crate::client::EngineClient;
     use crate::{
@@ -600,6 +613,10 @@ mod tests {
                 edge_after_costs: None,
                 required_edge: None,
                 skip_reasons: Vec::new(),
+                model_version: None,
+                generator_version: None,
+                path_count: None,
+                generator_count: None,
             }],
             error: None,
             errors: Vec::new(),
@@ -705,6 +722,22 @@ mod tests {
         assert_eq!(PROBABILITY_POLL_INTERVAL, Duration::from_secs(3));
         assert_eq!(OUTCOME_POLL_INTERVAL, Duration::from_secs(15));
         assert_eq!(OUTCOME_HISTORY_LIMIT, 5000);
+    }
+
+    #[test]
+    fn transient_live_stream_errors_do_not_become_runtime_errors() {
+        let update = runtime_update_from_stream_error("read live stream: connection reset");
+
+        assert_eq!(update.error, None);
+        assert!(update.status.is_none());
+        assert!(update.monitor.is_none());
+    }
+
+    #[test]
+    fn non_transient_live_stream_errors_still_surface() {
+        let update = runtime_update_from_stream_error("http 500");
+
+        assert_eq!(update.error, Some("stream: http 500".to_string()));
     }
 
     #[tokio::test]

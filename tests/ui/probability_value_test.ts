@@ -18,6 +18,8 @@ const upRow = {
   p_finish: 0.55,
   p_hat: 0.56,
   path_count: 120000,
+  paths_per_generator: 30000,
+  generator_count: 4,
   paths_per_seed: 30000,
   seed_count: 4,
   simulation_preview: {
@@ -41,6 +43,8 @@ assert.equal(probabilityDisplayValue({ p_hat: 0, p_finish: 0.55 }), 0);
 assert.notEqual(probabilityRowKey(upRow), probabilityRowKey(downRow));
 assert.deepEqual(probabilityMetadata(upRow), {
   totalPaths: 120000,
+  pathsPerGenerator: 30000,
+  generatorCount: 4,
   pathsPerSeed: 30000,
   seedCount: 4,
   previewPathCount: 24,
@@ -214,6 +218,19 @@ assert.deepEqual(
       sparse: undefined,
     },
   ],
+);
+
+assert.deepEqual(
+  generatorBreakdownRows({
+    path_count: 80_000,
+    generator_summary: {
+      empirical_conditional: { p_finish: 0.61, p_no_touch: 0.55, weight: 0.4, sparse: false },
+      block_bootstrap: { p_finish: 0.58, p_no_touch: 0.52, weight: 0.25, sparse: false },
+      filtered_historical: { p_finish: 0.63, p_no_touch: 0.57, weight: 0.25, sparse: false },
+      stress_overlay: { p_finish: 0.53, p_no_touch: 0.49, weight: 0.1, sparse: false },
+    },
+  }).map((row) => row.id),
+  ["empirical_conditional", "block_bootstrap", "filtered_historical", "stress_overlay"],
 );
 
 assert.deepEqual(generatorBreakdownRows({ generator_summary: undefined }), []);

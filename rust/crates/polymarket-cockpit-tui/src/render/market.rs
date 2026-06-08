@@ -8,7 +8,7 @@ use ratatui::{
 
 use crate::{
     market_view,
-    render::orderbook,
+    render::{orderbook, probability},
     state::AppState,
     status::{RuntimeOrderbookRow, RuntimeOutcomeRow, RuntimeOutcomes},
 };
@@ -341,6 +341,10 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(13), Constraint::Min(3)])
         .areas(area);
+    let [book_area, probabilities_area] = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(8), Constraint::Length(8)])
+        .areas(orderbook_area);
     let visible_rows = counts_area.height.saturating_sub(3).max(1) as usize;
     let rows = market_rows_for_visible_count(app, visible_rows)
         .into_iter()
@@ -391,7 +395,8 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     .block(Block::bordered().title("Market"));
 
     frame.render_widget(table, counts_area);
-    orderbook::render(frame, orderbook_area, app);
+    orderbook::render(frame, book_area, app);
+    probability::render_compact(frame, probabilities_area, app);
 }
 
 #[cfg(test)]

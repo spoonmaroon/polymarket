@@ -219,6 +219,58 @@ assert.equal(retainedFromPartialRefresh.rows?.[1]?.p_finish, 0.37);
 assert.equal(retainedFromPartialRefresh.previous_mc_retained, true);
 assert.equal(retainedFromPartialRefresh.retained_mc_rows, 1);
 
+const retainedAsofPreview = {
+  sampled_paths: [
+    {
+      index: "empirical_conditional:0",
+      generator_id: "empirical_conditional",
+      points: [1, 2, 3],
+    },
+  ],
+  terminal_histogram: [],
+};
+
+const retainedPreviewAcrossAsof = mergeGraphableProbabilityPayloadRows(
+  {
+    ok: true,
+    state: "OK",
+    rows: [
+      {
+        contract_id: "btc-window-up",
+        asset: "BTC",
+        side: "UP",
+        start_ts: "2026-06-05T13:20:00Z",
+        expiry_ts: "2026-06-05T13:25:00Z",
+        asof_ts: "2026-06-05T13:20:01Z",
+        p_finish: 0.61,
+        simulation_preview: retainedAsofPreview,
+      },
+    ],
+  },
+  {
+    ok: true,
+    state: "OK",
+    rows: [
+      {
+        contract_id: "btc-window-up",
+        asset: "BTC",
+        side: "UP",
+        start_ts: "2026-06-05T13:20:00Z",
+        expiry_ts: "2026-06-05T13:25:00Z",
+        asof_ts: "2026-06-05T13:20:05Z",
+        p_finish: 0.62,
+      },
+    ],
+  },
+  nowMs,
+);
+
+assert.deepEqual(
+  retainedPreviewAcrossAsof.rows?.[0]?.simulation_preview,
+  retainedAsofPreview,
+);
+assert.equal(retainedPreviewAcrossAsof.rows?.[0]?.p_finish, 0.62);
+
 const notRetainedFromFreshOkRefresh = mergeGraphableProbabilityPayloadRows(
   {
     ok: true,

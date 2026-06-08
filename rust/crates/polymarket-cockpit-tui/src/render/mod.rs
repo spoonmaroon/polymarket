@@ -42,10 +42,6 @@ pub fn render(frame: &mut Frame<'_>, app: &AppState) {
             price_path::render(frame, prices, app);
             volatility::render(frame, volatility, app);
         }
-        MainTab::Probability => {
-            probability::render(frame, body.primary, app);
-            systems::render(frame, body.secondary, app);
-        }
         MainTab::Outcomes => {
             outcomes::render(frame, body.primary, app);
             systems::render(frame, body.secondary, app);

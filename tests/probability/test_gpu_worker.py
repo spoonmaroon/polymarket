@@ -76,18 +76,24 @@ def test_event_payload_includes_simulation_preview_for_mc_rows() -> None:
     assert payload["simulation_preview"] == preview
 
 
-def test_worker_budget_caps_paths_per_runtime_input() -> None:
-    budget = ProbabilityWorkerBudget(max_total_paths=120_000)
+def test_worker_budget_caps_total_generator_paths_for_ensemble() -> None:
+    budget = ProbabilityWorkerBudget(max_total_paths=320_000, worker_mode="ensemble")
 
-    assert _path_budget_per_input(input_count=4, budget=budget) == 30_000
-    assert _clamp_path_count(80_000, path_budget_per_input=30_000) == (
-        30_000,
+    assert _path_budget_per_input(input_count=4, budget=budget) == 20_000
+    assert _clamp_path_count(80_000, path_budget_per_input=20_000) == (
+        20_000,
         True,
     )
-    assert _clamp_path_count(20_000, path_budget_per_input=30_000) == (
-        20_000,
+    assert _clamp_path_count(10_000, path_budget_per_input=20_000) == (
+        10_000,
         False,
     )
+
+
+def test_worker_budget_keeps_single_generator_modes_divided_by_inputs_only() -> None:
+    budget = ProbabilityWorkerBudget(max_total_paths=320_000, worker_mode="cuda")
+
+    assert _path_budget_per_input(input_count=4, budget=budget) == 80_000
 
 
 def test_worker_budget_rejects_non_positive_limits() -> None:
@@ -372,8 +378,25 @@ def test_worker_writes_ensemble_v1_rows_and_events(
             diagnostics={
                 "model": "ensemble-v1",
                 "generator_version": "four-generator-ensemble-v1",
-                "path_count": path_count,
+                "path_count": path_count * 4,
+                "paths_per_generator": path_count,
+                "generator_count": 4,
                 "steps": steps,
+                "simulation_preview": {
+                    "path_count": path_count * 4,
+                    "paths_per_generator": path_count,
+                    "generator_count": 4,
+                    "sampled_paths": [
+                        {
+                            "index": "empirical_conditional:0",
+                            "generator_id": "empirical_conditional",
+                            "terminal_win": True,
+                            "no_touch_win": True,
+                            "points": [70_100.0, 70_120.0],
+                        }
+                    ],
+                    "terminal_histogram": [],
+                },
                 "effective_weights": {
                     "empirical_conditional": 0.4,
                     "block_bootstrap": 0.25,
@@ -416,6 +439,10 @@ def test_worker_writes_ensemble_v1_rows_and_events(
     assert row["generator_version"] == "four-generator-ensemble-v1"
     assert row["backend"] == "ensemble"
     assert row["p_finish"] == 0.64
+    assert row["path_count"] == 30_000
+    assert row["paths_per_generator"] == 7_500
+    assert row["generator_count"] == 4
+    assert row["simulation_preview"]["sampled_paths"][0]["generator_id"] == "empirical_conditional"
     assert row["effective_weights"]["stress_overlay"] == 0.1
     assert row["generator_summary"]["empirical_conditional"]["sparse"] is True
     assert row["mc_dispersion"] == 0.08
@@ -430,6 +457,10 @@ def test_worker_writes_ensemble_v1_rows_and_events(
     mc_event = next(event for event in events if event["probability_kind"] == "MC")
     assert mc_event["model_version"] == "ensemble-v1"
     assert mc_event["generator_version"] == "four-generator-ensemble-v1"
+    assert mc_event["path_count"] == 30_000
+    assert mc_event["paths_per_generator"] == 7_500
+    assert mc_event["generator_count"] == 4
+    assert mc_event["simulation_preview"]["sampled_paths"][0]["generator_id"] == "empirical_conditional"
     assert mc_event["effective_weights"]["empirical_conditional"] == 0.4
     assert mc_event["generator_summary"]["empirical_conditional"]["p_finish"] == 0.66
 

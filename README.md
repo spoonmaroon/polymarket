@@ -29,6 +29,11 @@ fees, spread, slippage, data latency, and path-reversal risk.
 Start with [SETUP.md](SETUP.md). Normal development should merge back to
 `main`; do not leave merged `codex/*` branches on GitHub.
 
+THEPC deploys fetch `origin/main` over SSH from GitHub. The Windows/WSL user
+must have a GitHub SSH key that can read
+`git@github.com:AnimeWeeb9000/polymarket.git`. The deploy script refuses commits
+that are not already present at `origin/main`.
+
 ## Part One Data Contract
 
 The locked Part One data-source and database plan lives in

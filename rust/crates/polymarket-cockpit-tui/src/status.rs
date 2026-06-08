@@ -177,6 +177,14 @@ pub struct RuntimeProbabilityRow {
     pub required_edge: Option<f64>,
     #[serde(default)]
     pub skip_reasons: Vec<String>,
+    #[serde(default)]
+    pub model_version: Option<String>,
+    #[serde(default)]
+    pub generator_version: Option<String>,
+    #[serde(default)]
+    pub path_count: Option<u64>,
+    #[serde(default)]
+    pub generator_count: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]

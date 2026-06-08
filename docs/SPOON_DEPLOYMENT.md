@@ -54,11 +54,11 @@ them without compiling Rust on the host.
 
 ### THEPC Deploy
 
-THEPC is the active runtime host. Do not use blind auto-pull for this lane. The
-Mac-side helper below builds pinned Linux images, creates a git bundle for the
-exact local commit, streams the bundle and image tarballs into THEPC's Ubuntu
-WSL environment, runs the existing prebuilt-image deploy gate, and finishes with
-the collector status check. The same deploy also installs the matching
+THEPC is the active runtime host. Do not use blind auto-pull for this lane.
+THEPC deploys are GitHub-pull based. The Mac pushes `main`; THEPC WSL fetches
+`git@github.com:AnimeWeeb9000/polymarket.git`, checks out the exact pushed SHA,
+then builds and restarts from that checkout. Do not deploy local-only commits.
+The same deploy also installs the matching
 `polymarket-cockpit-tui` binary to `/home/ender/bin/polymarket-cockpit-tui`, so
 the Windows desktop shortcut opens the TUI for the deployed commit.
 `./scripts/deploy_pc.sh` is the only supported CUDA runtime deployment path; the
@@ -74,7 +74,7 @@ Defaults:
 - `PC_HOST=ender@100.72.104.49`
 - `PC_WSL_DISTRO=Ubuntu`
 - `PC_REPO=/home/ender/polymarket`
-- `PC_BUNDLE=/home/ender/polymarket.bundle`
+- `PC_GIT_REMOTE=git@github.com:AnimeWeeb9000/polymarket.git`
 - `PC_DATA_DIR=/home/ender/polymarket-data`
 - `PC_BIN_DIR=/home/ender/bin`
 - `PC_NORMALIZER_INTERVAL_SECONDS=0.1`
@@ -393,7 +393,7 @@ The default is `POLYMARKET_PROBABILITY_CPU_TARGET_PERCENT=15.0` with
 `POLYMARKET_PROBABILITY_CPU_SOFT_MAX_PERCENT=20.0`. The worker measures
 per-cycle process CPU and adapts its next total path budget between
 `POLYMARKET_PROBABILITY_MIN_TOTAL_PATHS=4000` and
-`POLYMARKET_PROBABILITY_MAX_TOTAL_PATHS=40000`.
+`POLYMARKET_PROBABILITY_MAX_TOTAL_PATHS=320000`.
 
 The manifest in `deploy/cluster/cluster.local.example.json` is the source of
 truth for ownership and mirrors:

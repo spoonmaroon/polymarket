@@ -58,7 +58,7 @@ DEFAULT_CPU_TARGET_PERCENT = 15.0
 DEFAULT_CPU_SOFT_MAX_PERCENT = 20.0
 DEFAULT_MAX_RSS_MB = 512
 DEFAULT_MAX_CYCLE_RUNTIME_MS = 750
-DEFAULT_MAX_TOTAL_PATHS = 40_000
+DEFAULT_MAX_TOTAL_PATHS = 320_000
 DEFAULT_MIN_TOTAL_PATHS = 4_000
 DEFAULT_SUSTAINED_BREACH_CYCLES = 3
 DEFAULT_FRAGMENT_MAX_ROWS = 250_000
@@ -348,7 +348,8 @@ def run_cuda_probability_worker_cycle(
             )
             for runtime_input in group
         )
-        requested_total_paths += requested_path_count * len(group)
+        generator_count = _generator_count_for_budget(budget)
+        requested_total_paths += requested_path_count * len(group) * generator_count
         path_count, was_clamped = _clamp_path_count(
             requested_path_count,
             path_budget_per_input=path_budget_per_input,
@@ -358,7 +359,7 @@ def run_cuda_probability_worker_cycle(
         seed_count = min(_gpu_seed_count_for_total_paths(path_count), path_count)
         paths_per_seed = max(1, path_count // seed_count)
         path_count = paths_per_seed * seed_count
-        allocated_total_paths += path_count * len(group)
+        allocated_total_paths += path_count * len(group) * generator_count
         seed = min(_seed_for_input(runtime_input.probability_input) for runtime_input in group)
         mc_started_ts = datetime.now(timezone.utc)
         try:
@@ -781,7 +782,17 @@ def _mc_row_from_output(
 ) -> tuple[dict[str, Any], str]:
     probability_input = runtime_input.probability_input
     diagnostics = dict(output.diagnostics)
-    diagnostics["path_count"] = path_count
+    effective_path_count = int(diagnostics.get("path_count", path_count))
+    paths_per_generator = int(diagnostics.get("paths_per_generator", path_count))
+    generator_count = int(
+        diagnostics.get(
+            "generator_count",
+            4 if output.model_version == "ensemble-v1" else 1,
+        )
+    )
+    diagnostics["path_count"] = effective_path_count
+    diagnostics["paths_per_generator"] = paths_per_generator
+    diagnostics["generator_count"] = generator_count
     diagnostics["paths_per_seed"] = paths_per_seed
     diagnostics["seed_count"] = seed_count
     latency = ProbabilityLatencyTrace(
@@ -799,7 +810,9 @@ def _mc_row_from_output(
         "start_ts": runtime_input.start_ts.isoformat(),
         "expiry_ts": runtime_input.expiry_ts.isoformat(),
         "asof_ts": probability_input.asof_ts.isoformat(),
-        "path_count": path_count,
+        "path_count": effective_path_count,
+        "paths_per_generator": paths_per_generator,
+        "generator_count": generator_count,
         "paths_per_seed": paths_per_seed,
         "seed_count": seed_count,
     }
@@ -820,7 +833,7 @@ def _mc_row_from_output(
         p_finish=output.p_finish,
         p_no_touch=output.p_no_touch,
         u_gen=_float(diagnostics.get("u_gen", 0.0), "u_gen"),
-        path_count=path_count,
+        path_count=effective_path_count,
         seed=seed,
         volatility_regime=runtime_input.volatility_regime,
         generator_version=str(
@@ -863,6 +876,9 @@ def _mc_row_from_output(
             "executable_price": probability_input.executable_price,
             "source_age_ms": probability_input.source_age_ms,
             "book_age_ms": probability_input.book_age_ms,
+            "path_count": effective_path_count,
+            "paths_per_generator": paths_per_generator,
+            "generator_count": generator_count,
             "latency": diagnostics["latency"],
             "wave_phase": nowcast_row["wave_phase"],
             "wave_score": nowcast_row["wave_score"],
@@ -910,7 +926,12 @@ def _path_budget_per_input(
 ) -> int:
     if input_count <= 0:
         return 0
-    return max(1, budget.max_total_paths // input_count)
+    generator_count = _generator_count_for_budget(budget)
+    return max(1, budget.max_total_paths // (input_count * generator_count))
+
+
+def _generator_count_for_budget(budget: ProbabilityWorkerBudget) -> int:
+    return 4 if budget.worker_mode == "ensemble" else 1
 
 
 def _clamp_path_count(
@@ -1147,6 +1168,8 @@ def _event_payload_from_row(
         "wave_phase": str(row.get("wave_phase") or "none"),
         "wave_score": _float(row.get("wave_score", 0.0), "wave_score"),
         "path_count": _optional_event_int(row.get("path_count")),
+        "paths_per_generator": _optional_event_int(row.get("paths_per_generator")),
+        "generator_count": _optional_event_int(row.get("generator_count")),
         "seed": _optional_event_int(row.get("seed")),
         "queue_ms": _latency_value(latency, "queue_ms"),
         "runtime_ms": _latency_value(latency, "runtime_ms"),

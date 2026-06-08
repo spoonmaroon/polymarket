@@ -57,10 +57,34 @@ def _suite(
     history_fragments: Sequence[Sequence[float]] | None = None,
 ) -> tuple[PathSimulationResult, PathSimulationResult, PathSimulationResult, PathSimulationResult]:
     return (
-        _result(GeneratorId.EMPIRICAL_CONDITIONAL, p_finish_wins=6, p_no_touch_wins=6),
-        _result(GeneratorId.BLOCK_BOOTSTRAP, p_finish_wins=5, p_no_touch_wins=5),
-        _result(GeneratorId.FILTERED_HISTORICAL, p_finish_wins=7, p_no_touch_wins=7),
-        _result(GeneratorId.STRESS_OVERLAY, p_finish_wins=9, p_no_touch_wins=9),
+        _result(
+            GeneratorId.EMPIRICAL_CONDITIONAL,
+            p_finish_wins=6,
+            p_no_touch_wins=6,
+            path_count=path_count,
+            point_count=steps + 1,
+        ),
+        _result(
+            GeneratorId.BLOCK_BOOTSTRAP,
+            p_finish_wins=5,
+            p_no_touch_wins=5,
+            path_count=path_count,
+            point_count=steps + 1,
+        ),
+        _result(
+            GeneratorId.FILTERED_HISTORICAL,
+            p_finish_wins=7,
+            p_no_touch_wins=7,
+            path_count=path_count,
+            point_count=steps + 1,
+        ),
+        _result(
+            GeneratorId.STRESS_OVERLAY,
+            p_finish_wins=9,
+            p_no_touch_wins=9,
+            path_count=path_count,
+            point_count=steps + 1,
+        ),
     )
 
 
@@ -145,9 +169,39 @@ def test_run_four_generator_ensemble_diagnostics_include_four_generators_and_see
     }
     assert diagnostics["model"] == "ensemble-v1"
     assert diagnostics["generator_version"] == "four-generator-ensemble-v1"
-    assert diagnostics["path_count"] == 10
+    assert diagnostics["path_count"] == 40
+    assert diagnostics["paths_per_generator"] == 10
+    assert diagnostics["generator_count"] == 4
     assert diagnostics["steps"] == 1
     json.dumps(diagnostics, sort_keys=True, allow_nan=False)
+
+
+def test_run_four_generator_ensemble_attaches_preview_with_generator_ids(monkeypatch) -> None:
+    from polymarket_engine.probability import ensemble_runtime
+
+    monkeypatch.setattr(ensemble_runtime, "run_generator_suite", _suite)
+
+    output = ensemble_runtime.run_four_generator_ensemble(
+        _probability_input(),
+        path_count=20,
+        steps=1,
+        seed=17,
+        history_fragments=((100.0, 101.0),),
+    )
+
+    preview = output.diagnostics["simulation_preview"]
+
+    assert preview["generator_count"] == 4
+    assert preview["paths_per_generator"] == 20
+    assert preview["path_count"] == 80
+    assert len(preview["sampled_paths"]) == 64
+    assert {path["generator_id"] for path in preview["sampled_paths"]} == {
+        "empirical_conditional",
+        "block_bootstrap",
+        "filtered_historical",
+        "stress_overlay",
+    }
+    assert all(len(path["points"]) == 2 for path in preview["sampled_paths"])
 
 
 def test_run_four_generator_ensemble_rejects_wrong_actual_path_count(

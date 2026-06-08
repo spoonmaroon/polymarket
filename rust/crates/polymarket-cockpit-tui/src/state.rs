@@ -22,7 +22,6 @@ pub enum MainTab {
     Live,
     Systems,
     Market,
-    Probability,
     Outcomes,
     Logs,
 }
@@ -33,7 +32,6 @@ impl MainTab {
             MainTab::Live,
             MainTab::Systems,
             MainTab::Market,
-            MainTab::Probability,
             MainTab::Outcomes,
             MainTab::Logs,
         ]
@@ -44,7 +42,6 @@ impl MainTab {
             MainTab::Live => "Live",
             MainTab::Systems => "Systems",
             MainTab::Market => "Market",
-            MainTab::Probability => "Probability",
             MainTab::Outcomes => "Outcomes",
             MainTab::Logs => "Logs",
         }
@@ -927,14 +924,7 @@ mod tests {
 
         assert_eq!(
             labels,
-            vec![
-                "Live",
-                "Systems",
-                "Market",
-                "Probability",
-                "Outcomes",
-                "Logs"
-            ]
+            vec!["Live", "Systems", "Market", "Outcomes", "Logs"]
         );
     }
 

@@ -1,114 +1,87 @@
-# Main Deploy, TUI Probabilities, and Browser Ensemble Preview Implementation Plan
+# Main Deploy, TUI Market Probabilities, and Browser Ensemble Preview Recovery Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make `main` the only GitHub/deploy branch, deploy THEPC by GitHub SSH pull, move TUI probability rows into the Market tab, stop noisy stream read errors, and restore browser Monte Carlo path fans with visible four-generator ensemble context.
+**Goal:** Update THEPC from GitHub `main`, keep GitHub main as the only deploy branch, move TUI probabilities into the Market tab, suppress noisy transient stream errors, and make browser Monte Carlo path fans render from real four-generator ensemble preview data.
 
-**Architecture:** Keep runtime authority unchanged and read-only. Treat GitHub `origin/main` as the deploy source of truth, keep THEPC pinned by exact commit SHA after fetching `main`, and expose the existing ensemble outputs more clearly in TUI/browser surfaces. Separate backend simulation count from browser preview line count: backend gets enough paths for probability quality, browser receives a bounded sampled preview for rendering.
+**Architecture:** Keep the runtime read-only and paper/display-only. THEPC should fetch GitHub `main` over SSH, check out an exact pushed SHA, build/restart locally, and fail closed if live smoke checks do not see fresh four-contract ensemble rows. The probability worker should emit enough backend paths for useful probabilities while sending only a bounded sampled preview to the browser.
 
-**Tech Stack:** Bash deploy scripts, Git/GitHub SSH, Rust Ratatui TUI, Python probability worker/runtime API, React/Vite browser UI, pytest, Rust cargo tests, TypeScript helper tests.
-
----
-
-## Key Decisions
-
-- `main` is the only long-lived GitHub branch.
-- THEPC deploy should fetch `git@github.com:AnimeWeeb9000/polymarket.git` over SSH instead of receiving a git bundle.
-- The Monte Carlo ensemble has four generator members: `empirical_conditional`, `block_bootstrap`, `filtered_historical`, and `stress_overlay`.
-- Browser display should show one card per contract: BTC UP, BTC DOWN, ETH UP, ETH DOWN. Each card shows the final ensemble probability, a path fan sampled from all four generators, and a compact generator legend.
-- Backend target path budget should default to `320_000` total paths per cycle on THEPC. With four live contract rows, this allows `80_000` paths per contract, matching `runtime_path_count_for_state()` for near-threshold/forming contracts.
-- Browser preview should default to `64` sampled path lines per contract, stratified across the four generators. The browser must not run simulations; it only renders sampled backend paths.
-- Implementation should happen on local branch `codex/main-deploy-tui-browser-ensemble`, then merge into `main` and push only `main`.
-
-## File Structure
-
-- Modify `scripts/deploy_pc.sh`
-  - Replace git-bundle repository sync with GitHub SSH clone/fetch.
-  - Default `PC_BRANCH=main`.
-  - Add a preflight check that local `HEAD` equals `origin/main` before deploying.
-  - Keep exact-SHA checkout on THEPC.
-  - Increase THEPC probability path budget default to `320000`.
-
-- Modify `tests/scripts/test_deploy_script.py`
-  - Lock the GitHub SSH deploy flow.
-  - Lock main-only defaults.
-  - Lock the new `320000` THEPC path budget.
-
-- Modify `README.md` and `docs/SPOON_DEPLOYMENT.md`
-  - Document `main` as the only deploy branch.
-  - Document THEPC GitHub SSH requirement.
-
-- Modify `rust/crates/polymarket-cockpit-tui/src/state.rs`
-  - Remove `MainTab::Probability`.
-
-- Modify `rust/crates/polymarket-cockpit-tui/src/render/mod.rs`
-  - Remove the `MainTab::Probability` render arm.
-
-- Modify `rust/crates/polymarket-cockpit-tui/src/status.rs`
-  - Add optional probability metadata fields needed for TUI labels.
-
-- Modify `rust/crates/polymarket-cockpit-tui/src/render/probability.rs`
-  - Keep reusable probability table model helpers.
-  - Add compact, status-free market probability rows.
-
-- Modify `rust/crates/polymarket-cockpit-tui/src/render/market.rs`
-  - Split the selected market lower area into book and probabilities.
-  - Render compact contract probabilities below the book.
-
-- Modify `rust/crates/polymarket-cockpit-tui/src/event_loop.rs`
-  - Treat live SSE read/close errors as transient and keep poll fallback running without setting `runtime_error`.
-
-- Modify `src/polymarket_engine/probability/ensemble_runtime.py`
-  - Attach `simulation_preview` to `ensemble-v1` diagnostics.
-  - Include sampled paths from all four generators with generator IDs.
-  - Include `generator_count` and total preview path count.
-
-- Modify `src/polymarket_engine/probability/gpu_worker.py`
-  - Raise `DEFAULT_MAX_TOTAL_PATHS` to `320_000`.
-  - Ensure emitted rows/events preserve ensemble preview diagnostics.
-
-- Modify `deploy/collector/.env.example`, `deploy/collector/docker-compose.yml`, and `deploy/gpu/gpu-probability-entrypoint.sh`
-  - Add `POLYMARKET_ENSEMBLE_PREVIEW_PATHS` default `64`.
-  - Add `POLYMARKET_ENSEMBLE_PREVIEW_POINTS` default `48`.
-  - Raise default `POLYMARKET_PROBABILITY_MAX_TOTAL_PATHS` to `320000`.
-
-- Modify `ui/src/App.tsx`, `ui/src/probabilityRows.ts`, and `ui/src/styles.css`
-  - Add optional `generator_id` on sampled preview paths.
-  - Render ensemble legend/weights in each Monte Carlo card.
-  - Color path lines by generator.
-  - Retain previews across fresh rows for the same contract/window even when `asof_ts` changes.
-
-- Modify tests:
-  - `tests/probability/test_ensemble_runtime.py`
-  - `tests/probability/test_gpu_worker.py`
-  - `tests/test_cli.py`
-  - `tests/scripts/test_deploy_script.py`
-  - `tests/ui/probability_value_test.ts`
-  - `tests/ui/probability_rows_test.ts`
+**Tech Stack:** Bash deploy scripts, Git/GitHub SSH, Python probability worker/runtime API, Rust Ratatui TUI, React/Vite browser UI, pytest, cargo tests, TypeScript helper tests.
 
 ---
 
-### Task 0: Create Local Work Branch From Main
+## Current Evidence To Preserve
+
+- GitHub `origin/main` was `46d4af0fd359803cb672db3b486ccb5901ae5fe1`.
+- THEPC `/home/ender/polymarket` was `4c6cd59c968c18ce5a182d1cdd66fea8f40de2a3`, `113` commits behind and `0` commits ahead.
+- THEPC was checked out on `codex/dedicated-volatility-tab-mac-launcher`, not `main`.
+- THEPC Docker services were up: collector, normalizer, API, and `gpu-probability-worker`.
+- THEPC GPU was visible: NVIDIA GeForce RTX 5060 Ti with 16 GB VRAM.
+- THEPC probability endpoint recovered to `NOWCAST` with four rows: BTC UP, BTC DOWN, ETH UP, ETH DOWN.
+- Those four live rows did not include `simulation_preview`, so the browser cannot draw Monte Carlo path lines from current status rows even when probability values exist.
+- `STALE_INPUTS` was intermittent around probability input gaps; collector and normalizer freshness were OK. Treat this as a transient input construction/rollover state that should retain last good rows without becoming a TUI runtime error.
+
+## Non-Negotiable Targets
+
+- GitHub remote has only `main` after cleanup.
+- THEPC deploy uses GitHub SSH pull/fetch, not Mac-to-PC git bundle transfer.
+- THEPC deploy refuses local-only commits that are not on `origin/main`.
+- TUI tab labels become `Live`, `Systems`, `Market`, `Outcomes`, `Logs`.
+- TUI `Probability` tab is removed.
+- Market tab shows selected book plus compact contract probabilities below the book.
+- Browser shows one probability card per BTC/ETH UP/DOWN contract with path fans and four-generator context when preview data exists.
+- Backend `POLYMARKET_PROBABILITY_MAX_TOTAL_PATHS=320000` means total generator-path budget per cycle. With four active contracts and four generators, the target is about `20,000` paths per generator and `80,000` effective paths per contract.
+- Browser preview defaults to at most `64` sampled paths and `48` points per contract. The browser never runs simulations.
+
+## Subagent Split
+
+- Subagent A: deploy script, GitHub SSH, docs, deploy tests.
+- Subagent B: TUI Market probabilities and Probability tab removal.
+- Subagent C: TUI transient stream error suppression.
+- Subagent D: ensemble preview emission and path-budget semantics.
+- Subagent E: browser path fan/legend rendering and preview retention.
+- Final integrator: focused verification, push `main`, clean remote branches, deploy THEPC, verify live runtime.
+
+---
+
+### Task 0: Baseline And Guardrails
 
 **Files:**
-- No source file edits expected.
+- No source edits.
 
-- [ ] **Step 1: Start from current GitHub main**
+- [ ] **Step 1: Confirm local main and THEPC state**
 
 Run:
 
 ```bash
-git fetch origin main
+git fetch origin main --prune
 git switch main
-git pull --ff-only origin main
-git switch -c codex/main-deploy-tui-browser-ensemble
+git status --short --branch
+git rev-parse origin/main
+ssh ender@100.72.104.49 "wsl.exe -d Ubuntu -- bash -lc 'cd /home/ender/polymarket && git rev-parse HEAD && git branch --show-current && git status --short --branch'"
 ```
 
-Expected: local branch `codex/main-deploy-tui-browser-ensemble` exists and starts at `origin/main`. Do not push this branch unless a reviewer explicitly needs it; final GitHub state should still be `main` only.
+Expected:
+
+- Local branch is `main`.
+- Local worktree is clean before source edits.
+- THEPC may still be behind on the old Codex branch. Do not manually reset THEPC in this task.
+
+- [ ] **Step 2: Confirm current tests before edits**
+
+Run:
+
+```bash
+uv run pytest tests/probability tests/test_runtime_api.py tests/ui tests/scripts/test_check_collector_status.py tests/scripts/test_check_probability_latency.py -q
+npm run build --prefix ui
+cargo test -q --manifest-path rust/Cargo.toml -p polymarket-cockpit-tui
+```
+
+Expected: all pass before implementation starts. If an unrelated failure appears, record it in the final handoff before changing code.
 
 ---
 
-### Task 1: Main-Only GitHub SSH Deploy Flow
+### Task 1: GitHub SSH Main-Only THEPC Deploy
 
 **Files:**
 - Modify: `scripts/deploy_pc.sh`
@@ -116,37 +89,34 @@ Expected: local branch `codex/main-deploy-tui-browser-ensemble` exists and start
 - Modify: `README.md`
 - Modify: `docs/SPOON_DEPLOYMENT.md`
 
-- [ ] **Step 1: Write failing deploy-script tests**
+- [ ] **Step 1: Add deploy-script tests**
 
-In `tests/scripts/test_deploy_script.py`, replace the bundle expectations in `test_pc_deploy_script_streams_bundle_and_images_into_wsl()` with GitHub SSH expectations:
+In `tests/scripts/test_deploy_script.py`, add:
 
 ```python
-def test_pc_deploy_script_fetches_main_from_github_ssh_in_wsl() -> None:
+def test_pc_deploy_fetches_exact_main_sha_from_github_ssh() -> None:
     script = (ROOT / "scripts" / "deploy_pc.sh").read_text(encoding="utf-8")
 
     assert 'PC_GIT_REMOTE="${PC_GIT_REMOTE:-git@github.com:AnimeWeeb9000/polymarket.git}"' in script
     assert 'PC_BRANCH="${PC_BRANCH:-main}"' in script
-    assert 'PC_BUNDLE=' not in script
-    assert "git -C \"$ROOT\" fetch --quiet origin main" in script
+    assert 'git -C "$ROOT" fetch --quiet origin main' in script
     assert 'LOCAL_MAIN_SHA="$(git -C "$ROOT" rev-parse origin/main^{commit})"' in script
-    assert 'if [ "$LOCAL_MAIN_SHA" != "$FULL_SHA" ]; then' in script
+    assert 'origin/main is $LOCAL_MAIN_SHA but deploy ref is $FULL_SHA' in script
+    assert 'git ls-remote "$PC_GIT_REMOTE" HEAD' in script
     assert 'git clone "$PC_GIT_REMOTE" "$PC_REPO"' in script
-    assert 'git remote set-url origin "$PC_GIT_REMOTE"' in script
     assert 'git fetch --quiet --prune origin "$PC_BRANCH"' in script
     assert 'git checkout -B "$PC_BRANCH" "$FULL_SHA"' in script
-    assert "wsl_put_file()" not in script
     assert "git bundle create" not in script
+    assert "PC_BUNDLE" not in script
 ```
 
-Add this assertion to `test_pc_deploy_script_runs_prebuilt_deploy_gate_with_pc_cadence()`:
+In `test_compose_and_env_support_prebuilt_image_overrides()`, update the path-budget expectation to:
 
 ```python
-assert 'PC_PROBABILITY_MAX_TOTAL_PATHS="${PC_PROBABILITY_MAX_TOTAL_PATHS:-320000}"' in script
+assert "POLYMARKET_PROBABILITY_MAX_TOTAL_PATHS=320000" in env_example
 ```
 
-Remove old assertions that require `PC_BUNDLE`, `git bundle create`, `wsl_put_file()`, and `copying git bundle`.
-
-- [ ] **Step 2: Run deploy-script tests and verify they fail**
+- [ ] **Step 2: Verify deploy tests fail**
 
 Run:
 
@@ -154,11 +124,11 @@ Run:
 uv run pytest tests/scripts/test_deploy_script.py -q
 ```
 
-Expected: fail because `deploy_pc.sh` still creates/copies a git bundle and defaults path budget to `40000`.
+Expected: fail because `scripts/deploy_pc.sh` still uses a git bundle and defaults to `40000`.
 
-- [ ] **Step 3: Update `scripts/deploy_pc.sh` constants and preflight**
+- [ ] **Step 3: Replace bundle sync with GitHub SSH sync**
 
-At the top of `scripts/deploy_pc.sh`, replace the repo/bundle/branch/path defaults with:
+In `scripts/deploy_pc.sh`, replace the deploy defaults with:
 
 ```bash
 PC_REPO="${PC_REPO:-/home/ender/polymarket}"
@@ -193,31 +163,54 @@ if [ "$LOCAL_MAIN_SHA" != "$FULL_SHA" ]; then
 fi
 ```
 
-Remove:
+Remove repository bundle creation and transfer:
+
+Delete the `LOCAL_BUNDLE` assignment, the `PC_BUNDLE` assignment, the `git -C "$ROOT" bundle create "$LOCAL_BUNDLE.tmp" --branches --tags` call, the `mv "$LOCAL_BUNDLE.tmp" "$LOCAL_BUNDLE"` call, and the repository-transfer call that sends `"$LOCAL_BUNDLE"` to THEPC.
+
+If `image-tar` mode still transfers image tarballs, keep that helper but rename it to:
 
 ```bash
-PC_BUNDLE=...
-LOCAL_BUNDLE=...
-git -C "$ROOT" bundle create ...
-wsl_put_file()
-wsl_put_file "$LOCAL_BUNDLE" "$PC_BUNDLE"
+wsl_put_artifact_file() {
+  local src="$1"
+  local dest="$2"
+  local dest_dir
+  local dest_dir_q
+  local dest_q
+  local dest_tmp
+  local dest_tmp_q
+
+  dest_dir="$(dirname "$dest")"
+  dest_tmp="$dest.tmp.$$"
+  dest_dir_q="$(shell_quote "$dest_dir")"
+  dest_q="$(shell_quote "$dest")"
+  dest_tmp_q="$(shell_quote "$dest_tmp")"
+
+  ssh "$PC_HOST" "wsl.exe -d $PC_WSL_DISTRO -- bash -lc \"mkdir -p $dest_dir_q && cat > $dest_tmp_q && mv -f $dest_tmp_q $dest_q\"" < "$src"
+}
 ```
 
-Keep `wsl_put_file` only if `image-tar` mode still needs tarball transfer. If it is kept for tarballs, rename it to `wsl_put_artifact_file()` so tests do not confuse it with repo sync.
+- [ ] **Step 4: Update THEPC WSL sync block**
 
-- [ ] **Step 4: Update THEPC WSL repo sync block**
-
-In the remote WSL heredoc, replace clone/fetch origin setup with:
+Inside the remote WSL heredoc, pass:
 
 ```bash
 PC_GIT_REMOTE=$(shell_quote "$PC_GIT_REMOTE")
 ```
 
-and:
+Use this repo sync sequence:
 
 ```bash
-mkdir -p "$PC_DATA_DIR/raw" "$PC_DATA_DIR/db" "$PC_DATA_DIR/live" "$PC_DATA_DIR/logs" "$PC_DIST_DIR" "$PC_BIN_DIR"
-touch "$PC_DATA_DIR/raw/.polymarket_archive_root"
+if ! git ls-remote "$PC_GIT_REMOTE" HEAD >/dev/null 2>&1; then
+  echo "THEPC WSL cannot read $PC_GIT_REMOTE over SSH." >&2
+  mkdir -p /home/ender/.ssh
+  chmod 700 /home/ender/.ssh
+  if [ ! -f /home/ender/.ssh/id_ed25519.pub ]; then
+    ssh-keygen -t ed25519 -N "" -C "thepc-polymarket@github" -f /home/ender/.ssh/id_ed25519
+  fi
+  echo "Add this key to GitHub, then rerun deploy:" >&2
+  cat /home/ender/.ssh/id_ed25519.pub >&2
+  exit 1
+fi
 
 if [ ! -d "$PC_REPO/.git" ]; then
   git clone "$PC_GIT_REMOTE" "$PC_REPO"
@@ -231,39 +224,30 @@ if ! git diff --quiet || ! git diff --cached --quiet; then
 fi
 
 git remote set-url origin "$PC_GIT_REMOTE" 2>/dev/null || git remote add origin "$PC_GIT_REMOTE"
-ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -T git@github.com >/dev/null 2>&1 || {
-  echo "THEPC WSL cannot SSH to GitHub. Add /home/ender/.ssh/id_ed25519.pub to GitHub, then rerun." >&2
-  if [ ! -f /home/ender/.ssh/id_ed25519.pub ]; then
-    mkdir -p /home/ender/.ssh
-    chmod 700 /home/ender/.ssh
-    ssh-keygen -t ed25519 -N "" -C "thepc-polymarket@github" -f /home/ender/.ssh/id_ed25519
-  fi
-  cat /home/ender/.ssh/id_ed25519.pub >&2
-  exit 1
-}
 git fetch --quiet --prune origin "$PC_BRANCH"
 git checkout -B "$PC_BRANCH" "$FULL_SHA"
 ```
 
-- [ ] **Step 5: Update docs**
+- [ ] **Step 5: Document THEPC SSH requirement**
 
-In `README.md`, keep the existing main-only language and add:
+In `README.md`, add:
 
 ```markdown
 THEPC deploys fetch `origin/main` over SSH from GitHub. The Windows/WSL user
-must have a GitHub SSH key that can read `git@github.com:AnimeWeeb9000/polymarket.git`.
-The deploy script refuses commits that are not already present at `origin/main`.
+must have a GitHub SSH key that can read
+`git@github.com:AnimeWeeb9000/polymarket.git`. The deploy script refuses commits
+that are not already present at `origin/main`.
 ```
 
-In `docs/SPOON_DEPLOYMENT.md`, replace the old THEPC bundle language with:
+In `docs/SPOON_DEPLOYMENT.md`, add:
 
 ```markdown
 THEPC deploys are GitHub-pull based. The Mac pushes `main`; THEPC WSL fetches
 `git@github.com:AnimeWeeb9000/polymarket.git`, checks out the exact pushed SHA,
-then builds/restarts from that checkout. Do not deploy local-only commits.
+then builds and restarts from that checkout. Do not deploy local-only commits.
 ```
 
-- [ ] **Step 6: Run deploy-script tests**
+- [ ] **Step 6: Run deploy tests**
 
 Run:
 
@@ -277,12 +261,12 @@ Expected: pass.
 
 ```bash
 git add scripts/deploy_pc.sh tests/scripts/test_deploy_script.py README.md docs/SPOON_DEPLOYMENT.md
-git commit -m "deploy: pull THEPC from GitHub main"
+git commit -m "deploy: fetch THEPC from GitHub main"
 ```
 
 ---
 
-### Task 2: Market Tab Contract Probabilities and No Probability Tab
+### Task 2: Move TUI Probabilities Into Market And Remove Probability Tab
 
 **Files:**
 - Modify: `rust/crates/polymarket-cockpit-tui/src/state.rs`
@@ -291,100 +275,92 @@ git commit -m "deploy: pull THEPC from GitHub main"
 - Modify: `rust/crates/polymarket-cockpit-tui/src/render/probability.rs`
 - Modify: `rust/crates/polymarket-cockpit-tui/src/render/market.rs`
 
-- [ ] **Step 1: Write failing TUI tab test**
+- [ ] **Step 1: Update tab test first**
 
-In `rust/crates/polymarket-cockpit-tui/src/state.rs`, update `cockpit_tabs_are_operator_surfaces()` expected labels to:
+In `state.rs`, change `cockpit_tabs_are_operator_surfaces()` to expect:
 
 ```rust
 assert_eq!(
     labels,
-    vec!["Live", "Systems", "Market", "Volatility", "Outcomes", "Logs"]
+    vec!["Live", "Systems", "Market", "Outcomes", "Logs"]
 );
 ```
 
-- [ ] **Step 2: Write failing compact probability model test**
+Expected: no `Probability` tab and no separate `Volatility` tab.
 
-In `rust/crates/polymarket-cockpit-tui/src/render/probability.rs`, add:
+- [ ] **Step 2: Add compact probability table test**
+
+In `render/probability.rs`, add a test named:
 
 ```rust
 #[test]
-fn compact_probability_table_shows_four_contracts_without_status_row() {
+fn compact_probability_table_shows_contract_rows_without_status_error_row() {
     let app = AppState {
         runtime_probabilities: Some(RuntimeProbabilities {
-            ok: false,
+            ok: true,
             state: "NOWCAST".to_string(),
-            generated_at: "2026-06-07T16:00:00Z".to_string(),
+            generated_at: "2026-06-07T21:15:27Z".to_string(),
             cached: false,
             rows: vec![
-                probability_row("BTC 5m UP", 0.61, "ensemble-v1", 80_000),
-                probability_row("BTC 5m DOWN", 0.39, "ensemble-v1", 80_000),
-                probability_row("ETH 5m UP", 0.54, "ensemble-v1", 80_000),
-                probability_row("ETH 5m DOWN", 0.46, "ensemble-v1", 80_000),
+                probability_row("BTC 5m UP", 0.4729, 80_000),
+                probability_row("BTC 5m DOWN", 0.4271, 80_000),
+                probability_row("ETH 5m UP", 0.3700, 80_000),
+                probability_row("ETH 5m DOWN", 0.5300, 80_000),
             ],
-            error: Some("nowcast stale".to_string()),
-            errors: vec!["temporary".to_string()],
+            error: Some("transient nowcast".to_string()),
+            errors: vec![],
         }),
         ..Default::default()
     };
 
     let table = compact_probability_table(&app);
 
-    assert_eq!(table.headers, vec!["Contract", "p_finish", "p_no_touch", "Paths", "Model"]);
+    assert_eq!(table.headers, vec!["Contract", "p", "NoTouch", "Paths", "Model"]);
     assert_eq!(table.rows.len(), 4);
     assert_eq!(table.rows[0][0], "BTC 5m UP");
+    assert_eq!(table.rows[0][1], "0.473");
     assert_eq!(table.rows[0][3], "80000");
-    assert_eq!(table.rows[0][4], "ensemble-v1");
     assert!(table.rows.iter().all(|row| !row[0].starts_with("probability ")));
 }
 ```
 
-Add this helper inside the test module:
+Add this helper in the same test module:
 
 ```rust
-fn probability_row(
-    contract: &str,
-    p_finish: f64,
-    model_version: &str,
-    path_count: u64,
-) -> RuntimeProbabilityRow {
+fn probability_row(contract: &str, p_finish: f64, effective_path_count: u64) -> RuntimeProbabilityRow {
     RuntimeProbabilityRow {
         contract: contract.to_string(),
         p_finish,
         p_no_touch: 0.25,
         z_path: 0.42,
-        sigma_tau: 0.0123,
+        sigma_tau: 0.01234,
         age_ms: 850,
         flags: vec!["OK".to_string()],
         decision_hint: Some("READ_ONLY".to_string()),
         edge_after_costs: None,
         required_edge: None,
-        skip_reasons: Vec::new(),
-        model_version: Some(model_version.to_string()),
+        skip_reasons: vec![],
+        model_version: Some("ensemble-v1".to_string()),
         generator_version: Some("four-generator-ensemble-v1".to_string()),
-        path_count: Some(path_count),
-        prior_fragment_generators: vec![
-            "empirical_conditional".to_string(),
-            "block_bootstrap".to_string(),
-            "filtered_historical".to_string(),
-            "stress_overlay".to_string(),
-        ],
+        path_count: Some(effective_path_count),
+        generator_count: Some(4),
     }
 }
 ```
 
-- [ ] **Step 3: Run TUI tests and verify they fail**
+- [ ] **Step 3: Run focused failing TUI tests**
 
 Run:
 
 ```bash
-cargo test -q --manifest-path rust/Cargo.toml -p polymarket-cockpit-tui cockpit_tabs_are_operator_surfaces compact_probability_table_shows_four_contracts_without_status_row
+cargo test -q --manifest-path rust/Cargo.toml -p polymarket-cockpit-tui cockpit_tabs_are_operator_surfaces compact_probability_table_shows_contract_rows_without_status_error_row
 ```
 
-Expected: fail because `MainTab::Probability`, compact table, and new row fields do not exist together.
+Expected: fail until the tab and compact table changes exist.
 
-- [ ] **Step 4: Extend `RuntimeProbabilityRow`**
+- [ ] **Step 4: Extend probability status row fields**
 
-In `rust/crates/polymarket-cockpit-tui/src/status.rs`, append these fields to `RuntimeProbabilityRow`:
+In `status.rs`, extend `RuntimeProbabilityRow` with optional fields:
 
 ```rust
 #[serde(default)]
@@ -394,40 +370,35 @@ pub generator_version: Option<String>,
 #[serde(default)]
 pub path_count: Option<u64>,
 #[serde(default)]
-pub prior_fragment_generators: Vec<String>,
+pub generator_count: Option<u64>,
 ```
 
-Update all existing test fixtures constructing `RuntimeProbabilityRow` to include:
+Update existing Rust test fixtures that construct `RuntimeProbabilityRow` with:
 
 ```rust
 model_version: None,
 generator_version: None,
 path_count: None,
-prior_fragment_generators: Vec::new(),
+generator_count: None,
 ```
 
-- [ ] **Step 5: Remove the Probability tab**
+- [ ] **Step 5: Remove `MainTab::Probability`**
 
-In `state.rs`, remove `Probability` from `MainTab`, `MainTab::all()`, and `label()`.
-
-In `render/mod.rs`, delete:
+In `state.rs`, remove `Probability` from:
 
 ```rust
-MainTab::Probability => {
-    probability::render(frame, body.primary, app);
-    systems::render(frame, body.secondary, app);
-}
+pub enum MainTab
+MainTab::all()
+MainTab::label()
 ```
 
-- [ ] **Step 6: Add compact probability table helpers**
+In `render/mod.rs`, remove the `MainTab::Probability` render arm. Do not reintroduce a separate `Volatility` tab.
+
+- [ ] **Step 6: Add compact probability renderer**
 
 In `render/probability.rs`, add:
 
 ```rust
-pub fn compact_probability_header_labels() -> [&'static str; 5] {
-    ["Contract", "p_finish", "p_no_touch", "Paths", "Model"]
-}
-
 pub fn compact_probability_table(app: &AppState) -> ProbabilityTableModel {
     let rows = app
         .runtime_probabilities
@@ -441,12 +412,8 @@ pub fn compact_probability_table(app: &AppState) -> ProbabilityTableModel {
                         row.contract.clone(),
                         format_probability(row.p_finish),
                         format_probability(row.p_no_touch),
-                        row.path_count
-                            .map(|value| value.to_string())
-                            .unwrap_or_else(|| "-".to_string()),
-                        row.model_version
-                            .clone()
-                            .unwrap_or_else(|| "-".to_string()),
+                        row.path_count.map(|value| value.to_string()).unwrap_or_else(|| "-".to_string()),
+                        row.model_version.clone().unwrap_or_else(|| "-".to_string()),
                     ]
                 })
                 .collect::<Vec<_>>()
@@ -454,7 +421,7 @@ pub fn compact_probability_table(app: &AppState) -> ProbabilityTableModel {
         .unwrap_or_default();
 
     ProbabilityTableModel {
-        headers: compact_probability_header_labels().to_vec(),
+        headers: vec!["Contract", "p", "NoTouch", "Paths", "Model"],
         rows: if rows.is_empty() {
             vec![vec![
                 "probability pending".to_string(),
@@ -468,40 +435,24 @@ pub fn compact_probability_table(app: &AppState) -> ProbabilityTableModel {
         },
     }
 }
-
-pub fn render_compact(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
-    let model = compact_probability_table(app);
-    let rows = model
-        .rows
-        .into_iter()
-        .map(|row| Row::new(row.into_iter().map(Cell::from).collect::<Vec<_>>()))
-        .collect::<Vec<_>>();
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Length(18),
-            Constraint::Length(10),
-            Constraint::Length(12),
-            Constraint::Length(10),
-            Constraint::Min(12),
-        ],
-    )
-    .header(Row::new(model.headers).style(Style::default().fg(Color::Cyan)))
-    .block(Block::bordered().title("Contract Probabilities"));
-
-    frame.render_widget(table, area);
-}
 ```
 
-- [ ] **Step 7: Render compact probabilities below the Market book**
+Add `render_compact()` using the same `Table` pattern already used by `render()`, with title `Contract Probabilities`.
 
-In `render/market.rs`, add `probability` to the import:
+- [ ] **Step 7: Render compact probabilities below selected book**
+
+In `render/market.rs`, import the probability renderer:
 
 ```rust
-render::{orderbook, probability},
+use crate::{
+    market_view,
+    render::{orderbook, probability},
+    state::AppState,
+    status::{RuntimeOrderbookRow, RuntimeOutcomeRow, RuntimeOutcomes},
+};
 ```
 
-Replace the lower render area inside `render()`:
+Inside `render()`, split `orderbook_area`:
 
 ```rust
 let [book_area, probabilities_area] = Layout::default()
@@ -510,30 +461,20 @@ let [book_area, probabilities_area] = Layout::default()
     .areas(orderbook_area);
 ```
 
-Change:
+Replace:
 
 ```rust
 orderbook::render(frame, orderbook_area, app);
 ```
 
-to:
+with:
 
 ```rust
 orderbook::render(frame, book_area, app);
 probability::render_compact(frame, probabilities_area, app);
 ```
 
-- [ ] **Step 8: Run focused TUI tests**
-
-Run:
-
-```bash
-cargo test -q --manifest-path rust/Cargo.toml -p polymarket-cockpit-tui cockpit_tabs_are_operator_surfaces compact_probability_table_shows_four_contracts_without_status_row
-```
-
-Expected: pass.
-
-- [ ] **Step 9: Run all TUI crate tests**
+- [ ] **Step 8: Run TUI tests**
 
 Run:
 
@@ -541,48 +482,55 @@ Run:
 cargo test -q --manifest-path rust/Cargo.toml -p polymarket-cockpit-tui
 ```
 
-Expected: pass.
+Expected: all TUI crate tests pass.
 
-- [ ] **Step 10: Commit Task 2**
+- [ ] **Step 9: Commit Task 2**
 
 ```bash
 git add rust/crates/polymarket-cockpit-tui/src/state.rs rust/crates/polymarket-cockpit-tui/src/render/mod.rs rust/crates/polymarket-cockpit-tui/src/status.rs rust/crates/polymarket-cockpit-tui/src/render/probability.rs rust/crates/polymarket-cockpit-tui/src/render/market.rs
-git commit -m "tui: show contract probabilities in market tab"
+git commit -m "tui: move probabilities into market tab"
 ```
 
 ---
 
-### Task 3: Suppress Transient TUI Live Stream Read Errors
+### Task 3: Suppress Transient TUI Stream Read Errors
 
 **Files:**
 - Modify: `rust/crates/polymarket-cockpit-tui/src/event_loop.rs`
 
-- [ ] **Step 1: Write failing transient stream error test**
+- [ ] **Step 1: Add failing stream error tests**
 
-In the `event_loop.rs` test module, add:
+In `event_loop.rs`, add:
 
 ```rust
 #[test]
-fn stream_read_errors_do_not_surface_as_runtime_errors() {
+fn transient_live_stream_errors_do_not_become_runtime_errors() {
     let update = runtime_update_from_stream_error("read live stream: connection reset");
 
     assert_eq!(update.error, None);
     assert!(update.status.is_none());
     assert!(update.monitor.is_none());
 }
+
+#[test]
+fn non_transient_live_stream_errors_still_surface() {
+    let update = runtime_update_from_stream_error("http 500");
+
+    assert_eq!(update.error, Some("stream: http 500".to_string()));
+}
 ```
 
-- [ ] **Step 2: Run test and verify it fails**
+- [ ] **Step 2: Run focused failing tests**
 
 Run:
 
 ```bash
-cargo test -q --manifest-path rust/Cargo.toml -p polymarket-cockpit-tui stream_read_errors_do_not_surface_as_runtime_errors
+cargo test -q --manifest-path rust/Cargo.toml -p polymarket-cockpit-tui transient_live_stream_errors_do_not_become_runtime_errors non_transient_live_stream_errors_still_surface
 ```
 
 Expected: fail because `runtime_update_from_stream_error()` does not exist.
 
-- [ ] **Step 3: Add transient stream helper**
+- [ ] **Step 3: Add helper**
 
 In `event_loop.rs`, near `runtime_update_from_live()`, add:
 
@@ -592,7 +540,8 @@ fn runtime_update_from_stream_error(error: &str) -> RuntimeUpdate {
     let transient = normalized.contains("read live stream")
         || normalized.contains("live stream closed")
         || normalized.contains("connection reset")
-        || normalized.contains("unexpected eof");
+        || normalized.contains("unexpected eof")
+        || normalized.contains("operation timed out");
 
     RuntimeUpdate {
         status: None,
@@ -611,13 +560,12 @@ fn runtime_update_from_stream_error(error: &str) -> RuntimeUpdate {
 }
 ```
 
-- [ ] **Step 4: Use helper in `RuntimeLiveTask::spawn`**
+- [ ] **Step 4: Use helper in stream loop**
 
-Replace the stream error send block with:
+Replace the current stream error send block in `RuntimeLiveTask::spawn()` with:
 
 ```rust
-let stream_result = stream_runtime_updates(&client, poll_interval_ms, &runtime_tx).await;
-if let Err(error) = stream_result {
+if let Err(error) = stream_runtime_updates(&client, poll_interval_ms, &runtime_tx).await {
     let update = runtime_update_from_stream_error(&error.to_string());
     if update.error.is_some() && runtime_tx.send(update).is_err() {
         break;
@@ -625,29 +573,20 @@ if let Err(error) = stream_result {
 }
 ```
 
-Keep the existing `poll_runtime(&client).await` fallback after the stream attempt.
+Keep the existing polling fallback after stream attempts.
 
-- [ ] **Step 5: Run focused test**
-
-Run:
-
-```bash
-cargo test -q --manifest-path rust/Cargo.toml -p polymarket-cockpit-tui stream_read_errors_do_not_surface_as_runtime_errors
-```
-
-Expected: pass.
-
-- [ ] **Step 6: Run event loop tests**
+- [ ] **Step 5: Run TUI tests**
 
 Run:
 
 ```bash
 cargo test -q --manifest-path rust/Cargo.toml -p polymarket-cockpit-tui event_loop
+cargo test -q --manifest-path rust/Cargo.toml -p polymarket-cockpit-tui
 ```
 
 Expected: pass.
 
-- [ ] **Step 7: Commit Task 3**
+- [ ] **Step 6: Commit Task 3**
 
 ```bash
 git add rust/crates/polymarket-cockpit-tui/src/event_loop.rs
@@ -656,7 +595,7 @@ git commit -m "tui: ignore transient live stream disconnects"
 
 ---
 
-### Task 4: Attach Ensemble Simulation Preview and Raise Path Budget
+### Task 4: Emit Ensemble Simulation Preview And Fix Path Budget Semantics
 
 **Files:**
 - Modify: `src/polymarket_engine/probability/ensemble_runtime.py`
@@ -666,17 +605,14 @@ git commit -m "tui: ignore transient live stream disconnects"
 - Modify: `deploy/gpu/gpu-probability-entrypoint.sh`
 - Modify: `tests/probability/test_ensemble_runtime.py`
 - Modify: `tests/probability/test_gpu_worker.py`
-- Modify: `tests/test_cli.py`
 - Modify: `tests/scripts/test_deploy_script.py`
 
-- [ ] **Step 1: Write failing ensemble preview test**
+- [ ] **Step 1: Add ensemble preview test**
 
 In `tests/probability/test_ensemble_runtime.py`, add:
 
 ```python
-def test_run_four_generator_ensemble_attaches_stratified_simulation_preview(
-    monkeypatch,
-) -> None:
+def test_run_four_generator_ensemble_attaches_preview_with_generator_ids(monkeypatch) -> None:
     from polymarket_engine.probability import ensemble_runtime
 
     monkeypatch.setattr(ensemble_runtime, "run_generator_suite", _suite)
@@ -690,61 +626,68 @@ def test_run_four_generator_ensemble_attaches_stratified_simulation_preview(
     )
 
     preview = output.diagnostics["simulation_preview"]
-    sampled_paths = preview["sampled_paths"]
 
     assert preview["generator_count"] == 4
+    assert preview["paths_per_generator"] == 20
     assert preview["path_count"] == 80
-    assert len(sampled_paths) == 64
-    assert {path["generator_id"] for path in sampled_paths} == {
+    assert len(preview["sampled_paths"]) == 64
+    assert {path["generator_id"] for path in preview["sampled_paths"]} == {
         "empirical_conditional",
         "block_bootstrap",
         "filtered_historical",
         "stress_overlay",
     }
-    assert all(len(path["points"]) == 2 for path in sampled_paths)
+    assert all(len(path["points"]) == 2 for path in preview["sampled_paths"])
 ```
 
-- [ ] **Step 2: Update path budget tests to target 320k**
+- [ ] **Step 2: Add budget semantics test**
 
-In `tests/probability/test_gpu_worker.py`, update `test_worker_budget_caps_paths_per_runtime_input()`:
+In `tests/probability/test_gpu_worker.py`, replace `test_worker_budget_caps_paths_per_runtime_input()` with:
 
 ```python
-def test_worker_budget_caps_paths_per_runtime_input() -> None:
-    budget = ProbabilityWorkerBudget(max_total_paths=320_000)
+def test_worker_budget_caps_total_generator_paths_for_ensemble() -> None:
+    budget = ProbabilityWorkerBudget(max_total_paths=320_000, worker_mode="ensemble")
 
-    assert _path_budget_per_input(input_count=4, budget=budget) == 80_000
-    assert _clamp_path_count(80_000, path_budget_per_input=80_000) == (
-        80_000,
-        False,
-    )
-    assert _clamp_path_count(250_000, path_budget_per_input=80_000) == (
-        80_000,
+    assert _path_budget_per_input(input_count=4, budget=budget) == 20_000
+    assert _clamp_path_count(80_000, path_budget_per_input=20_000) == (
+        20_000,
         True,
+    )
+    assert _clamp_path_count(10_000, path_budget_per_input=20_000) == (
+        10_000,
+        False,
     )
 ```
 
-Update script/docs tests expecting `40000` to expect `320000`.
+Add a second test for non-ensemble mode:
 
-- [ ] **Step 3: Run focused Python tests and verify failures**
+```python
+def test_worker_budget_keeps_single_generator_modes_divided_by_inputs_only() -> None:
+    budget = ProbabilityWorkerBudget(max_total_paths=320_000, worker_mode="cuda")
+
+    assert _path_budget_per_input(input_count=4, budget=budget) == 80_000
+```
+
+- [ ] **Step 3: Run focused failing tests**
 
 Run:
 
 ```bash
-uv run pytest tests/probability/test_ensemble_runtime.py::test_run_four_generator_ensemble_attaches_stratified_simulation_preview tests/probability/test_gpu_worker.py::test_worker_budget_caps_paths_per_runtime_input tests/scripts/test_deploy_script.py::test_pc_deploy_script_runs_prebuilt_deploy_gate_with_pc_cadence -q
+uv run pytest tests/probability/test_ensemble_runtime.py::test_run_four_generator_ensemble_attaches_preview_with_generator_ids tests/probability/test_gpu_worker.py::test_worker_budget_caps_total_generator_paths_for_ensemble tests/probability/test_gpu_worker.py::test_worker_budget_keeps_single_generator_modes_divided_by_inputs_only -q
 ```
 
-Expected: fail because ensemble diagnostics do not include `simulation_preview` and defaults still use `40000`.
+Expected: fail until preview and budget semantics are implemented.
 
-- [ ] **Step 4: Add preview constants and helper in `ensemble_runtime.py`**
+- [ ] **Step 4: Add ensemble preview helpers**
 
-Add near the existing constants:
+In `ensemble_runtime.py`, add constants:
 
 ```python
 ENSEMBLE_PREVIEW_PATH_LIMIT = 64
 ENSEMBLE_PREVIEW_POINT_LIMIT = 48
 ```
 
-Add helper functions:
+Add a helper that samples evenly from each `PathSimulationResult`:
 
 ```python
 def _ensemble_simulation_preview(
@@ -757,34 +700,35 @@ def _ensemble_simulation_preview(
     generator_count = len(results)
     if generator_count <= 0:
         raise ValueError("results must be non-empty")
+    paths_per_generator = len(results[0].paths)
     per_generator_limit = max(1, path_limit // generator_count)
     sampled_paths: list[dict[str, Any]] = []
     terminal_win_count = 0
     no_touch_win_count = 0
-    total_path_count = 0
+    terminal_prices: list[float] = []
 
     for result in results:
-        total_path_count += len(result.paths)
         terminal_win_count += sum(1 for win in result.terminal_wins if win)
         no_touch_win_count += sum(1 for win in result.no_touch_survivals if win)
+        terminal_prices.extend(float(price) for price in result.terminal_prices)
         path_indices = _evenly_spaced_indices(
             len(result.paths),
             min(per_generator_limit, len(result.paths)),
         )
         for path_index in path_indices:
-            points = _sampled_points(result.paths[path_index], point_limit=point_limit)
             sampled_paths.append(
                 {
                     "index": f"{result.generator_id}:{path_index}",
                     "generator_id": result.generator_id,
                     "terminal_win": bool(result.terminal_wins[path_index]),
                     "no_touch_win": bool(result.no_touch_survivals[path_index]),
-                    "points": points,
+                    "points": _sampled_points(result.paths[path_index], point_limit=point_limit),
                 }
             )
 
     return {
-        "path_count": total_path_count,
+        "path_count": sum(len(result.paths) for result in results),
+        "paths_per_generator": paths_per_generator,
         "generator_count": generator_count,
         "steps": len(results[0].paths[0]) - 1,
         "start_price": probability_input.settlement_price,
@@ -793,97 +737,187 @@ def _ensemble_simulation_preview(
         "terminal_win_count": terminal_win_count,
         "no_touch_win_count": no_touch_win_count,
         "sampled_paths": sampled_paths[:path_limit],
-        "terminal_histogram": [],
+        "terminal_histogram": _terminal_histogram(tuple(terminal_prices)),
     }
+```
 
+Add these helpers in `ensemble_runtime.py`:
 
-def _evenly_spaced_indices(count: int, sample_count: int) -> tuple[int, ...]:
-    if count <= 0 or sample_count <= 0:
+```python
+def _evenly_spaced_indices(length: int, count: int) -> tuple[int, ...]:
+    if count <= 0:
         return ()
-    if sample_count >= count:
-        return tuple(range(count))
-    return tuple(round(index * (count - 1) / (sample_count - 1)) for index in range(sample_count))
+    if count >= length:
+        return tuple(range(length))
+    if count == 1:
+        return (0,)
+    return tuple(round(index * (length - 1) / (count - 1)) for index in range(count))
 
 
 def _sampled_points(path: Sequence[float], *, point_limit: int) -> list[float]:
     indices = _evenly_spaced_indices(len(path), min(point_limit, len(path)))
     return [float(path[index]) for index in indices]
+
+
+def _terminal_histogram(terminal_prices: tuple[float, ...]) -> list[dict[str, Any]]:
+    lower_bound = min(terminal_prices)
+    upper_bound = max(terminal_prices)
+    if lower_bound == upper_bound:
+        return [{"lower": lower_bound, "upper": upper_bound, "count": len(terminal_prices)}]
+
+    bin_count = min(16, len(terminal_prices))
+    width = (upper_bound - lower_bound) / bin_count
+    counts = [0] * bin_count
+    for price in terminal_prices:
+        index = min(bin_count - 1, int((price - lower_bound) / width))
+        counts[index] += 1
+    return [
+        {
+            "lower": lower_bound + width * index,
+            "upper": lower_bound + width * (index + 1),
+            "count": count,
+        }
+        for index, count in enumerate(counts)
+    ]
 ```
 
-- [ ] **Step 5: Attach preview in `run_four_generator_ensemble()`**
+- [ ] **Step 5: Attach preview to ensemble diagnostics**
 
-Add this to `diagnostics`:
+In `run_four_generator_ensemble()`, add:
 
 ```python
+"path_count": int(path_count * len(results)),
+"paths_per_generator": int(path_count),
+"generator_count": len(results),
 "simulation_preview": _ensemble_simulation_preview(probability_input, results),
 ```
 
-- [ ] **Step 6: Raise worker defaults**
+Keep `generator_summary`, `generator_runs`, `effective_weights`, and `prior_fragment_generators`.
 
-In `gpu_worker.py`, change:
+- [ ] **Step 6: Fix worker budget semantics**
+
+In `gpu_worker.py`, set:
 
 ```python
 DEFAULT_MAX_TOTAL_PATHS = 320_000
 ```
 
-In `deploy/collector/.env.example`, change:
+Change `_path_budget_per_input()` so ensemble mode divides by active inputs and four generators:
+
+```python
+def _path_budget_per_input(
+    *,
+    input_count: int,
+    budget: ProbabilityWorkerBudget,
+) -> int:
+    if input_count <= 0:
+        return 0
+    generator_count = 4 if budget.worker_mode == "ensemble" else 1
+    return max(1, budget.max_total_paths // (input_count * generator_count))
+```
+
+When writing row diagnostics, preserve both effective and per-generator counts from `output.diagnostics`:
+
+```python
+row["path_count"] = int(output.diagnostics.get("path_count", path_count))
+row["paths_per_generator"] = int(output.diagnostics.get("paths_per_generator", path_count))
+row["generator_count"] = int(output.diagnostics.get("generator_count", 4))
+```
+
+- [ ] **Step 7: Update deploy defaults**
+
+In `deploy/collector/.env.example`:
 
 ```bash
 POLYMARKET_PROBABILITY_MAX_TOTAL_PATHS=320000
-POLYMARKET_ENSEMBLE_PREVIEW_PATHS=64
-POLYMARKET_ENSEMBLE_PREVIEW_POINTS=48
 ```
 
-In `deploy/collector/docker-compose.yml`, change the worker environment default:
+In `deploy/collector/docker-compose.yml`:
 
 ```yaml
 POLYMARKET_PROBABILITY_MAX_TOTAL_PATHS: ${POLYMARKET_PROBABILITY_MAX_TOTAL_PATHS:-320000}
-POLYMARKET_ENSEMBLE_PREVIEW_PATHS: ${POLYMARKET_ENSEMBLE_PREVIEW_PATHS:-64}
-POLYMARKET_ENSEMBLE_PREVIEW_POINTS: ${POLYMARKET_ENSEMBLE_PREVIEW_POINTS:-48}
 ```
 
-In `deploy/gpu/gpu-probability-entrypoint.sh`, change:
+In `deploy/gpu/gpu-probability-entrypoint.sh`:
 
 ```bash
 MAX_TOTAL_PATHS="${POLYMARKET_PROBABILITY_MAX_TOTAL_PATHS:-320000}"
 ```
 
-and export:
-
-```bash
-export POLYMARKET_ENSEMBLE_PREVIEW_PATHS="${POLYMARKET_ENSEMBLE_PREVIEW_PATHS:-64}"
-export POLYMARKET_ENSEMBLE_PREVIEW_POINTS="${POLYMARKET_ENSEMBLE_PREVIEW_POINTS:-48}"
-```
-
-- [ ] **Step 7: Run focused Python tests**
+- [ ] **Step 8: Run focused probability tests**
 
 Run:
 
 ```bash
-uv run pytest tests/probability/test_ensemble_runtime.py tests/probability/test_gpu_worker.py tests/scripts/test_deploy_script.py tests/test_cli.py -q
+uv run pytest tests/probability/test_ensemble_runtime.py tests/probability/test_gpu_worker.py tests/scripts/test_deploy_script.py -q
 ```
 
 Expected: pass.
 
-- [ ] **Step 8: Commit Task 4**
+- [ ] **Step 9: Commit Task 4**
 
 ```bash
-git add src/polymarket_engine/probability/ensemble_runtime.py src/polymarket_engine/probability/gpu_worker.py deploy/collector/.env.example deploy/collector/docker-compose.yml deploy/gpu/gpu-probability-entrypoint.sh tests/probability/test_ensemble_runtime.py tests/probability/test_gpu_worker.py tests/scripts/test_deploy_script.py tests/test_cli.py
-git commit -m "probability: preview ensemble paths and raise path budget"
+git add src/polymarket_engine/probability/ensemble_runtime.py src/polymarket_engine/probability/gpu_worker.py deploy/collector/.env.example deploy/collector/docker-compose.yml deploy/gpu/gpu-probability-entrypoint.sh tests/probability/test_ensemble_runtime.py tests/probability/test_gpu_worker.py tests/scripts/test_deploy_script.py
+git commit -m "probability: emit ensemble previews and raise path budget"
 ```
 
 ---
 
-### Task 5: Browser Ensemble Path Fan and Preview Retention
+### Task 5: Browser Path Fans And Generator Context
 
 **Files:**
 - Modify: `ui/src/App.tsx`
 - Modify: `ui/src/probabilityRows.ts`
 - Modify: `ui/src/styles.css`
-- Modify: `tests/ui/probability_value_test.ts`
 - Modify: `tests/ui/probability_rows_test.ts`
+- Modify: `tests/ui/probability_value_test.ts`
 
-- [ ] **Step 1: Write failing helper tests**
+- [ ] **Step 1: Add preview-retention test**
+
+In `tests/ui/probability_rows_test.ts`, add a case where the previous row has `simulation_preview`, the new row has the same contract/window with a newer `asof_ts`, and the merged result keeps the preview while using the new `p_finish`:
+
+```typescript
+const preview = {
+  sampled_paths: [{ index: "empirical_conditional:0", generator_id: "empirical_conditional", points: [1, 2, 3] }],
+  terminal_histogram: [],
+};
+
+const retainedPreviewAcrossAsof = mergeGraphableProbabilityPayloadRows(
+  {
+    ok: true,
+    state: "OK",
+    rows: [{
+      contract_id: "btc-window-up",
+      asset: "BTC",
+      side: "UP",
+      start_ts: "2026-06-05T13:20:00Z",
+      expiry_ts: "2026-06-05T13:25:00Z",
+      asof_ts: "2026-06-05T13:20:01Z",
+      p_finish: 0.61,
+      simulation_preview: preview,
+    }],
+  },
+  {
+    ok: true,
+    state: "OK",
+    rows: [{
+      contract_id: "btc-window-up",
+      asset: "BTC",
+      side: "UP",
+      start_ts: "2026-06-05T13:20:00Z",
+      expiry_ts: "2026-06-05T13:25:00Z",
+      asof_ts: "2026-06-05T13:20:05Z",
+      p_finish: 0.62,
+    }],
+  },
+  nowMs,
+);
+
+assert.deepEqual(retainedPreviewAcrossAsof.rows?.[0]?.simulation_preview, preview);
+assert.equal(retainedPreviewAcrossAsof.rows?.[0]?.p_finish, 0.62);
+```
+
+- [ ] **Step 2: Add four-generator breakdown test**
 
 In `tests/ui/probability_value_test.ts`, add:
 
@@ -891,13 +925,6 @@ In `tests/ui/probability_value_test.ts`, add:
 assert.deepEqual(
   generatorBreakdownRows({
     path_count: 80_000,
-    simulation_preview: {
-      generator_count: 4,
-      sampled_paths: new Array(64).fill({
-        generator_id: "empirical_conditional",
-        points: [1, 2, 3],
-      }),
-    },
     generator_summary: {
       empirical_conditional: { p_finish: 0.61, p_no_touch: 0.55, weight: 0.4, sparse: false },
       block_bootstrap: { p_finish: 0.58, p_no_touch: 0.52, weight: 0.25, sparse: false },
@@ -909,65 +936,21 @@ assert.deepEqual(
 );
 ```
 
-In `tests/ui/probability_rows_test.ts`, add a preview-retention case:
+This locks the browser-visible generator order and proves all four ensemble members can be surfaced.
 
-```typescript
-const retainedAcrossFreshAsof = mergeGraphableProbabilityPayloadRows(
-  {
-    ok: true,
-    state: "OK",
-    rows: [
-      {
-        contract_id: "btc-window-up",
-        asset: "BTC",
-        side: "UP",
-        start_ts: "2026-06-05T13:20:00Z",
-        expiry_ts: "2026-06-05T13:25:00Z",
-        asof_ts: "2026-06-05T13:20:01Z",
-        generated_at: "2026-06-05T13:20:01Z",
-        valid_until: "2026-06-05T13:20:31Z",
-        p_finish: 0.61,
-        simulation_preview: preview,
-      },
-    ],
-  },
-  {
-    ok: true,
-    state: "OK",
-    rows: [
-      {
-        contract_id: "btc-window-up",
-        asset: "BTC",
-        side: "UP",
-        start_ts: "2026-06-05T13:20:00Z",
-        expiry_ts: "2026-06-05T13:25:00Z",
-        asof_ts: "2026-06-05T13:20:05Z",
-        generated_at: "2026-06-05T13:20:05Z",
-        valid_until: "2026-06-05T13:20:35Z",
-        p_finish: 0.62,
-      },
-    ],
-  },
-  nowMs,
-);
-
-assert.deepEqual(retainedAcrossFreshAsof.rows?.[0]?.simulation_preview, preview);
-assert.equal(retainedAcrossFreshAsof.rows?.[0]?.p_finish, 0.62);
-```
-
-- [ ] **Step 2: Run UI helper tests and verify they fail**
+- [ ] **Step 3: Run UI helper tests and verify failure**
 
 Run:
 
 ```bash
-uv run pytest tests/ui/test_probability_rows_helper.py::test_probability_value_helper_handles_p_hat_and_path_metadata tests/ui/test_probability_rows_helper.py::test_probability_row_filter_helper_handles_partial_payloads -q
+uv run pytest tests/ui/test_probability_rows_helper.py -q
 ```
 
-Expected: fail until preview retention and optional generator IDs are handled.
+Expected: fail if preview retention or four-generator breakdown handling is missing.
 
-- [ ] **Step 3: Extend preview types**
+- [ ] **Step 4: Preserve `generator_id` in browser preview paths**
 
-In `ui/src/App.tsx`, update `SimulationPath`:
+In `ui/src/App.tsx`, update the preview path type:
 
 ```typescript
 type SimulationPath = {
@@ -979,58 +962,17 @@ type SimulationPath = {
 };
 ```
 
-In `parseSimulationPreview()`, preserve `generator_id` when present:
+In `parseSimulationPreview()`, keep:
 
 ```typescript
 generator_id: typeof path.generator_id === "string" ? path.generator_id : undefined,
 ```
 
-- [ ] **Step 4: Render generator-aware path classes and legend**
+- [ ] **Step 5: Render generator legend and path classes**
 
-In `MonteCarloCanvas`, compute generator rows:
-
-```typescript
-const generators = generatorBreakdownRows(row);
-```
-
-Change path class generation to:
+In `MonteCarloCanvas`, build generator rows from the selected probability row and render a compact four-generator legend below the SVG. Use these labels:
 
 ```typescript
-className={compactList([
-  "mc-path",
-  path.terminalWin ? "path-win" : "path-loss",
-  path.generatorId ? `generator-${generatorTone(path.generatorId)}` : undefined,
-])}
-```
-
-Update `buildPathGeometry()` to return `generatorId`:
-
-```typescript
-return { d, index: path.index, terminalWin: path.terminal_win, generatorId: path.generator_id };
-```
-
-Add a legend below the SVG:
-
-```tsx
-{generators.length > 0 ? (
-  <div className="ensemble-legend" aria-label="Four-generator ensemble weights">
-    {generators.map((generator) => (
-      <span className={`ensemble-chip generator-${generatorTone(generator.id)}`} key={generator.id}>
-        <strong>{shortGeneratorLabel(generator.id)}</strong>
-        <small>{formatProbability(generator.weight)}</small>
-      </span>
-    ))}
-  </div>
-) : null}
-```
-
-Add helpers:
-
-```typescript
-function generatorTone(value: string) {
-  return value.toLowerCase().replace(/[^a-z0-9]+/g, "-");
-}
-
 function shortGeneratorLabel(value: string) {
   switch (value) {
     case "empirical_conditional":
@@ -1047,34 +989,11 @@ function shortGeneratorLabel(value: string) {
 }
 ```
 
-- [ ] **Step 5: Loosen preview retention**
-
-In `mergeProbabilityPreviews()`, remove the strict same-`asof_ts` requirement and require same contract/window via `probabilityPreviewKeys()` instead:
-
-```typescript
-const previousRow = probabilityPreviewKeys(row)
-  .map((key) => previousRowsByKey.get(key))
-  .find((candidate) => candidate?.simulation_preview);
-```
-
-Keep the returned row current:
-
-```typescript
-return {
-  ...row,
-  simulation_preview: previousRow.simulation_preview,
-};
-```
+When building SVG path geometry, carry `generatorId` through so CSS can color by generator.
 
 - [ ] **Step 6: Add CSS**
 
-In `ui/src/styles.css`, add this variable inside the existing `:root` block:
-
-```css
---border-muted: rgba(148, 163, 184, 0.35);
-```
-
-Then add:
+In `ui/src/styles.css`, add:
 
 ```css
 .ensemble-legend {
@@ -1089,17 +1008,10 @@ Then add:
   align-items: center;
   justify-content: space-between;
   min-width: 0;
-  border: 1px solid var(--border-muted);
+  border: 1px solid rgba(148, 163, 184, 0.35);
   border-radius: 6px;
   padding: 5px 7px;
   font-size: 0.72rem;
-}
-
-.ensemble-chip strong,
-.ensemble-chip small {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .mc-path.generator-empirical-conditional {
@@ -1119,13 +1031,13 @@ Then add:
 }
 ```
 
-- [ ] **Step 7: Run UI tests/build**
+- [ ] **Step 7: Run UI tests and build**
 
 Run:
 
 ```bash
-uv run pytest tests/ui/test_probability_rows_helper.py::test_probability_value_helper_handles_p_hat_and_path_metadata tests/ui/test_probability_rows_helper.py::test_probability_row_filter_helper_handles_partial_payloads -q
-npm --prefix ui run build
+uv run pytest tests/ui/test_probability_rows_helper.py -q
+npm run build --prefix ui
 ```
 
 Expected: pass.
@@ -1133,60 +1045,42 @@ Expected: pass.
 - [ ] **Step 8: Commit Task 5**
 
 ```bash
-git add ui/src/App.tsx ui/src/probabilityRows.ts ui/src/styles.css tests/ui/probability_value_test.ts tests/ui/probability_rows_test.ts
-git commit -m "ui: render ensemble path previews"
+git add ui/src/App.tsx ui/src/probabilityRows.ts ui/src/styles.css tests/ui/probability_rows_test.ts tests/ui/probability_value_test.ts
+git commit -m "ui: show ensemble path previews"
 ```
 
 ---
 
-### Task 6: Merge to Main, Push, Clean Remote Branches, and Deploy THEPC
+### Task 6: Final Verification, Push Main, Clean Branches, Deploy THEPC
 
 **Files:**
-- No source file edits expected.
+- No source edits unless verification exposes a bug.
 
 - [ ] **Step 1: Run focused verification**
 
 Run:
 
 ```bash
-uv run pytest tests/probability/test_ensemble_runtime.py tests/probability/test_gpu_worker.py tests/scripts/test_deploy_script.py tests/test_cli.py tests/ui/test_probability_rows_helper.py -q
+uv run pytest tests/probability/test_ensemble_runtime.py tests/probability/test_gpu_worker.py tests/scripts/test_deploy_script.py tests/test_runtime_api.py tests/ui -q
 cargo test -q --manifest-path rust/Cargo.toml -p polymarket-cockpit-tui
-npm --prefix ui run build
+npm run build --prefix ui
 ```
 
 Expected: all pass.
 
-- [ ] **Step 2: Switch to `main` and merge implementation commits**
+- [ ] **Step 2: Push only `main`**
 
 Run:
 
 ```bash
-git fetch origin main
-git switch main
-git pull --ff-only origin main
-git merge --ff-only codex/main-deploy-tui-browser-ensemble
-```
-
-If fast-forward is impossible because the executor committed directly on `main`, use:
-
-```bash
-git log --oneline --decorate -5
 git status --short --branch
-```
-
-Then either cherry-pick the implementation commits onto `main` or merge with a normal merge commit. Do not force-push.
-
-- [ ] **Step 3: Push `main`**
-
-Run:
-
-```bash
+git fetch origin main --prune
 git push origin main
 ```
 
-Expected: `origin/main` contains the implementation commit(s).
+Expected: `origin/main` contains the implementation commits.
 
-- [ ] **Step 4: Delete remote `codex/*` branches after main push**
+- [ ] **Step 3: Delete remote Codex branches**
 
 Run:
 
@@ -1194,17 +1088,17 @@ Run:
 git ls-remote --heads origin 'refs/heads/codex/*'
 ```
 
-For every listed branch that is now obsolete because `main` is the only deploy branch, run:
+For every listed branch, run:
 
 ```bash
 git push origin --delete <branch-name>
 ```
 
-Do not delete non-`codex/*` branches in this task.
+Expected: `origin/main` is the only remote branch.
 
-- [ ] **Step 5: Deploy THEPC from GitHub main**
+- [ ] **Step 4: Deploy THEPC from GitHub main**
 
-Run from `/Users/goon/polymarket`:
+Run:
 
 ```bash
 PC_DEPLOY_MODE=remote-build POLYMARKET_DEPLOY_REF=HEAD ./scripts/deploy_pc.sh
@@ -1212,54 +1106,44 @@ PC_DEPLOY_MODE=remote-build POLYMARKET_DEPLOY_REF=HEAD ./scripts/deploy_pc.sh
 
 Expected:
 
-- THEPC WSL can SSH to GitHub.
-- THEPC fetches `origin/main`.
-- THEPC checks out the exact pushed SHA.
-- Images build or refresh on THEPC.
-- Runtime smoke passes for `/health`, `/api/runtime/live`, `/api/runtime/probabilities`, `/api/runtime/outcomes`, and SSE.
+- THEPC WSL can `git ls-remote git@github.com:AnimeWeeb9000/polymarket.git HEAD`.
+- THEPC checks out branch `main` at the exact pushed SHA.
+- Docker images build/restart on THEPC.
+- Deploy smoke passes `/health`, `/api/runtime/live`, `/api/runtime/probabilities`, `/api/runtime/outcomes`, and live SSE.
 
-- [ ] **Step 6: Verify live probability budget and ensemble preview**
+- [ ] **Step 5: Verify live THEPC probability rows**
 
 Run:
 
 ```bash
-ssh ender@100.72.104.49 'wsl.exe -d Ubuntu -- bash -lc "python3 - <<'\''PY'\''
+ssh ender@100.72.104.49 "wsl.exe -d Ubuntu -- bash -lc 'python3 - <<\"PY\"
 import json
 from pathlib import Path
 
-payload = json.loads(Path('/home/ender/polymarket-data/live/probabilities.json').read_text())
-rows = payload.get('rows') or []
-budget = payload.get('budget') or {}
-print('state=', payload.get('state'))
-print('budget=', budget)
+payload = json.loads(Path(\"/home/ender/polymarket-data/live/probabilities.json\").read_text())
+rows = payload.get(\"rows\") or []
+print(\"state\", payload.get(\"state\"))
+print(\"budget\", payload.get(\"budget\"))
 for row in rows[:4]:
-    preview = row.get('simulation_preview') or {}
-    print(row.get('contract'), row.get('model_version'), row.get('path_count'), len(preview.get('sampled_paths') or []), sorted((row.get('generator_summary') or {}).keys()))
-PY"'
+    preview = row.get(\"simulation_preview\") or {}
+    generators = sorted((row.get(\"generator_summary\") or {}).keys())
+    print(row.get(\"contract\"), row.get(\"model_version\"), row.get(\"path_count\"), row.get(\"paths_per_generator\"), row.get(\"generator_count\"), len(preview.get(\"sampled_paths\") or []), generators)
+PY'"
 ```
 
 Expected:
 
-- `budget["max_total_paths"] == 320000`
-- `budget["path_budget_per_input"] >= 80000` when there are four active MC inputs
-- four visible rows use `model_version == "ensemble-v1"`
-- each row has `simulation_preview.sampled_paths` length up to `64`
-- each row has all four generator IDs in `generator_summary`
+- State is `OK` or `NOWCAST`.
+- Four visible rows exist for BTC UP, BTC DOWN, ETH UP, ETH DOWN.
+- Each row has `model_version == "ensemble-v1"`.
+- Each row has `generator_count == 4`.
+- Each row has all four generator IDs in `generator_summary`.
+- Each row has non-empty `simulation_preview.sampled_paths`.
+- Budget diagnostics show `max_total_paths == 320000`.
 
-- [ ] **Step 7: Verify browser UI manually**
+- [ ] **Step 6: Verify TUI manually**
 
-Start or use the deployed UI route that serves the React build, then inspect the Runtime Monitor in a browser.
-
-Expected:
-
-- BTC UP, BTC DOWN, ETH UP, ETH DOWN cards are visible.
-- Cards show Monte Carlo path fans, not only the snapshot bar.
-- Each card has a four-generator legend.
-- The selected contract panel still shows prior fragments and generator breakdown.
-
-- [ ] **Step 8: Verify TUI manually**
-
-Run on THEPC WSL:
+Run on THEPC:
 
 ```bash
 /home/ender/bin/open-polymarket-tui.sh
@@ -1267,31 +1151,45 @@ Run on THEPC WSL:
 
 Expected:
 
-- Tabs are `Live`, `Systems`, `Market`, `Volatility`, `Outcomes`, `Logs`.
-- No `Probability` tab exists.
-- Market tab shows the selected book and a `Contract Probabilities` table below it.
-- No repeating `runtime_error=stream: read live stream` appears during normal stream reconnects.
+- Tabs are `Live`, `Systems`, `Market`, `Outcomes`, `Logs`.
+- No `Probability` tab appears.
+- Market tab shows selected book and `Contract Probabilities` below it.
+- Normal stream reconnects do not spam `runtime_error=stream: read live stream`.
 
-- [ ] **Step 9: Final status**
+- [ ] **Step 7: Verify browser manually**
+
+Open the deployed browser UI.
+
+Expected:
+
+- BTC UP, BTC DOWN, ETH UP, ETH DOWN cards are visible.
+- Monte Carlo path fans are visible, not only snapshot bars.
+- Each card has a four-generator legend.
+- Probability values and generator context match `/api/runtime/probabilities`.
+
+- [ ] **Step 8: Final repository check**
 
 Run:
 
 ```bash
 git status --short --branch
 git branch -r
+ssh ender@100.72.104.49 "wsl.exe -d Ubuntu -- bash -lc 'cd /home/ender/polymarket && git rev-parse HEAD && git branch --show-current && git status --short --branch'"
 ```
 
 Expected:
 
-- Local `main` is clean.
-- `origin/main` is the deployment branch.
-- No remote `codex/*` branches remain unless intentionally retained outside this task.
+- Local worktree is clean.
+- Remote branches list only `origin/main`.
+- THEPC branch is `main`.
+- THEPC HEAD equals pushed `origin/main`.
 
 ---
 
 ## Self-Review Notes
 
-- Spec coverage: deploy flow, main-only GitHub state, THEPC GitHub SSH, TUI probability placement, Probability tab removal, stream error suppression, browser ensemble display, preview line increase, and backend path budget increase are all mapped to tasks.
-- No placeholders: all tasks include exact paths, concrete expected code, commands, and expected outcomes.
-- Type consistency: Rust probability metadata fields are optional to preserve old payload compatibility; TypeScript preview `index` becomes `number | string` because ensemble preview uses `generator_id:index` identities.
-- Risk: `320000` total paths may exceed THEPC cadence with the current Python ensemble implementation. The deploy verification step must check live budget/cycle diagnostics. If cycle runtime is consistently breached, keep the code path but lower only the deployed env value after capturing evidence.
+- The plan no longer assumes that updating THEPC alone restores browser path lines. It explicitly fixes the missing `simulation_preview` data path.
+- The path-budget target is now precise: `320000` total generator paths per cycle, roughly `80k` effective paths per contract when four contracts and four generators are active.
+- The TUI target matches current `main`: no separate `Volatility` tab and no `Probability` tab.
+- The deploy target matches the requested fastest flow: push GitHub `main`, then THEPC fetches over SSH.
+- No live trading, signing, or order-placement path is introduced.
