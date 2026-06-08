@@ -51,7 +51,34 @@ def test_reduce_ensemble_caps_stress_overlay_so_it_cannot_improve_probability() 
 
     assert round(result.p_finish, 4) == 0.6000
     assert result.effective_generator_values["stress_overlay"]["p_finish"] == 0.60
+    assert result.risk_adjusted_p_finish == pytest.approx(0.60)
+    assert result.risk_adjustment == pytest.approx(0.0)
     assert result.path_diagnosis == PathDiagnosis.CLEAN
+
+
+def test_reduce_ensemble_keeps_terminal_probability_separate_from_stress_haircut() -> None:
+    result = reduce_ensemble(
+        runs=(
+            _run(GeneratorId.EMPIRICAL_CONDITIONAL, 0.60, 0.70),
+            _run(GeneratorId.BLOCK_BOOTSTRAP, 0.58, 0.68),
+            _run(GeneratorId.FILTERED_HISTORICAL, 0.62, 0.72),
+            _run(GeneratorId.STRESS_OVERLAY, 0.20, 0.30),
+        ),
+        weights=(
+            GeneratorWeight(GeneratorId.EMPIRICAL_CONDITIONAL, 0.40),
+            GeneratorWeight(GeneratorId.BLOCK_BOOTSTRAP, 0.25),
+            GeneratorWeight(GeneratorId.FILTERED_HISTORICAL, 0.25),
+            GeneratorWeight(GeneratorId.STRESS_OVERLAY, 0.10),
+        ),
+        base_model_buffer=0.01,
+    )
+
+    assert result.p_finish == pytest.approx(0.60)
+    assert result.p_no_touch == pytest.approx(0.70)
+    assert result.risk_adjusted_p_finish == pytest.approx(0.56)
+    assert result.risk_adjusted_p_no_touch == pytest.approx(0.66)
+    assert result.risk_adjustment == pytest.approx(0.04)
+    assert result.effective_generator_values["stress_overlay"]["p_finish"] == 0.20
 
 
 def test_reduce_ensemble_marks_sparse_output() -> None:

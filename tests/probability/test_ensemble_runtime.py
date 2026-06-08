@@ -173,6 +173,10 @@ def test_run_four_generator_ensemble_diagnostics_include_four_generators_and_see
     assert diagnostics["paths_per_generator"] == 10
     assert diagnostics["generator_count"] == 4
     assert diagnostics["steps"] == 1
+    assert diagnostics["terminal_probability_source"] == "core_generators_ex_stress_overlay"
+    assert diagnostics["risk_adjusted_p_finish"] == pytest.approx(output.p_finish)
+    assert diagnostics["risk_adjusted_p_no_touch"] == pytest.approx(output.p_no_touch)
+    assert diagnostics["risk_adjustment"] == pytest.approx(0.0)
     json.dumps(diagnostics, sort_keys=True, allow_nan=False)
 
 

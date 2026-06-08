@@ -85,6 +85,10 @@ def run_four_generator_ensemble(
         "u_gen": float(ensemble.u_gen),
         "mc_dispersion": float(ensemble.mc_dispersion),
         "uncertainty_buffer": float(ensemble.uncertainty_buffer),
+        "terminal_probability_source": "core_generators_ex_stress_overlay",
+        "risk_adjusted_p_finish": float(ensemble.risk_adjusted_p_finish),
+        "risk_adjusted_p_no_touch": float(ensemble.risk_adjusted_p_no_touch),
+        "risk_adjustment": float(ensemble.risk_adjustment),
         "path_diagnosis": ensemble.path_diagnosis.value,
         "sparse_scope": sparse_scope,
         "prior_fragment_generators": [
