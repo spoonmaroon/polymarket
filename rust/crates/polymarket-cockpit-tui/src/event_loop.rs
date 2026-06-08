@@ -23,8 +23,8 @@ use crate::{
 
 type Tui = Terminal<CrosstermBackend<Stdout>>;
 const PROBABILITY_POLL_INTERVAL: Duration = Duration::from_secs(3);
-const OUTCOME_POLL_INTERVAL: Duration = Duration::from_secs(15);
-const OUTCOME_HISTORY_LIMIT: usize = 5000;
+const OUTCOME_POLL_INTERVAL: Duration = Duration::from_secs(5);
+const OUTCOME_HISTORY_LIMIT: usize = 512;
 
 pub async fn run(mut app: AppState, engine_api_url: String, poll_interval_ms: u64) -> Result<()> {
     let mut terminal = TerminalGuard::enter()?;
@@ -722,8 +722,8 @@ mod tests {
     fn auxiliary_poll_interval_is_slower_than_live_market_polling() {
         assert_eq!(poll_interval_duration(100), Duration::from_millis(100));
         assert_eq!(PROBABILITY_POLL_INTERVAL, Duration::from_secs(3));
-        assert_eq!(OUTCOME_POLL_INTERVAL, Duration::from_secs(15));
-        assert_eq!(OUTCOME_HISTORY_LIMIT, 5000);
+        assert_eq!(OUTCOME_POLL_INTERVAL, Duration::from_secs(5));
+        assert_eq!(OUTCOME_HISTORY_LIMIT, 512);
     }
 
     #[test]
