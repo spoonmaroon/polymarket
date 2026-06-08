@@ -164,6 +164,18 @@ pub struct RuntimeProbabilityRow {
     pub contract: String,
     pub p_finish: f64,
     pub p_no_touch: f64,
+    #[serde(default)]
+    pub risk_adjusted_p_finish: Option<f64>,
+    #[serde(default)]
+    pub risk_adjusted_p_no_touch: Option<f64>,
+    #[serde(default)]
+    pub risk_adjustment: Option<f64>,
+    #[serde(default)]
+    pub pair_probability_sum_before: Option<f64>,
+    #[serde(default)]
+    pub pair_complement_gap: Option<f64>,
+    #[serde(default)]
+    pub pair_normalized: Option<bool>,
     pub z_path: f64,
     pub sigma_tau: f64,
     pub age_ms: u64,

@@ -11,7 +11,7 @@ use crate::{state::AppState, status::RuntimeProbabilityRow};
 pub struct ProbabilityDisplayRow {
     pub contract: String,
     pub p_finish: String,
-    pub p_no_touch: String,
+    pub risk_adjusted: String,
     pub edge: String,
     pub required_edge: String,
     pub hint_reasons: String,
@@ -26,8 +26,8 @@ pub struct ProbabilityTableModel {
 pub fn probability_header_labels() -> [&'static str; 6] {
     [
         "Contract",
-        "p_finish",
-        "p_no_touch",
+        "Terminal",
+        "RiskAdj",
         "Edge",
         "Req",
         "Hint/Reasons",
@@ -43,7 +43,7 @@ pub fn probability_table(app: &AppState) -> ProbabilityTableModel {
                 vec![
                     row.contract,
                     row.p_finish,
-                    row.p_no_touch,
+                    row.risk_adjusted,
                     row.edge,
                     row.required_edge,
                     row.hint_reasons,
@@ -99,7 +99,7 @@ pub fn compact_probability_table(app: &AppState) -> ProbabilityTableModel {
                     vec![
                         row.contract.clone(),
                         format_probability(row.p_finish),
-                        format_probability(row.p_no_touch),
+                        format_optional_probability(row.risk_adjusted_p_finish),
                         row.path_count
                             .map(|value| value.to_string())
                             .unwrap_or_else(|| "-".to_string()),
@@ -111,7 +111,7 @@ pub fn compact_probability_table(app: &AppState) -> ProbabilityTableModel {
         .unwrap_or_default();
 
     ProbabilityTableModel {
-        headers: vec!["Contract", "p", "NoTouch", "Paths", "Model"],
+        headers: vec!["Contract", "Terminal", "RiskAdj", "Paths", "Model"],
         rows: if rows.is_empty() {
             vec![vec![
                 "probability pending".to_string(),
@@ -190,7 +190,7 @@ fn probability_row(row: &RuntimeProbabilityRow) -> ProbabilityDisplayRow {
     ProbabilityDisplayRow {
         contract: row.contract.clone(),
         p_finish: format_probability(row.p_finish),
-        p_no_touch: format_probability(row.p_no_touch),
+        risk_adjusted: format_optional_probability(row.risk_adjusted_p_finish),
         edge: format_optional_probability(row.edge_after_costs),
         required_edge: format_optional_probability(row.required_edge),
         hint_reasons: hint_reasons(row),
@@ -295,6 +295,12 @@ mod tests {
                     contract: "BTC 5m UP".to_string(),
                     p_finish: 0.5749,
                     p_no_touch: 0.3149,
+                    risk_adjusted_p_finish: Some(0.5249),
+                    risk_adjusted_p_no_touch: Some(0.2849),
+                    risk_adjustment: Some(0.0500),
+                    pair_probability_sum_before: Some(0.9000),
+                    pair_complement_gap: Some(0.1000),
+                    pair_normalized: Some(true),
                     z_path: 0.4219,
                     sigma_tau: 0.01234,
                     age_ms: 850,
@@ -320,8 +326,8 @@ mod tests {
             probability_header_labels(),
             [
                 "Contract",
-                "p_finish",
-                "p_no_touch",
+                "Terminal",
+                "RiskAdj",
                 "Edge",
                 "Req",
                 "Hint/Reasons"
@@ -329,7 +335,7 @@ mod tests {
         );
         assert_eq!(rows[0].contract, "BTC 5m UP");
         assert_eq!(rows[0].p_finish, "0.575");
-        assert_eq!(rows[0].p_no_touch, "0.315");
+        assert_eq!(rows[0].risk_adjusted, "0.525");
         assert_eq!(rows[0].edge, "0.100");
         assert_eq!(rows[0].required_edge, "0.060");
         assert_eq!(rows[0].hint_reasons, "PAPER_TRADE");
@@ -382,6 +388,12 @@ mod tests {
                     contract: "BTC 5m UP".to_string(),
                     p_finish: 0.5749,
                     p_no_touch: 0.3149,
+                    risk_adjusted_p_finish: None,
+                    risk_adjusted_p_no_touch: None,
+                    risk_adjustment: None,
+                    pair_probability_sum_before: None,
+                    pair_complement_gap: None,
+                    pair_normalized: None,
                     z_path: 0.4219,
                     sigma_tau: 0.01234,
                     age_ms: 850,
@@ -544,7 +556,7 @@ mod tests {
 
         assert_eq!(
             table.headers,
-            vec!["Contract", "p", "NoTouch", "Paths", "Model"]
+            vec!["Contract", "Terminal", "RiskAdj", "Paths", "Model"]
         );
         assert_eq!(table.rows.len(), 4);
         assert_eq!(table.rows[0][0], "BTC 5m UP");
@@ -567,6 +579,12 @@ mod tests {
             contract: contract.to_string(),
             p_finish,
             p_no_touch: 0.25,
+            risk_adjusted_p_finish: Some(p_finish - 0.05),
+            risk_adjusted_p_no_touch: Some(0.20),
+            risk_adjustment: Some(0.05),
+            pair_probability_sum_before: Some(1.0),
+            pair_complement_gap: Some(0.0),
+            pair_normalized: Some(false),
             z_path: 0.42,
             sigma_tau: 0.01234,
             age_ms: 850,
