@@ -121,6 +121,8 @@ container owns CUDA Monte Carlo refreshes for active current and next rows.
 THEPC probability path count is adaptive under the soft CPU target; the target
 changes path budget, not model authority or artifact ownership.
 
+On contract rollover, new current and next contracts publish NOWCAST rows before Monte Carlo finishes. The browser UI and TUI may replace NOWCAST rows with MC rows as they arrive, but they must not keep showing an expired contract as the primary current row when fresh hot inputs for the next market window are available.
+
 ## Runtime API And Cockpit Display
 
 The cockpit should prefer `/api/runtime/live/stream`, which emits `event: live`

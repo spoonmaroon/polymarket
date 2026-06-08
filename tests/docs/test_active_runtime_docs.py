@@ -189,3 +189,19 @@ def test_docs_describe_default_soft_cpu_split() -> None:
     assert "not a hard Docker CPU cap" in deployment
     assert "artifact sync loop" in deployment
     assert "THEPC probability path count is adaptive under the soft CPU target" in part_two
+
+
+def test_probability_docs_separate_terminal_and_risk_adjusted_probability() -> None:
+    text = (ROOT / "docs" / "probability-generator-weights.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "`p_finish` is the terminal fair-value probability" in text
+    assert "`risk_adjusted_p_finish` is a stress-haircuted score" in text
+    assert "UP and DOWN terminal probabilities should sum to approximately 1.0" in text
+
+
+def test_live_collector_docs_require_nowcast_on_contract_rollover() -> None:
+    text = (ROOT / "docs" / "PART_TWO_LIVE_COLLECTORS.md").read_text(encoding="utf-8")
+
+    assert "new current and next contracts publish NOWCAST rows before Monte Carlo finishes" in text
