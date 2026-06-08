@@ -108,6 +108,39 @@ def test_latest_probability_output_rows_preserves_explicit_zero_p_hat(
     assert rows[0]["p_hat"] == pytest.approx(0.0)
 
 
+def test_latest_probability_output_rows_promotes_risk_adjusted_fields(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.duckdb"
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    probability_input = _persisted_probability_input(store)
+    store.insert_probability_output(
+        output_id="prob-risk-fields",
+        probability_input=probability_input,
+        output=ProbabilityOutput(
+            state_id=probability_input.state_id,
+            asof_ts=probability_input.asof_ts,
+            p_finish=0.62,
+            p_no_touch=0.58,
+            z_path=probability_input.z_path,
+            model_version="ensemble-v1",
+            seed=20260607,
+            diagnostics={
+                "risk_adjusted_p_finish": 0.56,
+                "risk_adjusted_p_no_touch": 0.51,
+                "risk_adjustment": 0.06,
+                "terminal_probability_source": "core_generators_ex_stress_overlay",
+            },
+        ),
+    )
+
+    rows = latest_probability_output_rows(duckdb_path=db_path, limit=1)
+
+    assert rows[0]["p_finish"] == pytest.approx(0.62)
+    assert rows[0]["risk_adjusted_p_finish"] == pytest.approx(0.56)
+    assert rows[0]["risk_adjustment"] == pytest.approx(0.06)
+    assert rows[0]["terminal_probability_source"] == "core_generators_ex_stress_overlay"
+
+
 def _persisted_probability_input(store: DuckDbIngestStore) -> ProbabilityInput:
     state = _decision_state()
     store.upsert_contract_spec(state.contract)

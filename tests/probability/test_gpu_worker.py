@@ -416,6 +416,10 @@ def test_worker_writes_ensemble_v1_rows_and_events(
                 "u_gen": 0.03,
                 "mc_dispersion": 0.08,
                 "uncertainty_buffer": 0.055,
+                "risk_adjusted_p_finish": 0.56,
+                "risk_adjusted_p_no_touch": 0.53,
+                "risk_adjustment": 0.08,
+                "terminal_probability_source": "core_generators_ex_stress_overlay",
                 "path_diagnosis": "SPARSE",
                 "sparse_scope": True,
             },
@@ -447,6 +451,8 @@ def test_worker_writes_ensemble_v1_rows_and_events(
     assert row["generator_summary"]["empirical_conditional"]["sparse"] is True
     assert row["mc_dispersion"] == 0.08
     assert row["uncertainty_buffer"] == 0.055
+    assert row["risk_adjusted_p_finish"] == 0.56
+    assert row["terminal_probability_source"] == "core_generators_ex_stress_overlay"
     assert row["path_diagnosis"] == "SPARSE"
     assert row["sparse_scope"] is True
 
@@ -463,6 +469,8 @@ def test_worker_writes_ensemble_v1_rows_and_events(
     assert mc_event["simulation_preview"]["sampled_paths"][0]["generator_id"] == "empirical_conditional"
     assert mc_event["effective_weights"]["empirical_conditional"] == 0.4
     assert mc_event["generator_summary"]["empirical_conditional"]["p_finish"] == 0.66
+    assert mc_event["risk_adjusted_p_finish"] == 0.56
+    assert mc_event["terminal_probability_source"] == "core_generators_ex_stress_overlay"
 
 
 def test_worker_passes_asof_safe_fragments_into_ensemble(

@@ -32,6 +32,7 @@ from polymarket_engine.probability.grid_cache import grid_runtime_row
 from polymarket_engine.probability.hot_inputs import HOT_PROBABILITY_INPUTS_SCHEMA_VERSION
 from polymarket_engine.probability.latency import ProbabilityLatencyTrace
 from polymarket_engine.probability.path_policy import runtime_path_count_for_state
+from polymarket_engine.probability.pair_coherence import normalize_binary_probability_pairs
 from polymarket_engine.probability.runtime import DEFAULT_PROBABILITY_GRID_VALID_SECONDS
 from polymarket_engine.probability.runtime import DEFAULT_PROBABILITY_MAX_STATE_AGE_SECONDS
 from polymarket_engine.probability.runtime import _float
@@ -174,6 +175,7 @@ def run_cuda_probability_worker_cycle(
     nowcast_rows: list[dict[str, Any]] = []
     nowcast_by_state_id: dict[str, dict[str, Any]] = {}
     event_rows: list[dict[str, Any]] = []
+    mc_output_ids_by_state_id: dict[str, str] = {}
     errors: list[str] = []
     try:
         if probability_inputs_path is not None:
@@ -291,7 +293,20 @@ def run_cuda_probability_worker_cycle(
     for runtime_input in inputs:
         nowcast_row = _nowcast_row(runtime_input, generated_at=generated_at)
         nowcast_rows.append(nowcast_row)
-        nowcast_by_state_id[runtime_input.probability_input.state_id] = nowcast_row
+    nowcast_rows = normalize_binary_probability_pairs(nowcast_rows)
+    runtime_inputs_by_state_id = {
+        runtime_input.probability_input.state_id: runtime_input
+        for runtime_input in inputs
+    }
+    nowcast_by_state_id = {
+        str(row["state_id"]): row
+        for row in nowcast_rows
+        if isinstance(row.get("state_id"), str)
+    }
+    for nowcast_row in nowcast_rows:
+        runtime_input = runtime_inputs_by_state_id.get(str(nowcast_row.get("state_id") or ""))
+        if runtime_input is None:
+            continue
         event_rows.append(
             _event_payload_from_row(
                 runtime_input=runtime_input,
@@ -411,14 +426,7 @@ def run_cuda_probability_worker_cycle(
                 seed=seed,
             )
             rows.append(row)
-            event_rows.append(
-                _event_payload_from_row(
-                    runtime_input=runtime_input,
-                    row=row,
-                    generated_at=generated_at,
-                    output_id=output_id,
-                )
-            )
+            mc_output_ids_by_state_id[output.state_id] = output_id
 
     rows, partial_retained_mc_rows = _merge_missing_retained_mc_rows(
         fresh_rows=rows,
@@ -426,6 +434,21 @@ def run_cuda_probability_worker_cycle(
         now=generated_at,
         enabled=quality_skipped > 0 and bool(rows),
     )
+    rows = normalize_binary_probability_pairs(rows)
+    for row in rows:
+        state_id = str(row.get("state_id") or "")
+        output_id = mc_output_ids_by_state_id.get(state_id)
+        runtime_input = runtime_inputs_by_state_id.get(state_id)
+        if output_id is None or runtime_input is None:
+            continue
+        event_rows.append(
+            _event_payload_from_row(
+                runtime_input=runtime_input,
+                row=row,
+                generated_at=generated_at,
+                output_id=output_id,
+            )
+        )
     payload = _status_payload(
         generated_at=generated_at,
         rows=rows,
@@ -1209,6 +1232,14 @@ def _event_payload_from_row(
         "prior_fragment_ids",
         "prior_fragment_error",
         "prior_fragment_generators",
+        "terminal_probability_source",
+        "risk_adjusted_p_finish",
+        "risk_adjusted_p_no_touch",
+        "risk_adjustment",
+        "pair_probability_sum_before",
+        "pair_complement_gap",
+        "pair_normalized",
+        "counterparty_p_finish",
     ):
         if key in row:
             payload[key] = row[key]

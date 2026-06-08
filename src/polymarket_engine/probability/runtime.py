@@ -17,6 +17,7 @@ from polymarket_engine.probability.generator_fragments import GeneratorFragment
 from polymarket_engine.probability.generator_fragments import read_probability_fragments
 from polymarket_engine.probability.generator_fragments import select_fragments_for_input
 from polymarket_engine.probability.hot_inputs import read_hot_probability_inputs
+from polymarket_engine.probability.pair_coherence import normalize_binary_probability_pairs
 from polymarket_engine.probability.runtime_inputs import ProbabilityRuntimeInput, contract_label
 from polymarket_engine.probability.schema import ProbabilityInput, ProbabilityOutput
 from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
@@ -108,6 +109,7 @@ def build_probability_payload(
                 inputs=hot_payload.inputs,
                 probability_fragments_path=probability_fragments_path,
             )
+            hot_rows = normalize_binary_probability_pairs(hot_rows)
             return {
                 "ok": not hot_errors,
                 "state": "OK" if not hot_errors else "PARTIAL",
@@ -133,6 +135,7 @@ def build_probability_payload(
     try:
         persisted_rows = latest_probability_output_rows(duckdb_path=duckdb_path, limit=limit)
         if persisted_rows:
+            persisted_rows = normalize_binary_probability_pairs(persisted_rows)
             return _with_hot_input_warning(
                 {
                     "ok": True,
@@ -185,6 +188,7 @@ def build_probability_payload(
         inputs=inputs,
         probability_fragments_path=probability_fragments_path,
     )
+    rows = normalize_binary_probability_pairs(rows)
 
     return _with_hot_input_warning(
         {
@@ -389,7 +393,7 @@ def latest_probability_output_rows_from_connection(
         _latest_probability_output_rows_sql(include_decisions=has_decision_table),
         [cutoff, cutoff, active_now, active_now, limit],
     ).fetchall()
-    return [_persisted_runtime_row(row) for row in rows]
+    return normalize_binary_probability_pairs([_persisted_runtime_row(row) for row in rows])
 
 
 def _latest_probability_output_rows_sql(*, include_decisions: bool) -> str:
@@ -839,6 +843,14 @@ def _merge_grid_diagnostics(
         "prior_fragment_ids",
         "prior_fragment_error",
         "prior_fragment_generators",
+        "terminal_probability_source",
+        "risk_adjusted_p_finish",
+        "risk_adjusted_p_no_touch",
+        "risk_adjustment",
+        "pair_probability_sum_before",
+        "pair_complement_gap",
+        "pair_normalized",
+        "counterparty_p_finish",
     ):
         if key in diagnostics and row.get(key) is None:
             row[key] = diagnostics[key]
