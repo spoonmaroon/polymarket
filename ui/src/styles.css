@@ -597,6 +597,8 @@ svg {
   fill: none;
   opacity: 0.72;
   stroke-width: 1.45;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .path-win {
@@ -673,6 +675,8 @@ svg {
 
 .mc-path.generator-empirical-conditional {
   stroke: #4f8cff;
+  opacity: 0.9;
+  stroke-width: 1.85;
 }
 
 .mc-path.generator-block-bootstrap {
@@ -681,6 +685,8 @@ svg {
 
 .mc-path.generator-filtered-historical {
   stroke: #d89100;
+  opacity: 0.58;
+  stroke-dasharray: 8 5;
 }
 
 .mc-path.generator-stress-overlay {
