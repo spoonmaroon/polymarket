@@ -801,6 +801,17 @@ def get_json(path: str) -> dict[str, object]:
         return json.loads(response.read().decode("utf-8"))
 
 
+def wait_json(path: str, attempts: int = 30) -> dict[str, object]:
+    last: dict[str, object] = {}
+    for _ in range(attempts):
+        try:
+            return get_json(path)
+        except Exception as exc:
+            last = {"error": repr(exc)}
+            time.sleep(1)
+    raise SystemExit(f"{path} smoke unavailable: {last}")
+
+
 def parse_ts(value: object) -> datetime | None:
     if not isinstance(value, str):
         return None
@@ -832,7 +843,7 @@ def row_is_recent(row: dict[str, object], now: datetime) -> bool:
     return (now - generated_at).total_seconds() <= 90
 
 
-health = get_json("/health")
+health = wait_json("/health")
 if health.get("status") != "ok":
     raise SystemExit(f"health smoke failed: {health}")
 
@@ -884,7 +895,7 @@ for _ in range(30):
 else:
     raise SystemExit(f"runtime probabilities smoke failed: {probabilities}")
 
-outcomes = get_json("/api/runtime/outcomes?limit=8")
+outcomes = wait_json("/api/runtime/outcomes?limit=8")
 if (
     not isinstance(outcomes.get("rows"), list)
     or outcomes.get("ok") is not True

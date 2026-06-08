@@ -202,7 +202,8 @@ def test_runtime_api_service_is_deployed_with_engine_compose() -> None:
     assert "compose_for_role logs --tail=80 $START_SERVICES" in script
     assert "docker compose --env-file deploy/collector/.env" in pc_script
     assert "-f deploy/collector/docker-compose.thepc-gpu-api.yml ps" in pc_script
-    assert 'get_json("/health")' in pc_script
+    assert "def wait_json(path: str, attempts: int = 30)" in pc_script
+    assert 'health = wait_json("/health")' in pc_script
     assert 'get_json("/api/runtime/live?limit=8")' in pc_script
     assert "has_orderbooks" in pc_script
     assert 'live = {"error": repr(exc)}' in pc_script
@@ -219,7 +220,7 @@ def test_runtime_api_service_is_deployed_with_engine_compose() -> None:
     assert 'parse_ts(row.get("valid_until"))' in pc_script
     assert 'parse_ts(row.get("generated_at"))' in pc_script
     assert "runtime probabilities smoke failed" in pc_script
-    assert 'get_json("/api/runtime/outcomes?limit=8")' in pc_script
+    assert 'outcomes = wait_json("/api/runtime/outcomes?limit=8")' in pc_script
     assert 'outcomes.get("state") == "LOCKED"' in pc_script
     assert "/api/runtime/live/stream?limit=8&interval_ms=250&max_events=1" in pc_script
 
