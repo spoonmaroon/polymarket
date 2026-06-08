@@ -30,6 +30,14 @@ export type ProbabilityValueRow = ProbabilityRowForGraph & {
   p_finish?: number;
   p_hat?: number;
   p_no_touch?: number;
+  risk_adjusted_p_finish?: number;
+  risk_adjusted_p_no_touch?: number;
+  risk_adjustment?: number;
+  terminal_probability_source?: string;
+  pair_probability_sum_before?: number;
+  pair_complement_gap?: number;
+  pair_normalized?: boolean;
+  counterparty_p_finish?: number;
   probability_kind?: string;
   path_count?: number;
   paths_per_generator?: number;
@@ -108,6 +116,21 @@ export function probabilityDisplayValue(row?: ProbabilityValueRow | null) {
     return undefined;
   }
   return isFiniteNumber(row.p_hat) ? row.p_hat : row.p_finish;
+}
+
+export function riskAdjustedDisplayValue(row?: ProbabilityValueRow | null) {
+  if (!row) {
+    return undefined;
+  }
+  return isFiniteNumber(row.risk_adjusted_p_finish) ? row.risk_adjusted_p_finish : undefined;
+}
+
+export function pairCoherenceLabel(row?: ProbabilityValueRow | null) {
+  if (!row || !isFiniteNumber(row.pair_probability_sum_before)) {
+    return undefined;
+  }
+  const sum = row.pair_probability_sum_before.toFixed(3);
+  return row.pair_normalized === true ? `normalized from ${sum} pair sum` : `pair sum ${sum}`;
 }
 
 export function probabilityRowKey(row: ProbabilityValueRow) {

@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import {
   generatorBreakdownRows,
+  pairCoherenceLabel,
   probabilityDisplayValue,
   probabilityMetadata,
   probabilityPriorSummary,
   probabilityRowKey,
   probabilitySelectionKey,
+  riskAdjustedDisplayValue,
 } from "../../ui/src/probabilityRows";
 
 const upRow = {
@@ -40,6 +42,16 @@ const downRow = {
 assert.equal(probabilityDisplayValue(upRow), 0.56);
 assert.equal(probabilityDisplayValue({ ...upRow, p_hat: undefined }), 0.55);
 assert.equal(probabilityDisplayValue({ p_hat: 0, p_finish: 0.55 }), 0);
+assert.equal(riskAdjustedDisplayValue({ p_finish: 0.62, risk_adjusted_p_finish: 0.56 }), 0.56);
+assert.equal(riskAdjustedDisplayValue({ p_finish: 0.62 }), undefined);
+assert.equal(
+  pairCoherenceLabel({ pair_probability_sum_before: 0.9, pair_normalized: true }),
+  "normalized from 0.900 pair sum",
+);
+assert.equal(
+  pairCoherenceLabel({ pair_probability_sum_before: 1.0, pair_normalized: false }),
+  "pair sum 1.000",
+);
 assert.notEqual(probabilityRowKey(upRow), probabilityRowKey(downRow));
 assert.deepEqual(probabilityMetadata(upRow), {
   totalPaths: 120000,

@@ -4,6 +4,7 @@ import {
   generatorBreakdownRows,
   mergeGraphableProbabilityPayloadRows,
   mergeProbabilityEventsIntoPayload,
+  pairCoherenceLabel,
   probabilityDisplayValue,
   probabilityMetadata,
   probabilityPriorSummary,
@@ -11,6 +12,7 @@ import {
   probabilityRuntimeStateLabel,
   probabilityRowsWithRolloverHold,
   probabilitySelectionKey,
+  riskAdjustedDisplayValue,
   visibleProbabilityDiagnosticRows,
 } from "./probabilityRows";
 import {
@@ -162,6 +164,14 @@ type ProbabilityRow = {
   p_hat_ci_low?: number;
   p_hat_ci_high?: number;
   p_no_touch?: number;
+  risk_adjusted_p_finish?: number;
+  risk_adjusted_p_no_touch?: number;
+  risk_adjustment?: number;
+  terminal_probability_source?: string;
+  pair_probability_sum_before?: number;
+  pair_complement_gap?: number;
+  pair_normalized?: boolean;
+  counterparty_p_finish?: number;
   z_path?: number;
   sigma_tau?: number;
   age_ms?: number;
@@ -733,7 +743,9 @@ function SelectedDetails({
       </div>
 
       <div className="hero-metrics">
-        <Metric label="Monte Carlo" value={formatProbability(probabilityDisplayValue(row))} />
+        <Metric label="Terminal probability" value={formatProbability(probabilityDisplayValue(row))} />
+        <Metric label="Risk adjusted" value={formatProbability(riskAdjustedDisplayValue(row))} />
+        <Metric label="Pair coherence" value={pairCoherenceLabel(row) ?? "-"} />
         <Metric label="model" value={row.model_version ?? probabilities?.model_version ?? "-"} />
         <Metric label="generator" value={row.generator_version ?? "-"} />
         <Metric label={timingLabel} value={formatTimestamp(row.expiry_ts)} />
@@ -850,7 +862,7 @@ function PairProbabilityButton({
     >
       <strong>{label}</strong>
       <span>{formatProbability(probabilityDisplayValue(row))}</span>
-      <small>{quote}</small>
+      <small>{compactList([quote, `risk ${formatProbability(riskAdjustedDisplayValue(row))}`])}</small>
     </button>
   );
 }
@@ -968,7 +980,14 @@ function MonteCarloComparisonCard({
       >
         <div>
           <h3>{label} Monte Carlo</h3>
-          <span>{compactList([formatProbability(probabilityDisplayValue(row)), quote, isLeader ? "leading" : undefined])}</span>
+          <span>
+            {compactList([
+              formatProbability(probabilityDisplayValue(row)),
+              `risk ${formatProbability(riskAdjustedDisplayValue(row))}`,
+              quote,
+              isLeader ? "leading" : undefined,
+            ])}
+          </span>
         </div>
         <GatePill value={row.decision_hint} />
       </button>
