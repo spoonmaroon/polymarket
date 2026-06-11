@@ -1210,14 +1210,14 @@ Priority 1: Stabilize current bugs
 
 Fix the currently observed runtime bugs before adding major new modeling features:
 
-## BUG-001 TUI freeze with CPU spike
-## BUG-002 API BLOCKED / response decode errors
-## BUG-003 degraded runtime after restart
-## BUG-004 offload starts too soon after restart
-## BUG-005 sigma instability
-## BUG-006 K threshold mutation
-## BUG-008 service communication mismatch
-## BUG-009 missing automatic bug-report pipeline
+### BUG-001 TUI freeze with CPU spike
+### BUG-002 API BLOCKED / response decode errors
+### BUG-003 degraded runtime after restart
+### BUG-004 offload starts too soon after restart
+### BUG-005 sigma instability
+### BUG-006 K threshold mutation
+### BUG-008 service communication mismatch
+### BUG-009 missing automatic bug-report pipeline
 
 Do not start full ML development until these are logged, reproducible where possible, and covered by basic health checks or tests.
 
