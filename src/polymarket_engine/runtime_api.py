@@ -44,12 +44,16 @@ def build_runtime_router(
     outcome_status_path: Path = Path("data/live/outcomes.json"),
     target_cache_path: Path = Path("data/live/targets.json"),
     volatility_status_path: Path = Path("data/live/volatility.json"),
+    recovery_status_path: Path = Path("data/live/recovery_status.json"),
+    offload_status_path: Path = Path("data/live/offload_status.json"),
+    bug_report_dir: Path = Path("data/live/bug-reports"),
     data_dir: Path = Path("data"),
     enable_container_status: bool = False,
     enable_runtime_probabilities: bool = False,
     allow_probability_compute_fallback: bool = False,
 ) -> APIRouter:
     router = APIRouter(prefix="/api/runtime")
+    _ = bug_report_dir
     probability_cache = ProbabilityRuntimeCache()
     probability_event_path = probability_status_path.with_name("probability-events.jsonl")
 
@@ -147,6 +151,30 @@ def build_runtime_router(
             normalized_health_path=normalized_health_path,
         )
 
+    @router.get("/recovery")
+    def runtime_recovery() -> dict[str, Any]:
+        return _read_optional_status_payload(
+            recovery_status_path,
+            missing_state="MISSING",
+            default={
+                "runtime_phase": "UNKNOWN",
+                "ready": False,
+                "reasons": ["recovery_status_missing"],
+            },
+        )
+
+    @router.get("/offload")
+    def runtime_offload() -> dict[str, Any]:
+        return _read_optional_status_payload(
+            offload_status_path,
+            missing_state="MISSING",
+            default={
+                "offload_allowed": False,
+                "reason_codes": ["offload_status_missing"],
+                "recommended_worker_mode": "disabled",
+            },
+        )
+
     @router.get("/live")
     def runtime_live(limit: int = 8) -> dict[str, Any]:
         return _runtime_live_payload(
@@ -157,6 +185,8 @@ def build_runtime_router(
             probability_inputs_path=probability_inputs_path,
             target_cache_path=target_cache_path,
             volatility_status_path=volatility_status_path,
+            recovery_status_path=recovery_status_path,
+            offload_status_path=offload_status_path,
             limit=limit,
         )
 
@@ -179,6 +209,8 @@ def build_runtime_router(
                     probability_inputs_path=probability_inputs_path,
                     target_cache_path=target_cache_path,
                     volatility_status_path=volatility_status_path,
+                    recovery_status_path=recovery_status_path,
+                    offload_status_path=offload_status_path,
                     limit=limit,
                 )
                 yield f"event: live\ndata: {json.dumps(payload, separators=(',', ':'))}\n\n"
@@ -540,6 +572,8 @@ def _runtime_live_payload(
     probability_inputs_path: Path | None,
     target_cache_path: Path,
     volatility_status_path: Path,
+    recovery_status_path: Path,
+    offload_status_path: Path,
     limit: int,
 ) -> dict[str, Any]:
     started = time.perf_counter()
@@ -609,6 +643,8 @@ def _runtime_live_payload(
         volatility_status_path=volatility_status_path,
         limit=limit,
     )
+    recovery = _compact_recovery_status(recovery_status_path)
+    offload = _compact_offload_status(offload_status_path)
     return {
         "ok": bool(status.get("ok"))
         and bool(gates.get("ok"))
@@ -618,8 +654,79 @@ def _runtime_live_payload(
         "gates": gates,
         "monitor": monitor,
         "volatility": volatility,
+        "recovery": recovery,
+        "offload": offload,
         "latency": latency,
     }
+
+
+def _read_optional_status_payload(
+    path: Path,
+    *,
+    missing_state: str,
+    default: dict[str, Any],
+) -> dict[str, Any]:
+    payload, read_error = _read_json_or_error(path)
+    if payload is not None:
+        return payload
+
+    state = read_error["state"]
+    if state == "MISSING":
+        state = missing_state
+    return {
+        **default,
+        "ok": False,
+        "state": state,
+        "error": read_error["error"],
+        "path": str(path),
+    }
+
+
+def _compact_recovery_status(path: Path) -> dict[str, Any]:
+    payload = _read_optional_status_payload(
+        path,
+        missing_state="MISSING",
+        default={
+            "runtime_phase": "UNKNOWN",
+            "ready": False,
+            "reasons": ["recovery_status_missing"],
+        },
+    )
+    return {
+        "runtime_phase": str(payload.get("runtime_phase") or "UNKNOWN"),
+        "ready": bool(payload.get("ready")),
+        "reasons": _string_list(payload.get("reasons")),
+        "boot_id": payload.get("boot_id"),
+        "generated_at": payload.get("generated_at"),
+        "state": payload.get("state"),
+        "error": payload.get("error"),
+    }
+
+
+def _compact_offload_status(path: Path) -> dict[str, Any]:
+    payload = _read_optional_status_payload(
+        path,
+        missing_state="MISSING",
+        default={
+            "offload_allowed": False,
+            "reason_codes": ["offload_status_missing"],
+            "recommended_worker_mode": "disabled",
+        },
+    )
+    return {
+        "offload_allowed": bool(payload.get("offload_allowed")),
+        "reason_codes": _string_list(payload.get("reason_codes")),
+        "recommended_worker_mode": str(payload.get("recommended_worker_mode") or "disabled"),
+        "generated_at": payload.get("generated_at"),
+        "state": payload.get("state"),
+        "error": payload.get("error"),
+    }
+
+
+def _string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value]
 
 
 def _enrich_monitor_thresholds_from_probability_inputs(

@@ -482,6 +482,64 @@ def test_runtime_live_combines_status_gates_monitor_and_latency(tmp_path: Path) 
     assert payload["latency"]["server_sent_at"].endswith("+00:00")
 
 
+def test_runtime_api_exposes_recovery_status(tmp_path: Path) -> None:
+    recovery_path = tmp_path / "live" / "recovery_status.json"
+    recovery_path.parent.mkdir(parents=True)
+    recovery_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "polymarket-recovery-runtime-v1",
+                "generated_at": "2026-06-11T12:00:00+00:00",
+                "runtime_phase": "WARMING",
+                "ready": False,
+                "reasons": ["warmup_active"],
+                "boot_id": "boot-1",
+            }
+        ),
+        encoding="utf-8",
+    )
+    app = FastAPI()
+    app.include_router(build_runtime_router(data_dir=tmp_path, recovery_status_path=recovery_path))
+    client = TestClient(app)
+
+    response = client.get("/api/runtime/recovery")
+
+    assert response.status_code == 200
+    assert response.json()["runtime_phase"] == "WARMING"
+    assert response.json()["reasons"] == ["warmup_active"]
+
+
+def test_runtime_live_includes_compact_recovery_and_offload(tmp_path: Path) -> None:
+    live_dir = tmp_path / "live"
+    live_dir.mkdir(parents=True)
+    recovery_path = live_dir / "recovery_status.json"
+    offload_path = live_dir / "offload_status.json"
+    recovery_path.write_text(
+        json.dumps({"runtime_phase": "READY", "ready": True, "reasons": [], "boot_id": "boot-1"}),
+        encoding="utf-8",
+    )
+    offload_path.write_text(
+        json.dumps(
+            {"offload_allowed": True, "reason_codes": [], "recommended_worker_mode": "gpu_mc"}
+        ),
+        encoding="utf-8",
+    )
+    app = FastAPI()
+    app.include_router(
+        build_runtime_router(
+            data_dir=tmp_path,
+            recovery_status_path=recovery_path,
+            offload_status_path=offload_path,
+        )
+    )
+    client = TestClient(app)
+
+    payload = client.get("/api/runtime/live").json()
+
+    assert payload["recovery"]["runtime_phase"] == "READY"
+    assert payload["offload"]["offload_allowed"] is True
+
+
 def test_runtime_live_includes_volatility_diagnostics(tmp_path: Path) -> None:
     status_path = tmp_path / "status.json"
     _write_status(status_path)
