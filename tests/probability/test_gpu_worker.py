@@ -246,6 +246,14 @@ def test_worker_blocks_expensive_mc_when_offload_gate_blocks(
         fail_if_mc_runs,
     )
 
+    def fail_if_fragments_load(*_: object, **__: object) -> tuple[tuple[object, ...], None]:
+        raise AssertionError("fragments should not load when offload gate blocks")
+
+    monkeypatch.setattr(
+        "polymarket_engine.probability.gpu_worker._load_probability_fragments",
+        fail_if_fragments_load,
+    )
+
     payload = run_cuda_probability_worker_cycle(
         duckdb_path=tmp_path / "unused.duckdb",
         probability_status_path=probability_status_path,
@@ -263,6 +271,8 @@ def test_worker_blocks_expensive_mc_when_offload_gate_blocks(
     assert payload["state"] == "OFFLOAD_BLOCKED"
     assert payload["offload"]["offload_allowed"] is False
     assert payload["offload"]["reason_codes"] == ["runtime_not_ready"]
+    assert payload["offload"]["recommended_worker_mode"] == "nowcast_only"
+    assert payload["offload"]["recommended_max_total_paths"] == 0
     assert payload["rows"][0]["probability_kind"] == "NOWCAST"
 
 

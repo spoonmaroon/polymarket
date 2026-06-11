@@ -264,10 +264,6 @@ def run_cuda_probability_worker_cycle(
         _write_status(probability_status_path, payload)
         return payload
 
-    prior_fragments, prior_fragment_error = _load_probability_fragments(
-        path=probability_fragments_path,
-        max_age_seconds=max_input_snapshot_age_seconds,
-    )
     mc_inputs = tuple(inputs)
     if len(mc_inputs) > budget.max_total_paths:
         mc_input_skipped = len(mc_inputs) - budget.max_total_paths
@@ -402,6 +398,11 @@ def run_cuda_probability_worker_cycle(
         payload["offload"] = offload_decision
         _write_status(probability_status_path, payload)
         return payload
+
+    prior_fragments, prior_fragment_error = _load_probability_fragments(
+        path=probability_fragments_path,
+        max_age_seconds=max_input_snapshot_age_seconds,
+    )
 
     for group in _batch_runtime_inputs(mc_inputs):
         representative = group[0].probability_input
