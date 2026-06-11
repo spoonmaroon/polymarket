@@ -1812,86 +1812,14 @@ git commit -m "calibration: add probability calibration reports"
 
 ---
 
-## Task 14: Add First ML Calibrator Only After Clean Data Exists
+## Task 14: Removed - First ML Calibrator Deferred
 
-**Files:**
-- Create: `src/polymarket_engine/calibration/models.py`
-- Create: `tests/calibration/test_models.py`
+**Files:** none.
 
-- [ ] **Step 1: Add guard test for insufficient data**
-
-The model trainer must refuse to train if:
-
-```text
-row count < configured minimum
-labels missing
-walk-forward split impossible
-any feature timestamp is after asof_ts
-```
-
-Expected:
-
-```python
-assert result.trained is False
-assert "insufficient_labeled_rows" in result.reasons
-```
-
-- [ ] **Step 2: Implement logistic baseline contract**
-
-Model name:
-
-```text
-MC_Calibrator_LogReg_v1
-```
-
-Inputs:
-
-```text
-logit(p_finish_mc)
-p_no_touch_mc
-z_path
-tte_seconds
-sigma_tau
-spread
-orderbook_imbalance
-volatility_regime
-asset
-side
-```
-
-Output:
-
-```text
-p_finish_calibrated
-```
-
-- [ ] **Step 3: Add no-live-authority guard**
-
-The calibrator may write research artifacts only:
-
-```text
-data/research/calibration/models/
-reports/calibration/
-```
-
-It must not write `data/live/`, worker status, TUI state, or decision-gate outputs.
-
-- [ ] **Step 4: Run tests**
-
-Run:
-
-```bash
-uv run pytest -q tests/calibration/test_models.py
-```
-
-Expected: all pass.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add src/polymarket_engine/calibration/models.py tests/calibration/test_models.py
-git commit -m "calibration: add guarded logistic baseline contract"
-```
+The first ML calibrator is intentionally not part of this recovery pass. Enoch
+has separate plans for calibrator work, so this task must not create
+`src/polymarket_engine/calibration/models.py`, `tests/calibration/test_models.py`,
+or any `MC_Calibrator_LogReg_v1` artifacts.
 
 ---
 
@@ -2011,7 +1939,7 @@ git commit -m "docs: document runtime recovery and offload gates"
 12. Task 11: recovery writer integration.
 13. Task 12: calibration dataset.
 14. Task 13: calibration reports.
-15. Task 14: guarded first ML calibrator.
+15. Task 14: removed; first ML calibrator deferred.
 16. Task 15: verification and deployed smoke checks.
 
 ## Risk Controls
