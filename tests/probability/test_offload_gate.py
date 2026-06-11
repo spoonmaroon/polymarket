@@ -45,6 +45,15 @@ def test_offload_allowed_when_ready_and_fresh() -> None:
     assert decision.recommended_max_total_paths == 80_000
 
 
+def test_offload_allows_connected_websocket_status() -> None:
+    decision = evaluate_offload_readiness(
+        base_inputs(websocket_status="CONNECTED"),
+        OffloadGateConfig(),
+    )
+    assert decision.offload_allowed is True
+    assert "websocket_unhealthy" not in decision.reason_codes
+
+
 def test_offload_blocked_during_warming() -> None:
     decision = evaluate_offload_readiness(
         base_inputs(runtime_phase=RuntimePhase.WARMING),
@@ -72,6 +81,13 @@ def test_offload_blocks_recent_decode_error() -> None:
     )
     assert decision.offload_allowed is False
     assert "decode_error_recent" in decision.reason_codes
+
+
+def test_zero_freshness_threshold_is_valid_and_strict() -> None:
+    config = OffloadGateConfig(max_price_age_ms=0)
+    decision = evaluate_offload_readiness(base_inputs(price_age_ms=1), config)
+    assert decision.offload_allowed is False
+    assert "price_stale" in decision.reason_codes
 
 
 def test_path_budget_ramps_after_startup() -> None:

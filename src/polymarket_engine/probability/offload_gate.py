@@ -31,18 +31,18 @@ class OffloadGateConfig:
             "required_healthy_cycles",
             self.required_healthy_cycles,
         )
-        _validate_positive_int("max_price_age_ms", self.max_price_age_ms)
-        _validate_positive_int("max_orderbook_age_ms", self.max_orderbook_age_ms)
-        _validate_positive_int(
+        _validate_nonnegative_int("max_price_age_ms", self.max_price_age_ms)
+        _validate_nonnegative_int("max_orderbook_age_ms", self.max_orderbook_age_ms)
+        _validate_nonnegative_int(
             "max_probability_input_age_ms",
             self.max_probability_input_age_ms,
         )
-        _validate_positive_int("max_volatility_age_ms", self.max_volatility_age_ms)
-        _validate_positive_int(
+        _validate_nonnegative_int("max_volatility_age_ms", self.max_volatility_age_ms)
+        _validate_nonnegative_int(
             "max_target_status_age_ms",
             self.max_target_status_age_ms,
         )
-        _validate_positive_int("max_sigma_tau_age_ms", self.max_sigma_tau_age_ms)
+        _validate_nonnegative_int("max_sigma_tau_age_ms", self.max_sigma_tau_age_ms)
         _validate_nonnegative_float("cpu_soft_max_percent", self.cpu_soft_max_percent)
         _validate_nonnegative_int("memory_soft_max_mb", self.memory_soft_max_mb)
         _validate_nonnegative_int("queue_soft_max", self.queue_soft_max)
@@ -182,7 +182,7 @@ def evaluate_offload_readiness(
         reasons.append("normalized_health_unhealthy")
     if inputs.duckdb_status != "OK":
         reasons.append("duckdb_unhealthy")
-    if inputs.websocket_status != "OK":
+    if inputs.websocket_status not in {"OK", "CONNECTED"}:
         reasons.append("websocket_unhealthy")
     if inputs.recent_api_blocked:
         reasons.append("api_blocked_recent")
