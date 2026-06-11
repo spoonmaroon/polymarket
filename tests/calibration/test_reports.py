@@ -114,6 +114,11 @@ def test_build_calibration_report_computes_core_metrics() -> None:
     assert report.input_row_count == 4
     assert report.evaluated_row_count == 4
     assert report.skipped_row_count == 0
+    assert report.report_ready is True
+    assert report.not_ready_reasons == ()
+    assert report.brier_score is not None
+    assert report.log_loss is not None
+    assert report.expected_calibration_error is not None
     assert round(report.brier_score, 4) == 0.1825
     assert round(report.log_loss, 4) == 0.5403
     assert round(report.expected_calibration_error, 4) == 0.175
@@ -123,6 +128,7 @@ def test_build_calibration_report_computes_core_metrics() -> None:
 
 def test_build_calibration_report_exposes_ece_buckets() -> None:
     report = build_calibration_report(_fixed_rows(), ece_bucket_count=4)
+    assert report.expected_calibration_error is not None
 
     buckets = {bucket.bucket_key: bucket for bucket in report.ece_buckets}
 
@@ -207,7 +213,109 @@ def test_build_calibration_report_skips_bad_rows_with_validation_errors(
     assert issue.state_id == "bad"
     assert issue.field == field
     assert issue.reason == reason
+    assert report.brier_score is not None
     assert round(report.brier_score, 4) == 0.04
+
+
+@pytest.mark.parametrize("block_reason", ["sigma_invalid", "k_unstable", "offload_blocked", "manual_hold"])
+def test_build_calibration_report_skips_blocked_rows_before_metrics(block_reason: str) -> None:
+    rows = [
+        _row(state_id="good", p_finish_mc=0.8, final_label=1, skip_or_block_reason=None),
+        _row(
+            state_id="blocked",
+            p_finish_mc=0.0,
+            p_no_touch_mc=0.0,
+            best_bid=0.0,
+            best_ask=0.0,
+            midpoint=0.0,
+            final_label=1,
+            skip_or_block_reason=block_reason,
+        ),
+    ]
+
+    report = build_calibration_report(rows, ece_bucket_count=10)
+
+    assert report.input_row_count == 2
+    assert report.evaluated_row_count == 1
+    assert report.skipped_row_count == 1
+    expected_reason = f"blocked_{block_reason}"
+    assert report.validation_error_counts == {expected_reason: 1}
+    assert len(report.validation_errors) == 1
+    issue = report.validation_errors[0]
+    assert issue.row_index == 1
+    assert issue.state_id == "blocked"
+    assert issue.field == "skip_or_block_reason"
+    assert issue.reason == expected_reason
+    assert report.brier_score is not None
+    assert round(report.brier_score, 4) == 0.04
+
+
+def test_build_calibration_report_all_skipped_rows_has_unavailable_metrics() -> None:
+    report = build_calibration_report(
+        [
+            _row(state_id="missing-label", final_label=None),
+            _row(state_id="blocked", skip_or_block_reason="sigma_invalid"),
+        ],
+        ece_bucket_count=4,
+    )
+
+    assert report.input_row_count == 2
+    assert report.evaluated_row_count == 0
+    assert report.skipped_row_count == 2
+    assert report.report_ready is False
+    assert report.not_ready_reasons == ("no_evaluated_rows",)
+    assert report.brier_score is None
+    assert report.log_loss is None
+    assert report.expected_calibration_error is None
+    assert report.ece_buckets == ()
+    assert report.bucket_counts == {}
+    assert report.min_bucket_sample_count == 0
+    assert report.validation_error_counts == {
+        "blocked_sigma_invalid": 1,
+        "missing_label": 1,
+    }
+
+
+def test_build_calibration_report_assigns_probability_boundary_buckets() -> None:
+    report = build_calibration_report(
+        [
+            _row(
+                state_id="prob-zero",
+                p_finish_mc=0.0,
+                p_no_touch_mc=0.0,
+                best_bid=0.0,
+                best_ask=0.0,
+                midpoint=0.0,
+                final_label=0,
+            ),
+            _row(
+                state_id="prob-point-one",
+                p_finish_mc=0.1,
+                p_no_touch_mc=0.1,
+                best_bid=0.1,
+                best_ask=0.1,
+                midpoint=0.1,
+                final_label=0,
+            ),
+            _row(
+                state_id="prob-one",
+                p_finish_mc=1.0,
+                p_no_touch_mc=1.0,
+                best_bid=1.0,
+                best_ask=1.0,
+                midpoint=1.0,
+                final_label=1,
+            ),
+        ],
+        ece_bucket_count=10,
+    )
+
+    buckets = {bucket.bucket_key: bucket for bucket in report.ece_buckets}
+
+    assert tuple(buckets) == ("prob_0.00_0.10", "prob_0.10_0.20", "prob_0.90_1.00")
+    assert buckets["prob_0.00_0.10"].count == 1
+    assert buckets["prob_0.10_0.20"].count == 1
+    assert buckets["prob_0.90_1.00"].count == 1
 
 
 def test_report_serializes_to_strict_json_shape() -> None:
@@ -216,6 +324,8 @@ def test_report_serializes_to_strict_json_shape() -> None:
     payload = report.to_json_dict()
 
     assert payload["schema_version"] == "polymarket-calibration-report-v1"
+    assert payload["report_ready"] is True
+    assert payload["not_ready_reasons"] == []
     assert payload["brier_score"] == report.brier_score
     assert _keys(payload["bucket_counts"]) == sorted(report.bucket_counts)
     assert _keys(payload["validation_error_counts"]) == []

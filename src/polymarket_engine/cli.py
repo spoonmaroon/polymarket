@@ -572,7 +572,21 @@ def _run_calibration_report(args: argparse.Namespace) -> int:
     from polymarket_engine.calibration.reports import build_calibration_report
     from polymarket_engine.calibration.reports import load_calibration_jsonl
 
-    rows = load_calibration_jsonl(args.input)
+    try:
+        rows = load_calibration_jsonl(args.input)
+    except ValueError as exc:
+        payload: dict[str, object] = {"ok": False, "error": str(exc)}
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_text(
+            json.dumps(payload, allow_nan=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        print(
+            json.dumps(payload, allow_nan=False, sort_keys=True, separators=(",", ":")),
+            file=sys.stderr,
+        )
+        return 1
+
     report = build_calibration_report(rows)
     payload = report.to_json_dict()
     args.out.parent.mkdir(parents=True, exist_ok=True)

@@ -1125,11 +1125,45 @@ async def test_run_calibration_report_command_writes_output_json(
     file_payload = json.loads(out_path.read_text(encoding="utf-8"))
     assert stdout_payload == file_payload
     assert file_payload["schema_version"] == "polymarket-calibration-report-v1"
+    assert file_payload["report_ready"] is True
     assert file_payload["input_row_count"] == 2
     assert file_payload["evaluated_row_count"] == 2
     assert file_payload["skipped_row_count"] == 0
     assert round(file_payload["brier_score"], 4) == 0.04
     assert file_payload["bucket_counts"]["tte_0_60"] == 2
+
+
+@pytest.mark.anyio
+async def test_run_calibration_report_command_handles_malformed_jsonl(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    input_path = tmp_path / "data" / "research" / "calibration" / "bad.jsonl"
+    input_path.parent.mkdir(parents=True, exist_ok=True)
+    input_path.write_text("[1, 2, 3]\n", encoding="utf-8")
+    out_path = tmp_path / "reports" / "calibration-error.json"
+
+    result = await cli.run_collect_command(
+        [
+            "calibration-report",
+            "--input",
+            str(input_path),
+            "--out",
+            str(out_path),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    file_payload = json.loads(out_path.read_text(encoding="utf-8"))
+    assert result == 1
+    assert captured.out == ""
+    assert "Traceback" not in captured.err
+    stderr_payload = json.loads(captured.err)
+    assert stderr_payload == file_payload
+    assert file_payload == {
+        "error": "invalid calibration JSONL at line 1: row must be an object",
+        "ok": False,
+    }
 
 
 @pytest.mark.anyio

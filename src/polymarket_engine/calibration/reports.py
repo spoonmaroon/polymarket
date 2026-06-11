@@ -57,12 +57,14 @@ class CalibrationEceBucket:
 @dataclass(frozen=True)
 class CalibrationReport:
     schema_version: str
+    report_ready: bool
+    not_ready_reasons: tuple[str, ...]
     input_row_count: int
     evaluated_row_count: int
     skipped_row_count: int
-    brier_score: float
-    log_loss: float
-    expected_calibration_error: float
+    brier_score: float | None
+    log_loss: float | None
+    expected_calibration_error: float | None
     ece_buckets: tuple[CalibrationEceBucket, ...]
     bucket_counts: dict[str, int]
     min_bucket_sample_count: int
@@ -72,6 +74,8 @@ class CalibrationReport:
     def to_json_dict(self) -> JsonObject:
         return {
             "schema_version": self.schema_version,
+            "report_ready": self.report_ready,
+            "not_ready_reasons": list(self.not_ready_reasons),
             "input_row_count": self.input_row_count,
             "evaluated_row_count": self.evaluated_row_count,
             "skipped_row_count": self.skipped_row_count,
@@ -134,11 +138,15 @@ def build_calibration_report(
 
     bucket_counts = _slice_bucket_counts(evaluated_rows)
     ece_buckets = _ece_buckets(evaluated_rows, bucket_count=ece_bucket_count)
-    ece = sum(bucket.ece_contribution for bucket in ece_buckets)
+    report_ready = len(evaluated_rows) > 0
+    not_ready_reasons = () if report_ready else ("no_evaluated_rows",)
+    ece = sum(bucket.ece_contribution for bucket in ece_buckets) if report_ready else None
     error_counts = Counter(issue.reason for issue in validation_errors)
 
     return CalibrationReport(
         schema_version=SCHEMA_VERSION,
+        report_ready=report_ready,
+        not_ready_reasons=not_ready_reasons,
         input_row_count=len(raw_rows),
         evaluated_row_count=len(evaluated_rows),
         skipped_row_count=len(raw_rows) - len(evaluated_rows),
@@ -189,6 +197,20 @@ def _validate_row(
     probability_field: str,
 ) -> tuple[_ValidatedRow | None, tuple[CalibrationValidationError, ...]]:
     issues: list[CalibrationValidationError] = []
+    block_reason = _skip_or_block_reason(payload)
+    if block_reason is not None:
+        return (
+            None,
+            (
+                _issue(
+                    row_index,
+                    state_id,
+                    "skip_or_block_reason",
+                    f"blocked_{_key_part(block_reason.lower())}",
+                ),
+            ),
+        )
+
     probability = _probability_field(
         payload,
         probability_field,
@@ -412,15 +434,23 @@ def _string_field(payload: Mapping[str, object], field: str) -> str:
     return text if text else "unknown"
 
 
-def _brier_score(rows: list[_ValidatedRow]) -> float:
+def _skip_or_block_reason(payload: Mapping[str, object]) -> str | None:
+    value = payload.get("skip_or_block_reason")
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text if text else None
+
+
+def _brier_score(rows: list[_ValidatedRow]) -> float | None:
     if not rows:
-        return 0.0
+        return None
     return sum((row.probability - row.label) ** 2 for row in rows) / len(rows)
 
 
-def _log_loss(rows: list[_ValidatedRow]) -> float:
+def _log_loss(rows: list[_ValidatedRow]) -> float | None:
     if not rows:
-        return 0.0
+        return None
     return sum(_row_log_loss(row) for row in rows) / len(rows)
 
 
@@ -553,4 +583,3 @@ def _key_part(value: str) -> str:
 def _require_positive_int(value: int, name: str) -> None:
     if value <= 0:
         raise ValueError(f"{name} must be positive")
-
