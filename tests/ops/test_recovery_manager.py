@@ -11,6 +11,7 @@ import pytest
 
 from polymarket_engine.ops.recovery_manager import RecoveryConfig
 from polymarket_engine.ops.recovery_manager import RecoveryInputs
+from polymarket_engine.ops.recovery_manager import RecoveryState
 from polymarket_engine.ops.recovery_manager import RuntimePhase
 from polymarket_engine.ops.recovery_manager import evaluate_recovery_state
 from polymarket_engine.ops.recovery_manager import write_recovery_status
@@ -57,6 +58,9 @@ def test_recovery_state_ready_when_all_gates_pass() -> None:
 
 def test_write_recovery_status_writes_runtime_schema_atomically(tmp_path: Path) -> None:
     path = tmp_path / "live" / "recovery_status.json"
+    fixed_tmp = path.with_suffix(".json.tmp")
+    fixed_tmp.parent.mkdir(parents=True)
+    fixed_tmp.write_text("sentinel", encoding="utf-8")
     state = evaluate_recovery_state(
         healthy_inputs(startup_ts=BASE - timedelta(seconds=10)),
         RecoveryConfig(warmup_min_seconds=60),
@@ -81,7 +85,29 @@ def test_write_recovery_status_writes_runtime_schema_atomically(tmp_path: Path) 
         indent=2,
         sort_keys=True,
     ) + "\n"
-    assert not path.with_suffix(".json.tmp").exists()
+    assert fixed_tmp.read_text(encoding="utf-8") == "sentinel"
+    assert not list(path.parent.glob(".recovery_status.*.tmp"))
+
+
+def test_write_recovery_status_rejects_non_strict_json_without_temp_leftover(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "live" / "recovery_status.json"
+    state = RecoveryState(
+        runtime_phase=RuntimePhase.WARMING,
+        ready=False,
+        reasons=("warmup_active",),
+        boot_id="boot-1",
+        uptime_seconds=nan,
+        consecutive_healthy_cycles=0,
+        recovery_attempts=0,
+    )
+
+    with pytest.raises(ValueError):
+        write_recovery_status(path, state, generated_at=BASE)
+
+    assert not path.exists()
+    assert not list(path.parent.glob("*.tmp"))
 
 
 def test_recovery_state_warming_during_startup_warmup() -> None:

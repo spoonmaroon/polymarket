@@ -4,6 +4,7 @@ import json
 import subprocess
 import urllib.error
 import urllib.request
+import uuid
 from collections.abc import Sequence
 from dataclasses import asdict
 from dataclasses import dataclass
@@ -52,7 +53,7 @@ class RuntimeKeeperConfig:
     poll_interval_seconds: float = 2.0
     loop_interval_seconds: float = 30.0
     recovery_status_path: Path | None = None
-    recovery_boot_id: str = "runtime-keeper"
+    recovery_boot_id: str = field(default_factory=lambda: f"runtime-keeper-{uuid.uuid4().hex}")
     recovery_startup_ts: datetime | None = None
     recovery_config: RecoveryConfig = field(default_factory=RecoveryConfig)
 
@@ -114,7 +115,7 @@ class RuntimeKeeper:
         runner = self.runner or SubprocessRunner()
         client = self.http_client or UrlHttpClient()
 
-        docker_info = runner.run(("docker", "info"), timeout_seconds=10.0)
+        docker_info = run_command_safely(runner, ("docker", "info"), timeout_seconds=10.0)
         if not docker_info.ok:
             checks.append(
                 KeeperCheck(
@@ -132,7 +133,11 @@ class RuntimeKeeper:
 
         for service in self.config.required_services:
             up_command = compose_command(self.config, "up", "-d", service)
-            result = runner.run(up_command, timeout_seconds=self.config.once_timeout_seconds)
+            result = run_command_safely(
+                runner,
+                up_command,
+                timeout_seconds=self.config.once_timeout_seconds,
+            )
             actions.append(f"compose up {service}")
             if not result.ok:
                 checks.append(
@@ -144,7 +149,8 @@ class RuntimeKeeper:
                 )
 
         for container in self.config.optional_containers:
-            start_result = runner.run(
+            start_result = run_command_safely(
+                runner,
                 ("docker", "start", container),
                 timeout_seconds=self.config.once_timeout_seconds,
             )
@@ -157,7 +163,8 @@ class RuntimeKeeper:
             checks.append(
                 evaluate_required_service(
                     service=service,
-                    result=runner.run(
+                    result=run_command_safely(
+                        runner,
                         (*compose_command(self.config, "ps", service, "--services", "--status", "running"),
                          ),
                         timeout_seconds=self.config.poll_interval_seconds,
@@ -169,7 +176,8 @@ class RuntimeKeeper:
             checks.append(
                 evaluate_optional_container(
                     container=container,
-                    result=runner.run(
+                    result=run_command_safely(
+                        runner,
                         (
                             "docker",
                             "ps",
@@ -201,13 +209,15 @@ class RuntimeKeeper:
     def _http_checks(self, client: HttpClient) -> tuple[KeeperCheck, ...]:
         base = self.config.api_base_url.rstrip("/")
         return evaluate_http_checks(
-            health=client.get(f"{base}/health", timeout_seconds=5.0),
-            ui=client.get(f"{base}/", timeout_seconds=5.0),
-            live=client.get(
+            health=get_http_safely(client, f"{base}/health", timeout_seconds=5.0),
+            ui=get_http_safely(client, f"{base}/", timeout_seconds=5.0),
+            live=get_http_safely(
+                client,
                 f"{base}/api/runtime/live?limit=8",
                 timeout_seconds=8.0,
             ),
-            probabilities=client.get(
+            probabilities=get_http_safely(
+                client,
                 f"{base}/api/runtime/probabilities?limit=8",
                 timeout_seconds=8.0,
             ),
@@ -231,13 +241,17 @@ class RuntimeKeeper:
             raise ValueError("recovery_status_path must be configured")
         if recovery_startup_ts is None:
             raise ValueError("recovery_startup_ts must be configured")
+        previous_healthy_cycles = read_previous_consecutive_healthy_cycles(
+            recovery_status_path,
+            boot_id=self.config.recovery_boot_id,
+        )
         state = evaluate_recovery_state(
             recovery_inputs_from_checks(
                 checks,
                 boot_id=self.config.recovery_boot_id,
                 startup_ts=recovery_startup_ts,
                 now=generated_at,
-                required_healthy_cycles=self.config.recovery_config.required_healthy_cycles,
+                previous_consecutive_healthy_cycles=previous_healthy_cycles,
             ),
             self.config.recovery_config,
         )
@@ -284,6 +298,34 @@ class UrlHttpClient:
             )
         except OSError as exc:
             return HttpResult(status_code=0, json_payload={}, text=f"{type(exc).__name__}: {exc}")
+
+
+def run_command_safely(
+    runner: CommandRunner,
+    args: tuple[str, ...],
+    *,
+    timeout_seconds: float,
+) -> CommandResult:
+    try:
+        return runner.run(args, timeout_seconds=timeout_seconds)
+    except Exception as exc:
+        return CommandResult(args=args, returncode=1, stdout="", stderr=_exception_detail(exc))
+
+
+def get_http_safely(
+    client: HttpClient,
+    url: str,
+    *,
+    timeout_seconds: float,
+) -> HttpResult:
+    try:
+        return client.get(url, timeout_seconds=timeout_seconds)
+    except Exception as exc:
+        return HttpResult(status_code=0, json_payload={}, text=_exception_detail(exc))
+
+
+def _exception_detail(exc: Exception) -> str:
+    return f"{type(exc).__name__}: {exc}"
 
 
 def _parse_json_payload(body: str, content_type: str) -> dict[str, Any]:
@@ -399,13 +441,16 @@ def recovery_inputs_from_checks(
     boot_id: str,
     startup_ts: datetime,
     now: datetime,
-    required_healthy_cycles: int,
+    previous_consecutive_healthy_cycles: int,
 ) -> RecoveryInputs:
     check_by_name = {check.name: check for check in checks}
     failed_checks = tuple(check for check in checks if not check.ok)
     all_checks_ok = all(check.ok for check in checks)
     live_ok = _check_ok(check_by_name, "api:/api/runtime/live")
     probabilities_ok = _check_ok(check_by_name, "api:/api/runtime/probabilities")
+    consecutive_healthy_cycles = (
+        previous_consecutive_healthy_cycles + 1 if all_checks_ok else 0
+    )
 
     return RecoveryInputs(
         boot_id=boot_id,
@@ -432,19 +477,30 @@ def recovery_inputs_from_checks(
         recent_api_blocked=_failed_check_mentions(
             failed_checks,
             "api_blocked",
-            "blocked",
-            "rate limited",
             "status=403",
             "status=429",
         ),
         recent_decode_error=_failed_check_mentions(
             failed_checks,
             "decode",
-            "json",
+            "json parse failed",
         ),
-        consecutive_healthy_cycles=required_healthy_cycles if all_checks_ok else 0,
+        consecutive_healthy_cycles=consecutive_healthy_cycles,
         recovery_attempts=0,
     )
+
+
+def read_previous_consecutive_healthy_cycles(path: Path, *, boot_id: str) -> int:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return 0
+    if not isinstance(payload, dict) or payload.get("boot_id") != boot_id:
+        return 0
+    value = payload.get("consecutive_healthy_cycles")
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 0
+    return max(0, value)
 
 
 def _check_ok(check_by_name: dict[str, KeeperCheck], name: str) -> bool:

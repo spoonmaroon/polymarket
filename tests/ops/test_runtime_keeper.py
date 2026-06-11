@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -12,12 +13,14 @@ from polymarket_engine.ops.recovery_manager import RecoveryConfig
 from polymarket_engine.ops.runtime_keeper import (
     CommandResult,
     HttpResult,
+    KeeperCheck,
     RuntimeKeeper,
     RuntimeKeeperConfig,
     compose_command,
     evaluate_http_checks,
     evaluate_optional_container,
     evaluate_required_service,
+    recovery_inputs_from_checks,
 )
 
 
@@ -38,6 +41,15 @@ def test_runtime_keeper_defaults_match_thepc_layout() -> None:
     assert config.recovery_status_path == Path(
         "/home/ender/polymarket-data/live/recovery_status.json"
     )
+
+
+def test_default_recovery_boot_ids_are_distinguishable() -> None:
+    first = RuntimeKeeperConfig()
+    second = RuntimeKeeperConfig()
+    explicit = RuntimeKeeperConfig(recovery_boot_id="boot-1")
+
+    assert first.recovery_boot_id != second.recovery_boot_id
+    assert explicit.recovery_boot_id == "boot-1"
 
 
 def test_compose_command_uses_env_file_and_compose_file() -> None:
@@ -197,12 +209,19 @@ class FakeHttpClient:
         raise AssertionError(url)
 
 
-def ready_recovery_config(tmp_path: Path) -> RuntimeKeeperConfig:
+def ready_recovery_config(
+    tmp_path: Path,
+    *,
+    required_healthy_cycles: int = 0,
+) -> RuntimeKeeperConfig:
     return RuntimeKeeperConfig(
         repo=tmp_path / "repo",
         data_dir=tmp_path / "data",
         recovery_boot_id="boot-1",
-        recovery_config=RecoveryConfig(warmup_min_seconds=0, required_healthy_cycles=0),
+        recovery_config=RecoveryConfig(
+            warmup_min_seconds=0,
+            required_healthy_cycles=required_healthy_cycles,
+        ),
         recovery_startup_ts=BASE - timedelta(minutes=5),
     )
 
@@ -244,6 +263,52 @@ def test_runtime_keeper_writes_ready_recovery_status_for_healthy_run(tmp_path: P
     assert payload["boot_id"] == "boot-1"
 
 
+def test_runtime_keeper_requires_two_consecutive_healthy_cycles(tmp_path: Path) -> None:
+    config = ready_recovery_config(tmp_path, required_healthy_cycles=2)
+    keeper = RuntimeKeeper(config=config, runner=FakeRunner(), http_client=FakeHttpClient())
+
+    keeper.run_once()
+    first = read_recovery_status(config)
+
+    assert first["consecutive_healthy_cycles"] == 1
+    assert first["runtime_phase"] == "WARMING"
+    assert first["ready"] is False
+    assert "insufficient_healthy_cycles" in first["reasons"]
+
+    keeper.run_once()
+    second = read_recovery_status(config)
+
+    assert second["consecutive_healthy_cycles"] == 2
+    assert second["runtime_phase"] == "READY"
+    assert second["ready"] is True
+    assert second["reasons"] == []
+
+
+def test_runtime_keeper_failed_run_resets_consecutive_healthy_cycles(
+    tmp_path: Path,
+) -> None:
+    class FailingLiveHttpClient(FakeHttpClient):
+        def get(self, url: str, *, timeout_seconds: float) -> HttpResult:
+            if url.endswith("/api/runtime/live?limit=8"):
+                return HttpResult(200, {"ok": False, "monitor": {"orderbooks": []}}, "")
+            return super().get(url, timeout_seconds=timeout_seconds)
+
+    config = ready_recovery_config(tmp_path, required_healthy_cycles=2)
+    RuntimeKeeper(config=config, runner=FakeRunner(), http_client=FakeHttpClient()).run_once()
+    assert read_recovery_status(config)["consecutive_healthy_cycles"] == 1
+
+    RuntimeKeeper(
+        config=config,
+        runner=FakeRunner(),
+        http_client=FailingLiveHttpClient(),
+    ).run_once()
+    recovery = read_recovery_status(config)
+
+    assert recovery["consecutive_healthy_cycles"] == 0
+    assert recovery["ready"] is False
+    assert "orderbook_stale" in recovery["reasons"]
+
+
 def test_runtime_keeper_reports_docker_unavailable(tmp_path: Path) -> None:
     class BrokenDockerRunner(FakeRunner):
         def run(self, args: tuple[str, ...], *, timeout_seconds: float) -> CommandResult:
@@ -271,6 +336,58 @@ def test_runtime_keeper_reports_docker_unavailable(tmp_path: Path) -> None:
     assert recovery["runtime_phase"] == "DEGRADED"
     assert "status_unhealthy" in recovery["reasons"]
     assert "api_unhealthy" in recovery["reasons"]
+
+
+def test_runtime_keeper_runner_exception_still_writes_status_files(
+    tmp_path: Path,
+) -> None:
+    class TimeoutRunner(FakeRunner):
+        def run(self, args: tuple[str, ...], *, timeout_seconds: float) -> CommandResult:
+            raise subprocess.TimeoutExpired(args, timeout_seconds)
+
+    config = ready_recovery_config(tmp_path)
+    keeper = RuntimeKeeper(
+        config=config,
+        runner=TimeoutRunner(),
+        http_client=FakeHttpClient(),
+    )
+
+    payload = keeper.run_once()
+
+    assert payload["ok"] is False
+    assert payload["checks"][0]["name"] == "docker:info"
+    assert "TimeoutExpired" in payload["checks"][0]["detail"]
+    assert config.report_path.is_file()
+    recovery = read_recovery_status(config)
+    assert recovery["ready"] is False
+    assert "status_unhealthy" in recovery["reasons"]
+
+
+def test_runtime_keeper_http_exception_still_writes_status_files(tmp_path: Path) -> None:
+    class ExplodingHttpClient(FakeHttpClient):
+        def get(self, url: str, *, timeout_seconds: float) -> HttpResult:
+            if url.endswith("/api/runtime/probabilities?limit=8"):
+                raise RuntimeError("probability client exploded")
+            return super().get(url, timeout_seconds=timeout_seconds)
+
+    config = ready_recovery_config(tmp_path)
+    keeper = RuntimeKeeper(
+        config=config,
+        runner=FakeRunner(),
+        http_client=ExplodingHttpClient(),
+    )
+
+    payload = keeper.run_once()
+
+    assert payload["ok"] is False
+    probability_check = next(
+        check for check in payload["checks"] if check["name"] == "api:/api/runtime/probabilities"
+    )
+    assert "RuntimeError" in probability_check["detail"]
+    assert config.report_path.is_file()
+    recovery = read_recovery_status(config)
+    assert recovery["ready"] is False
+    assert "probability_inputs_stale" in recovery["reasons"]
 
 
 @pytest.mark.parametrize(
@@ -304,3 +421,66 @@ def test_runtime_keeper_maps_runtime_failures_to_non_ready_recovery_status(
     assert recovery["ready"] is False
     assert recovery["runtime_phase"] == "DEGRADED"
     assert expected_reason in recovery["reasons"]
+
+
+def recovery_inputs_for_failed_detail(
+    *,
+    check_name: str,
+    detail: str,
+) -> Any:
+    return recovery_inputs_from_checks(
+        (
+            KeeperCheck("api:/health", True, "ok"),
+            KeeperCheck("api:/api/runtime/live", True, "live rows present"),
+            KeeperCheck(check_name, False, detail),
+        ),
+        boot_id="boot-1",
+        startup_ts=BASE - timedelta(minutes=5),
+        now=BASE,
+        previous_consecutive_healthy_cycles=1,
+    )
+
+
+def test_json_content_type_alone_does_not_set_decode_error_recent() -> None:
+    inputs = recovery_inputs_for_failed_detail(
+        check_name="api:/api/runtime/probabilities",
+        detail="status=500 content_type=application/json body_prefix=server error",
+    )
+
+    assert inputs.recent_decode_error is False
+
+
+@pytest.mark.parametrize("detail", ["decode error", "JSON parse failed"])
+def test_explicit_decode_detail_sets_decode_error_recent(detail: str) -> None:
+    inputs = recovery_inputs_for_failed_detail(
+        check_name="api:/api/runtime/probabilities",
+        detail=detail,
+    )
+
+    assert inputs.recent_decode_error is True
+
+
+def test_generic_blocked_wording_does_not_set_api_blocked_recent() -> None:
+    inputs = recovery_inputs_for_failed_detail(
+        check_name="api:/api/runtime/probabilities",
+        detail="state=BLOCKED body_prefix=probability offload blocked",
+    )
+
+    assert inputs.recent_api_blocked is False
+
+
+@pytest.mark.parametrize(
+    "detail",
+    [
+        "API_BLOCKED upstream throttle",
+        "status=403 content_type=text/plain body_prefix=forbidden",
+        "status=429 content_type=text/plain body_prefix=rate limited",
+    ],
+)
+def test_explicit_api_blocked_details_set_api_blocked_recent(detail: str) -> None:
+    inputs = recovery_inputs_for_failed_detail(
+        check_name="api:/health",
+        detail=detail,
+    )
+
+    assert inputs.recent_api_blocked is True

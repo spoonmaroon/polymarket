@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import StrEnum
@@ -115,10 +116,15 @@ def write_recovery_status(
         "consecutive_healthy_cycles": state.consecutive_healthy_cycles,
         "recovery_attempts": state.recovery_attempts,
     }
+    status_json = json.dumps(payload, allow_nan=False, indent=2, sort_keys=True) + "\n"
     path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_suffix(".json.tmp")
-    temp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    temp.replace(path)
+    temp = path.parent / f".{path.name}.{uuid.uuid4().hex}.tmp"
+    try:
+        temp.write_text(status_json, encoding="utf-8")
+        temp.replace(path)
+    except Exception:
+        temp.unlink(missing_ok=True)
+        raise
 
 
 def _validate_nonnegative_int(field: str, value: int) -> None:
