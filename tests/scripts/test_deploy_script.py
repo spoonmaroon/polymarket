@@ -301,6 +301,22 @@ def test_thepc_spoon_artifact_sync_installer_is_role_safe() -> None:
     assert "artifact sync skipped" in script
 
 
+def test_spoon_collector_watchdog_restarts_unhealthy_collector_only() -> None:
+    script = (ROOT / "scripts" / "install_spoon_collector_watchdog.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'REPO="${POLYMARKET_REPO:-/home/spoon/polymarket-main}"' in script
+    assert "polymarket-spoon-collector-watchdog.service" in script
+    assert "docker inspect" in script
+    assert "polymarket-rust-collector-collector-1" in script
+    assert 'docker compose --env-file "\\$ENV_FILE"' in script
+    assert 'restart "\\$SERVICE_NAME"' in script
+    assert "UNHEALTHY_GRACE_CYCLES" in script
+    assert "normalizer" not in script
+    assert "systemctl --user enable --now polymarket-spoon-collector-watchdog.service" in script
+
+
 def test_compose_and_env_support_prebuilt_image_overrides() -> None:
     compose = (ROOT / "deploy" / "collector" / "docker-compose.yml").read_text(
         encoding="utf-8"
