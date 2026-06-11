@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from math import inf
 from math import nan
+from typing import Any
 
 import pytest
 
@@ -15,8 +16,8 @@ from polymarket_engine.ops.recovery_manager import evaluate_recovery_state
 BASE = datetime(2026, 6, 11, 12, 0, tzinfo=UTC)
 
 
-def healthy_inputs(**overrides: object) -> RecoveryInputs:
-    values = {
+def healthy_inputs(**overrides: Any) -> RecoveryInputs:
+    values: dict[str, Any] = {
         "boot_id": "boot-1",
         "startup_ts": BASE - timedelta(minutes=10),
         "now": BASE,
@@ -153,7 +154,8 @@ def test_recovery_attempts_exceeded_uses_greater_than_boundary() -> None:
 )
 def test_recovery_config_rejects_invalid_values(field: str, value: object) -> None:
     with pytest.raises(ValueError, match=field):
-        RecoveryConfig(**{field: value})
+        kwargs: dict[str, Any] = {field: value}
+        RecoveryConfig(**kwargs)
 
 
 @pytest.mark.parametrize(
