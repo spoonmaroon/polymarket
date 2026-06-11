@@ -172,6 +172,7 @@ def _offload_decision_from_inputs(
     inputs: Sequence[ProbabilityRuntimeInput],
     budget: ProbabilityWorkerBudget,
     generated_at: datetime,
+    recovery_status_path: Path,
 ) -> dict[str, Any]:
     if not inputs:
         return _blocked_offload_decision(
@@ -181,11 +182,12 @@ def _offload_decision_from_inputs(
         )
 
     input_block_reasons = _input_block_reasons(inputs)
-    runtime_phase = RuntimePhase.READY if not input_block_reasons else RuntimePhase.WARMING
+    recovery_status = _read_recovery_status(recovery_status_path)
+    runtime_phase = recovery_status.runtime_phase
     gate_inputs = OffloadGateInputs(
         runtime_phase=runtime_phase,
-        uptime_seconds=OffloadGateConfig().normal_after_seconds,
-        consecutive_healthy_cycles=OffloadGateConfig().required_healthy_cycles,
+        uptime_seconds=recovery_status.uptime_seconds,
+        consecutive_healthy_cycles=recovery_status.consecutive_healthy_cycles,
         price_age_ms=max(
             runtime_input.probability_input.source_age_ms for runtime_input in inputs
         ),
@@ -217,7 +219,9 @@ def _offload_decision_from_inputs(
         min_total_paths=budget.min_total_paths,
     )
     decision = evaluate_offload_readiness(gate_inputs, OffloadGateConfig())
-    reason_codes = _dedupe_reasons((*decision.reason_codes, *input_block_reasons))
+    reason_codes = _dedupe_reasons(
+        (*decision.reason_codes, *recovery_status.reasons, *input_block_reasons)
+    )
     if reason_codes:
         worker_mode = (
             "nowcast_only"
@@ -230,6 +234,72 @@ def _offload_decision_from_inputs(
             generated_at=generated_at,
         )
     return _offload_decision_payload(decision, generated_at=generated_at)
+
+
+@dataclass(frozen=True)
+class _RecoveryStatus:
+    runtime_phase: RuntimePhase
+    uptime_seconds: float
+    consecutive_healthy_cycles: int
+    reasons: tuple[str, ...]
+
+
+def _read_recovery_status(path: Path) -> _RecoveryStatus:
+    try:
+        raw_payload = path.read_text(encoding="utf-8")
+    except (FileNotFoundError, OSError):
+        return _missing_recovery_status()
+    try:
+        payload = json.loads(raw_payload)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return _invalid_recovery_status()
+    if not isinstance(payload, Mapping):
+        return _invalid_recovery_status()
+    runtime_phase = _recovery_phase(payload.get("runtime_phase"))
+    try:
+        reasons = _string_list(payload.get("reasons", []), "reasons")
+        uptime_seconds = _nonnegative_float(
+            payload.get("uptime_seconds", 0.0), "uptime_seconds"
+        )
+        consecutive_healthy_cycles = _nonnegative_int(
+            payload.get("consecutive_healthy_cycles", 0),
+            "consecutive_healthy_cycles",
+        )
+    except (TypeError, ValueError):
+        return _invalid_recovery_status()
+    if payload.get("ready") is not True and "runtime_not_ready" not in reasons:
+        reasons.append("runtime_not_ready")
+    return _RecoveryStatus(
+        runtime_phase=runtime_phase,
+        uptime_seconds=uptime_seconds,
+        consecutive_healthy_cycles=consecutive_healthy_cycles,
+        reasons=tuple(reasons),
+    )
+
+
+def _missing_recovery_status() -> _RecoveryStatus:
+    return _RecoveryStatus(
+        runtime_phase=RuntimePhase.WARMING,
+        uptime_seconds=0.0,
+        consecutive_healthy_cycles=0,
+        reasons=("recovery_status_missing",),
+    )
+
+
+def _invalid_recovery_status() -> _RecoveryStatus:
+    return _RecoveryStatus(
+        runtime_phase=RuntimePhase.WARMING,
+        uptime_seconds=0.0,
+        consecutive_healthy_cycles=0,
+        reasons=("recovery_status_invalid",),
+    )
+
+
+def _recovery_phase(value: object) -> RuntimePhase:
+    try:
+        return RuntimePhase(str(value))
+    except ValueError:
+        return RuntimePhase.WARMING
 
 
 def _runtime_input_age_ms(
@@ -337,6 +407,7 @@ def run_cuda_probability_worker_cycle(
     probability_status_path: Path,
     probability_inputs_path: Path | None = None,
     probability_fragments_path: Path | None = None,
+    recovery_status_path: Path | None = None,
     offload_status_path: Path | None = None,
     limit: int = DEFAULT_GPU_PROBABILITY_LIMIT,
     valid_seconds: int = int(DEFAULT_PROBABILITY_GRID_VALID_SECONDS),
@@ -360,6 +431,9 @@ def run_cuda_probability_worker_cycle(
     mc_input_skipped = 0
     path_budget_per_input = 0
     previous_rows = _read_status_rows(probability_status_path)
+    recovery_status_path = recovery_status_path or probability_status_path.with_name(
+        "recovery_status.json"
+    )
     offload_status_path = offload_status_path or probability_status_path.with_name(
         "offload_status.json"
     )
@@ -458,6 +532,7 @@ def run_cuda_probability_worker_cycle(
             inputs=inputs,
             budget=budget,
             generated_at=generated_at,
+            recovery_status_path=recovery_status_path,
         )
     assert offload_decision is not None
     _write_offload_status(offload_status_path, offload_decision)
@@ -827,6 +902,7 @@ def run_cuda_probability_worker_loop(
     probability_status_path: Path,
     probability_inputs_path: Path | None = None,
     probability_fragments_path: Path | None = None,
+    recovery_status_path: Path | None = None,
     offload_status_path: Path | None = None,
     interval_seconds: float = DEFAULT_GPU_PROBABILITY_INTERVAL_SECONDS,
     limit: int = DEFAULT_GPU_PROBABILITY_LIMIT,
@@ -859,6 +935,7 @@ def run_cuda_probability_worker_loop(
                 probability_status_path=probability_status_path,
                 probability_inputs_path=probability_inputs_path,
                 probability_fragments_path=probability_fragments_path,
+                recovery_status_path=recovery_status_path,
                 offload_status_path=offload_status_path,
                 limit=limit,
                 valid_seconds=valid_seconds,
@@ -1873,6 +1950,13 @@ def _string_list(value: object, field_name: str) -> list[str]:
 
 def _nonnegative_int(value: object, field_name: str) -> int:
     number = _int(value, field_name)
+    if number < 0:
+        raise ValueError(f"{field_name} must be nonnegative")
+    return number
+
+
+def _nonnegative_float(value: object, field_name: str) -> float:
+    number = _float(value, field_name)
     if number < 0:
         raise ValueError(f"{field_name} must be nonnegative")
     return number

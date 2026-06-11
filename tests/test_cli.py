@@ -297,6 +297,7 @@ def test_parse_run_cuda_probability_worker_defaults() -> None:
     assert args.command == "run-cuda-probability-worker"
     assert args.duckdb_path == Path("data/db/polymarket.duckdb")
     assert args.probability_status_path == Path("data/live/probabilities.json")
+    assert args.recovery_status_path == Path("data/live/recovery_status.json")
     assert args.offload_status_path == Path("data/live/offload_status.json")
     assert args.probability_inputs_path == Path("data/live/probability_inputs.json")
     assert args.probability_fragments_path == Path("data/live/probability_fragments.json")
@@ -344,6 +345,20 @@ def test_parse_run_cuda_probability_worker_offload_status_path_arg() -> None:
     )
 
     assert args.offload_status_path == Path("tmp/offload_status.json")
+
+
+def test_parse_run_cuda_probability_worker_recovery_status_path_arg() -> None:
+    args = parse_args(
+        [
+            "run-cuda-probability-worker",
+            "--duckdb-path",
+            "data/db/polymarket.duckdb",
+            "--recovery-status-path",
+            "tmp/recovery_status.json",
+        ]
+    )
+
+    assert args.recovery_status_path == Path("tmp/recovery_status.json")
 
 
 def test_run_rust_normalizer_sidecar_defaults_to_quarter_second_cadence() -> None:

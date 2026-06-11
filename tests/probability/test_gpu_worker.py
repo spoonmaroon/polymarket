@@ -22,6 +22,21 @@ from polymarket_engine.probability.runtime_inputs import ProbabilityRuntimeInput
 from polymarket_engine.probability.schema import ProbabilityInput, ProbabilityOutput
 
 
+def _write_ready_recovery_status(path: Path) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "runtime_phase": "READY",
+                "ready": True,
+                "reasons": [],
+                "uptime_seconds": 300.0,
+                "consecutive_healthy_cycles": 3,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 def test_event_payload_includes_simulation_preview_for_mc_rows() -> None:
     asof_ts = datetime(2026, 6, 6, 16, 0, tzinfo=UTC)
     runtime_input = ProbabilityRuntimeInput(
@@ -124,6 +139,7 @@ def test_worker_publishes_nowcast_rows_for_new_contracts_before_mc_finishes(
     probability_status_path = tmp_path / "probabilities.json"
     probability_inputs_path = tmp_path / "probability_inputs.json"
     probability_event_path = tmp_path / "probability-events.jsonl"
+    _write_ready_recovery_status(probability_status_path.with_name("recovery_status.json"))
 
     def input_row(state_id: str, side: str, start_offset_minutes: int) -> dict[str, object]:
         probability_input = ProbabilityInput(
@@ -270,12 +286,94 @@ def test_worker_blocks_expensive_mc_when_offload_gate_blocks(
 
     assert payload["state"] == "OFFLOAD_BLOCKED"
     assert payload["offload"]["offload_allowed"] is False
-    assert payload["offload"]["reason_codes"] == ["runtime_not_ready"]
+    assert "runtime_not_ready" in payload["offload"]["reason_codes"]
+    assert "recovery_status_missing" in payload["offload"]["reason_codes"]
     assert payload["offload"]["recommended_worker_mode"] == "nowcast_only"
     assert payload["offload"]["recommended_max_total_paths"] == 0
     assert payload["rows"][0]["probability_kind"] == "NOWCAST"
     persisted_offload = json.loads(offload_status_path.read_text(encoding="utf-8"))
     assert persisted_offload == payload["offload"]
+
+
+def test_worker_blocks_expensive_mc_until_recovery_is_ready(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asof_ts = datetime.now(UTC)
+    probability_status_path = tmp_path / "probabilities.json"
+    recovery_status_path = tmp_path / "recovery_status.json"
+    probability_inputs_path = tmp_path / "probability_inputs.json"
+
+    probability_inputs_path.write_text(
+        json.dumps(
+            {
+                "schema_version": PROBABILITY_INPUTS_SCHEMA_VERSION,
+                "generated_at": asof_ts.isoformat(),
+                "rows": [
+                    {
+                        "contract": "BTC 5m UP",
+                        "contract_id": "btc-up",
+                        "market_slug": "btc-updown-5m",
+                        "start_ts": asof_ts.isoformat(),
+                        "expiry_ts": (asof_ts + timedelta(minutes=5)).isoformat(),
+                        "flags": ["OK"],
+                        "probability_input": ProbabilityInput(
+                            state_id="state-btc-up",
+                            asof_ts=asof_ts,
+                            asset="BTC",
+                            side="UP",
+                            comparison_operator=">=",
+                            seconds_left=300.0,
+                            settlement_price=70_100.0,
+                            threshold=70_000.0,
+                            sigma_tau=0.012,
+                            executable_price=0.52,
+                            source_age_ms=100,
+                            book_age_ms=100,
+                            z_path=0.12,
+                        ).to_json_dict(),
+                        "volatility_regime": "normal",
+                    }
+                ],
+                "skipped": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    recovery_status_path.write_text(
+        json.dumps(
+            {
+                "runtime_phase": "WARMING",
+                "ready": False,
+                "reasons": ["warmup_active"],
+                "uptime_seconds": 30.0,
+                "consecutive_healthy_cycles": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fail_if_mc_runs(*_: object, **__: object) -> ProbabilityOutput:
+        raise AssertionError("MC should be blocked while recovery is warming")
+
+    monkeypatch.setattr(
+        "polymarket_engine.probability.gpu_worker.run_four_generator_ensemble",
+        fail_if_mc_runs,
+    )
+
+    payload = run_cuda_probability_worker_cycle(
+        duckdb_path=tmp_path / "unused.duckdb",
+        probability_status_path=probability_status_path,
+        recovery_status_path=recovery_status_path,
+        probability_inputs_path=probability_inputs_path,
+        budget=ProbabilityWorkerBudget(max_total_paths=80_000),
+    )
+
+    assert payload["state"] == "OFFLOAD_BLOCKED"
+    assert payload["offload"]["offload_allowed"] is False
+    assert "runtime_not_ready" in payload["offload"]["reason_codes"]
+    assert "warmup_active" in payload["offload"]["reason_codes"]
+    assert payload["rows"][0]["probability_kind"] == "NOWCAST"
 
 
 def test_snapshot_adapter_preserves_runtime_safety_fields(tmp_path: Path) -> None:
@@ -349,6 +447,7 @@ def test_worker_preserves_blocked_threshold_rows_without_running_mc(
     probability_status_path = tmp_path / "probabilities.json"
     probability_inputs_path = tmp_path / "hot_probability_inputs.json"
     probability_event_path = tmp_path / "probability-events.jsonl"
+    _write_ready_recovery_status(probability_status_path.with_name("recovery_status.json"))
 
     def input_row(
         *,
@@ -754,6 +853,7 @@ def test_worker_writes_ensemble_v1_rows_and_events(
     probability_status_path = tmp_path / "probabilities.json"
     probability_inputs_path = tmp_path / "probability_inputs.json"
     probability_event_path = tmp_path / "probability-events.jsonl"
+    _write_ready_recovery_status(probability_status_path.with_name("recovery_status.json"))
     probability_input = ProbabilityInput(
         state_id="state-btc-up",
         asof_ts=asof_ts,
@@ -915,6 +1015,7 @@ def test_worker_passes_asof_safe_fragments_into_ensemble(
     probability_status_path = tmp_path / "probabilities.json"
     probability_inputs_path = tmp_path / "probability_inputs.json"
     probability_fragments_path = tmp_path / "probability_fragments.json"
+    _write_ready_recovery_status(probability_status_path.with_name("recovery_status.json"))
     probability_input = ProbabilityInput(
         state_id="state-btc-up",
         asof_ts=asof_ts,

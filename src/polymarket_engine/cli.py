@@ -114,6 +114,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=Path("data/live/probabilities.json"),
     )
     cuda_probability_worker.add_argument(
+        "--recovery-status-path",
+        type=Path,
+        default=Path("data/live/recovery_status.json"),
+    )
+    cuda_probability_worker.add_argument(
         "--offload-status-path",
         type=Path,
         default=Path("data/live/offload_status.json"),
@@ -419,6 +424,7 @@ def _run_cuda_probability_worker(args: argparse.Namespace) -> int:
         payload = run_cuda_probability_worker_cycle(
             duckdb_path=args.duckdb_path,
             probability_status_path=args.probability_status_path,
+            recovery_status_path=args.recovery_status_path,
             offload_status_path=args.offload_status_path,
             probability_inputs_path=args.probability_inputs_path,
             probability_fragments_path=args.probability_fragments_path,
@@ -433,6 +439,7 @@ def _run_cuda_probability_worker(args: argparse.Namespace) -> int:
     run_cuda_probability_worker_loop(
         duckdb_path=args.duckdb_path,
         probability_status_path=args.probability_status_path,
+        recovery_status_path=args.recovery_status_path,
         offload_status_path=args.offload_status_path,
         probability_inputs_path=args.probability_inputs_path,
         probability_fragments_path=args.probability_fragments_path,
