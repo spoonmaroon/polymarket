@@ -9,6 +9,21 @@ from polymarket_engine.ops.recovery_manager import RuntimePhase
 
 WorkerMode = Literal["disabled", "nowcast_only", "min_mc", "normal_mc", "gpu_mc"]
 
+_NOWCAST_SAFE_PHASES = {RuntimePhase.WARMING, RuntimePhase.RECOVERING}
+_HARD_OR_DATA_INTEGRITY_BLOCKERS = {
+    "sigma_invalid",
+    "k_unstable",
+    "duckdb_unhealthy",
+    "price_stale",
+    "orderbook_stale",
+    "probability_inputs_stale",
+    "volatility_stale",
+    "target_stale",
+    "sigma_stale",
+    "api_blocked_recent",
+    "decode_error_recent",
+}
+
 
 @dataclass(frozen=True)
 class OffloadGateConfig:
@@ -119,11 +134,15 @@ class OffloadDecision:
 
 
 def _validate_nonnegative_int(field: str, value: int) -> None:
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ValueError(f"{field} must be an int")
     if not isfinite(value) or value < 0:
         raise ValueError(f"{field} must be finite and >= 0")
 
 
 def _validate_positive_int(field: str, value: int) -> None:
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ValueError(f"{field} must be an int")
     if not isfinite(value) or value <= 0:
         raise ValueError(f"{field} must be finite and > 0")
 
@@ -144,8 +163,14 @@ def _validate_optional_nonnegative_float(field: str, value: float | None) -> Non
 
 
 def _validate_nonempty_string(field: str, value: str) -> None:
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be a string")
     if not value.strip():
         raise ValueError(f"{field} must be non-empty")
+
+
+def _normalized_status(value: str) -> str:
+    return value.strip().upper()
 
 
 def evaluate_offload_readiness(
@@ -176,13 +201,13 @@ def evaluate_offload_readiness(
         reasons.append("sigma_stale")
     if not inputs.k_stable:
         reasons.append("k_unstable")
-    if inputs.api_status != "OK":
+    if _normalized_status(inputs.api_status) != "OK":
         reasons.append("api_unhealthy")
-    if inputs.normalized_health_status != "OK":
+    if _normalized_status(inputs.normalized_health_status) != "OK":
         reasons.append("normalized_health_unhealthy")
-    if inputs.duckdb_status != "OK":
+    if _normalized_status(inputs.duckdb_status) != "OK":
         reasons.append("duckdb_unhealthy")
-    if inputs.websocket_status not in {"OK", "CONNECTED"}:
+    if _normalized_status(inputs.websocket_status) not in {"OK", "CONNECTED"}:
         reasons.append("websocket_unhealthy")
     if inputs.recent_api_blocked:
         reasons.append("api_blocked_recent")
@@ -199,7 +224,7 @@ def evaluate_offload_readiness(
         return OffloadDecision(
             offload_allowed=False,
             reason_codes=tuple(reasons),
-            recommended_worker_mode=_blocked_worker_mode(reasons),
+            recommended_worker_mode=_blocked_worker_mode(inputs.runtime_phase, reasons),
             recommended_max_total_paths=0,
         )
 
@@ -212,8 +237,14 @@ def evaluate_offload_readiness(
     )
 
 
-def _blocked_worker_mode(reasons: list[str]) -> WorkerMode:
-    if "runtime_not_ready" in reasons:
+def _blocked_worker_mode(
+    runtime_phase: RuntimePhase,
+    reasons: list[str],
+) -> WorkerMode:
+    if (
+        runtime_phase in _NOWCAST_SAFE_PHASES
+        and not _HARD_OR_DATA_INTEGRITY_BLOCKERS.intersection(reasons)
+    ):
         return "nowcast_only"
     return "disabled"
 

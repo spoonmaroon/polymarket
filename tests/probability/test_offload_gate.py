@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import pytest
 from typing import Any
+from typing import cast
 
 from polymarket_engine.ops.recovery_manager import RuntimePhase
 from polymarket_engine.probability.offload_gate import OffloadGateConfig
@@ -65,6 +67,37 @@ def test_offload_blocked_during_warming() -> None:
     assert decision.recommended_max_total_paths == 0
 
 
+def test_offload_blocked_phase_recommends_disabled() -> None:
+    decision = evaluate_offload_readiness(
+        base_inputs(runtime_phase=RuntimePhase.BLOCKED),
+        OffloadGateConfig(),
+    )
+    assert decision.offload_allowed is False
+    assert "runtime_not_ready" in decision.reason_codes
+    assert decision.recommended_worker_mode == "disabled"
+
+
+def test_offload_degraded_phase_recommends_disabled() -> None:
+    decision = evaluate_offload_readiness(
+        base_inputs(runtime_phase=RuntimePhase.DEGRADED),
+        OffloadGateConfig(),
+    )
+    assert decision.offload_allowed is False
+    assert "runtime_not_ready" in decision.reason_codes
+    assert decision.recommended_worker_mode == "disabled"
+
+
+def test_offload_warming_with_sigma_invalid_recommends_disabled() -> None:
+    decision = evaluate_offload_readiness(
+        base_inputs(runtime_phase=RuntimePhase.WARMING, sigma_tau_valid=False),
+        OffloadGateConfig(),
+    )
+    assert decision.offload_allowed is False
+    assert "runtime_not_ready" in decision.reason_codes
+    assert "sigma_invalid" in decision.reason_codes
+    assert decision.recommended_worker_mode == "disabled"
+
+
 def test_offload_blocked_when_sigma_invalid() -> None:
     decision = evaluate_offload_readiness(
         base_inputs(sigma_tau_valid=False),
@@ -81,6 +114,30 @@ def test_offload_blocks_recent_decode_error() -> None:
     )
     assert decision.offload_allowed is False
     assert "decode_error_recent" in decision.reason_codes
+
+
+def test_status_checks_are_case_insensitive() -> None:
+    decision = evaluate_offload_readiness(
+        base_inputs(
+            api_status="ok",
+            normalized_health_status="ok",
+            duckdb_status="ok",
+            websocket_status="connected",
+        ),
+        OffloadGateConfig(),
+    )
+    assert decision.offload_allowed is True
+    assert decision.reason_codes == ()
+
+
+def test_non_string_status_raises_value_error() -> None:
+    with pytest.raises(ValueError, match="api_status"):
+        base_inputs(api_status=cast(Any, 123))
+
+
+def test_int_fields_reject_bool_values() -> None:
+    with pytest.raises(ValueError, match="price_age_ms"):
+        base_inputs(price_age_ms=cast(Any, True))
 
 
 def test_zero_freshness_threshold_is_valid_and_strict() -> None:
