@@ -30,6 +30,46 @@ pub fn systems_summary_lines(app: &AppState) -> Vec<String> {
     }
 
     if let Some(lag) = app.runtime_display_lag.as_ref() {
+        if has_runtime_visibility(lag) {
+            let phase = value_or_dash(&lag.recovery.runtime_phase);
+            let offload = if lag.offload.offload_allowed {
+                "ALLOWED"
+            } else {
+                "BLOCKED"
+            };
+            let worker = value_or_dash(&lag.offload.recommended_worker_mode);
+            let boot = lag.recovery.boot_id.as_deref().unwrap_or("-");
+            let reasons = if lag.offload.reason_codes.is_empty() {
+                "-".to_string()
+            } else {
+                lag.offload
+                    .reason_codes
+                    .iter()
+                    .take(2)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(",")
+            };
+
+            lines.push(format!("phase={phase}"));
+            lines.push(format!("offload={offload} reasons={reasons}"));
+            lines.push(format!("worker={worker}"));
+            lines.push(format!("boot={boot}"));
+
+            if !lag.recovery.reasons.is_empty() {
+                lines.push(format!(
+                    "recovery_reasons={}",
+                    lag.recovery
+                        .reasons
+                        .iter()
+                        .take(2)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(",")
+                ));
+            }
+        }
+
         if let Some(value) = lag.status_age_ms {
             lines.push(format!("status_age_ms={value}"));
         }
@@ -68,6 +108,20 @@ pub fn systems_summary_lines(app: &AppState) -> Vec<String> {
     lines
 }
 
+fn has_runtime_visibility(lag: &crate::status::RuntimeDisplayLag) -> bool {
+    !lag.recovery.runtime_phase.is_empty()
+        || lag.recovery.ready
+        || !lag.recovery.reasons.is_empty()
+        || lag.recovery.boot_id.is_some()
+        || lag.offload.offload_allowed
+        || !lag.offload.reason_codes.is_empty()
+        || !lag.offload.recommended_worker_mode.is_empty()
+}
+
+fn value_or_dash(value: &str) -> &str {
+    if value.is_empty() { "-" } else { value }
+}
+
 fn format_optional_vol(value: Option<f64>) -> String {
     value.map_or_else(|| "-".to_string(), |value| format!("{value:.5}"))
 }
@@ -89,8 +143,8 @@ mod tests {
     use crate::{
         state::AppState,
         status::{
-            RuntimeCounts, RuntimeDisplayLag, RuntimeGates, RuntimeStatus, RuntimeVolatility,
-            RuntimeVolatilityRow,
+            RuntimeCounts, RuntimeDisplayLag, RuntimeGates, RuntimeOffloadSummary,
+            RuntimeRecoverySummary, RuntimeStatus, RuntimeVolatility, RuntimeVolatilityRow,
         },
     };
 
@@ -149,6 +203,39 @@ mod tests {
         assert!(text.contains("status_age_ms=57"));
         assert!(text.contains("state_us=220"));
         assert!(text.contains("tui_rx_ms=8"));
+    }
+
+    #[test]
+    fn systems_summary_shows_recovery_and_offload_state() {
+        let app = AppState {
+            runtime_display_lag: Some(RuntimeDisplayLag {
+                recovery: RuntimeRecoverySummary {
+                    runtime_phase: "WARMING".to_string(),
+                    ready: false,
+                    reasons: vec!["warmup_active".to_string()],
+                    boot_id: Some("boot-1".to_string()),
+                },
+                offload: RuntimeOffloadSummary {
+                    offload_allowed: false,
+                    reason_codes: vec![
+                        "runtime_not_ready".to_string(),
+                        "probability_stale".to_string(),
+                        "ignored_third".to_string(),
+                    ],
+                    recommended_worker_mode: "nowcast_only".to_string(),
+                },
+                ..RuntimeDisplayLag::default()
+            }),
+            ..Default::default()
+        };
+
+        let text = systems_summary_lines(&app).join("\n");
+
+        assert!(text.contains("phase=WARMING"));
+        assert!(text.contains("offload=BLOCKED reasons=runtime_not_ready,probability_stale"));
+        assert!(text.contains("worker=nowcast_only"));
+        assert!(text.contains("boot=boot-1"));
+        assert!(text.contains("recovery_reasons=warmup_active"));
     }
 
     #[test]

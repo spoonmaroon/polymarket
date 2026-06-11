@@ -267,19 +267,19 @@ fn apply_runtime_update(app: &mut AppState, update: RuntimeUpdate) -> bool {
         changed |= replace_if_changed(&mut app.runtime_gates, gates);
     }
 
-    if let Some(outcomes) = update.outcomes {
-        if app.apply_runtime_outcomes(outcomes) {
-            app.sync_outcome_selection();
-            app.sync_market_selection();
-            changed = true;
-        }
+    if let Some(outcomes) = update.outcomes
+        && app.apply_runtime_outcomes(outcomes)
+    {
+        app.sync_outcome_selection();
+        app.sync_market_selection();
+        changed = true;
     }
 
-    if let Some(monitor) = update.monitor {
-        if app.apply_runtime_monitor(monitor) {
-            app.sync_market_selection();
-            changed = true;
-        }
+    if let Some(monitor) = update.monitor
+        && app.apply_runtime_monitor(monitor)
+    {
+        app.sync_market_selection();
+        changed = true;
     }
 
     if let Some(volatility) = update.volatility {
@@ -336,10 +336,11 @@ async fn poll_runtime(client: &EngineClient) -> RuntimeUpdate {
             gates = Some(next_live.gates);
             monitor = Some(next_live.monitor);
             volatility = Some(next_live.volatility);
-            display_lag = Some(display_lag_with_receive_ms(
-                next_live.latency,
-                next_live.server_sent_at,
-            ));
+            let mut next_display_lag =
+                display_lag_with_receive_ms(next_live.latency, next_live.server_sent_at);
+            next_display_lag.recovery = next_live.recovery;
+            next_display_lag.offload = next_live.offload;
+            display_lag = Some(next_display_lag);
         }
         Err(error) => {
             errors.push(format!("live: {error}"));
@@ -428,7 +429,9 @@ fn parse_sse_live_event(event: &str) -> Result<Option<RuntimeLive>> {
 }
 
 fn runtime_update_from_live(live: RuntimeLive) -> RuntimeUpdate {
-    let display_lag = display_lag_with_receive_ms(live.latency, live.server_sent_at);
+    let mut display_lag = display_lag_with_receive_ms(live.latency, live.server_sent_at);
+    display_lag.recovery = live.recovery;
+    display_lag.offload = live.offload;
     RuntimeUpdate {
         status: Some(live.status),
         gates: Some(live.gates),
