@@ -42,7 +42,7 @@ CRITICAL
 * JSON/API decode error not handled cleanly.
 * TUI waiting on a dead/stale endpoint.
 
-Required behavior
+### Required behavior
 
 The TUI must remain responsive even when the API, probability worker, WebSocket feed, or order book feed fails.
 
@@ -55,7 +55,7 @@ OFFLOAD_BLOCKED
 RECOVERING
 BLOCKED
 
-Suggested files to inspect
+### Suggested files to inspect
 
 rust/crates/polymarket-cockpit-tui/src/event_loop.rs
 rust/crates/polymarket-cockpit-tui/src/client.rs
@@ -66,7 +66,7 @@ src/polymarket_engine/runtime_api.py
 
 ## BUG-002: API BLOCKED / Response Body Decode Error
 
-Observed behavior
+### Observed behavior
 
 The live system sometimes reports:
 
@@ -76,11 +76,11 @@ error decoding response body from API response
 
 Stopping and restarting containers sometimes temporarily fixes the issue, but the system may degrade again later.
 
-Severity
+### Severity
 
 ERROR / CRITICAL
 
-Suspected causes
+### Suspected causes
 
 * API returns non-JSON response but client tries to decode as JSON.
 * API returns blocked/rate-limited/HTML/error body.
@@ -91,7 +91,7 @@ Suspected causes
 * Retry/backoff logic is missing or too aggressive.
 * Circuit breaker is missing for blocked upstream APIs.
 
-Required behavior
+### Required behavior
 
 The system should never crash or freeze because an API response cannot be decoded.
 
@@ -106,7 +106,7 @@ Before decoding any response:
 7. Retry with exponential backoff.
 8. Avoid tight retry loops.
 
-Suggested files to inspect
+### Suggested files to inspect
 
 rust/crates/polymarket-cockpit-tui/src/client.rs
 src/polymarket_engine/runtime_api.py
@@ -116,11 +116,11 @@ src/polymarket_engine/ingestion/*
 
 ## BUG-003: System Degrades After Restart
 
-Observed behavior
+### Observed behavior
 
 After a PC restart or container restart, the system may not come back cleanly. Some services appear to work at first, then degrade.
 
-Known symptoms:
+### Known symptoms:
 
 * Runtime errors appear after restart.
 * Containers need manual stop/start to recover.
@@ -129,11 +129,11 @@ Known symptoms:
 * Sigma, target, order book, or probability inputs may be stale.
 * Expensive probability work may start before the system is ready.
 
-Severity
+### Severity
 
 CRITICAL
 
-Suspected causes
+### Suspected causes
 
 * Services start in the wrong order.
 * No recovery state machine.
@@ -145,7 +145,7 @@ Suspected causes
 * One failed dependency causes downstream failure.
 * Containers recover individually but not as a coordinated system.
 
-Required behavior
+### Required behavior
 
 After restart, the system should enter:
 
@@ -157,7 +157,7 @@ BOOTING -> WARMING -> DEGRADED / BLOCKED
 
 The system should not run full Monte Carlo, GPU offload, or high path-count probability jobs until readiness gates pass for several consecutive cycles.
 
-Suggested files to inspect
+### Suggested files to inspect
 
 src/polymarket_engine/ops/runtime_keeper.py
 src/polymarket_engine/runtime_api.py
@@ -169,7 +169,7 @@ src/polymarket_engine/probability/cpu_budget.py
 
 ## BUG-004: Offloading Work Too Soon After Restart
 
-Observed behavior
+### Observed behavior
 
 After restart, the system may begin expensive probability work too early, before live feeds, sigma, K, order book, and API health are stable.
 
@@ -181,11 +181,11 @@ This may cause:
 * Probability outputs appear valid even when upstream data is stale.
 * TUI freezes or becomes delayed.
 
-Severity
+### Severity
 
 CRITICAL
 
-Suspected causes
+### Suspected causes
 
 * CPU budget logic does not check runtime phase.
 * GPU worker does not check readiness.
@@ -194,7 +194,7 @@ Suspected causes
 * Offload decision is based on capacity, not system trustworthiness.
 * Probability worker treats stale inputs as usable.
 
-Required behavior
+### Required behavior
 
 Add an OffloadReadinessGate.
 
@@ -213,7 +213,7 @@ no recent API_BLOCKED state
 no recent decode errors
 consecutive healthy cycles >= required threshold
 
-Suggested files to inspect
+### Suggested files to inspect
 
 src/polymarket_engine/probability/offload_gate.py
 src/polymarket_engine/probability/gpu_worker.py
@@ -225,15 +225,15 @@ src/polymarket_engine/runtime_gates.py
 
 ## BUG-005: Sigma Calculation Instability
 
-Observed behavior
+### Observed behavior
 
 Sigma calculations appear to load and unload repeatedly. Some components may be having trouble communicating. This may cause probability instability or stale probability output.
 
-Severity
+### Severity
 
 ERROR
 
-Suspected causes
+### Suspected causes
 
 * Sigma task restarting repeatedly.
 * Volatility inputs are stale or missing.
@@ -244,7 +244,7 @@ Suspected causes
 * Race condition between price feed and sigma calculation.
 * Probability worker runs even when sigma is invalid.
 
-Required behavior
+### Required behavior
 
 The sigma engine should expose diagnostics:
 
@@ -267,7 +267,7 @@ offload_allowed = false
 
 The system should never produce confident probabilities from invalid sigma inputs.
 
-Suggested files to inspect
+### Suggested files to inspect
 
 src/polymarket_engine/features/volatility.py
 src/polymarket_engine/probability/hot_inputs.py
@@ -278,17 +278,17 @@ src/polymarket_engine/probability/gpu_worker.py
 
 ## BUG-006: K / Threshold Alternates Between Two Prices
 
-Observed behavior
+### Observed behavior
 
 The contract threshold/reference price K appears to glitch and alternate between two prices.
 
 This is dangerous because K determines the contract boundary. If K changes incorrectly, then distance_to_threshold, z_path, p_finish, p_no_touch, and executable edge may all become invalid.
 
-Severity
+### Severity
 
 CRITICAL
 
-Suspected causes
+### Suspected causes
 
 * Confusion between current price, start price, threshold price, and settlement price.
 * Market rule parser updates K repeatedly.
@@ -298,7 +298,7 @@ Suspected causes
 * Proxy feed is being used as threshold.
 * Contract target state is not immutable after initialization.
 
-Required behavior
+### Required behavior
 
 After contract rule parsing, K should be immutable unless the venue rule explicitly changes.
 
@@ -322,7 +322,7 @@ THRESHOLD_MUTATION_ERROR
 
 and block probability output for that contract until reviewed.
 
-Suggested files to inspect
+### Suggested files to inspect
 
 src/polymarket_engine/domain/contract_rules.py
 src/polymarket_engine/domain/contracts.py
@@ -334,7 +334,7 @@ src/polymarket_engine/probability/runtime_inputs.py
 
 ## BUG-007: Probability Overconfidence / Underconfidence
 
-Observed behavior
+### Observed behavior
 
 The Monte Carlo probabilities are often either underestimated or overestimated. Sometimes the model is too confident even when TTE is not very low yet.
 
@@ -346,11 +346,11 @@ Symptoms:
 * Model may be poorly calibrated by TTE, volatility regime, or threshold distance.
 * Probability can feel directionally right but numerically wrong.
 
-Severity
+### Severity
 
 MODEL_RISK / RESEARCH_BLOCKER
 
-Suspected causes
+### Suspected causes
 
 * sigma_tau too small.
 * Monte Carlo paths too narrow.
@@ -362,7 +362,7 @@ Suspected causes
 * Model not calibrated by TTE/z_path/regime.
 * Polymarket price/order book not correctly separated from settlement probability.
 
-Required behavior
+### Required behavior
 
 Do not replace Monte Carlo yet. Add calibration and diagnostics.
 
@@ -403,7 +403,7 @@ Then:
 
 MC_Calibrator_GBDT_v1 using LightGBM or XGBoost
 
-Suggested files to inspect
+### Suggested files to inspect
 
 src/polymarket_engine/probability/*
 src/polymarket_engine/features/*
@@ -415,7 +415,7 @@ tests/test_probability*
 
 ## BUG-008: Services Having Trouble Communicating
 
-Observed behavior
+### Observed behavior
 
 Some components appear to have trouble talking to each other. This may happen after restart or during runtime degradation.
 
@@ -427,11 +427,11 @@ Symptoms:
 * Sigma may update separately from probability input state.
 * Containers may individually appear alive but the system is not coherent.
 
-Severity
+### Severity
 
 ERROR / CRITICAL
 
-Suspected causes
+### Suspected causes
 
 * Missing service dependency checks.
 * Missing heartbeat between services.
@@ -440,7 +440,7 @@ Suspected causes
 * TUI polls an endpoint that is technically alive but semantically stale.
 * No shared boot_id or runtime generation ID after restart.
 
-Required behavior
+### Required behavior
 
 Add coordinated runtime health using:
 
@@ -454,7 +454,7 @@ dependency_status
 
 A service should not be considered healthy only because the process is alive. It must also prove that its data is fresh.
 
-Suggested files to inspect
+### Suggested files to inspect
 
 src/polymarket_engine/ops/runtime_keeper.py
 src/polymarket_engine/runtime_api.py
@@ -465,15 +465,15 @@ rust/crates/polymarket-cockpit-tui/src/client.rs
 
 ## BUG-009: No Automatic Bug Report Pipeline
 
-Observed behavior
+### Observed behavior
 
 When bugs occur, they are difficult to trace immediately. Important runtime context may be lost unless manually observed.
 
-Severity
+### Severity
 
 HIGH_PRIORITY_TOOLING_GAP
 
-Required behavior
+### Required behavior
 
 Build a structured bug-report system that automatically captures:
 
@@ -534,7 +534,7 @@ Runtime stability comes before ML. The system should not train or trust ML until
 
 ⸻
 
-2. Runtime Recovery State Machine
+# 2. Runtime Recovery State Machine
 
 Create a runtime phase system with explicit states:
 
@@ -668,7 +668,7 @@ Rules:
 
 ⸻
 
-3. Offload Readiness Gate
+# 3. Offload Readiness Gate
 
 Problem
 
@@ -769,7 +769,7 @@ The exact values should be configurable.
 
 ⸻
 
-4. Recovery System Design
+# 4. Recovery System Design
 
 Recovery system goal
 
@@ -832,7 +832,7 @@ runtime_phase = BLOCKED
 
 ⸻
 
-5. Bug Report System
+# 5. Bug Report System
 
 Every automatic bug report should include:
 
@@ -965,7 +965,7 @@ scripts/check_probability_latency.py
 
 ⸻
 
-6. TUI Stability Requirements
+# 6. TUI Stability Requirements
 
 Current concern
 
@@ -1014,7 +1014,7 @@ queue_length
 
 ⸻
 
-7. Probability and ML Plan
+# 7. Probability and ML Plan
 
 Do not replace Monte Carlo yet
 
@@ -1204,7 +1204,7 @@ autoencoder for unusual market states
 
 ⸻
 
-8. Immediate Implementation Priorities
+# 8. Immediate Implementation Priorities
 
 Priority 1: Stabilize current bugs
 
@@ -1363,7 +1363,7 @@ Do not use neural networks until the dataset is larger, stable, and replay-safe.
 
 ⸻
 
-9. Questions for Enoch
+# 9. Questions for Enoch
 
 Before final implementation, answer these questions:
 
@@ -1390,7 +1390,7 @@ Before final implementation, answer these questions:
 
 ⸻
 
-10. Suggested Codex Instruction
+# 10. Suggested Codex Instruction
 
 Use this as the next high-level prompt:
 
