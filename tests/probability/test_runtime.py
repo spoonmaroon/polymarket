@@ -187,6 +187,77 @@ def test_build_probability_payload_uses_hot_inputs_without_duckdb_read(
     assert row["effective_weights"]
 
 
+def test_build_probability_payload_does_not_compute_blocked_hot_inputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hot_inputs_path = tmp_path / "live" / "probability_inputs.json"
+    blocked_state = replace(_decision_state(), sigma_tau=None)
+    write_hot_probability_inputs(
+        out_path=hot_inputs_path,
+        states=(blocked_state,),
+        generated_at=datetime.now(timezone.utc),
+    )
+
+    def fail_ensemble(*_: object, **__: object) -> NoReturn:
+        raise AssertionError("blocked hot inputs must not run ensemble")
+
+    monkeypatch.setattr(
+        "polymarket_engine.probability.runtime.run_four_generator_ensemble",
+        fail_ensemble,
+    )
+
+    payload = build_probability_payload(
+        duckdb_path=tmp_path / "missing.duckdb",
+        limit=4,
+        probability_inputs_path=hot_inputs_path,
+    )
+
+    assert payload["ok"] is True
+    assert payload["source"] == "hot_inputs"
+    assert payload["model_version"] is None
+    assert payload["errors"] == []
+    row = payload["rows"][0]
+    assert row["contract_id"] == "btc-market:UP"
+    assert row["probability_state"] == "BLOCKED_OR_STALE"
+    assert row["sigma_valid"] is False
+    assert row["offload_allowed"] is False
+    assert "sigma_invalid" in row["block_reasons"]
+    assert row["model_version"] is None
+    assert row["model_version"] != "ensemble-v1"
+
+
+def test_compute_and_persist_rows_does_not_persist_blocked_inputs() -> None:
+    calls: list[tuple[tuple[str, ProbabilityInput, ProbabilityOutput], ...]] = []
+    runtime_inputs = (
+        replace(
+            _runtime_input(_decision_state()),
+            probability_state="BLOCKED_OR_STALE",
+            sigma_valid=False,
+            offload_allowed=False,
+            block_reasons=("sigma_invalid",),
+        ),
+    )
+
+    class _Store:
+        def insert_probability_outputs(
+            self,
+            rows: list[tuple[str, ProbabilityInput, ProbabilityOutput]],
+        ) -> None:
+            calls.append(tuple(rows))
+
+    rows, errors = _compute_and_persist_rows(store=_Store(), inputs=runtime_inputs)  # type: ignore[arg-type]
+
+    assert errors == []
+    assert calls == []
+    assert len(rows) == 1
+    assert rows[0]["probability_state"] == "BLOCKED_OR_STALE"
+    assert rows[0]["sigma_valid"] is False
+    assert rows[0]["offload_allowed"] is False
+    assert "sigma_invalid" in rows[0]["block_reasons"]
+    assert rows[0]["model_version"] is None
+
+
 def test_hot_input_fallback_uses_probability_fragments_prior(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

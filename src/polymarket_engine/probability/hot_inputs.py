@@ -24,6 +24,7 @@ MAX_FUTURE_GENERATED_AT_SECONDS = 5.0
 THRESHOLD_MUTATION_ERROR = "THRESHOLD_MUTATION_ERROR"
 SIGMA_INVALID_BLOCK_REASON = "sigma_invalid"
 DIAGNOSTIC_SIGMA_TAU_FLOOR = 0.00005
+VOLATILITY_QUALITY_FLAGS = frozenset({"missing_volatility"})
 
 
 @dataclass(frozen=True)
@@ -67,13 +68,17 @@ def write_hot_probability_inputs(
     threshold_assignments = _previous_threshold_assignments(out_path)
 
     for state in states:
-        if state.data_quality_flags:
+        if _should_skip_for_quality_flags(state):
             skipped += 1
             continue
         sigma_diagnostics = _sigma_diagnostics(state)
         probability_source_state = state
         if not sigma_diagnostics.sigma_valid:
-            probability_source_state = replace(state, sigma_tau=DIAGNOSTIC_SIGMA_TAU_FLOOR)
+            probability_source_state = replace(
+                state,
+                sigma_tau=DIAGNOSTIC_SIGMA_TAU_FLOOR,
+                data_quality_flags=(),
+            )
         probability_input = ProbabilityInput.from_decision_state(probability_source_state)
         previous_assignment = threshold_assignments.get(state.contract.contract_id)
         threshold_diagnostics = _threshold_diagnostics(
@@ -364,16 +369,19 @@ def _sigma_diagnostics(state: DecisionState) -> _SigmaDiagnostics:
         sigma_tau=raw_sigma,
         volatility_regime=state.volatility_regime,
     )
-    last_sigma_update_ts = state.asof_ts if state.realized_returns else None
-    sigma_age_ms = 0 if last_sigma_update_ts is not None else 0
+    last_sigma_update_ts = (
+        state.asof_ts
+        if state.realized_returns and not is_volatility_failure_regime(state.volatility_regime)
+        else None
+    )
     return _SigmaDiagnostics(
         sigma_tau=sigma_tau,
         sigma_valid=failure_reason is None,
-        sigma_age_ms=sigma_age_ms,
+        sigma_age_ms=0,
         last_sigma_update_ts=last_sigma_update_ts,
-        short_vol=state.short_realized_vol,
-        medium_vol=state.medium_realized_vol,
-        long_vol=state.long_realized_vol,
+        short_vol=_finite_optional_float(state.short_realized_vol),
+        medium_vol=_finite_optional_float(state.medium_realized_vol),
+        long_vol=_finite_optional_float(state.long_realized_vol),
         volatility_floor_applied=False,
         regime_multiplier_applied=state.volatility_regime in {"expanding", "contracting"},
         failure_reason=failure_reason,
@@ -403,6 +411,13 @@ def _finite_optional_float(value: float | None) -> float | None:
     if not math.isfinite(value):
         return None
     return float(value)
+
+
+def _should_skip_for_quality_flags(state: DecisionState) -> bool:
+    if not state.data_quality_flags:
+        return False
+    flags = set(state.data_quality_flags)
+    return not flags.issubset(VOLATILITY_QUALITY_FLAGS)
 
 
 def _require_aware_datetime(value: datetime, field_name: str) -> datetime:

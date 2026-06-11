@@ -18,7 +18,11 @@ from polymarket_engine.probability.generator_fragments import read_probability_f
 from polymarket_engine.probability.generator_fragments import select_fragments_for_input
 from polymarket_engine.probability.hot_inputs import read_hot_probability_inputs
 from polymarket_engine.probability.pair_coherence import normalize_binary_probability_pairs
-from polymarket_engine.probability.runtime_inputs import ProbabilityRuntimeInput, contract_label
+from polymarket_engine.probability.runtime_inputs import (
+    ProbabilityRuntimeInput,
+    ThresholdDiagnostics,
+    contract_label,
+)
 from polymarket_engine.probability.schema import ProbabilityInput, ProbabilityOutput
 from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
 
@@ -529,6 +533,9 @@ def _compute_rows_without_persistence(
         path=probability_fragments_path,
     )
     for runtime_input in inputs:
+        if _runtime_input_blocked(runtime_input):
+            rows.append(_blocked_runtime_row(runtime_input))
+            continue
         probability_input = runtime_input.probability_input
         seed = _seed_for_input(probability_input)
         steps = _steps_for_input(probability_input)
@@ -574,6 +581,9 @@ def _compute_and_persist_rows(
         path=probability_fragments_path,
     )
     for runtime_input in inputs:
+        if _runtime_input_blocked(runtime_input):
+            rows.append(_blocked_runtime_row(runtime_input))
+            continue
         probability_input = runtime_input.probability_input
         seed = _seed_for_input(probability_input)
         steps = _steps_for_input(probability_input)
@@ -615,6 +625,15 @@ def _compute_and_persist_rows(
             )
             rows = []
     return rows, errors
+
+
+def _runtime_input_blocked(runtime_input: ProbabilityRuntimeInput) -> bool:
+    return (
+        runtime_input.probability_state != "READY"
+        or not runtime_input.sigma_valid
+        or not runtime_input.offload_allowed
+        or not runtime_input.k_stable
+    )
 
 
 def _load_probability_fragments(
@@ -739,6 +758,73 @@ def _runtime_row(
     }
     _merge_grid_diagnostics(row=row, diagnostics=output.diagnostics, preview_is_current=True)
     return row
+
+
+def _blocked_runtime_row(runtime_input: ProbabilityRuntimeInput) -> dict[str, Any]:
+    probability_input = runtime_input.probability_input
+    age_ms = max(
+        0,
+        int((datetime.now(timezone.utc) - probability_input.asof_ts).total_seconds() * 1000),
+    )
+    row = {
+        "contract": runtime_input.contract,
+        "contract_id": runtime_input.contract_id,
+        "asset": probability_input.asset,
+        "side": probability_input.side,
+        "asof_ts": probability_input.asof_ts.isoformat(),
+        "start_ts": runtime_input.start_ts.isoformat(),
+        "expiry_ts": runtime_input.expiry_ts.isoformat(),
+        "market_slug": runtime_input.market_slug,
+        "p_finish": None,
+        "p_no_touch": None,
+        "z_path": probability_input.z_path,
+        "sigma_tau": runtime_input.sigma_tau,
+        "age_ms": age_ms,
+        "flags": list(runtime_input.flags),
+        "model_version": None,
+        "seed": None,
+        "output_id": None,
+        "probability_state": runtime_input.probability_state,
+        "sigma_valid": runtime_input.sigma_valid,
+        "sigma_age_ms": runtime_input.sigma_age_ms,
+        "last_sigma_update_ts": (
+            None
+            if runtime_input.last_sigma_update_ts is None
+            else runtime_input.last_sigma_update_ts.isoformat()
+        ),
+        "short_vol": runtime_input.short_vol,
+        "medium_vol": runtime_input.medium_vol,
+        "long_vol": runtime_input.long_vol,
+        "volatility_floor_applied": runtime_input.volatility_floor_applied,
+        "regime_multiplier_applied": runtime_input.regime_multiplier_applied,
+        "failure_reason": runtime_input.failure_reason,
+        "input_sample_count": runtime_input.input_sample_count,
+        "offload_allowed": runtime_input.offload_allowed,
+        "block_reasons": list(runtime_input.block_reasons),
+        "k_stable": runtime_input.k_stable,
+        "threshold_diagnostics": _threshold_diagnostics_row(
+            runtime_input.threshold_diagnostics
+        ),
+    }
+    return row
+
+
+def _threshold_diagnostics_row(value: ThresholdDiagnostics | None) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    return {
+        "contract_id": value.contract_id,
+        "market_slug": value.market_slug,
+        "asset": value.asset,
+        "side": value.side,
+        "K": value.K,
+        "K_source": value.K_source,
+        "rule_hash": value.rule_hash,
+        "timestamp": value.timestamp.isoformat(),
+        "previous_K": value.previous_K,
+        "new_K": value.new_K,
+        "reason_for_change": value.reason_for_change,
+    }
 
 
 def _persisted_runtime_row(row: tuple[Any, ...]) -> dict[str, Any]:

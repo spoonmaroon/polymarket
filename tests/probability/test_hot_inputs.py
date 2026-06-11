@@ -231,7 +231,10 @@ def test_hot_probability_inputs_blocks_invalid_sigma_with_diagnostics(
     assert row["sigma_tau"] == expected_sigma_tau
     assert row["sigma_valid"] is False
     assert row["sigma_age_ms"] == 0
-    assert row["last_sigma_update_ts"] == "2026-05-31T20:03:00+00:00"
+    if invalid_case == "stale":
+        assert row["last_sigma_update_ts"] is None
+    else:
+        assert row["last_sigma_update_ts"] == "2026-05-31T20:03:00+00:00"
     assert row["short_vol"] == 0.01
     assert row["medium_vol"] == 0.012
     assert row["long_vol"] == 0.015
@@ -250,6 +253,44 @@ def test_hot_probability_inputs_blocks_invalid_sigma_with_diagnostics(
     assert payload.inputs[0].sigma_valid is False
     assert payload.inputs[0].offload_allowed is False
     assert "sigma_invalid" in payload.inputs[0].block_reasons
+
+
+def test_hot_probability_inputs_keeps_missing_volatility_as_blocked_diagnostic(
+    tmp_path: Path,
+) -> None:
+    out_path = tmp_path / "inputs.json"
+    missing_volatility = replace(
+        _state("UP"),
+        sigma_tau=None,
+        short_realized_vol=float("nan"),
+        medium_realized_vol=float("inf"),
+        long_realized_vol=float("-inf"),
+        volatility_regime="missing_reference_source",
+        data_quality_flags=("missing_volatility",),
+    )
+
+    write_hot_probability_inputs(
+        out_path=out_path,
+        states=(missing_volatility,),
+        generated_at=datetime.now(timezone.utc),
+    )
+
+    raw_text = out_path.read_text()
+    raw = json.loads(raw_text)
+    row = raw["inputs"][0]
+
+    assert raw["skipped"] == 0
+    assert "NaN" not in raw_text
+    assert "Infinity" not in raw_text
+    assert row["probability_state"] == "BLOCKED_OR_STALE"
+    assert row["offload_allowed"] is False
+    assert row["sigma_tau"] is None
+    assert row["sigma_valid"] is False
+    assert row["short_vol"] is None
+    assert row["medium_vol"] is None
+    assert row["long_vol"] is None
+    assert row["failure_reason"] == "sigma_missing"
+    assert "sigma_invalid" in row["block_reasons"]
 
 
 def test_hot_probability_inputs_blocks_threshold_mutation_under_same_rule_hash(
