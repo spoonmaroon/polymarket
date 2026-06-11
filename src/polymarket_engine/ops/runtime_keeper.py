@@ -221,7 +221,10 @@ class UrlHttpClient:
                 payload: dict[str, Any] = {}
                 content_type = response.headers.get("content-type", "")
                 if "json" in content_type:
-                    parsed = json.loads(body)
+                    try:
+                        parsed = json.loads(body)
+                    except json.JSONDecodeError:
+                        parsed = {}
                     if isinstance(parsed, dict):
                         payload = parsed
                 return HttpResult(
@@ -298,6 +301,8 @@ def evaluate_http_checks(
     )
     if live_ok:
         live_detail = "live rows present"
+    elif _http_error_message(live) is not None:
+        live_detail = _http_error_detail(live)
     elif _http_response_failed(live):
         live_detail = _http_failure_detail(live)
     else:
@@ -305,6 +310,8 @@ def evaluate_http_checks(
 
     if probabilities_ok:
         probabilities_detail = "probability rows present"
+    elif _http_error_message(probabilities) is not None:
+        probabilities_detail = _http_error_detail(probabilities)
     elif _http_response_failed(probabilities):
         probabilities_detail = _http_failure_detail(probabilities)
     else:
@@ -343,6 +350,21 @@ def evaluate_http_checks(
 
 def _http_response_failed(result: HttpResult) -> bool:
     return result.status_code != 200 or not result.json_payload
+
+
+def _http_error_message(result: HttpResult) -> tuple[str, Any] | None:
+    for field in ("error", "detail", "message"):
+        if field in result.json_payload:
+            return field, result.json_payload[field]
+    return None
+
+
+def _http_error_detail(result: HttpResult) -> str:
+    message = _http_error_message(result)
+    if message is None:
+        return _http_failure_detail(result)
+    field, value = message
+    return f"status={result.status_code} content_type={result.content_type} {field}={value}"
 
 
 def _http_failure_detail(result: HttpResult) -> str:
