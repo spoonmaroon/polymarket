@@ -25,7 +25,7 @@ def test_keeper_report_includes_evidence_fields() -> None:
     assert payload["generated_at"] == "2026-06-11T12:00:00+00:00"
     assert payload["checks"][0]["name"] == "api:/api/runtime/live"
     assert payload["checks"][0]["ok"] is False
-    assert "content_type=text/html" in payload["checks"][0]["detail"]
+    assert payload["checks"][0]["detail"] == "status=502 content_type=text/html body_prefix=<html"
     assert payload["actions"] == ["compose up api"]
 
 
