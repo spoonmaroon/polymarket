@@ -13,6 +13,9 @@ def test_thepc_runtime_keeper_installer_installs_loop_and_task() -> None:
     assert 'python3 -m pip install --user --break-system-packages -e "$REPO"' in script
     assert "POLYMARKET_ENGINE_BIN" in script
     assert "$HOME/.local/bin/polymarket-engine" in script
+    assert "POWERSHELL_SCRIPT_WINDOWS" in script
+    assert 'wslpath -w "$POWERSHELL_SCRIPT"' in script
+    assert '$env:USERPROFILE\\polymarket-runtime-keeper.ps1' not in script
     assert '--compose-file "$REPO/deploy/collector/docker-compose.yml"' in script
     assert '--compose-file "$REPO/deploy/collector/docker-compose.thepc-gpu-api.yml"' in script
     assert '--required-service "api"' in script

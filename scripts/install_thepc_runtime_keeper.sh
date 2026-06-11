@@ -41,6 +41,7 @@ if [ ! -d "$WINDOWS_USER_DIR" ]; then
   echo "Windows user directory missing: $WINDOWS_USER_DIR" >&2
   exit 1
 fi
+POWERSHELL_SCRIPT_WINDOWS="$(wslpath -w "$POWERSHELL_SCRIPT")"
 
 cat > "$POWERSHELL_SCRIPT" <<EOF
 \$ErrorActionPreference = 'Stop'
@@ -49,7 +50,7 @@ Start-Sleep -Seconds 20
 EOF
 
 powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "\
-\$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -ExecutionPolicy Bypass -File \"\$env:USERPROFILE\\polymarket-runtime-keeper.ps1\"'; \
+\$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -ExecutionPolicy Bypass -File \"$POWERSHELL_SCRIPT_WINDOWS\"'; \
 \$trigger = New-ScheduledTaskTrigger -AtLogOn; \
 \$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1); \
 Register-ScheduledTask -TaskName '$TASK_NAME' -Action \$action -Trigger \$trigger -Settings \$settings -Force | Out-Null"
