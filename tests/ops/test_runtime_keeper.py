@@ -177,6 +177,39 @@ def test_http_checks_expose_missing_probability_rows() -> None:
     assert probability_check.detail == "missing probability rows"
 
 
+def test_http_checks_accept_offload_blocked_when_nowcast_rows_are_fresh() -> None:
+    checks = evaluate_http_checks(
+        health=HttpResult(200, {"status": "ok"}, ""),
+        ui=HttpResult(200, {}, "<title>Probability Runtime</title>"),
+        live=HttpResult(
+            200,
+            {"ok": True, "monitor": {"orderbooks": [{"id": 1}]}},
+            "",
+        ),
+        probabilities=HttpResult(
+            200,
+            {
+                "ok": True,
+                "state": "OFFLOAD_BLOCKED",
+                "rows": [],
+                "lanes": {"NOWCAST": 8},
+                "last_good_rows": [{"contract": "BTC 5m UP"}],
+                "offload": {
+                    "reason_codes": [
+                        "runtime_not_ready",
+                        "insufficient_healthy_cycles",
+                    ]
+                },
+            },
+            "",
+        ),
+    )
+
+    probability_check = checks[-1]
+    assert probability_check.ok is True
+    assert probability_check.detail == "probability runtime warm"
+
+
 class FakeRunner:
     def __init__(self) -> None:
         self.calls: list[tuple[str, ...]] = []

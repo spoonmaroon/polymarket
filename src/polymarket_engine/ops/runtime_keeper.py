@@ -406,11 +406,9 @@ def evaluate_http_checks(
         and live_gates_ok
         and len(live_orderbooks) > 0
     )
-    probabilities_ok = (
-        probabilities.status_code == 200
-        and probabilities.json_payload.get("ok") is True
-        and probabilities.json_payload.get("state") == "OK"
-        and len(probability_rows) > 0
+    probabilities_ok = _probabilities_recovery_ok(
+        probabilities,
+        probability_row_count=len(probability_rows),
     )
     live_detail = _live_check_detail(
         live=live,
@@ -533,6 +531,36 @@ def _nested_ok(value: object, *, default: bool) -> bool:
     return default
 
 
+def _probabilities_recovery_ok(
+    probabilities: HttpResult,
+    *,
+    probability_row_count: int,
+) -> bool:
+    if probabilities.status_code != 200 or probabilities.json_payload.get("ok") is not True:
+        return False
+    state = probabilities.json_payload.get("state")
+    if state == "OK":
+        return probability_row_count > 0
+    if state != "OFFLOAD_BLOCKED":
+        return False
+
+    offload = probabilities.json_payload.get("offload")
+    reason_codes: set[str] = set()
+    if isinstance(offload, dict):
+        reason_codes = {
+            str(reason)
+            for reason in offload.get("reason_codes", [])
+            if reason is not None
+        }
+    if "no_probability_inputs" in reason_codes:
+        return False
+
+    lanes = probabilities.json_payload.get("lanes")
+    nowcast_count = lanes.get("NOWCAST", 0) if isinstance(lanes, dict) else 0
+    last_good_rows = probabilities.json_payload.get("last_good_rows") or []
+    return probability_row_count > 0 or bool(last_good_rows) or int(nowcast_count or 0) > 0
+
+
 def _failed_check_mentions(checks: Sequence[KeeperCheck], *needles: str) -> bool:
     normalized_needles = tuple(needle.lower() for needle in needles)
     return any(
@@ -569,6 +597,8 @@ def _probability_check_detail(
     probability_row_count: int,
 ) -> str:
     if probabilities_ok:
+        if probabilities.json_payload.get("state") == "OFFLOAD_BLOCKED":
+            return "probability runtime warm"
         return "probability rows present"
     if _http_error_message(probabilities) is not None or _http_response_failed(probabilities):
         return _http_failure_detail(probabilities)
