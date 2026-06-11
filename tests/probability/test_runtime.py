@@ -225,6 +225,12 @@ def test_build_probability_payload_does_not_compute_blocked_hot_inputs(
     assert "sigma_invalid" in row["block_reasons"]
     assert row["model_version"] is None
     assert row["model_version"] != "ensemble-v1"
+    assert row["threshold"] == 103_950.0
+    assert row["threshold_price"] == 103_950.0
+    assert row["settlement_price"] == 104_000.0
+    assert row["executable_price"] == 0.64
+    assert row["source_age_ms"] == 1000
+    assert row["book_age_ms"] == 1000
 
 
 def test_compute_and_persist_rows_does_not_persist_blocked_inputs() -> None:
