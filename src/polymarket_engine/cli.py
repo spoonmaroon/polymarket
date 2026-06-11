@@ -256,6 +256,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     runtime_keeper.add_argument("--data-dir", type=Path, default=Path("/home/ender/polymarket-data"))
     runtime_keeper.add_argument("--api-base-url", default="http://127.0.0.1:8000")
     runtime_keeper.add_argument(
+        "--compose-file",
+        type=Path,
+        action="append",
+        default=None,
+        help="Docker Compose file to use. Repeatable, preserving order.",
+    )
+    runtime_keeper.add_argument(
         "--required-service",
         action="append",
         default=None,
@@ -622,6 +629,7 @@ def _run_runtime_keeper(args: argparse.Namespace) -> int:
         repo=args.repo,
         data_dir=args.data_dir,
         api_base_url=args.api_base_url,
+        compose_files=tuple(args.compose_file or ()),
         required_services=tuple(args.required_service or DEFAULT_REQUIRED_SERVICES),
         optional_containers=tuple(args.optional_container or DEFAULT_OPTIONAL_CONTAINERS),
         loop_interval_seconds=args.loop_interval_seconds,

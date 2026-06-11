@@ -513,7 +513,11 @@ Run one manual check:
 polymarket-engine runtime-keeper \
   --repo /home/ender/polymarket \
   --data-dir /home/ender/polymarket-data \
-  --api-base-url http://127.0.0.1:8000
+  --api-base-url http://127.0.0.1:8000 \
+  --compose-file /home/ender/polymarket/deploy/collector/docker-compose.yml \
+  --compose-file /home/ender/polymarket/deploy/collector/docker-compose.thepc-gpu-api.yml \
+  --required-service api \
+  --required-service gpu-probability-worker
 ```
 
 Run the Mac tunnel check on the Mac:

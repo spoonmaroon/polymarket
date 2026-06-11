@@ -464,6 +464,10 @@ def test_parse_runtime_keeper_args() -> None:
             "/home/ender/polymarket-data",
             "--api-base-url",
             "http://127.0.0.1:8000",
+            "--compose-file",
+            "/home/ender/polymarket/deploy/collector/docker-compose.yml",
+            "--compose-file",
+            "/home/ender/polymarket/deploy/collector/docker-compose.thepc-gpu-api.yml",
             "--optional-container",
             "polymarket-rust-collector-gpu-probability-worker-1",
             "--loop",
@@ -476,6 +480,10 @@ def test_parse_runtime_keeper_args() -> None:
     assert args.repo == Path("/home/ender/polymarket")
     assert args.data_dir == Path("/home/ender/polymarket-data")
     assert args.api_base_url == "http://127.0.0.1:8000"
+    assert args.compose_file == [
+        Path("/home/ender/polymarket/deploy/collector/docker-compose.yml"),
+        Path("/home/ender/polymarket/deploy/collector/docker-compose.thepc-gpu-api.yml"),
+    ]
     assert args.optional_container == [
         "polymarket-rust-collector-gpu-probability-worker-1",
     ]

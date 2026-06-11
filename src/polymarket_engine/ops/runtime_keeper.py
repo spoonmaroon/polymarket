@@ -46,6 +46,7 @@ class RuntimeKeeperConfig:
     repo: Path = DEFAULT_REPO
     data_dir: Path = DEFAULT_DATA_DIR
     env_file: Path | None = None
+    compose_files: tuple[Path, ...] = ()
     api_base_url: str = "http://127.0.0.1:8000"
     required_services: tuple[str, ...] = DEFAULT_REQUIRED_SERVICES
     optional_containers: tuple[str, ...] = DEFAULT_OPTIONAL_CONTAINERS
@@ -65,6 +66,11 @@ class RuntimeKeeperConfig:
         )
         object.__setattr__(
             self,
+            "compose_files",
+            self.compose_files or (self.repo / "deploy" / "collector" / "docker-compose.yml",),
+        )
+        object.__setattr__(
+            self,
             "recovery_status_path",
             self.recovery_status_path or self.data_dir / "live" / "recovery_status.json",
         )
@@ -76,7 +82,7 @@ class RuntimeKeeperConfig:
 
     @property
     def compose_file(self) -> Path:
-        return self.repo / "deploy" / "collector" / "docker-compose.yml"
+        return self.compose_files[0]
 
     @property
     def report_path(self) -> Path:
@@ -339,13 +345,17 @@ def _parse_json_payload(body: str, content_type: str) -> dict[str, Any]:
 
 
 def compose_command(config: RuntimeKeeperConfig, *args: str) -> tuple[str, ...]:
+    compose_file_args = tuple(
+        part
+        for compose_file in config.compose_files
+        for part in ("-f", str(compose_file))
+    )
     return (
         "docker",
         "compose",
         "--env-file",
         str(config.env_file),
-        "-f",
-        str(config.compose_file),
+        *compose_file_args,
         *args,
     )
 

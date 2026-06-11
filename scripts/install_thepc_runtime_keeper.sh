@@ -28,6 +28,10 @@ exec "\$ENGINE_BIN" runtime-keeper \\
   --repo "$REPO" \\
   --data-dir "$DATA_DIR" \\
   --api-base-url "http://127.0.0.1:8000" \\
+  --compose-file "$REPO/deploy/collector/docker-compose.yml" \\
+  --compose-file "$REPO/deploy/collector/docker-compose.thepc-gpu-api.yml" \\
+  --required-service "api" \\
+  --required-service "gpu-probability-worker" \\
   --loop \\
   --loop-interval-seconds 30
 EOF

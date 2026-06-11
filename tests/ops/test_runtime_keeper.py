@@ -33,6 +33,9 @@ def test_runtime_keeper_defaults_match_thepc_layout() -> None:
     assert config.repo == Path("/home/ender/polymarket")
     assert config.data_dir == Path("/home/ender/polymarket-data")
     assert config.compose_file == Path("/home/ender/polymarket/deploy/collector/docker-compose.yml")
+    assert config.compose_files == (
+        Path("/home/ender/polymarket/deploy/collector/docker-compose.yml"),
+    )
     assert config.env_file == Path("/home/ender/polymarket/deploy/collector/.env")
     assert config.api_base_url == "http://127.0.0.1:8000"
     assert config.required_services == ("collector", "normalizer", "outcome-refresh", "api")
@@ -62,6 +65,28 @@ def test_compose_command_uses_env_file_and_compose_file() -> None:
         "/repo/.env",
         "-f",
         "/repo/deploy/collector/docker-compose.yml",
+        "up",
+        "-d",
+        "api",
+    )
+
+
+def test_compose_command_uses_all_configured_compose_files() -> None:
+    config = RuntimeKeeperConfig(
+        repo=Path("/repo"),
+        env_file=Path("/repo/.env"),
+        compose_files=(Path("/repo/base.yml"), Path("/repo/thepc.yml")),
+    )
+
+    assert compose_command(config, "up", "-d", "api") == (
+        "docker",
+        "compose",
+        "--env-file",
+        "/repo/.env",
+        "-f",
+        "/repo/base.yml",
+        "-f",
+        "/repo/thepc.yml",
         "up",
         "-d",
         "api",
