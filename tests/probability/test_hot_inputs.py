@@ -186,6 +186,72 @@ def test_hot_probability_inputs_skip_quality_blocked_states(tmp_path: Path) -> N
     assert [row.contract_id for row in payload.inputs] == ["btc-market:UP"]
 
 
+@pytest.mark.parametrize(
+    ("invalid_case", "expected_sigma_tau", "expected_failure_reason"),
+    [
+        ("missing", None, "sigma_missing"),
+        ("nan", None, "sigma_nonfinite"),
+        ("zero", 0.0, "sigma_non_positive"),
+        ("stale", 0.002, "stale_reference_source"),
+    ],
+)
+def test_hot_probability_inputs_blocks_invalid_sigma_with_diagnostics(
+    tmp_path: Path,
+    invalid_case: str,
+    expected_sigma_tau: float | None,
+    expected_failure_reason: str,
+) -> None:
+    out_path = tmp_path / "inputs.json"
+    base_state = _state("UP")
+    if invalid_case == "missing":
+        invalid_sigma_state = replace(base_state, sigma_tau=None)
+    elif invalid_case == "nan":
+        invalid_sigma_state = replace(base_state, sigma_tau=float("nan"))
+    elif invalid_case == "zero":
+        invalid_sigma_state = replace(base_state, sigma_tau=0.0)
+    elif invalid_case == "stale":
+        invalid_sigma_state = replace(
+            base_state,
+            volatility_regime="stale_reference_source",
+        )
+    else:
+        raise AssertionError(f"unknown invalid sigma case: {invalid_case}")
+
+    write_hot_probability_inputs(
+        out_path=out_path,
+        states=(invalid_sigma_state,),
+        generated_at=datetime.now(timezone.utc),
+    )
+
+    raw_text = out_path.read_text()
+    raw = json.loads(raw_text)
+    row = raw["inputs"][0]
+
+    assert "NaN" not in raw_text
+    assert row["sigma_tau"] == expected_sigma_tau
+    assert row["sigma_valid"] is False
+    assert row["sigma_age_ms"] == 0
+    assert row["last_sigma_update_ts"] == "2026-05-31T20:03:00+00:00"
+    assert row["short_vol"] == 0.01
+    assert row["medium_vol"] == 0.012
+    assert row["long_vol"] == 0.015
+    assert row["volatility_floor_applied"] is False
+    assert row["regime_multiplier_applied"] is False
+    assert row["failure_reason"] == expected_failure_reason
+    assert row["input_sample_count"] == 2
+    assert row["probability_state"] == "BLOCKED_OR_STALE"
+    assert row["offload_allowed"] is False
+    assert "sigma_invalid" in row["block_reasons"]
+
+    payload = read_hot_probability_inputs(out_path=out_path, limit=10, max_age_seconds=60)
+
+    assert payload.skipped == 0
+    assert payload.inputs[0].probability_state == "BLOCKED_OR_STALE"
+    assert payload.inputs[0].sigma_valid is False
+    assert payload.inputs[0].offload_allowed is False
+    assert "sigma_invalid" in payload.inputs[0].block_reasons
+
+
 def test_hot_probability_inputs_blocks_threshold_mutation_under_same_rule_hash(
     tmp_path: Path,
 ) -> None:

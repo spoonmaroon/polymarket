@@ -37,6 +37,19 @@ class ProbabilityRuntimeInput:
     probability_state: ProbabilityState = "READY"
     k_stable: bool = True
     threshold_diagnostics: ThresholdDiagnostics | None = None
+    sigma_tau: float | None = None
+    sigma_valid: bool = True
+    sigma_age_ms: int = 0
+    last_sigma_update_ts: datetime | None = None
+    short_vol: float | None = None
+    medium_vol: float | None = None
+    long_vol: float | None = None
+    volatility_floor_applied: bool = False
+    regime_multiplier_applied: bool = False
+    failure_reason: str | None = None
+    input_sample_count: int = 0
+    offload_allowed: bool = True
+    block_reasons: tuple[str, ...] = ()
 
 
 def contract_label(*, asset: str, side: str, start_ts: datetime, expiry_ts: datetime) -> str:

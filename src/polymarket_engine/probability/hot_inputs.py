@@ -3,12 +3,13 @@ from __future__ import annotations
 import json
 import math
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence, cast
 
 from polymarket_engine.domain.market_state import DecisionState
+from polymarket_engine.features.volatility import is_volatility_failure_regime
 from polymarket_engine.probability.runtime_inputs import (
     ProbabilityRuntimeInput,
     ProbabilityState,
@@ -21,6 +22,8 @@ from polymarket_engine.storage.atomic import durable_replace
 HOT_PROBABILITY_INPUTS_SCHEMA_VERSION = "polymarket-hot-probability-inputs-v1"
 MAX_FUTURE_GENERATED_AT_SECONDS = 5.0
 THRESHOLD_MUTATION_ERROR = "THRESHOLD_MUTATION_ERROR"
+SIGMA_INVALID_BLOCK_REASON = "sigma_invalid"
+DIAGNOSTIC_SIGMA_TAU_FLOOR = 0.00005
 
 
 @dataclass(frozen=True)
@@ -35,6 +38,21 @@ class HotProbabilityInputPayload:
 class _ThresholdAssignment:
     threshold: float
     rule_hash: str
+
+
+@dataclass(frozen=True)
+class _SigmaDiagnostics:
+    sigma_tau: float | None
+    sigma_valid: bool
+    sigma_age_ms: int
+    last_sigma_update_ts: datetime | None
+    short_vol: float | None
+    medium_vol: float | None
+    long_vol: float | None
+    volatility_floor_applied: bool
+    regime_multiplier_applied: bool
+    failure_reason: str | None
+    input_sample_count: int
 
 
 def write_hot_probability_inputs(
@@ -52,21 +70,31 @@ def write_hot_probability_inputs(
         if state.data_quality_flags:
             skipped += 1
             continue
-        probability_input = ProbabilityInput.from_decision_state(state)
+        sigma_diagnostics = _sigma_diagnostics(state)
+        probability_source_state = state
+        if not sigma_diagnostics.sigma_valid:
+            probability_source_state = replace(state, sigma_tau=DIAGNOSTIC_SIGMA_TAU_FLOOR)
+        probability_input = ProbabilityInput.from_decision_state(probability_source_state)
         previous_assignment = threshold_assignments.get(state.contract.contract_id)
         threshold_diagnostics = _threshold_diagnostics(
             state=state,
             previous_assignment=previous_assignment,
         )
         probability_state: ProbabilityState = "READY"
+        offload_allowed = True
         k_stable = True
         flags = ("OK",)
+        block_reasons: tuple[str, ...] = ()
         threshold_mutated_without_rule_change = (
             previous_assignment is not None
             and previous_assignment.rule_hash == state.contract.rule_hash
             and previous_assignment.threshold != state.threshold
         )
-        if threshold_mutated_without_rule_change:
+        if not sigma_diagnostics.sigma_valid:
+            probability_state = "BLOCKED_OR_STALE"
+            offload_allowed = False
+            block_reasons = (SIGMA_INVALID_BLOCK_REASON,)
+        elif threshold_mutated_without_rule_change:
             probability_state = "BLOCKED"
             k_stable = False
             flags = (THRESHOLD_MUTATION_ERROR,)
@@ -92,6 +120,19 @@ def write_hot_probability_inputs(
             probability_state=probability_state,
             k_stable=k_stable,
             threshold_diagnostics=threshold_diagnostics,
+            sigma_tau=sigma_diagnostics.sigma_tau,
+            sigma_valid=sigma_diagnostics.sigma_valid,
+            sigma_age_ms=sigma_diagnostics.sigma_age_ms,
+            last_sigma_update_ts=sigma_diagnostics.last_sigma_update_ts,
+            short_vol=sigma_diagnostics.short_vol,
+            medium_vol=sigma_diagnostics.medium_vol,
+            long_vol=sigma_diagnostics.long_vol,
+            volatility_floor_applied=sigma_diagnostics.volatility_floor_applied,
+            regime_multiplier_applied=sigma_diagnostics.regime_multiplier_applied,
+            failure_reason=sigma_diagnostics.failure_reason,
+            input_sample_count=sigma_diagnostics.input_sample_count,
+            offload_allowed=offload_allowed,
+            block_reasons=block_reasons,
         )
         rows.append(_runtime_input_to_json_dict(runtime_input))
 
@@ -185,9 +226,26 @@ def _runtime_input_to_json_dict(runtime_input: ProbabilityRuntimeInput) -> dict[
         "expiry_ts": runtime_input.expiry_ts.isoformat(),
         "flags": list(runtime_input.flags),
         "k_stable": runtime_input.k_stable,
+        "block_reasons": list(runtime_input.block_reasons),
+        "failure_reason": runtime_input.failure_reason,
+        "input_sample_count": runtime_input.input_sample_count,
+        "last_sigma_update_ts": (
+            None
+            if runtime_input.last_sigma_update_ts is None
+            else runtime_input.last_sigma_update_ts.isoformat()
+        ),
+        "long_vol": runtime_input.long_vol,
+        "medium_vol": runtime_input.medium_vol,
+        "offload_allowed": runtime_input.offload_allowed,
         "probability_state": runtime_input.probability_state,
         "probability_input": runtime_input.probability_input.to_json_dict(),
+        "regime_multiplier_applied": runtime_input.regime_multiplier_applied,
+        "short_vol": runtime_input.short_vol,
+        "sigma_age_ms": runtime_input.sigma_age_ms,
+        "sigma_tau": runtime_input.sigma_tau,
+        "sigma_valid": runtime_input.sigma_valid,
         "start_ts": runtime_input.start_ts.isoformat(),
+        "volatility_floor_applied": runtime_input.volatility_floor_applied,
     }
     if runtime_input.market_slug:
         row["market_slug"] = runtime_input.market_slug
@@ -220,6 +278,31 @@ def _runtime_input_from_json_dict(value: object) -> ProbabilityRuntimeInput:
         threshold_diagnostics = _optional_threshold_diagnostics(
             value.get("threshold_diagnostics")
         )
+        sigma_tau = _optional_float(value.get("sigma_tau"), "sigma_tau")
+        sigma_valid = _optional_bool(value.get("sigma_valid"), "sigma_valid")
+        sigma_age_ms = _optional_int(value.get("sigma_age_ms"), "sigma_age_ms")
+        last_sigma_update_ts = _optional_datetime(
+            value.get("last_sigma_update_ts"),
+            "last_sigma_update_ts",
+        )
+        short_vol = _optional_float(value.get("short_vol"), "short_vol")
+        medium_vol = _optional_float(value.get("medium_vol"), "medium_vol")
+        long_vol = _optional_float(value.get("long_vol"), "long_vol")
+        volatility_floor_applied = _optional_bool(
+            value.get("volatility_floor_applied"),
+            "volatility_floor_applied",
+        )
+        regime_multiplier_applied = _optional_bool(
+            value.get("regime_multiplier_applied"),
+            "regime_multiplier_applied",
+        )
+        failure_reason = _optional_str(value.get("failure_reason"), "failure_reason")
+        input_sample_count = _optional_int(
+            value.get("input_sample_count"),
+            "input_sample_count",
+        )
+        offload_allowed = _optional_bool(value.get("offload_allowed"), "offload_allowed")
+        block_reasons = _string_tuple(value.get("block_reasons"), "block_reasons")
     except (TypeError, ValueError) as exc:
         raise ValueError(f"invalid input row: {exc}") from exc
     return ProbabilityRuntimeInput(
@@ -234,6 +317,23 @@ def _runtime_input_from_json_dict(value: object) -> ProbabilityRuntimeInput:
         probability_state=probability_state,
         k_stable=True if k_stable is None else k_stable,
         threshold_diagnostics=threshold_diagnostics,
+        sigma_tau=sigma_tau,
+        sigma_valid=True if sigma_valid is None else sigma_valid,
+        sigma_age_ms=0 if sigma_age_ms is None else sigma_age_ms,
+        last_sigma_update_ts=last_sigma_update_ts,
+        short_vol=short_vol,
+        medium_vol=medium_vol,
+        long_vol=long_vol,
+        volatility_floor_applied=(
+            False if volatility_floor_applied is None else volatility_floor_applied
+        ),
+        regime_multiplier_applied=(
+            False if regime_multiplier_applied is None else regime_multiplier_applied
+        ),
+        failure_reason=failure_reason,
+        input_sample_count=0 if input_sample_count is None else input_sample_count,
+        offload_allowed=True if offload_allowed is None else offload_allowed,
+        block_reasons=block_reasons,
     )
 
 
@@ -255,6 +355,54 @@ def _probability_input_from_json_dict(value: object) -> ProbabilityInput:
         book_age_ms=_required_int(value, "book_age_ms"),
         z_path=_required_float(value, "z_path"),
     )
+
+
+def _sigma_diagnostics(state: DecisionState) -> _SigmaDiagnostics:
+    raw_sigma = state.sigma_tau
+    sigma_tau = _finite_optional_float(raw_sigma)
+    failure_reason = _sigma_failure_reason(
+        sigma_tau=raw_sigma,
+        volatility_regime=state.volatility_regime,
+    )
+    last_sigma_update_ts = state.asof_ts if state.realized_returns else None
+    sigma_age_ms = 0 if last_sigma_update_ts is not None else 0
+    return _SigmaDiagnostics(
+        sigma_tau=sigma_tau,
+        sigma_valid=failure_reason is None,
+        sigma_age_ms=sigma_age_ms,
+        last_sigma_update_ts=last_sigma_update_ts,
+        short_vol=state.short_realized_vol,
+        medium_vol=state.medium_realized_vol,
+        long_vol=state.long_realized_vol,
+        volatility_floor_applied=False,
+        regime_multiplier_applied=state.volatility_regime in {"expanding", "contracting"},
+        failure_reason=failure_reason,
+        input_sample_count=len(state.realized_returns),
+    )
+
+
+def _sigma_failure_reason(
+    *,
+    sigma_tau: float | None,
+    volatility_regime: str | None,
+) -> str | None:
+    if sigma_tau is None:
+        return "sigma_missing"
+    if not math.isfinite(sigma_tau):
+        return "sigma_nonfinite"
+    if sigma_tau <= 0:
+        return "sigma_non_positive"
+    if is_volatility_failure_regime(volatility_regime):
+        return volatility_regime
+    return None
+
+
+def _finite_optional_float(value: float | None) -> float | None:
+    if value is None:
+        return None
+    if not math.isfinite(value):
+        return None
+    return float(value)
 
 
 def _require_aware_datetime(value: datetime, field_name: str) -> datetime:
@@ -400,6 +548,12 @@ def _parse_datetime(value: object, field_name: str) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
+def _optional_datetime(value: object, field_name: str) -> datetime | None:
+    if value is None:
+        return None
+    return _parse_datetime(value, field_name)
+
+
 def _required_str(value: dict[str, Any], field_name: str) -> str:
     item = value.get(field_name)
     if not isinstance(item, str) or not item:
@@ -420,6 +574,14 @@ def _optional_bool(value: object, field_name: str) -> bool | None:
         return None
     if not isinstance(value, bool):
         raise ValueError(f"{field_name} must be a boolean when set")
+    return value
+
+
+def _optional_int(value: object, field_name: str) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"{field_name} must be a nonnegative integer when set")
     return value
 
 
@@ -460,3 +622,14 @@ def _flags(value: object) -> tuple[str, ...]:
     if not all(isinstance(flag, str) and flag for flag in flags):
         raise ValueError("flags must contain non-empty strings")
     return flags
+
+
+def _string_tuple(value: object, field_name: str) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise ValueError(f"{field_name} must be an array when set")
+    items = tuple(value)
+    if not all(isinstance(item, str) and item for item in items):
+        raise ValueError(f"{field_name} must contain non-empty strings")
+    return items
