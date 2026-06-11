@@ -16,8 +16,9 @@ use crate::{
     render,
     state::{AppState, MainTab},
     status::{
-        RuntimeDisplayLag, RuntimeGates, RuntimeLive, RuntimeMonitor, RuntimeOutcomes,
-        RuntimeProbabilities, RuntimeStatus, RuntimeVolatility,
+        RuntimeDisplayLag, RuntimeGates, RuntimeLive, RuntimeMonitor, RuntimeOffloadSummary,
+        RuntimeOutcomes, RuntimeProbabilities, RuntimeRecoverySummary, RuntimeStatus,
+        RuntimeVolatility,
     },
 };
 
@@ -168,6 +169,8 @@ struct RuntimeUpdate {
     probabilities: Option<RuntimeProbabilities>,
     outcomes: Option<RuntimeOutcomes>,
     display_lag: Option<RuntimeDisplayLag>,
+    recovery: Option<RuntimeRecoverySummary>,
+    offload: Option<RuntimeOffloadSummary>,
     error: Option<String>,
 }
 
@@ -294,6 +297,14 @@ fn apply_runtime_update(app: &mut AppState, update: RuntimeUpdate) -> bool {
         changed |= replace_if_changed(&mut app.runtime_display_lag, display_lag);
     }
 
+    if let Some(recovery) = update.recovery {
+        changed |= replace_if_changed(&mut app.runtime_recovery, recovery);
+    }
+
+    if let Some(offload) = update.offload {
+        changed |= replace_if_changed(&mut app.runtime_offload, offload);
+    }
+
     if app.runtime_error != update.error {
         app.runtime_error = update.error;
         changed = true;
@@ -323,6 +334,8 @@ async fn poll_runtime(client: &EngineClient) -> RuntimeUpdate {
     let mut probabilities = None;
     let mut outcomes = None;
     let mut display_lag = None;
+    let mut recovery = None;
+    let mut offload = None;
 
     let (live_result, probabilities_result, outcomes_result) = tokio::join!(
         client.live(8),
@@ -336,11 +349,12 @@ async fn poll_runtime(client: &EngineClient) -> RuntimeUpdate {
             gates = Some(next_live.gates);
             monitor = Some(next_live.monitor);
             volatility = Some(next_live.volatility);
-            let mut next_display_lag =
-                display_lag_with_receive_ms(next_live.latency, next_live.server_sent_at);
-            next_display_lag.recovery = next_live.recovery;
-            next_display_lag.offload = next_live.offload;
-            display_lag = Some(next_display_lag);
+            recovery = meaningful_runtime_recovery(next_live.recovery);
+            offload = meaningful_runtime_offload(next_live.offload);
+            display_lag = Some(display_lag_with_receive_ms(
+                next_live.latency,
+                next_live.server_sent_at,
+            ));
         }
         Err(error) => {
             errors.push(format!("live: {error}"));
@@ -379,6 +393,8 @@ async fn poll_runtime(client: &EngineClient) -> RuntimeUpdate {
         probabilities,
         outcomes,
         display_lag,
+        recovery,
+        offload,
         error: if errors.is_empty() {
             None
         } else {
@@ -429,9 +445,7 @@ fn parse_sse_live_event(event: &str) -> Result<Option<RuntimeLive>> {
 }
 
 fn runtime_update_from_live(live: RuntimeLive) -> RuntimeUpdate {
-    let mut display_lag = display_lag_with_receive_ms(live.latency, live.server_sent_at);
-    display_lag.recovery = live.recovery;
-    display_lag.offload = live.offload;
+    let display_lag = display_lag_with_receive_ms(live.latency, live.server_sent_at);
     RuntimeUpdate {
         status: Some(live.status),
         gates: Some(live.gates),
@@ -440,7 +454,32 @@ fn runtime_update_from_live(live: RuntimeLive) -> RuntimeUpdate {
         probabilities: None,
         outcomes: None,
         display_lag: Some(display_lag),
+        recovery: meaningful_runtime_recovery(live.recovery),
+        offload: meaningful_runtime_offload(live.offload),
         error: None,
+    }
+}
+
+fn meaningful_runtime_recovery(recovery: RuntimeRecoverySummary) -> Option<RuntimeRecoverySummary> {
+    if recovery.runtime_phase.is_empty()
+        && !recovery.ready
+        && recovery.reasons.is_empty()
+        && recovery.boot_id.is_none()
+    {
+        None
+    } else {
+        Some(recovery)
+    }
+}
+
+fn meaningful_runtime_offload(offload: RuntimeOffloadSummary) -> Option<RuntimeOffloadSummary> {
+    if offload.offload_allowed
+        || !offload.reason_codes.is_empty()
+        || !offload.recommended_worker_mode.is_empty()
+    {
+        Some(offload)
+    } else {
+        None
     }
 }
 
@@ -462,6 +501,8 @@ fn runtime_update_from_stream_error(error: &str) -> RuntimeUpdate {
         probabilities: None,
         outcomes: None,
         display_lag: None,
+        recovery: None,
+        offload: None,
         error: if transient {
             None
         } else {
@@ -481,6 +522,8 @@ async fn poll_probability_runtime(client: &EngineClient) -> RuntimeUpdate {
         probabilities: None,
         outcomes: None,
         display_lag: None,
+        recovery: None,
+        offload: None,
         error: None,
     };
 
@@ -506,6 +549,8 @@ async fn poll_outcome_runtime(client: &EngineClient) -> RuntimeUpdate {
         probabilities: None,
         outcomes: None,
         display_lag: None,
+        recovery: None,
+        offload: None,
         error: None,
     };
 
@@ -555,15 +600,16 @@ mod tests {
     use super::{
         OUTCOME_HISTORY_LIMIT, OUTCOME_POLL_INTERVAL, PROBABILITY_POLL_INTERVAL, RuntimeUpdate,
         apply_key, apply_runtime_update, drain_runtime_updates, poll_interval_duration,
-        poll_runtime, runtime_update_from_stream_error,
+        poll_runtime, runtime_update_from_live, runtime_update_from_stream_error,
     };
     use crate::client::EngineClient;
     use crate::{
         state::{AppState, MainTab},
         status::{
-            RuntimeCounts, RuntimeDisplayLag, RuntimeGates, RuntimeMonitor, RuntimeOrderbookRow,
-            RuntimeOutcomeRow, RuntimeOutcomes, RuntimePriceRow, RuntimeProbabilities,
-            RuntimeProbabilityRow, RuntimeStatus,
+            RuntimeCounts, RuntimeDisplayLag, RuntimeGates, RuntimeLive, RuntimeMonitor,
+            RuntimeOffloadSummary, RuntimeOrderbookRow, RuntimeOutcomeRow, RuntimeOutcomes,
+            RuntimePriceRow, RuntimeProbabilities, RuntimeProbabilityRow, RuntimeRecoverySummary,
+            RuntimeStatus,
         },
     };
 
@@ -775,6 +821,78 @@ mod tests {
         assert_eq!(update.error, None);
     }
 
+    #[tokio::test]
+    async fn poll_runtime_carries_recovery_and_offload_summaries() {
+        let engine_api_url = delayed_runtime_api_url(Duration::from_millis(0));
+        let client = EngineClient::new(engine_api_url);
+
+        let update = poll_runtime(&client).await;
+        let mut app = AppState::default();
+        let changed = apply_runtime_update(&mut app, update);
+
+        assert!(changed);
+        assert_eq!(
+            app.runtime_recovery
+                .as_ref()
+                .map(|recovery| recovery.runtime_phase.as_str()),
+            Some("WARMING")
+        );
+        assert_eq!(
+            app.runtime_offload
+                .as_ref()
+                .map(|offload| offload.offload_allowed),
+            Some(false)
+        );
+        assert_eq!(
+            app.runtime_offload
+                .as_ref()
+                .map(|offload| offload.recommended_worker_mode.as_str()),
+            Some("nowcast_only")
+        );
+    }
+
+    #[test]
+    fn runtime_update_from_live_carries_recovery_and_offload_summaries() {
+        let update = runtime_update_from_live(RuntimeLive {
+            ok: false,
+            server_sent_at: None,
+            status: status("state-manager"),
+            gates: RuntimeGates {
+                ok: false,
+                failures: vec!["warmup_active".to_string()],
+            },
+            monitor: monitor("65000.00"),
+            recovery: RuntimeRecoverySummary {
+                runtime_phase: "RECOVERING".to_string(),
+                ready: false,
+                reasons: vec!["warmup_active".to_string()],
+                boot_id: Some("boot-sse".to_string()),
+            },
+            offload: RuntimeOffloadSummary {
+                offload_allowed: false,
+                reason_codes: vec!["runtime_not_ready".to_string()],
+                recommended_worker_mode: "nowcast_only".to_string(),
+            },
+            volatility: Default::default(),
+            latency: RuntimeDisplayLag::default(),
+        });
+
+        assert_eq!(
+            update
+                .recovery
+                .as_ref()
+                .map(|recovery| recovery.runtime_phase.as_str()),
+            Some("RECOVERING")
+        );
+        assert_eq!(
+            update
+                .offload
+                .as_ref()
+                .map(|offload| offload.reason_codes.as_slice()),
+            Some(["runtime_not_ready".to_string()].as_slice())
+        );
+    }
+
     #[test]
     fn drain_runtime_updates_applies_pending_status_gates_monitor_and_errors() {
         let (tx, mut rx) = mpsc::unbounded_channel();
@@ -789,6 +907,8 @@ mod tests {
                 status_age_ms: Some(10),
                 ..RuntimeDisplayLag::default()
             }),
+            recovery: None,
+            offload: None,
             error: Some("status: timeout".to_string()),
         })
         .unwrap();
@@ -805,6 +925,17 @@ mod tests {
             display_lag: Some(RuntimeDisplayLag {
                 status_age_ms: Some(12),
                 ..RuntimeDisplayLag::default()
+            }),
+            recovery: Some(RuntimeRecoverySummary {
+                runtime_phase: "READY".to_string(),
+                ready: true,
+                reasons: Vec::new(),
+                boot_id: Some("boot-2".to_string()),
+            }),
+            offload: Some(RuntimeOffloadSummary {
+                offload_allowed: true,
+                reason_codes: Vec::new(),
+                recommended_worker_mode: "full".to_string(),
             }),
             error: None,
         })
@@ -839,6 +970,18 @@ mod tests {
             app.runtime_display_lag.as_ref().unwrap().status_age_ms,
             Some(12)
         );
+        assert_eq!(
+            app.runtime_recovery
+                .as_ref()
+                .map(|recovery| recovery.runtime_phase.as_str()),
+            Some("READY")
+        );
+        assert_eq!(
+            app.runtime_offload
+                .as_ref()
+                .map(|offload| offload.offload_allowed),
+            Some(true)
+        );
         assert_eq!(app.runtime_error, None);
     }
 
@@ -859,6 +1002,8 @@ mod tests {
                 probabilities: None,
                 outcomes: None,
                 display_lag: None,
+                recovery: None,
+                offload: None,
                 error: None,
             },
         );
@@ -911,6 +1056,8 @@ mod tests {
                 probabilities: None,
                 outcomes: None,
                 display_lag: None,
+                recovery: None,
+                offload: None,
                 error: None,
             },
         );
@@ -993,6 +1140,8 @@ mod tests {
                     }],
                 }),
                 display_lag: None,
+                recovery: None,
+                offload: None,
                 error: None,
             },
         );
@@ -1029,6 +1178,8 @@ mod tests {
                 status_age_ms: Some(12),
                 ..RuntimeDisplayLag::default()
             }),
+            recovery: None,
+            offload: None,
             error: None,
         })
         .unwrap();
@@ -1185,6 +1336,8 @@ mod tests {
                     }],
                     "orderbooks": []
                 },
+                "recovery": {"runtime_phase": "WARMING", "ready": false, "reasons": ["warmup_active"], "boot_id": "boot-1"},
+                "offload": {"offload_allowed": false, "reason_codes": ["runtime_not_ready"], "recommended_worker_mode": "nowcast_only"},
                 "latency": {
                     "status_age_ms": 12,
                     "api_build_ms": 1,

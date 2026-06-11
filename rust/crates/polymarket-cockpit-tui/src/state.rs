@@ -7,8 +7,9 @@ use crate::outcome_view::{
     outcome_display_items, outcome_toggle_target_at,
 };
 use crate::status::{
-    RuntimeDisplayLag, RuntimeGates, RuntimeMonitor, RuntimeOrderbookRow, RuntimeOutcomeRow,
-    RuntimeOutcomes, RuntimePriceRow, RuntimeProbabilities, RuntimeStatus, RuntimeVolatility,
+    RuntimeDisplayLag, RuntimeGates, RuntimeMonitor, RuntimeOffloadSummary, RuntimeOrderbookRow,
+    RuntimeOutcomeRow, RuntimeOutcomes, RuntimePriceRow, RuntimeProbabilities,
+    RuntimeRecoverySummary, RuntimeStatus, RuntimeVolatility,
 };
 
 const EXPIRED_MARKET_HANDOFF_SECONDS: i64 = 60;
@@ -67,6 +68,8 @@ pub struct AppState {
     pub runtime_outcomes: Option<RuntimeOutcomes>,
     pub resolved_outcome_seen_at: HashMap<String, String>,
     pub runtime_display_lag: Option<RuntimeDisplayLag>,
+    pub runtime_recovery: Option<RuntimeRecoverySummary>,
+    pub runtime_offload: Option<RuntimeOffloadSummary>,
     pub runtime_error: Option<String>,
     pub selected_market_key: Option<String>,
     pub selected_outcome_index: Option<usize>,
@@ -89,6 +92,8 @@ impl Default for AppState {
             runtime_outcomes: None,
             resolved_outcome_seen_at: HashMap::new(),
             runtime_display_lag: None,
+            runtime_recovery: None,
+            runtime_offload: None,
             runtime_error: None,
             selected_market_key: None,
             selected_outcome_index: None,

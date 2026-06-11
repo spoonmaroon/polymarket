@@ -29,47 +29,34 @@ pub fn systems_summary_lines(app: &AppState) -> Vec<String> {
         }
     }
 
-    if let Some(lag) = app.runtime_display_lag.as_ref() {
-        if has_runtime_visibility(lag) {
-            let phase = value_or_dash(&lag.recovery.runtime_phase);
-            let offload = if lag.offload.offload_allowed {
-                "ALLOWED"
-            } else {
-                "BLOCKED"
-            };
-            let worker = value_or_dash(&lag.offload.recommended_worker_mode);
-            let boot = lag.recovery.boot_id.as_deref().unwrap_or("-");
-            let reasons = if lag.offload.reason_codes.is_empty() {
-                "-".to_string()
-            } else {
-                lag.offload
-                    .reason_codes
-                    .iter()
-                    .take(2)
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join(",")
-            };
+    if let Some(recovery) = app.runtime_recovery.as_ref() {
+        let phase = value_or_dash(&recovery.runtime_phase);
+        let boot = recovery.boot_id.as_deref().unwrap_or("-");
 
-            lines.push(format!("phase={phase}"));
-            lines.push(format!("offload={offload} reasons={reasons}"));
-            lines.push(format!("worker={worker}"));
-            lines.push(format!("boot={boot}"));
+        lines.push(format!("phase={phase}"));
+        lines.push(format_offload(app.runtime_offload.as_ref()));
+        lines.push(format!(
+            "worker={}",
+            format_worker(app.runtime_offload.as_ref())
+        ));
+        lines.push(format!("boot={boot}"));
 
-            if !lag.recovery.reasons.is_empty() {
-                lines.push(format!(
-                    "recovery_reasons={}",
-                    lag.recovery
-                        .reasons
-                        .iter()
-                        .take(2)
-                        .cloned()
-                        .collect::<Vec<_>>()
-                        .join(",")
-                ));
-            }
+        if !recovery.reasons.is_empty() {
+            lines.push(format!("recovery_reasons={}", first_two(&recovery.reasons)));
         }
+    } else if app
+        .runtime_offload
+        .as_ref()
+        .is_some_and(has_meaningful_offload)
+    {
+        lines.push(format_offload(app.runtime_offload.as_ref()));
+        lines.push(format!(
+            "worker={}",
+            format_worker(app.runtime_offload.as_ref())
+        ));
+    }
 
+    if let Some(lag) = app.runtime_display_lag.as_ref() {
         if let Some(value) = lag.status_age_ms {
             lines.push(format!("status_age_ms={value}"));
         }
@@ -108,14 +95,45 @@ pub fn systems_summary_lines(app: &AppState) -> Vec<String> {
     lines
 }
 
-fn has_runtime_visibility(lag: &crate::status::RuntimeDisplayLag) -> bool {
-    !lag.recovery.runtime_phase.is_empty()
-        || lag.recovery.ready
-        || !lag.recovery.reasons.is_empty()
-        || lag.recovery.boot_id.is_some()
-        || lag.offload.offload_allowed
-        || !lag.offload.reason_codes.is_empty()
-        || !lag.offload.recommended_worker_mode.is_empty()
+fn format_offload(offload: Option<&crate::status::RuntimeOffloadSummary>) -> String {
+    let Some(offload) = offload.filter(|offload| has_meaningful_offload(offload)) else {
+        return "offload=UNKNOWN".to_string();
+    };
+    let state = if offload.offload_allowed {
+        "ALLOWED"
+    } else {
+        "BLOCKED"
+    };
+    format!(
+        "offload={state} reasons={}",
+        first_two_or_dash(&offload.reason_codes)
+    )
+}
+
+fn format_worker(offload: Option<&crate::status::RuntimeOffloadSummary>) -> &str {
+    offload
+        .filter(|offload| has_meaningful_offload(offload))
+        .map_or("-", |offload| {
+            value_or_dash(&offload.recommended_worker_mode)
+        })
+}
+
+fn has_meaningful_offload(offload: &crate::status::RuntimeOffloadSummary) -> bool {
+    offload.offload_allowed
+        || !offload.reason_codes.is_empty()
+        || !offload.recommended_worker_mode.is_empty()
+}
+
+fn first_two(values: &[String]) -> String {
+    values.iter().take(2).cloned().collect::<Vec<_>>().join(",")
+}
+
+fn first_two_or_dash(values: &[String]) -> String {
+    if values.is_empty() {
+        "-".to_string()
+    } else {
+        first_two(values)
+    }
 }
 
 fn value_or_dash(value: &str) -> &str {
@@ -208,23 +226,20 @@ mod tests {
     #[test]
     fn systems_summary_shows_recovery_and_offload_state() {
         let app = AppState {
-            runtime_display_lag: Some(RuntimeDisplayLag {
-                recovery: RuntimeRecoverySummary {
-                    runtime_phase: "WARMING".to_string(),
-                    ready: false,
-                    reasons: vec!["warmup_active".to_string()],
-                    boot_id: Some("boot-1".to_string()),
-                },
-                offload: RuntimeOffloadSummary {
-                    offload_allowed: false,
-                    reason_codes: vec![
-                        "runtime_not_ready".to_string(),
-                        "probability_stale".to_string(),
-                        "ignored_third".to_string(),
-                    ],
-                    recommended_worker_mode: "nowcast_only".to_string(),
-                },
-                ..RuntimeDisplayLag::default()
+            runtime_recovery: Some(RuntimeRecoverySummary {
+                runtime_phase: "WARMING".to_string(),
+                ready: false,
+                reasons: vec!["warmup_active".to_string()],
+                boot_id: Some("boot-1".to_string()),
+            }),
+            runtime_offload: Some(RuntimeOffloadSummary {
+                offload_allowed: false,
+                reason_codes: vec![
+                    "runtime_not_ready".to_string(),
+                    "probability_stale".to_string(),
+                    "ignored_third".to_string(),
+                ],
+                recommended_worker_mode: "nowcast_only".to_string(),
             }),
             ..Default::default()
         };
@@ -236,6 +251,27 @@ mod tests {
         assert!(text.contains("worker=nowcast_only"));
         assert!(text.contains("boot=boot-1"));
         assert!(text.contains("recovery_reasons=warmup_active"));
+    }
+
+    #[test]
+    fn systems_summary_does_not_block_when_recovery_present_and_offload_absent() {
+        let app = AppState {
+            runtime_recovery: Some(RuntimeRecoverySummary {
+                runtime_phase: "WARMING".to_string(),
+                ready: false,
+                reasons: vec!["warmup_active".to_string()],
+                boot_id: Some("boot-1".to_string()),
+            }),
+            ..Default::default()
+        };
+
+        let text = systems_summary_lines(&app).join("\n");
+
+        assert!(text.contains("phase=WARMING"));
+        assert!(text.contains("boot=boot-1"));
+        assert!(text.contains("recovery_reasons=warmup_active"));
+        assert!(text.contains("offload=UNKNOWN"));
+        assert!(!text.contains("offload=BLOCKED"));
     }
 
     #[test]

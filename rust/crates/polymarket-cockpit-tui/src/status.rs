@@ -128,10 +128,6 @@ pub struct RuntimeDisplayLag {
     pub source_to_observed_ms: Option<u64>,
     pub observed_to_state_us: Option<u64>,
     pub tui_receive_lag_ms: Option<u64>,
-    #[serde(default)]
-    pub recovery: RuntimeRecoverySummary,
-    #[serde(default)]
-    pub offload: RuntimeOffloadSummary,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
