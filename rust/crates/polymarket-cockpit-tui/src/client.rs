@@ -72,14 +72,32 @@ impl EngineClient {
         T: serde::de::DeserializeOwned,
     {
         let url = format!("{}{}", self.base_url, path);
-        Ok(self
-            .client
-            .get(url)
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?)
+        let response = self.client.get(url).send().await?;
+        let status = response.status();
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        let body = response.text().await?;
+        if !status.is_success() {
+            anyhow::bail!(
+                "API_BLOCKED status={} content_type={} body_prefix={}",
+                status.as_u16(),
+                content_type,
+                body.chars().take(120).collect::<String>()
+            );
+        }
+        if !content_type.contains("json") {
+            anyhow::bail!(
+                "API_BLOCKED status={} content_type={} body_prefix={}",
+                status.as_u16(),
+                content_type,
+                body.chars().take(120).collect::<String>()
+            );
+        }
+        Ok(serde_json::from_str(&body)?)
     }
 }
 
@@ -116,6 +134,36 @@ mod tests {
 
         assert!(result.is_err());
         assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[tokio::test]
+    async fn status_request_classifies_non_json_body() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let _server = thread::spawn(move || {
+            let Ok((mut stream, _peer)) = listener.accept() else {
+                return;
+            };
+            let mut buffer = [0; 512];
+            let _ = stream.read(&mut buffer).unwrap();
+            let body = "<html>blocked</html>";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+
+        let client = EngineClient::with_request_timeout(
+            format!("http://{address}"),
+            Duration::from_millis(500),
+        );
+
+        let result = client.status().await;
+
+        assert!(result.is_err());
+        assert!(format!("{:#}", result.unwrap_err()).contains("API_BLOCKED"));
     }
 
     #[tokio::test]
