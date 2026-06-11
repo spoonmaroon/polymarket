@@ -186,6 +186,34 @@ def test_hot_probability_inputs_skip_quality_blocked_states(tmp_path: Path) -> N
     assert [row.contract_id for row in payload.inputs] == ["btc-market:UP"]
 
 
+def test_hot_probability_inputs_blocks_threshold_mutation_under_same_rule_hash(
+    tmp_path: Path,
+) -> None:
+    out_path = tmp_path / "inputs.json"
+    mutated = replace(_state("UP"), state_id="state-UP-mutated", threshold=103_951.0)
+
+    write_hot_probability_inputs(
+        out_path=out_path,
+        states=(_state("UP"), mutated),
+        generated_at=datetime.now(timezone.utc),
+    )
+
+    raw = json.loads(out_path.read_text())
+    row = raw["inputs"][1]
+
+    assert raw["skipped"] == 0
+    assert row["contract_id"] == "btc-market:UP"
+    assert row["probability_state"] == "BLOCKED"
+    assert "THRESHOLD_MUTATION_ERROR" in row["flags"]
+    assert row["k_stable"] is False
+    assert row["threshold_diagnostics"]["previous_K"] == 103_950.0
+    assert row["threshold_diagnostics"]["new_K"] == 103_951.0
+    assert row["threshold_diagnostics"]["rule_hash"] == "hash"
+    assert row["threshold_diagnostics"]["reason_for_change"] == (
+        "threshold_changed_without_rule_hash_change"
+    )
+
+
 def test_read_hot_probability_inputs_enforces_limit(tmp_path: Path) -> None:
     out_path = tmp_path / "inputs.json"
 
