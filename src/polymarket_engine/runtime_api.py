@@ -26,6 +26,8 @@ from polymarket_engine.validation.outcomes import build_outcome_history_payload
 
 NORMALIZED_HEALTH_SCHEMA_VERSION = "polymarket-normalized-health-v1"
 VOLATILITY_STATUS_SCHEMA_VERSION = "polymarket-volatility-runtime-v1"
+BUG_REPORT_MAX_REPORTS = 100
+BUG_REPORT_MAX_FILE_BYTES = 1_000_000
 _PROBABILITY_EVENT_ROWS_CACHE: dict[
     tuple[str, int, int, int],
     tuple[list[dict[str, Any]], list[str]],
@@ -567,6 +569,7 @@ def _last_probability_event_id(rows: Sequence[object]) -> str | None:
 
 
 def _bug_reports_payload(*, bug_report_dir: Path, limit: int) -> dict[str, Any]:
+    clamped_limit = min(max(limit, 0), BUG_REPORT_MAX_REPORTS)
     if not bug_report_dir.exists():
         error = f"{bug_report_dir} missing"
         return {
@@ -574,6 +577,9 @@ def _bug_reports_payload(*, bug_report_dir: Path, limit: int) -> dict[str, Any]:
             "ok": False,
             "state": "MISSING",
             "path": str(bug_report_dir),
+            "limit": clamped_limit,
+            "max_reports": BUG_REPORT_MAX_REPORTS,
+            "max_file_bytes": BUG_REPORT_MAX_FILE_BYTES,
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "reports": [],
             "errors": [error],
@@ -585,6 +591,9 @@ def _bug_reports_payload(*, bug_report_dir: Path, limit: int) -> dict[str, Any]:
             "ok": False,
             "state": "INVALID",
             "path": str(bug_report_dir),
+            "limit": clamped_limit,
+            "max_reports": BUG_REPORT_MAX_REPORTS,
+            "max_file_bytes": BUG_REPORT_MAX_FILE_BYTES,
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "reports": [],
             "errors": [error],
@@ -592,11 +601,10 @@ def _bug_reports_payload(*, bug_report_dir: Path, limit: int) -> dict[str, Any]:
 
     reports: list[dict[str, Any]] = []
     errors: list[str] = []
-    limit = max(limit, 0)
-    for path in _newest_json_files(bug_report_dir):
-        if len(reports) >= limit:
+    for path, file_size in _newest_json_files(bug_report_dir):
+        if len(reports) >= clamped_limit:
             break
-        payload, error = _read_bug_report_file(path)
+        payload, error = _read_bug_report_file(path, file_size=file_size)
         if payload is None:
             errors.append(error)
             continue
@@ -612,24 +620,42 @@ def _bug_reports_payload(*, bug_report_dir: Path, limit: int) -> dict[str, Any]:
         "ok": not errors,
         "state": state,
         "path": str(bug_report_dir),
+        "limit": clamped_limit,
+        "max_reports": BUG_REPORT_MAX_REPORTS,
+        "max_file_bytes": BUG_REPORT_MAX_FILE_BYTES,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "reports": reports,
         "errors": errors,
     }
 
 
-def _newest_json_files(path: Path) -> list[Path]:
-    candidates: list[tuple[int, str, Path]] = []
+def _newest_json_files(path: Path) -> list[tuple[Path, int]]:
+    candidates: list[tuple[int, str, Path, int]] = []
     for candidate in path.glob("*.json"):
         try:
-            mtime_ns = candidate.stat().st_mtime_ns
+            stat = candidate.stat()
         except OSError:
             continue
-        candidates.append((mtime_ns, candidate.name, candidate))
-    return [candidate for _mtime_ns, _name, candidate in sorted(candidates, reverse=True)]
+        candidates.append((stat.st_mtime_ns, candidate.name, candidate, stat.st_size))
+    return [
+        (candidate, file_size)
+        for _mtime_ns, _name, candidate, file_size in sorted(candidates, reverse=True)
+    ]
 
 
-def _read_bug_report_file(path: Path) -> tuple[dict[str, Any] | None, str]:
+def _read_bug_report_file(
+    path: Path,
+    *,
+    file_size: int,
+) -> tuple[dict[str, Any] | None, str]:
+    if file_size > BUG_REPORT_MAX_FILE_BYTES:
+        return (
+            None,
+            (
+                f"{path}: file size {file_size} bytes exceeds max size "
+                f"{BUG_REPORT_MAX_FILE_BYTES} bytes"
+            ),
+        )
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:

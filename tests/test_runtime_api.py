@@ -680,6 +680,109 @@ def test_runtime_bug_reports_lists_newest_json_reports(tmp_path: Path) -> None:
     assert str(malformed) in payload["errors"][0]
 
 
+def test_runtime_bug_reports_report_non_object_json_without_crashing(
+    tmp_path: Path,
+) -> None:
+    bug_report_dir = tmp_path / "bug-reports"
+    bug_report_dir.mkdir()
+    invalid = bug_report_dir / "array.json"
+    invalid.write_text("[]", encoding="utf-8")
+    app = FastAPI()
+    app.include_router(build_runtime_router(bug_report_dir=bug_report_dir))
+
+    response = TestClient(app).get("/api/runtime/bug-reports")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["state"] == "INVALID"
+    assert payload["reports"] == []
+    assert payload["errors"] == [f"{invalid}: JSON root must be an object"]
+
+
+def test_runtime_bug_reports_clamps_limit_and_allows_zero(tmp_path: Path) -> None:
+    bug_report_dir = tmp_path / "bug-reports"
+    bug_report_dir.mkdir()
+    for index in range(runtime_api_module.BUG_REPORT_MAX_REPORTS + 3):
+        path = bug_report_dir / f"report-{index:03}.json"
+        path.write_text(json.dumps({"bug_id": f"bug-{index:03}"}), encoding="utf-8")
+        os.utime(path, (float(index), float(index)))
+    app = FastAPI()
+    app.include_router(build_runtime_router(bug_report_dir=bug_report_dir))
+    client = TestClient(app)
+
+    zero = client.get("/api/runtime/bug-reports?limit=0").json()
+    clamped = client.get("/api/runtime/bug-reports?limit=999999").json()
+
+    assert zero["ok"] is True
+    assert zero["reports"] == []
+    assert len(clamped["reports"]) == runtime_api_module.BUG_REPORT_MAX_REPORTS
+    assert clamped["reports"][0]["bug_id"] == (
+        f"bug-{runtime_api_module.BUG_REPORT_MAX_REPORTS + 2:03}"
+    )
+
+
+def test_runtime_bug_reports_skips_oversized_json_files(tmp_path: Path) -> None:
+    bug_report_dir = tmp_path / "bug-reports"
+    bug_report_dir.mkdir()
+    oversized = bug_report_dir / "oversized.json"
+    valid = bug_report_dir / "valid.json"
+    oversized.write_text(
+        "{" + f'"payload":"{"x" * runtime_api_module.BUG_REPORT_MAX_FILE_BYTES}"' + "}",
+        encoding="utf-8",
+    )
+    valid.write_text(json.dumps({"bug_id": "bug-valid"}), encoding="utf-8")
+    os.utime(oversized, (300.0, 300.0))
+    os.utime(valid, (200.0, 200.0))
+    app = FastAPI()
+    app.include_router(build_runtime_router(bug_report_dir=bug_report_dir))
+
+    response = TestClient(app).get("/api/runtime/bug-reports?limit=2")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["state"] == "PARTIAL"
+    assert [report["bug_id"] for report in payload["reports"]] == ["bug-valid"]
+    assert len(payload["errors"]) == 1
+    assert str(oversized) in payload["errors"][0]
+    assert "exceeds max size" in payload["errors"][0]
+
+
+def test_create_app_uses_configured_bug_report_dir(tmp_path: Path) -> None:
+    bug_report_dir = tmp_path / "configured-bugs"
+    bug_report_dir.mkdir()
+    report_path = bug_report_dir / "report.json"
+    report_path.write_text(json.dumps({"bug_id": "bug-configured"}), encoding="utf-8")
+
+    response = TestClient(create_app(bug_report_dir=bug_report_dir)).get(
+        "/api/runtime/bug-reports"
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["path"] == str(bug_report_dir)
+    assert payload["reports"][0]["bug_id"] == "bug-configured"
+
+
+def test_create_app_from_env_uses_bug_report_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bug_report_dir = tmp_path / "env-bugs"
+    bug_report_dir.mkdir()
+    report_path = bug_report_dir / "report.json"
+    report_path.write_text(json.dumps({"bug_id": "bug-env"}), encoding="utf-8")
+    monkeypatch.setenv("POLYMARKET_BUG_REPORT_DIR", str(bug_report_dir))
+
+    response = TestClient(create_app_from_env()).get("/api/runtime/bug-reports")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["path"] == str(bug_report_dir)
+    assert payload["reports"][0]["bug_id"] == "bug-env"
+
+
 def test_runtime_live_includes_volatility_diagnostics(tmp_path: Path) -> None:
     status_path = tmp_path / "status.json"
     _write_status(status_path)

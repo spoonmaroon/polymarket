@@ -5,6 +5,7 @@ from dataclasses import fields
 from datetime import datetime
 from typing import Any
 import json
+import math
 
 
 @dataclass(frozen=True)
@@ -56,13 +57,16 @@ def render_llm_prompt(report: BugReport) -> str:
         "Use the bug report, stack trace, recent logs, and relevant source files. "
         "Do not change unrelated architecture. Add or update tests. "
         "Explain the root cause, the fix, and how to verify it.\n\n"
-        f"Bug report:\n{json.dumps(report.to_json_dict(), indent=2, sort_keys=True)}\n"
+        "Bug report:\n"
+        f"{json.dumps(report.to_json_dict(), indent=2, sort_keys=True, allow_nan=False)}\n"
     )
 
 
 def _json_safe_value(value: object) -> Any:
     if isinstance(value, datetime):
         return value.isoformat()
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
     if isinstance(value, tuple):
         return [_json_safe_value(item) for item in value]
     if isinstance(value, list):

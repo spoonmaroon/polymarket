@@ -26,6 +26,7 @@ def create_app(
     outcome_status_path: Optional[Path] = None,
     target_cache_path: Optional[Path] = None,
     volatility_status_path: Optional[Path] = None,
+    bug_report_dir: Optional[Path] = None,
     data_dir: Path = Path("data"),
     enable_container_status: bool | None = None,
     enable_runtime_probabilities: bool | None = None,
@@ -46,6 +47,7 @@ def create_app(
     volatility_status_path = volatility_status_path or status_path.with_name(
         "volatility.json"
     )
+    bug_report_dir = bug_report_dir or status_path.with_name("bug-reports")
     app = FastAPI(title="Polymarket Engine", version="0.1.0")
 
     @app.get("/health")
@@ -63,6 +65,7 @@ def create_app(
             outcome_status_path=outcome_status_path,
             target_cache_path=target_cache_path,
             volatility_status_path=volatility_status_path,
+            bug_report_dir=bug_report_dir,
             data_dir=data_dir,
             enable_container_status=container_status_enabled_from_env()
             if enable_container_status is None
@@ -117,6 +120,10 @@ def create_app_from_env() -> FastAPI:
         volatility_status_path=_env_path(
             "POLYMARKET_VOLATILITY_STATUS_PATH",
             status_path.with_name("volatility.json"),
+        ),
+        bug_report_dir=_env_path(
+            "POLYMARKET_BUG_REPORT_DIR",
+            status_path.with_name("bug-reports"),
         ),
         data_dir=_env_path("POLYMARKET_DATA_DIR", Path("data")),
         ui_dist_path=_env_path_or_none("POLYMARKET_UI_DIST_PATH"),
