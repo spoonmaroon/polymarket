@@ -303,23 +303,16 @@ def evaluate_http_checks(
         and probabilities.json_payload.get("state") == "OK"
         and len(probability_rows) > 0
     )
-    if live_ok:
-        live_detail = "live rows present"
-    elif _http_error_message(live) is not None:
-        live_detail = _http_error_detail(live)
-    elif _http_response_failed(live):
-        live_detail = _http_failure_detail(live)
-    else:
-        live_detail = "missing live rows"
-
-    if probabilities_ok:
-        probabilities_detail = "probability rows present"
-    elif _http_error_message(probabilities) is not None:
-        probabilities_detail = _http_error_detail(probabilities)
-    elif _http_response_failed(probabilities):
-        probabilities_detail = _http_failure_detail(probabilities)
-    else:
-        probabilities_detail = "missing probability rows"
+    live_detail = _live_check_detail(
+        live=live,
+        live_ok=live_ok,
+        live_orderbook_count=len(live_orderbooks),
+    )
+    probabilities_detail = _probability_check_detail(
+        probabilities=probabilities,
+        probabilities_ok=probabilities_ok,
+        probability_row_count=len(probability_rows),
+    )
     return (
         KeeperCheck(
             name="api:/health",
@@ -356,6 +349,43 @@ def _http_response_failed(result: HttpResult) -> bool:
     return result.status_code != 200 or not result.json_payload
 
 
+def _live_check_detail(
+    *,
+    live: HttpResult,
+    live_ok: bool,
+    live_orderbook_count: int,
+) -> str:
+    if live_ok:
+        return "live rows present"
+    if _http_error_message(live) is not None or _http_response_failed(live):
+        return _http_failure_detail(live)
+    if live.json_payload.get("ok") is not True:
+        return _http_failure_detail(live, semantic_detail="ok_not_true")
+    if live_orderbook_count == 0:
+        return "missing live rows"
+    return _http_failure_detail(live)
+
+
+def _probability_check_detail(
+    *,
+    probabilities: HttpResult,
+    probabilities_ok: bool,
+    probability_row_count: int,
+) -> str:
+    if probabilities_ok:
+        return "probability rows present"
+    if _http_error_message(probabilities) is not None or _http_response_failed(probabilities):
+        return _http_failure_detail(probabilities)
+    if probabilities.json_payload.get("ok") is not True:
+        return _http_failure_detail(probabilities, semantic_detail="ok_not_true")
+    state = probabilities.json_payload.get("state")
+    if state != "OK":
+        return _http_failure_detail(probabilities, semantic_detail=f"state={state}")
+    if probability_row_count == 0:
+        return "missing probability rows"
+    return _http_failure_detail(probabilities)
+
+
 def _http_error_message(result: HttpResult) -> tuple[str, Any] | None:
     for field in ("error", "detail", "message"):
         if field in result.json_payload:
@@ -367,7 +397,7 @@ def _http_error_detail(result: HttpResult) -> str:
     return _http_failure_detail(result)
 
 
-def _http_failure_detail(result: HttpResult) -> str:
+def _http_failure_detail(result: HttpResult, *, semantic_detail: str | None = None) -> str:
     parts = [
         f"status={result.status_code}",
         f"content_type={result.content_type}",
@@ -376,6 +406,8 @@ def _http_failure_detail(result: HttpResult) -> str:
     if message is not None:
         field, value = message
         parts.append(f"{field}={value}")
+    elif semantic_detail is not None:
+        parts.append(semantic_detail)
     parts.append(f"body_prefix={result.text[:120]}")
     return " ".join(parts)
 

@@ -187,3 +187,55 @@ def test_health_failure_detail_includes_semantic_json_message_and_body_prefix() 
     assert health_check.ok is False
     assert "detail=duckdb locked" in health_check.detail
     assert 'body_prefix={"detail":"duckdb locked"}' in health_check.detail
+
+
+def test_live_ok_false_with_rows_reports_semantic_failure_not_missing_rows() -> None:
+    checks = evaluate_http_checks(
+        health=HttpResult(200, {"status": "ok"}, "", "application/json"),
+        ui=HttpResult(200, {}, "<title>Probability Runtime</title>", "text/html"),
+        live=HttpResult(
+            200,
+            {"ok": False, "monitor": {"orderbooks": [{"id": 1}]}},
+            '{"ok":false,"monitor":{"orderbooks":[{"id":1}]}}',
+            "application/json",
+        ),
+        probabilities=HttpResult(
+            200,
+            {"ok": True, "state": "OK", "rows": [{"id": 1}]},
+            "",
+            "application/json",
+        ),
+    )
+
+    live_check = checks[2]
+    assert live_check.ok is False
+    assert "missing live rows" not in live_check.detail
+    assert "ok_not_true" in live_check.detail
+    assert 'body_prefix={"ok":false,"monitor":{"orderbooks":[{"id":1}]}}' in live_check.detail
+
+
+def test_probability_blocked_state_with_rows_reports_state_not_missing_rows() -> None:
+    checks = evaluate_http_checks(
+        health=HttpResult(200, {"status": "ok"}, "", "application/json"),
+        ui=HttpResult(200, {}, "<title>Probability Runtime</title>", "text/html"),
+        live=HttpResult(
+            200,
+            {"ok": True, "monitor": {"orderbooks": [{"id": 1}]}},
+            "",
+            "application/json",
+        ),
+        probabilities=HttpResult(
+            200,
+            {"ok": True, "state": "BLOCKED", "rows": [{"id": 1}]},
+            '{"ok":true,"state":"BLOCKED","rows":[{"id":1}]}',
+            "application/json",
+        ),
+    )
+
+    probability_check = checks[3]
+    assert probability_check.ok is False
+    assert "missing probability rows" not in probability_check.detail
+    assert "state=BLOCKED" in probability_check.detail
+    assert 'body_prefix={"ok":true,"state":"BLOCKED","rows":[{"id":1}]}' in (
+        probability_check.detail
+    )
