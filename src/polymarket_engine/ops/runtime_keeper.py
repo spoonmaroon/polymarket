@@ -7,9 +7,15 @@ import urllib.request
 from collections.abc import Sequence
 from dataclasses import asdict
 from dataclasses import dataclass
+from dataclasses import field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
+
+from polymarket_engine.ops.recovery_manager import RecoveryConfig
+from polymarket_engine.ops.recovery_manager import RecoveryInputs
+from polymarket_engine.ops.recovery_manager import evaluate_recovery_state
+from polymarket_engine.ops.recovery_manager import write_recovery_status
 
 
 DEFAULT_REPO = Path("/home/ender/polymarket")
@@ -45,12 +51,26 @@ class RuntimeKeeperConfig:
     once_timeout_seconds: float = 120.0
     poll_interval_seconds: float = 2.0
     loop_interval_seconds: float = 30.0
+    recovery_status_path: Path | None = None
+    recovery_boot_id: str = "runtime-keeper"
+    recovery_startup_ts: datetime | None = None
+    recovery_config: RecoveryConfig = field(default_factory=RecoveryConfig)
 
     def __post_init__(self) -> None:
         object.__setattr__(
             self,
             "env_file",
             self.env_file or self.repo / "deploy" / "collector" / ".env",
+        )
+        object.__setattr__(
+            self,
+            "recovery_status_path",
+            self.recovery_status_path or self.data_dir / "live" / "recovery_status.json",
+        )
+        object.__setattr__(
+            self,
+            "recovery_startup_ts",
+            self.recovery_startup_ts or datetime.now(timezone.utc),
         )
 
     @property
@@ -103,8 +123,10 @@ class RuntimeKeeper:
                     detail=docker_info.stderr.strip() or "docker info failed",
                 )
             )
-            payload = report_payload(checks, actions)
+            generated_at = datetime.now(timezone.utc)
+            payload = report_payload(checks, actions, generated_at=generated_at)
             self._write_report(payload)
+            self._write_recovery_status(checks, generated_at=generated_at)
             return payload
         checks.append(KeeperCheck(name="docker:info", ok=True, detail="docker responsive"))
 
@@ -163,8 +185,10 @@ class RuntimeKeeper:
 
         checks.extend(self._http_checks(client))
 
-        payload = report_payload(checks, actions)
+        generated_at = datetime.now(timezone.utc)
+        payload = report_payload(checks, actions, generated_at=generated_at)
         self._write_report(payload)
+        self._write_recovery_status(checks, generated_at=generated_at)
         return payload
 
     def run_loop(self) -> None:
@@ -194,6 +218,30 @@ class RuntimeKeeper:
         temp = self.config.report_path.with_suffix(".json.tmp")
         temp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         temp.replace(self.config.report_path)
+
+    def _write_recovery_status(
+        self,
+        checks: Sequence[KeeperCheck],
+        *,
+        generated_at: datetime,
+    ) -> None:
+        recovery_status_path = self.config.recovery_status_path
+        recovery_startup_ts = self.config.recovery_startup_ts
+        if recovery_status_path is None:
+            raise ValueError("recovery_status_path must be configured")
+        if recovery_startup_ts is None:
+            raise ValueError("recovery_startup_ts must be configured")
+        state = evaluate_recovery_state(
+            recovery_inputs_from_checks(
+                checks,
+                boot_id=self.config.recovery_boot_id,
+                startup_ts=recovery_startup_ts,
+                now=generated_at,
+                required_healthy_cycles=self.config.recovery_config.required_healthy_cycles,
+            ),
+            self.config.recovery_config,
+        )
+        write_recovery_status(recovery_status_path, state, generated_at=generated_at)
 
 
 class SubprocessRunner:
@@ -345,6 +393,73 @@ def evaluate_http_checks(
     )
 
 
+def recovery_inputs_from_checks(
+    checks: Sequence[KeeperCheck],
+    *,
+    boot_id: str,
+    startup_ts: datetime,
+    now: datetime,
+    required_healthy_cycles: int,
+) -> RecoveryInputs:
+    check_by_name = {check.name: check for check in checks}
+    failed_checks = tuple(check for check in checks if not check.ok)
+    all_checks_ok = all(check.ok for check in checks)
+    live_ok = _check_ok(check_by_name, "api:/api/runtime/live")
+    probabilities_ok = _check_ok(check_by_name, "api:/api/runtime/probabilities")
+
+    return RecoveryInputs(
+        boot_id=boot_id,
+        startup_ts=startup_ts,
+        now=now,
+        status_ok=live_ok,
+        normalized_health_ok=not _failed_check_mentions(failed_checks, "normalized"),
+        api_ok=_check_ok(check_by_name, "api:/health"),
+        price_fresh=live_ok,
+        orderbook_fresh=live_ok,
+        probability_inputs_fresh=probabilities_ok,
+        volatility_fresh=not _failed_check_mentions(failed_checks, "volatility"),
+        target_fresh=not _failed_check_mentions(failed_checks, "target"),
+        sigma_valid=not _failed_check_mentions(failed_checks, "sigma"),
+        k_stable=not _failed_check_mentions(
+            failed_checks,
+            "k_unstable",
+            "threshold_unstable",
+        ),
+        duckdb_ok=not _failed_check_mentions(failed_checks, "duckdb"),
+        cpu_percent=None,
+        memory_mb=None,
+        queue_length=None,
+        recent_api_blocked=_failed_check_mentions(
+            failed_checks,
+            "api_blocked",
+            "blocked",
+            "rate limited",
+            "status=403",
+            "status=429",
+        ),
+        recent_decode_error=_failed_check_mentions(
+            failed_checks,
+            "decode",
+            "json",
+        ),
+        consecutive_healthy_cycles=required_healthy_cycles if all_checks_ok else 0,
+        recovery_attempts=0,
+    )
+
+
+def _check_ok(check_by_name: dict[str, KeeperCheck], name: str) -> bool:
+    check = check_by_name.get(name)
+    return bool(check and check.ok)
+
+
+def _failed_check_mentions(checks: Sequence[KeeperCheck], *needles: str) -> bool:
+    normalized_needles = tuple(needle.lower() for needle in needles)
+    return any(
+        any(needle in f"{check.name} {check.detail}".lower() for needle in normalized_needles)
+        for check in checks
+    )
+
+
 def _http_response_failed(result: HttpResult) -> bool:
     return result.status_code != 200 or not result.json_payload
 
@@ -387,9 +502,9 @@ def _probability_check_detail(
 
 
 def _http_error_message(result: HttpResult) -> tuple[str, Any] | None:
-    for field in ("error", "detail", "message"):
-        if field in result.json_payload:
-            return field, result.json_payload[field]
+    for message_field in ("error", "detail", "message"):
+        if message_field in result.json_payload:
+            return message_field, result.json_payload[message_field]
     return None
 
 

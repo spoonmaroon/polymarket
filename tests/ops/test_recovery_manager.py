@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from math import inf
 from math import nan
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -11,6 +13,7 @@ from polymarket_engine.ops.recovery_manager import RecoveryConfig
 from polymarket_engine.ops.recovery_manager import RecoveryInputs
 from polymarket_engine.ops.recovery_manager import RuntimePhase
 from polymarket_engine.ops.recovery_manager import evaluate_recovery_state
+from polymarket_engine.ops.recovery_manager import write_recovery_status
 
 
 BASE = datetime(2026, 6, 11, 12, 0, tzinfo=UTC)
@@ -50,6 +53,35 @@ def test_recovery_state_ready_when_all_gates_pass() -> None:
     assert state.runtime_phase == RuntimePhase.READY
     assert state.ready is True
     assert state.reasons == ()
+
+
+def test_write_recovery_status_writes_runtime_schema_atomically(tmp_path: Path) -> None:
+    path = tmp_path / "live" / "recovery_status.json"
+    state = evaluate_recovery_state(
+        healthy_inputs(startup_ts=BASE - timedelta(seconds=10)),
+        RecoveryConfig(warmup_min_seconds=60),
+    )
+
+    write_recovery_status(path, state, generated_at=BASE)
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload == {
+        "boot_id": "boot-1",
+        "consecutive_healthy_cycles": 5,
+        "generated_at": "2026-06-11T12:00:00+00:00",
+        "ready": False,
+        "reasons": ["warmup_active"],
+        "recovery_attempts": 0,
+        "runtime_phase": "WARMING",
+        "schema_version": "polymarket-recovery-runtime-v1",
+        "uptime_seconds": 10.0,
+    }
+    assert path.read_text(encoding="utf-8") == json.dumps(
+        payload,
+        indent=2,
+        sort_keys=True,
+    ) + "\n"
+    assert not path.with_suffix(".json.tmp").exists()
 
 
 def test_recovery_state_warming_during_startup_warmup() -> None:

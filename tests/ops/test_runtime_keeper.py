@@ -1,7 +1,14 @@
 from __future__ import annotations
 
+import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
+from typing import cast
 
+import pytest
+
+from polymarket_engine.ops.recovery_manager import RecoveryConfig
 from polymarket_engine.ops.runtime_keeper import (
     CommandResult,
     HttpResult,
@@ -12,6 +19,9 @@ from polymarket_engine.ops.runtime_keeper import (
     evaluate_optional_container,
     evaluate_required_service,
 )
+
+
+BASE = datetime(2026, 6, 11, 12, 0, tzinfo=UTC)
 
 
 def test_runtime_keeper_defaults_match_thepc_layout() -> None:
@@ -25,6 +35,9 @@ def test_runtime_keeper_defaults_match_thepc_layout() -> None:
     assert config.required_services == ("collector", "normalizer", "outcome-refresh", "api")
     assert config.optional_containers == ("polymarket-rust-collector-gpu-probability-worker-1",)
     assert config.report_path == Path("/home/ender/polymarket-data/live/runtime_keeper.json")
+    assert config.recovery_status_path == Path(
+        "/home/ender/polymarket-data/live/recovery_status.json"
+    )
 
 
 def test_compose_command_uses_env_file_and_compose_file() -> None:
@@ -184,6 +197,25 @@ class FakeHttpClient:
         raise AssertionError(url)
 
 
+def ready_recovery_config(tmp_path: Path) -> RuntimeKeeperConfig:
+    return RuntimeKeeperConfig(
+        repo=tmp_path / "repo",
+        data_dir=tmp_path / "data",
+        recovery_boot_id="boot-1",
+        recovery_config=RecoveryConfig(warmup_min_seconds=0, required_healthy_cycles=0),
+        recovery_startup_ts=BASE - timedelta(minutes=5),
+    )
+
+
+def read_recovery_status(config: RuntimeKeeperConfig) -> dict[str, Any]:
+    recovery_status_path = config.recovery_status_path
+    assert recovery_status_path is not None
+    return cast(
+        dict[str, Any],
+        json.loads(recovery_status_path.read_text(encoding="utf-8")),
+    )
+
+
 def test_runtime_keeper_starts_services_optional_container_and_writes_report(tmp_path: Path) -> None:
     runner = FakeRunner()
     config = RuntimeKeeperConfig(repo=tmp_path / "repo", data_dir=tmp_path / "data")
@@ -198,6 +230,20 @@ def test_runtime_keeper_starts_services_optional_container_and_writes_report(tmp
     assert any(call[:2] == ("docker", "info") for call in runner.calls)
 
 
+def test_runtime_keeper_writes_ready_recovery_status_for_healthy_run(tmp_path: Path) -> None:
+    config = ready_recovery_config(tmp_path)
+    keeper = RuntimeKeeper(config=config, runner=FakeRunner(), http_client=FakeHttpClient())
+
+    keeper.run_once()
+
+    payload = read_recovery_status(config)
+    assert payload["schema_version"] == "polymarket-recovery-runtime-v1"
+    assert payload["runtime_phase"] == "READY"
+    assert payload["ready"] is True
+    assert payload["reasons"] == []
+    assert payload["boot_id"] == "boot-1"
+
+
 def test_runtime_keeper_reports_docker_unavailable(tmp_path: Path) -> None:
     class BrokenDockerRunner(FakeRunner):
         def run(self, args: tuple[str, ...], *, timeout_seconds: float) -> CommandResult:
@@ -207,7 +253,7 @@ def test_runtime_keeper_reports_docker_unavailable(tmp_path: Path) -> None:
             return CommandResult(args, 1, "", "should not run")
 
     keeper = RuntimeKeeper(
-        config=RuntimeKeeperConfig(repo=tmp_path / "repo", data_dir=tmp_path / "data"),
+        config=ready_recovery_config(tmp_path),
         runner=BrokenDockerRunner(),
         http_client=FakeHttpClient(),
     )
@@ -220,3 +266,41 @@ def test_runtime_keeper_reports_docker_unavailable(tmp_path: Path) -> None:
         "ok": False,
         "detail": "docker unavailable",
     }
+    recovery = read_recovery_status(keeper.config)
+    assert recovery["ready"] is False
+    assert recovery["runtime_phase"] == "DEGRADED"
+    assert "status_unhealthy" in recovery["reasons"]
+    assert "api_unhealthy" in recovery["reasons"]
+
+
+@pytest.mark.parametrize(
+    ("client", "expected_reason"),
+    [
+        ("live", "orderbook_stale"),
+        ("probabilities", "probability_inputs_stale"),
+    ],
+)
+def test_runtime_keeper_maps_runtime_failures_to_non_ready_recovery_status(
+    tmp_path: Path,
+    client: str,
+    expected_reason: str,
+) -> None:
+    class FailingHttpClient(FakeHttpClient):
+        def get(self, url: str, *, timeout_seconds: float) -> HttpResult:
+            if client == "live" and url.endswith("/api/runtime/live?limit=8"):
+                return HttpResult(200, {"ok": False, "monitor": {"orderbooks": []}}, "")
+            if client == "probabilities" and url.endswith(
+                "/api/runtime/probabilities?limit=8"
+            ):
+                return HttpResult(200, {"ok": True, "state": "STALE", "rows": []}, "")
+            return super().get(url, timeout_seconds=timeout_seconds)
+
+    config = ready_recovery_config(tmp_path)
+    keeper = RuntimeKeeper(config=config, runner=FakeRunner(), http_client=FailingHttpClient())
+
+    keeper.run_once()
+
+    recovery = read_recovery_status(config)
+    assert recovery["ready"] is False
+    assert recovery["runtime_phase"] == "DEGRADED"
+    assert expected_reason in recovery["reasons"]

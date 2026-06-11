@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import StrEnum
 from math import isfinite
+from pathlib import Path
 
 
 class RuntimePhase(StrEnum):
@@ -92,6 +94,31 @@ class RecoveryState:
     uptime_seconds: float
     consecutive_healthy_cycles: int
     recovery_attempts: int
+
+
+def write_recovery_status(
+    path: Path,
+    state: RecoveryState,
+    *,
+    generated_at: datetime | None = None,
+) -> None:
+    now = generated_at or datetime.now(timezone.utc)
+    _validate_aware_datetime("generated_at", now)
+    payload = {
+        "schema_version": "polymarket-recovery-runtime-v1",
+        "generated_at": now.isoformat(),
+        "runtime_phase": state.runtime_phase.value,
+        "ready": state.ready,
+        "reasons": list(state.reasons),
+        "boot_id": state.boot_id,
+        "uptime_seconds": state.uptime_seconds,
+        "consecutive_healthy_cycles": state.consecutive_healthy_cycles,
+        "recovery_attempts": state.recovery_attempts,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_suffix(".json.tmp")
+    temp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temp.replace(path)
 
 
 def _validate_nonnegative_int(field: str, value: int) -> None:
