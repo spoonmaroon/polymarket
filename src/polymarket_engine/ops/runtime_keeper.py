@@ -382,9 +382,18 @@ def evaluate_http_checks(
     probability_rows = probabilities.json_payload.get("rows") or []
     health_ok = health.status_code == 200 and health.json_payload.get("status") == "ok"
     ui_ok = ui.status_code == 200 and "<title>Probability Runtime</title>" in ui.text
+    live_status_ok = _nested_ok(
+        live.json_payload.get("status"),
+        default=live.json_payload.get("ok") is True,
+    )
+    live_gates_ok = _nested_ok(
+        live.json_payload.get("gates"),
+        default=live.json_payload.get("ok") is True,
+    )
     live_ok = (
         live.status_code == 200
-        and live.json_payload.get("ok") is True
+        and live_status_ok
+        and live_gates_ok
         and len(live_orderbooks) > 0
     )
     probabilities_ok = (
@@ -506,6 +515,12 @@ def read_previous_consecutive_healthy_cycles(path: Path, *, boot_id: str) -> int
 def _check_ok(check_by_name: dict[str, KeeperCheck], name: str) -> bool:
     check = check_by_name.get(name)
     return bool(check and check.ok)
+
+
+def _nested_ok(value: object, *, default: bool) -> bool:
+    if isinstance(value, dict):
+        return value.get("ok") is True
+    return default
 
 
 def _failed_check_mentions(checks: Sequence[KeeperCheck], *needles: str) -> bool:

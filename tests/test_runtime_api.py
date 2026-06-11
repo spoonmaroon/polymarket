@@ -467,6 +467,16 @@ def test_runtime_monitor_parseable_schema_malformed_status_returns_empty_envelop
 def test_runtime_live_combines_status_gates_monitor_and_latency(tmp_path: Path) -> None:
     status_path = tmp_path / "status.json"
     _write_status(status_path)
+    status_path.with_name("recovery_status.json").write_text(
+        json.dumps({"runtime_phase": "READY", "ready": True, "reasons": []}),
+        encoding="utf-8",
+    )
+    status_path.with_name("offload_status.json").write_text(
+        json.dumps(
+            {"offload_allowed": True, "reason_codes": [], "recommended_worker_mode": "gpu_mc"}
+        ),
+        encoding="utf-8",
+    )
     app = create_app(status_path=status_path)
 
     response = TestClient(app).get("/api/runtime/live?limit=8")
@@ -581,6 +591,7 @@ def test_runtime_api_optional_status_missing_fallbacks(tmp_path: Path) -> None:
     assert live_payload["offload"]["state"] == "MISSING"
     assert live_payload["offload"]["offload_allowed"] is False
     assert live_payload["offload"]["reason_codes"] == ["offload_status_missing"]
+    assert live_payload["ok"] is False
 
 
 @pytest.mark.parametrize("invalid_json", ["{not-json", "[]", '"not-an-object"'])
@@ -634,6 +645,56 @@ def test_runtime_api_optional_status_invalid_fallbacks(
     assert live_payload["offload"]["error"]
     assert live_payload["offload"]["offload_allowed"] is False
     assert live_payload["offload"]["reason_codes"] == ["offload_status_missing"]
+    assert live_payload["ok"] is False
+
+
+def test_runtime_live_ok_requires_recovery_ready_and_offload_allowed(
+    tmp_path: Path,
+) -> None:
+    status_path = tmp_path / "live" / "status.json"
+    status_path.parent.mkdir(parents=True)
+    _write_status(status_path)
+    recovery_path = status_path.with_name("recovery_status.json")
+    offload_path = status_path.with_name("offload_status.json")
+    recovery_path.write_text(
+        json.dumps(
+            {
+                "runtime_phase": "WARMING",
+                "ready": False,
+                "reasons": ["warmup_active"],
+                "boot_id": "boot-1",
+            }
+        ),
+        encoding="utf-8",
+    )
+    offload_path.write_text(
+        json.dumps(
+            {
+                "offload_allowed": False,
+                "reason_codes": ["runtime_not_ready"],
+                "recommended_worker_mode": "nowcast_only",
+            }
+        ),
+        encoding="utf-8",
+    )
+    app = FastAPI()
+    app.include_router(
+        build_runtime_router(
+            status_path=status_path,
+            data_dir=tmp_path,
+            recovery_status_path=recovery_path,
+            offload_status_path=offload_path,
+        )
+    )
+
+    payload = TestClient(app).get("/api/runtime/live").json()
+
+    assert payload["status"]["ok"] is True
+    assert payload["gates"]["ok"] is True
+    assert payload["monitor"]["orderbooks"]
+    assert payload["recovery"]["ready"] is False
+    assert payload["offload"]["offload_allowed"] is False
+    assert payload["ok"] is False
 
 
 def test_runtime_bug_reports_missing_dir_returns_controlled_state(tmp_path: Path) -> None:
@@ -946,6 +1007,16 @@ def test_runtime_live_reads_status_once_for_status_backed_payload(
 ) -> None:
     status_path = tmp_path / "status.json"
     _write_status(status_path)
+    status_path.with_name("recovery_status.json").write_text(
+        json.dumps({"runtime_phase": "READY", "ready": True, "reasons": []}),
+        encoding="utf-8",
+    )
+    status_path.with_name("offload_status.json").write_text(
+        json.dumps(
+            {"offload_allowed": True, "reason_codes": [], "recommended_worker_mode": "gpu_mc"}
+        ),
+        encoding="utf-8",
+    )
     read_count = 0
     real_read_text = Path.read_text
 

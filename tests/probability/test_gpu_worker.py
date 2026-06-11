@@ -200,6 +200,7 @@ def test_worker_blocks_expensive_mc_when_offload_gate_blocks(
 ) -> None:
     asof_ts = datetime.now(UTC)
     probability_status_path = tmp_path / "probabilities.json"
+    offload_status_path = tmp_path / "offload_status.json"
     probability_inputs_path = tmp_path / "probability_inputs.json"
     probability_event_path = tmp_path / "probability-events.jsonl"
 
@@ -216,6 +217,8 @@ def test_worker_blocks_expensive_mc_when_offload_gate_blocks(
                         "start_ts": asof_ts.isoformat(),
                         "expiry_ts": (asof_ts + timedelta(minutes=5)).isoformat(),
                         "flags": ["OK"],
+                        "offload_allowed": False,
+                        "block_reasons": ["runtime_not_ready"],
                         "probability_input": ProbabilityInput(
                             state_id="state-btc-up",
                             asof_ts=asof_ts,
@@ -259,15 +262,10 @@ def test_worker_blocks_expensive_mc_when_offload_gate_blocks(
     payload = run_cuda_probability_worker_cycle(
         duckdb_path=tmp_path / "unused.duckdb",
         probability_status_path=probability_status_path,
+        offload_status_path=offload_status_path,
         probability_inputs_path=probability_inputs_path,
         probability_event_path=probability_event_path,
         budget=ProbabilityWorkerBudget(max_total_paths=80_000),
-        offload_decision_override={
-            "offload_allowed": False,
-            "reason_codes": ["runtime_not_ready"],
-            "recommended_worker_mode": "nowcast_only",
-            "recommended_max_total_paths": 0,
-        },
     )
 
     assert payload["state"] == "OFFLOAD_BLOCKED"
@@ -276,6 +274,71 @@ def test_worker_blocks_expensive_mc_when_offload_gate_blocks(
     assert payload["offload"]["recommended_worker_mode"] == "nowcast_only"
     assert payload["offload"]["recommended_max_total_paths"] == 0
     assert payload["rows"][0]["probability_kind"] == "NOWCAST"
+    persisted_offload = json.loads(offload_status_path.read_text(encoding="utf-8"))
+    assert persisted_offload == payload["offload"]
+
+
+def test_snapshot_adapter_preserves_runtime_safety_fields(tmp_path: Path) -> None:
+    asof_ts = datetime.now(UTC)
+    probability_inputs_path = tmp_path / "probability_inputs.json"
+    probability_inputs_path.write_text(
+        json.dumps(
+            {
+                "schema_version": PROBABILITY_INPUTS_SCHEMA_VERSION,
+                "generated_at": asof_ts.isoformat(),
+                "rows": [
+                    {
+                        "contract": "BTC 5m UP",
+                        "contract_id": "btc-up",
+                        "market_slug": "btc-updown-5m",
+                        "start_ts": asof_ts.isoformat(),
+                        "expiry_ts": (asof_ts + timedelta(minutes=5)).isoformat(),
+                        "flags": ["SIGMA_INVALID"],
+                        "sigma_tau": None,
+                        "sigma_valid": False,
+                        "sigma_age_ms": 2500,
+                        "offload_allowed": False,
+                        "block_reasons": ["sigma_invalid"],
+                        "probability_input": ProbabilityInput(
+                            state_id="state-btc-up",
+                            asof_ts=asof_ts,
+                            asset="BTC",
+                            side="UP",
+                            comparison_operator=">=",
+                            seconds_left=300.0,
+                            settlement_price=70_100.0,
+                            threshold=70_000.0,
+                            sigma_tau=0.012,
+                            executable_price=0.52,
+                            source_age_ms=100,
+                            book_age_ms=100,
+                            z_path=0.12,
+                        ).to_json_dict(),
+                        "probability_state": "BLOCKED",
+                        "volatility_regime": "normal",
+                    }
+                ],
+                "skipped": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    inputs, skipped = _latest_probability_inputs_from_snapshot(
+        path=probability_inputs_path,
+        limit=4,
+        max_state_age_seconds=600,
+        max_snapshot_age_seconds=30,
+    )
+
+    assert skipped == 0
+    assert len(inputs) == 1
+    runtime_input = inputs[0]
+    assert runtime_input.sigma_valid is False
+    assert runtime_input.sigma_age_ms == 2500
+    assert runtime_input.offload_allowed is False
+    assert runtime_input.block_reasons == ("sigma_invalid",)
+    assert runtime_input.probability_state == "BLOCKED"
 
 
 def test_worker_preserves_blocked_threshold_rows_without_running_mc(
@@ -419,10 +482,10 @@ def test_worker_preserves_blocked_threshold_rows_without_running_mc(
         budget=ProbabilityWorkerBudget(max_total_paths=20_000),
     )
 
-    assert len(payload["rows"]) == 1
-    blocked = payload["rows"][0]
+    assert payload["state"] == "OFFLOAD_BLOCKED"
+    assert {row["probability_kind"] for row in payload["rows"]} == {"NOWCAST"}
+    blocked = next(row for row in payload["rows"] if row["state_id"] == "state-blocked-mutated")
     assert blocked["contract_id"] == "btc-up"
-    assert blocked["state_id"] == "state-blocked-mutated"
     assert blocked["probability_kind"] == "NOWCAST"
     assert blocked["probability_state"] == "BLOCKED"
     assert blocked["k_stable"] is False

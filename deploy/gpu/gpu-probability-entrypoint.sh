@@ -3,6 +3,7 @@ set -eu
 
 DB_PATH="${POLYMARKET_DUCKDB_PATH:-/var/lib/polymarket/db/polymarket.duckdb}"
 PROBABILITY_STATUS_PATH="${POLYMARKET_PROBABILITY_STATUS_PATH:-/var/lib/polymarket/live/probabilities.json}"
+OFFLOAD_STATUS_PATH="${POLYMARKET_OFFLOAD_STATUS_PATH:-/var/lib/polymarket/live/offload_status.json}"
 PROBABILITY_INPUTS_PATH="${POLYMARKET_PROBABILITY_INPUTS_PATH:-/var/lib/polymarket/live/probability_inputs.json}"
 PROBABILITY_FRAGMENTS_PATH="${POLYMARKET_PROBABILITY_FRAGMENTS_PATH:-/var/lib/polymarket/live/probability_fragments.json}"
 INTERVAL_SECONDS="${POLYMARKET_CUDA_PROBABILITY_INTERVAL_SECONDS:-1.0}"
@@ -24,6 +25,7 @@ CPU_THREADS="${POLYMARKET_ENSEMBLE_CPU_THREADS:-1}"
 exec polymarket-engine run-cuda-probability-worker \
   --duckdb-path "$DB_PATH" \
   --probability-status-path "$PROBABILITY_STATUS_PATH" \
+  --offload-status-path "$OFFLOAD_STATUS_PATH" \
   --probability-inputs-path "$PROBABILITY_INPUTS_PATH" \
   --probability-fragments-path "$PROBABILITY_FRAGMENTS_PATH" \
   --interval-seconds "$INTERVAL_SECONDS" \

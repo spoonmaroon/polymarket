@@ -786,7 +786,9 @@ def _runtime_live_payload(
     return {
         "ok": bool(status.get("ok"))
         and bool(gates.get("ok"))
-        and bool(monitor.get("orderbooks", [])),
+        and bool(monitor.get("orderbooks", []))
+        and bool(recovery.get("ready"))
+        and bool(offload.get("offload_allowed")),
         "server_sent_at": server_sent_at.isoformat(),
         "status": status,
         "gates": gates,
