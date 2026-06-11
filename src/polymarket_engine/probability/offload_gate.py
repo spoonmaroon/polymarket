@@ -20,6 +20,9 @@ _HARD_OR_DATA_INTEGRITY_BLOCKERS = {
     "volatility_stale",
     "target_stale",
     "sigma_stale",
+    "api_unhealthy",
+    "normalized_health_unhealthy",
+    "websocket_unhealthy",
     "api_blocked_recent",
     "decode_error_recent",
 }

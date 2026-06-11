@@ -98,6 +98,42 @@ def test_offload_warming_with_sigma_invalid_recommends_disabled() -> None:
     assert decision.recommended_worker_mode == "disabled"
 
 
+def test_offload_warming_with_api_unhealthy_recommends_disabled() -> None:
+    decision = evaluate_offload_readiness(
+        base_inputs(runtime_phase=RuntimePhase.WARMING, api_status="ERROR"),
+        OffloadGateConfig(),
+    )
+    assert decision.offload_allowed is False
+    assert "api_unhealthy" in decision.reason_codes
+    assert decision.recommended_worker_mode == "disabled"
+
+
+def test_offload_warming_with_normalized_health_unhealthy_recommends_disabled() -> None:
+    decision = evaluate_offload_readiness(
+        base_inputs(
+            runtime_phase=RuntimePhase.WARMING,
+            normalized_health_status="ERROR",
+        ),
+        OffloadGateConfig(),
+    )
+    assert decision.offload_allowed is False
+    assert "normalized_health_unhealthy" in decision.reason_codes
+    assert decision.recommended_worker_mode == "disabled"
+
+
+def test_offload_warming_with_websocket_unhealthy_recommends_disabled() -> None:
+    decision = evaluate_offload_readiness(
+        base_inputs(
+            runtime_phase=RuntimePhase.WARMING,
+            websocket_status="DISCONNECTED",
+        ),
+        OffloadGateConfig(),
+    )
+    assert decision.offload_allowed is False
+    assert "websocket_unhealthy" in decision.reason_codes
+    assert decision.recommended_worker_mode == "disabled"
+
+
 def test_offload_blocked_when_sigma_invalid() -> None:
     decision = evaluate_offload_readiness(
         base_inputs(sigma_tau_valid=False),
