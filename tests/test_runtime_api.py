@@ -540,6 +540,102 @@ def test_runtime_live_includes_compact_recovery_and_offload(tmp_path: Path) -> N
     assert payload["offload"]["offload_allowed"] is True
 
 
+def test_runtime_api_optional_status_missing_fallbacks(tmp_path: Path) -> None:
+    status_path = tmp_path / "live" / "status.json"
+    status_path.parent.mkdir(parents=True)
+    _write_status(status_path)
+    recovery_path = status_path.with_name("missing_recovery_status.json")
+    offload_path = status_path.with_name("missing_offload_status.json")
+    app = FastAPI()
+    app.include_router(
+        build_runtime_router(
+            status_path=status_path,
+            data_dir=tmp_path,
+            recovery_status_path=recovery_path,
+            offload_status_path=offload_path,
+        )
+    )
+    client = TestClient(app)
+
+    recovery = client.get("/api/runtime/recovery")
+    offload = client.get("/api/runtime/offload")
+    live = client.get("/api/runtime/live")
+
+    assert recovery.status_code == 200
+    assert offload.status_code == 200
+    assert live.status_code == 200
+    recovery_payload = recovery.json()
+    offload_payload = offload.json()
+    live_payload = live.json()
+    assert recovery_payload["state"] == "MISSING"
+    assert recovery_payload["runtime_phase"] == "UNKNOWN"
+    assert recovery_payload["ready"] is False
+    assert recovery_payload["reasons"] == ["recovery_status_missing"]
+    assert offload_payload["state"] == "MISSING"
+    assert offload_payload["offload_allowed"] is False
+    assert offload_payload["reason_codes"] == ["offload_status_missing"]
+    assert offload_payload["recommended_worker_mode"] == "disabled"
+    assert live_payload["recovery"]["state"] == "MISSING"
+    assert live_payload["recovery"]["runtime_phase"] == "UNKNOWN"
+    assert live_payload["recovery"]["reasons"] == ["recovery_status_missing"]
+    assert live_payload["offload"]["state"] == "MISSING"
+    assert live_payload["offload"]["offload_allowed"] is False
+    assert live_payload["offload"]["reason_codes"] == ["offload_status_missing"]
+
+
+@pytest.mark.parametrize("invalid_json", ["{not-json", "[]", '"not-an-object"'])
+def test_runtime_api_optional_status_invalid_fallbacks(
+    tmp_path: Path,
+    invalid_json: str,
+) -> None:
+    status_path = tmp_path / "live" / "status.json"
+    status_path.parent.mkdir(parents=True)
+    _write_status(status_path)
+    recovery_path = status_path.with_name("recovery_status.json")
+    offload_path = status_path.with_name("offload_status.json")
+    recovery_path.write_text(invalid_json, encoding="utf-8")
+    offload_path.write_text(invalid_json, encoding="utf-8")
+    app = FastAPI()
+    app.include_router(
+        build_runtime_router(
+            status_path=status_path,
+            data_dir=tmp_path,
+            recovery_status_path=recovery_path,
+            offload_status_path=offload_path,
+        )
+    )
+    client = TestClient(app)
+
+    recovery = client.get("/api/runtime/recovery")
+    offload = client.get("/api/runtime/offload")
+    live = client.get("/api/runtime/live")
+
+    assert recovery.status_code == 200
+    assert offload.status_code == 200
+    assert live.status_code == 200
+    recovery_payload = recovery.json()
+    offload_payload = offload.json()
+    live_payload = live.json()
+    assert recovery_payload["state"] == "INVALID"
+    assert recovery_payload["error"]
+    assert recovery_payload["runtime_phase"] == "UNKNOWN"
+    assert recovery_payload["ready"] is False
+    assert recovery_payload["reasons"] == ["recovery_status_missing"]
+    assert offload_payload["state"] == "INVALID"
+    assert offload_payload["error"]
+    assert offload_payload["offload_allowed"] is False
+    assert offload_payload["reason_codes"] == ["offload_status_missing"]
+    assert offload_payload["recommended_worker_mode"] == "disabled"
+    assert live_payload["recovery"]["state"] == "INVALID"
+    assert live_payload["recovery"]["error"]
+    assert live_payload["recovery"]["runtime_phase"] == "UNKNOWN"
+    assert live_payload["recovery"]["reasons"] == ["recovery_status_missing"]
+    assert live_payload["offload"]["state"] == "INVALID"
+    assert live_payload["offload"]["error"]
+    assert live_payload["offload"]["offload_allowed"] is False
+    assert live_payload["offload"]["reason_codes"] == ["offload_status_missing"]
+
+
 def test_runtime_live_includes_volatility_diagnostics(tmp_path: Path) -> None:
     status_path = tmp_path / "status.json"
     _write_status(status_path)
@@ -687,9 +783,30 @@ def test_runtime_live_reads_status_once_for_status_backed_payload(
 
 
 def test_runtime_live_stream_emits_sse_payload(tmp_path: Path) -> None:
-    status_path = tmp_path / "status.json"
+    status_path = tmp_path / "live" / "status.json"
+    status_path.parent.mkdir(parents=True)
     _write_status(status_path)
-    app = create_app(status_path=status_path)
+    recovery_path = status_path.with_name("recovery_status.json")
+    offload_path = status_path.with_name("offload_status.json")
+    recovery_path.write_text(
+        json.dumps({"runtime_phase": "READY", "ready": True, "reasons": [], "boot_id": "boot-1"}),
+        encoding="utf-8",
+    )
+    offload_path.write_text(
+        json.dumps(
+            {"offload_allowed": True, "reason_codes": [], "recommended_worker_mode": "gpu_mc"}
+        ),
+        encoding="utf-8",
+    )
+    app = FastAPI()
+    app.include_router(
+        build_runtime_router(
+            status_path=status_path,
+            data_dir=tmp_path,
+            recovery_status_path=recovery_path,
+            offload_status_path=offload_path,
+        )
+    )
 
     with TestClient(app).stream(
         "GET",
@@ -700,8 +817,12 @@ def test_runtime_live_stream_emits_sse_payload(tmp_path: Path) -> None:
     assert response.status_code == 200
     assert "event: live" in body
     assert "data: " in body
-    assert '"status"' in body
-    assert '"monitor"' in body
+    data_line = next(line for line in body.splitlines() if line.startswith("data: "))
+    payload = json.loads(data_line.removeprefix("data: "))
+    assert payload["status"]["counts"]["orderbooks"] == 1
+    assert payload["monitor"]["orderbooks"][0]["contract_id"] == "btc-5m-up"
+    assert payload["recovery"]["runtime_phase"] == "READY"
+    assert payload["offload"]["offload_allowed"] is True
 
 
 def test_runtime_outcomes_returns_market_level_history(tmp_path: Path) -> None:
