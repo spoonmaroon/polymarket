@@ -330,7 +330,56 @@ Endpoint smoke checks:
 curl -fsS "$POLYMARKET_ENGINE_API_URL/api/runtime/live?limit=8" | python3 -m json.tool | head -80
 curl -fsS -N "$POLYMARKET_ENGINE_API_URL/api/runtime/live/stream?limit=8&interval_ms=250&max_events=1" | head -20
 curl -fsS "$POLYMARKET_ENGINE_API_URL/api/runtime/outcomes?limit=8" | python3 -m json.tool | head -80
+curl -fsS "$POLYMARKET_ENGINE_API_URL/api/runtime/recovery" | python3 -m json.tool
+curl -fsS "$POLYMARKET_ENGINE_API_URL/api/runtime/offload" | python3 -m json.tool
+curl -fsS "$POLYMARKET_ENGINE_API_URL/api/runtime/bug-reports?limit=5" | python3 -m json.tool | head -120
 ```
+
+### Recovery, Offload, And Bug Reports
+
+`/api/runtime/recovery` reads the recovery status file from
+`data/live/recovery_status.json` by default. On THEPC the app config resolves
+that to `/home/ender/polymarket-data/live/recovery_status.json`. The important
+fields are `runtime_phase`, `ready`, `reasons`, `boot_id`,
+`uptime_seconds`, `consecutive_healthy_cycles`, and `recovery_attempts`.
+`READY` with `ready=true` means the runtime has passed warmup and the required
+healthy cycles. `WARMING`, `DEGRADED`, or `BLOCKED` means the `reasons` array is
+the first thing to read.
+
+After restart, warmup is expected. The keeper writes `WARMING` while uptime is
+below the configured warmup window or healthy cycles have not accumulated yet.
+If live feeds, API checks, normalized health, K, sigma, or DuckDB are bad, the
+phase moves to `DEGRADED` or `BLOCKED` with concrete reason codes such as
+`price_stale`, `orderbook_stale`, `probability_inputs_stale`, `sigma_invalid`,
+`k_unstable`, `duckdb_unhealthy`, `api_blocked_recent`, or
+`decode_error_recent`.
+
+`/api/runtime/offload` reads `data/live/offload_status.json` by default. Check
+`offload_allowed`, `reason_codes`, `recommended_worker_mode`, and
+`recommended_max_total_paths`. When `offload_allowed=false`, the
+`reason_codes` list explains why expensive MC/GPU work must not run. Some
+warmup states can still recommend `nowcast_only`; hard data-integrity blockers
+recommend `disabled`.
+
+Nowcast or last-good display is allowed while MC is blocked because it is
+operator visibility, not live decision authority. The TUI may continue to show
+fresh prices, books, recovery state, and cached/last-good probability rows, but
+the worker must not emit confident high-path MC rows from stale, invalid, or
+unready inputs.
+
+Structured bug reports live under `data/live/bug-reports` by default, or the
+directory set by `POLYMARKET_BUG_REPORT_DIR`. The API endpoint
+`/api/runtime/bug-reports` lists the newest bounded JSON reports and reports
+malformed or oversized files without crashing. Bug reports are for diagnosis:
+they can point an LLM or operator at suspected files and tests, but they do not
+auto-patch or restart the runtime.
+
+ML calibration work must not start from hot runtime guesses. First verify that
+runtime recovery reaches `READY`, offload is allowed for clean inputs, blocked
+rows stay diagnostic-only, replay-safe calibration datasets have chronological
+labels, calibration reports exclude skipped or blocked rows, and no unresolved
+bug reports point at K mutation, invalid sigma, decode failures, or service
+health mismatch. No first calibrator is shipped in this recovery pass.
 
 The deploy compose file runs `collector`, `normalizer`, and `api` with
 `restart: unless-stopped`, so the API should come back with Docker after a host
