@@ -3,9 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
+from math import isfinite
 
 
 class RuntimePhase(StrEnum):
+    # BOOTING and RECOVERING are reserved for runtime integration. This pure
+    # evaluator currently emits READY, WARMING, DEGRADED, or BLOCKED.
     BOOTING = "BOOTING"
     WARMING = "WARMING"
     RECOVERING = "RECOVERING"
@@ -22,6 +25,23 @@ class RecoveryConfig:
     memory_soft_max_mb: int = 512
     queue_soft_max: int = 100
     max_recovery_attempts: int = 3
+
+    def __post_init__(self) -> None:
+        _validate_nonnegative_int("warmup_min_seconds", self.warmup_min_seconds)
+        _validate_nonnegative_int(
+            "required_healthy_cycles",
+            self.required_healthy_cycles,
+        )
+        _validate_nonnegative_float(
+            "cpu_soft_max_percent",
+            self.cpu_soft_max_percent,
+        )
+        _validate_nonnegative_int("memory_soft_max_mb", self.memory_soft_max_mb)
+        _validate_nonnegative_int("queue_soft_max", self.queue_soft_max)
+        _validate_nonnegative_int(
+            "max_recovery_attempts",
+            self.max_recovery_attempts,
+        )
 
 
 @dataclass(frozen=True)
@@ -48,6 +68,20 @@ class RecoveryInputs:
     consecutive_healthy_cycles: int
     recovery_attempts: int
 
+    def __post_init__(self) -> None:
+        if not self.boot_id.strip():
+            raise ValueError("boot_id must be non-empty")
+        _validate_aware_datetime("startup_ts", self.startup_ts)
+        _validate_aware_datetime("now", self.now)
+        _validate_optional_nonnegative_float("cpu_percent", self.cpu_percent)
+        _validate_optional_nonnegative_int("memory_mb", self.memory_mb)
+        _validate_optional_nonnegative_int("queue_length", self.queue_length)
+        _validate_nonnegative_int(
+            "consecutive_healthy_cycles",
+            self.consecutive_healthy_cycles,
+        )
+        _validate_nonnegative_int("recovery_attempts", self.recovery_attempts)
+
 
 @dataclass(frozen=True)
 class RecoveryState:
@@ -58,6 +92,31 @@ class RecoveryState:
     uptime_seconds: float
     consecutive_healthy_cycles: int
     recovery_attempts: int
+
+
+def _validate_nonnegative_int(field: str, value: int) -> None:
+    if not isfinite(value) or value < 0:
+        raise ValueError(f"{field} must be finite and >= 0")
+
+
+def _validate_nonnegative_float(field: str, value: float) -> None:
+    if not isfinite(value) or value < 0.0:
+        raise ValueError(f"{field} must be finite and >= 0.0")
+
+
+def _validate_optional_nonnegative_int(field: str, value: int | None) -> None:
+    if value is not None:
+        _validate_nonnegative_int(field, value)
+
+
+def _validate_optional_nonnegative_float(field: str, value: float | None) -> None:
+    if value is not None:
+        _validate_nonnegative_float(field, value)
+
+
+def _validate_aware_datetime(field: str, value: datetime) -> None:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(f"{field} must be timezone-aware")
 
 
 def evaluate_recovery_state(
@@ -103,13 +162,14 @@ def evaluate_recovery_state(
         reasons.append("memory_above_soft_max")
     if inputs.queue_length is not None and inputs.queue_length > config.queue_soft_max:
         reasons.append("queue_above_soft_max")
+    if inputs.recovery_attempts > config.max_recovery_attempts:
+        reasons.append("recovery_attempts_exceeded")
 
     hard_blockers = {"k_unstable", "sigma_invalid", "duckdb_unhealthy"}
     if hard_blockers.intersection(reasons):
         phase = RuntimePhase.BLOCKED
-    elif inputs.recovery_attempts > config.max_recovery_attempts:
+    elif "recovery_attempts_exceeded" in reasons:
         phase = RuntimePhase.BLOCKED
-        reasons.append("recovery_attempts_exceeded")
     elif "warmup_active" in reasons or "insufficient_healthy_cycles" in reasons:
         phase = RuntimePhase.WARMING
     elif reasons:
