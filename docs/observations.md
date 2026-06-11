@@ -395,13 +395,9 @@ Use:
 Monte Carlo = base probability engine
 ML = calibration/meta-model layer
 
-Initial ML model:
-
-MC_Calibrator_LogReg_v1
-
-Then:
-
-MC_Calibrator_GBDT_v1 using LightGBM or XGBoost
+Calibration model implementation is intentionally out of scope for this pass.
+Keep this lane to replay-safe datasets and reports until a separate model plan
+is approved.
 
 ### Suggested files to inspect
 
@@ -1108,99 +1104,13 @@ sample count per bucket
 
 ⸻
 
-Phase 2: Baseline calibration model
+Calibration model training is deferred. Do not implement a baseline or tree
+calibrator from this observations pass; continue only with replay-safe dataset
+and report plumbing.
 
-Use logistic regression first.
-
-Model:
-
-MC_Calibrator_LogReg_v1
-
-Inputs:
-
-logit(p_finish_MC)
-p_no_touch_MC
-z_path
-TTE
-sigma_tau
-spread
-orderbook_imbalance
-volatility_regime
-
-Output:
-
-p_finish_calibrated
-
-Purpose:
-
-* Check if MC probability has real signal
-* Measure overconfidence
-* Create a simple interpretable baseline
-
-⸻
-
-Phase 3: Tree model
-
-Use:
-
-LightGBM or XGBoost
-
-Model:
-
-MC_Calibrator_GBDT_v1
-
-Why:
-
-* Best fit for tabular market features
-* Handles nonlinear interactions
-* Works well before neural networks
-* Easier to validate than deep learning
-
-Important:
-
-* Use walk-forward validation
-* No random shuffle
-* Add purge/embargo window
-* Compare against logistic baseline
-* Calibrate output with isotonic or sigmoid calibration
-
-⸻
-
-Phase 4: Separate models
-
-Do not ask one model to solve everything.
-
-Train separate models:
-
-1. p_finish model
-Predicts final win/loss.
-2. p_no_touch/path-risk model
-Predicts threshold crossing before expiry.
-3. execution model
-Predicts whether displayed edge survives executable price, slippage, and quote movement.
-4. failure/skip model
-Predicts when the system should demand more edge or block.
-
-⸻
-
-Phase 5: Neural networks later
-
-Do not start with neural networks.
-
-Only consider neural networks after:
-
-large replay-safe dataset exists
-features are stable
-labels are verified
-calibration pipeline works
-GBDT baseline is beaten out of sample
-no leakage is detected
-
-Possible later NN use cases:
-
-sequence model on order-book updates
-temporal CNN/Transformer for recent price path
-autoencoder for unusual market states
+Future modeling validation, architecture, and baseline choices belong to a
+separate approved plan. This observations pass does not define model families,
+training order, or calibration-output behavior.
 
 ⸻
 
@@ -1349,17 +1259,10 @@ log executable price assumptions
 
 ⸻
 
-Priority 9: Implement first ML calibration model
+Priority 9: Deferred calibration model work
 
-Start with:
-
-MC_Calibrator_LogReg_v1
-
-Then test:
-
-MC_Calibrator_GBDT_v1
-
-Do not use neural networks until the dataset is larger, stable, and replay-safe.
+No model implementation belongs to this pass. Revisit only under a separate
+approved plan after the dataset and reports are stable.
 
 ⸻
 

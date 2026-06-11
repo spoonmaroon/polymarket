@@ -91,8 +91,7 @@ Out of scope:
 
 - Create: `src/polymarket_engine/calibration/dataset.py`
 - Create: `src/polymarket_engine/calibration/reports.py`
-- Create later: `src/polymarket_engine/calibration/models.py`
-  - Replay-safe dataset export, calibration reports, and first logistic regression calibrator.
+  - Replay-safe dataset export and calibration reports.
 
 - Tests:
   - Create: `tests/ops/test_recovery_manager.py`

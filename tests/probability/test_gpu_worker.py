@@ -376,6 +376,98 @@ def test_worker_blocks_expensive_mc_until_recovery_is_ready(
     assert payload["rows"][0]["probability_kind"] == "NOWCAST"
 
 
+def test_worker_blocks_expensive_mc_when_recovery_status_is_invalid(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asof_ts = datetime.now(UTC)
+    probability_status_path = tmp_path / "probabilities.json"
+    recovery_status_path = tmp_path / "recovery_status.json"
+    probability_inputs_path = tmp_path / "probability_inputs.json"
+    probability_event_path = tmp_path / "probability-events.jsonl"
+    probability_fragments_path = tmp_path / "probability_fragments.json"
+
+    probability_inputs_path.write_text(
+        json.dumps(
+            {
+                "schema_version": PROBABILITY_INPUTS_SCHEMA_VERSION,
+                "generated_at": asof_ts.isoformat(),
+                "rows": [
+                    {
+                        "contract": "BTC 5m UP",
+                        "contract_id": "btc-up",
+                        "market_slug": "btc-updown-5m",
+                        "start_ts": asof_ts.isoformat(),
+                        "expiry_ts": (asof_ts + timedelta(minutes=5)).isoformat(),
+                        "flags": ["OK"],
+                        "probability_input": ProbabilityInput(
+                            state_id="state-btc-up",
+                            asof_ts=asof_ts,
+                            asset="BTC",
+                            side="UP",
+                            comparison_operator=">=",
+                            seconds_left=300.0,
+                            settlement_price=70_100.0,
+                            threshold=70_000.0,
+                            sigma_tau=0.012,
+                            executable_price=0.52,
+                            source_age_ms=100,
+                            book_age_ms=100,
+                            z_path=0.12,
+                        ).to_json_dict(),
+                        "volatility_regime": "normal",
+                    }
+                ],
+                "skipped": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    recovery_status_path.write_text(
+        json.dumps(
+            {
+                "runtime_phase": "READY",
+                "ready": True,
+                "reasons": [],
+                "uptime_seconds": -1.0,
+                "consecutive_healthy_cycles": 3,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fail_if_mc_runs(*_: object, **__: object) -> ProbabilityOutput:
+        raise AssertionError("MC should be blocked when recovery status is invalid")
+
+    monkeypatch.setattr(
+        "polymarket_engine.probability.gpu_worker.run_four_generator_ensemble",
+        fail_if_mc_runs,
+    )
+
+    def fail_if_fragments_load(*_: object, **__: object) -> tuple[tuple[object, ...], None]:
+        raise AssertionError("fragments should not load when recovery status is invalid")
+
+    monkeypatch.setattr(
+        "polymarket_engine.probability.gpu_worker._load_probability_fragments",
+        fail_if_fragments_load,
+    )
+
+    payload = run_cuda_probability_worker_cycle(
+        duckdb_path=tmp_path / "unused.duckdb",
+        probability_status_path=probability_status_path,
+        recovery_status_path=recovery_status_path,
+        probability_inputs_path=probability_inputs_path,
+        probability_fragments_path=probability_fragments_path,
+        probability_event_path=probability_event_path,
+        budget=ProbabilityWorkerBudget(max_total_paths=80_000),
+    )
+
+    assert payload["state"] == "OFFLOAD_BLOCKED"
+    assert payload["offload"]["offload_allowed"] is False
+    assert "recovery_status_invalid" in payload["offload"]["reason_codes"]
+    assert payload["rows"][0]["probability_kind"] == "NOWCAST"
+
+
 def test_snapshot_adapter_preserves_runtime_safety_fields(tmp_path: Path) -> None:
     asof_ts = datetime.now(UTC)
     probability_inputs_path = tmp_path / "probability_inputs.json"
