@@ -53,7 +53,6 @@ def build_runtime_router(
     allow_probability_compute_fallback: bool = False,
 ) -> APIRouter:
     router = APIRouter(prefix="/api/runtime")
-    _ = bug_report_dir
     probability_cache = ProbabilityRuntimeCache()
     probability_event_path = probability_status_path.with_name("probability-events.jsonl")
 
@@ -349,6 +348,10 @@ def build_runtime_router(
             outcome_status_path=outcome_status_path,
         )
 
+    @router.get("/bug-reports")
+    def runtime_bug_reports(limit: int = 20) -> dict[str, Any]:
+        return _bug_reports_payload(bug_report_dir=bug_report_dir, limit=limit)
+
     @router.get("/storage")
     def storage() -> dict[str, Any]:
         return _storage_payload(data_dir)
@@ -561,6 +564,81 @@ def _last_probability_event_id(rows: Sequence[object]) -> str | None:
             if isinstance(event_id, str) and event_id:
                 return event_id
     return None
+
+
+def _bug_reports_payload(*, bug_report_dir: Path, limit: int) -> dict[str, Any]:
+    if not bug_report_dir.exists():
+        error = f"{bug_report_dir} missing"
+        return {
+            "schema_version": "polymarket-runtime-bug-reports-v1",
+            "ok": False,
+            "state": "MISSING",
+            "path": str(bug_report_dir),
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "reports": [],
+            "errors": [error],
+        }
+    if not bug_report_dir.is_dir():
+        error = f"{bug_report_dir} is not a directory"
+        return {
+            "schema_version": "polymarket-runtime-bug-reports-v1",
+            "ok": False,
+            "state": "INVALID",
+            "path": str(bug_report_dir),
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "reports": [],
+            "errors": [error],
+        }
+
+    reports: list[dict[str, Any]] = []
+    errors: list[str] = []
+    limit = max(limit, 0)
+    for path in _newest_json_files(bug_report_dir):
+        if len(reports) >= limit:
+            break
+        payload, error = _read_bug_report_file(path)
+        if payload is None:
+            errors.append(error)
+            continue
+        reports.append({**payload, "source_path": str(path)})
+
+    state = "OK"
+    if errors and reports:
+        state = "PARTIAL"
+    elif errors:
+        state = "INVALID"
+    return {
+        "schema_version": "polymarket-runtime-bug-reports-v1",
+        "ok": not errors,
+        "state": state,
+        "path": str(bug_report_dir),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "reports": reports,
+        "errors": errors,
+    }
+
+
+def _newest_json_files(path: Path) -> list[Path]:
+    candidates: list[tuple[int, str, Path]] = []
+    for candidate in path.glob("*.json"):
+        try:
+            mtime_ns = candidate.stat().st_mtime_ns
+        except OSError:
+            continue
+        candidates.append((mtime_ns, candidate.name, candidate))
+    return [candidate for _mtime_ns, _name, candidate in sorted(candidates, reverse=True)]
+
+
+def _read_bug_report_file(path: Path) -> tuple[dict[str, Any] | None, str]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        return None, f"{path}: JSON parse failed: {_format_error(exc)}"
+    except OSError as exc:
+        return None, f"{path}: file read failed: {_format_error(exc)}"
+    if not isinstance(payload, dict):
+        return None, f"{path}: JSON root must be an object"
+    return payload, ""
 
 
 def _runtime_live_payload(

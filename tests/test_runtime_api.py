@@ -636,6 +636,50 @@ def test_runtime_api_optional_status_invalid_fallbacks(
     assert live_payload["offload"]["reason_codes"] == ["offload_status_missing"]
 
 
+def test_runtime_bug_reports_missing_dir_returns_controlled_state(tmp_path: Path) -> None:
+    missing_dir = tmp_path / "missing-bug-reports"
+    app = FastAPI()
+    app.include_router(build_runtime_router(bug_report_dir=missing_dir))
+
+    response = TestClient(app).get("/api/runtime/bug-reports")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["state"] == "MISSING"
+    assert payload["path"] == str(missing_dir)
+    assert payload["reports"] == []
+    assert payload["errors"] == [f"{missing_dir} missing"]
+
+
+def test_runtime_bug_reports_lists_newest_json_reports(tmp_path: Path) -> None:
+    bug_report_dir = tmp_path / "bug-reports"
+    bug_report_dir.mkdir()
+    older = bug_report_dir / "older.json"
+    newer = bug_report_dir / "newer.json"
+    malformed = bug_report_dir / "malformed.json"
+    older.write_text(json.dumps({"bug_id": "bug-old", "severity": "WARN"}), encoding="utf-8")
+    newer.write_text(json.dumps({"bug_id": "bug-new", "severity": "CRITICAL"}), encoding="utf-8")
+    malformed.write_text("{not-json", encoding="utf-8")
+    os.utime(older, (100.0, 100.0))
+    os.utime(newer, (300.0, 300.0))
+    os.utime(malformed, (200.0, 200.0))
+    app = FastAPI()
+    app.include_router(build_runtime_router(bug_report_dir=bug_report_dir))
+
+    response = TestClient(app).get("/api/runtime/bug-reports?limit=2")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["state"] == "PARTIAL"
+    assert payload["path"] == str(bug_report_dir)
+    assert [report["bug_id"] for report in payload["reports"]] == ["bug-new", "bug-old"]
+    assert payload["reports"][0]["source_path"] == str(newer)
+    assert len(payload["errors"]) == 1
+    assert str(malformed) in payload["errors"][0]
+
+
 def test_runtime_live_includes_volatility_diagnostics(tmp_path: Path) -> None:
     status_path = tmp_path / "status.json"
     _write_status(status_path)
