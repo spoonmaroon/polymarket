@@ -45,6 +45,8 @@ from polymarket_engine.probability.runtime import _steps_for_input
 from polymarket_engine.probability.runtime import latest_probability_inputs
 from polymarket_engine.probability.runtime import probability_gate_diagnostics
 from polymarket_engine.probability.runtime_inputs import ProbabilityRuntimeInput
+from polymarket_engine.probability.runtime_inputs import ProbabilityState
+from polymarket_engine.probability.runtime_inputs import ThresholdDiagnostics
 from polymarket_engine.probability.schema import ProbabilityInput, ProbabilityOutput
 from polymarket_engine.storage.atomic import durable_replace
 
@@ -264,7 +266,7 @@ def run_cuda_probability_worker_cycle(
         _write_status(probability_status_path, payload)
         return payload
 
-    mc_inputs = tuple(inputs)
+    mc_inputs = _mc_eligible_inputs(inputs)
     if len(mc_inputs) > budget.max_total_paths:
         mc_input_skipped = len(mc_inputs) - budget.max_total_paths
         mc_inputs = mc_inputs[: budget.max_total_paths]
@@ -825,7 +827,7 @@ def _nowcast_row(
         status_written_ts=generated_at,
         ui_seen_ts=None,
     )
-    return {
+    row = {
         "contract": runtime_input.contract,
         "state_id": probability_input.state_id,
         "contract_id": runtime_input.contract_id,
@@ -849,6 +851,8 @@ def _nowcast_row(
         "source_age_ms": probability_input.source_age_ms,
         "book_age_ms": probability_input.book_age_ms,
         "flags": list(runtime_input.flags) if runtime_input.flags else ["OK"],
+        "probability_state": runtime_input.probability_state,
+        "k_stable": runtime_input.k_stable,
         "backend": nowcast.backend,
         "probability_kind": nowcast.probability_kind,
         "model_version": nowcast.model_version,
@@ -864,6 +868,11 @@ def _nowcast_row(
         "dynamic_edge": nowcast.dynamic_edge,
         "dynamic_required_edge": nowcast.dynamic_required_edge,
     }
+    if runtime_input.threshold_diagnostics is not None:
+        row["threshold_diagnostics"] = _threshold_diagnostics_to_json_dict(
+            runtime_input.threshold_diagnostics
+        )
+    return row
 
 
 def _mc_row_from_output(
@@ -976,6 +985,9 @@ def _mc_row_from_output(
             "executable_price": probability_input.executable_price,
             "source_age_ms": probability_input.source_age_ms,
             "book_age_ms": probability_input.book_age_ms,
+            "flags": list(runtime_input.flags) if runtime_input.flags else ["OK"],
+            "probability_state": runtime_input.probability_state,
+            "k_stable": runtime_input.k_stable,
             "path_count": effective_path_count,
             "paths_per_generator": paths_per_generator,
             "generator_count": generator_count,
@@ -988,8 +1000,22 @@ def _mc_row_from_output(
             "dynamic_required_edge": nowcast_row["dynamic_required_edge"],
         }
     )
+    if runtime_input.threshold_diagnostics is not None:
+        row["threshold_diagnostics"] = _threshold_diagnostics_to_json_dict(
+            runtime_input.threshold_diagnostics
+        )
     row["output_id"] = output_id
     return row, output_id
+
+
+def _mc_eligible_inputs(
+    inputs: Sequence[ProbabilityRuntimeInput],
+) -> tuple[ProbabilityRuntimeInput, ...]:
+    return tuple(
+        runtime_input
+        for runtime_input in inputs
+        if runtime_input.probability_state == "READY" and runtime_input.k_stable
+    )
 
 
 def _batch_runtime_inputs(
@@ -1444,6 +1470,11 @@ def _latest_probability_inputs_from_snapshot(
                     "volatility_regime",
                 ),
                 flags=tuple(_string_list(row.get("flags", ["OK"]), "flags")),
+                probability_state=_probability_state(row.get("probability_state")),
+                k_stable=_optional_bool(row.get("k_stable"), "k_stable", default=True),
+                threshold_diagnostics=_optional_threshold_diagnostics(
+                    row.get("threshold_diagnostics")
+                ),
             )
         )
         if len(inputs) >= limit:
@@ -1503,6 +1534,68 @@ def _optional_str(value: object, field_name: str) -> str | None:
     if value is None:
         return None
     return _nonempty_str(value, field_name)
+
+
+def _probability_state(value: object) -> ProbabilityState:
+    if value is None:
+        return "READY"
+    if value not in {"READY", "BLOCKED"}:
+        raise ValueError("probability_state must be READY or BLOCKED")
+    return cast(ProbabilityState, value)
+
+
+def _optional_bool(value: object, field_name: str, *, default: bool) -> bool:
+    if value is None:
+        return default
+    if not isinstance(value, bool):
+        raise ValueError(f"{field_name} must be a boolean")
+    return value
+
+
+def _threshold_diagnostics_to_json_dict(
+    diagnostics: ThresholdDiagnostics,
+) -> dict[str, Any]:
+    return {
+        "contract_id": diagnostics.contract_id,
+        "market_slug": diagnostics.market_slug,
+        "asset": diagnostics.asset,
+        "side": diagnostics.side,
+        "K": diagnostics.K,
+        "K_source": diagnostics.K_source,
+        "rule_hash": diagnostics.rule_hash,
+        "timestamp": diagnostics.timestamp.isoformat(),
+        "previous_K": diagnostics.previous_K,
+        "new_K": diagnostics.new_K,
+        "reason_for_change": diagnostics.reason_for_change,
+    }
+
+
+def _optional_threshold_diagnostics(value: object) -> ThresholdDiagnostics | None:
+    if value is None:
+        return None
+    payload = _mapping(value, "threshold_diagnostics")
+    return ThresholdDiagnostics(
+        contract_id=_nonempty_str(payload.get("contract_id"), "contract_id"),
+        market_slug=_nonempty_str(payload.get("market_slug"), "market_slug"),
+        asset=_nonempty_str(payload.get("asset"), "asset"),
+        side=_nonempty_str(payload.get("side"), "side"),
+        K=_float(payload.get("K"), "K"),
+        K_source=_optional_str(payload.get("K_source"), "K_source"),
+        rule_hash=_nonempty_str(payload.get("rule_hash"), "rule_hash"),
+        timestamp=_parse_datetime(payload.get("timestamp")),
+        previous_K=_optional_float(payload.get("previous_K"), "previous_K"),
+        new_K=_float(payload.get("new_K"), "new_K"),
+        reason_for_change=_nonempty_str(
+            payload.get("reason_for_change"),
+            "reason_for_change",
+        ),
+    )
+
+
+def _optional_float(value: object, field_name: str) -> float | None:
+    if value is None:
+        return None
+    return _float(value, field_name)
 
 
 def _string_list(value: object, field_name: str) -> list[str]:

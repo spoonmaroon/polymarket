@@ -214,6 +214,67 @@ def test_hot_probability_inputs_blocks_threshold_mutation_under_same_rule_hash(
     )
 
 
+def test_hot_probability_inputs_blocks_threshold_mutation_across_writes(
+    tmp_path: Path,
+) -> None:
+    out_path = tmp_path / "inputs.json"
+
+    write_hot_probability_inputs(
+        out_path=out_path,
+        states=(_state("UP"),),
+        generated_at=datetime.now(timezone.utc),
+    )
+    write_hot_probability_inputs(
+        out_path=out_path,
+        states=(replace(_state("UP"), state_id="state-UP-next", threshold=103_951.0),),
+        generated_at=datetime.now(timezone.utc),
+    )
+
+    raw = json.loads(out_path.read_text())
+    row = raw["inputs"][0]
+
+    assert row["probability_state"] == "BLOCKED"
+    assert "THRESHOLD_MUTATION_ERROR" in row["flags"]
+    assert row["k_stable"] is False
+    assert row["threshold_diagnostics"]["previous_K"] == 103_950.0
+    assert row["threshold_diagnostics"]["new_K"] == 103_951.0
+
+
+def test_hot_probability_inputs_allows_threshold_change_when_rule_hash_changes(
+    tmp_path: Path,
+) -> None:
+    out_path = tmp_path / "inputs.json"
+    changed_rule_contract = replace(_contract("UP"), rule_hash="hash-v2")
+    changed_rule_state = replace(
+        _state("UP"),
+        contract=changed_rule_contract,
+        state_id="state-UP-rule-v2",
+        threshold=103_951.0,
+    )
+
+    write_hot_probability_inputs(
+        out_path=out_path,
+        states=(_state("UP"),),
+        generated_at=datetime.now(timezone.utc),
+    )
+    write_hot_probability_inputs(
+        out_path=out_path,
+        states=(changed_rule_state,),
+        generated_at=datetime.now(timezone.utc),
+    )
+
+    raw = json.loads(out_path.read_text())
+    row = raw["inputs"][0]
+
+    assert row["probability_state"] == "READY"
+    assert row["flags"] == ["OK"]
+    assert row["k_stable"] is True
+    assert row["threshold_diagnostics"]["previous_K"] == 103_950.0
+    assert row["threshold_diagnostics"]["new_K"] == 103_951.0
+    assert row["threshold_diagnostics"]["rule_hash"] == "hash-v2"
+    assert row["threshold_diagnostics"]["reason_for_change"] == "rule_hash_changed"
+
+
 def test_read_hot_probability_inputs_enforces_limit(tmp_path: Path) -> None:
     out_path = tmp_path / "inputs.json"
 

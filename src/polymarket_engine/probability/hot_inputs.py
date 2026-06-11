@@ -46,7 +46,7 @@ def write_hot_probability_inputs(
     generated_at_utc = _require_aware_datetime(generated_at, "generated_at")
     rows: list[dict[str, Any]] = []
     skipped = 0
-    threshold_assignments: dict[str, _ThresholdAssignment] = {}
+    threshold_assignments = _previous_threshold_assignments(out_path)
 
     for state in states:
         if state.data_quality_flags:
@@ -313,6 +313,42 @@ def _threshold_diagnostics_to_json_dict(
         "new_K": diagnostics.new_K,
         "reason_for_change": diagnostics.reason_for_change,
     }
+
+
+def _previous_threshold_assignments(out_path: Path) -> dict[str, _ThresholdAssignment]:
+    try:
+        raw = json.loads(
+            out_path.read_text(encoding="utf-8"),
+            parse_constant=_reject_json_constant,
+        )
+    except (FileNotFoundError, json.JSONDecodeError, OSError, ValueError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    if raw.get("schema_version") != HOT_PROBABILITY_INPUTS_SCHEMA_VERSION:
+        return {}
+    rows = raw.get("inputs")
+    if not isinstance(rows, list):
+        return {}
+
+    assignments: dict[str, _ThresholdAssignment] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        diagnostics = row.get("threshold_diagnostics")
+        if not isinstance(diagnostics, dict):
+            continue
+        try:
+            contract_id = _required_str(diagnostics, "contract_id")
+            threshold = _required_float(diagnostics, "new_K")
+            rule_hash = _required_str(diagnostics, "rule_hash")
+        except ValueError:
+            continue
+        assignments[contract_id] = _ThresholdAssignment(
+            threshold=threshold,
+            rule_hash=rule_hash,
+        )
+    return assignments
 
 
 def _optional_threshold_diagnostics(value: object) -> ThresholdDiagnostics | None:

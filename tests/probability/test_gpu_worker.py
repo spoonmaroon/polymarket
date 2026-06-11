@@ -14,6 +14,7 @@ from polymarket_engine.probability.gpu_worker import _event_payload_from_row
 from polymarket_engine.probability.gpu_worker import _path_budget_per_input
 from polymarket_engine.probability.gpu_worker import run_cuda_probability_worker_cycle
 from polymarket_engine.probability.gpu_worker import run_cuda_probability_worker_loop
+from polymarket_engine.probability.hot_inputs import HOT_PROBABILITY_INPUTS_SCHEMA_VERSION
 from polymarket_engine.probability.generator_fragments import GeneratorFragment
 from polymarket_engine.probability.generator_fragments import write_probability_fragments
 from polymarket_engine.probability.runtime_inputs import ProbabilityRuntimeInput
@@ -274,6 +275,154 @@ def test_worker_blocks_expensive_mc_when_offload_gate_blocks(
     assert payload["offload"]["recommended_worker_mode"] == "nowcast_only"
     assert payload["offload"]["recommended_max_total_paths"] == 0
     assert payload["rows"][0]["probability_kind"] == "NOWCAST"
+
+
+def test_worker_preserves_blocked_threshold_rows_without_running_mc(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asof_ts = datetime.now(UTC)
+    probability_status_path = tmp_path / "probabilities.json"
+    probability_inputs_path = tmp_path / "hot_probability_inputs.json"
+    probability_event_path = tmp_path / "probability-events.jsonl"
+
+    def input_row(
+        *,
+        state_id: str,
+        side: str,
+        probability_state: str = "READY",
+        k_stable: bool = True,
+        flags: list[str] | None = None,
+    ) -> dict[str, object]:
+        probability_input = ProbabilityInput(
+            state_id=state_id,
+            asof_ts=asof_ts,
+            asset="BTC",
+            side=side,
+            comparison_operator=">=" if side == "UP" else "<",
+            seconds_left=300.0,
+            settlement_price=70_100.0,
+            threshold=70_000.0 if k_stable else 70_001.0,
+            sigma_tau=0.012,
+            executable_price=0.52 if side == "UP" else 0.48,
+            source_age_ms=100,
+            book_age_ms=100,
+            z_path=0.12,
+        )
+        row: dict[str, object] = {
+            "contract": f"BTC 5m {side}",
+            "contract_id": f"btc-{side.lower()}",
+            "market_slug": "btc-updown-5m-1780752000",
+            "start_ts": asof_ts.isoformat(),
+            "expiry_ts": (asof_ts + timedelta(minutes=5)).isoformat(),
+            "flags": flags or ["OK"],
+            "k_stable": k_stable,
+            "probability_input": probability_input.to_json_dict(),
+            "probability_state": probability_state,
+            "threshold_diagnostics": {
+                "contract_id": f"btc-{side.lower()}",
+                "market_slug": "btc-updown-5m-1780752000",
+                "asset": "BTC",
+                "side": side,
+                "K": probability_input.threshold,
+                "K_source": "polymarket_rtds_chainlink",
+                "rule_hash": "hash",
+                "timestamp": asof_ts.isoformat(),
+                "previous_K": 70_000.0 if not k_stable else None,
+                "new_K": probability_input.threshold,
+                "reason_for_change": (
+                    "threshold_changed_without_rule_hash_change"
+                    if not k_stable
+                    else "initial_assignment"
+                ),
+            },
+            "volatility_regime": "normal",
+        }
+        return row
+
+    probability_inputs_path.write_text(
+        json.dumps(
+            {
+                "schema_version": HOT_PROBABILITY_INPUTS_SCHEMA_VERSION,
+                "generated_at": asof_ts.isoformat(),
+                "inputs": [
+                    input_row(state_id="state-ready-up", side="UP"),
+                    input_row(
+                        state_id="state-blocked-down",
+                        side="DOWN",
+                        probability_state="BLOCKED",
+                        k_stable=False,
+                        flags=["THRESHOLD_MUTATION_ERROR"],
+                    ),
+                ],
+                "skipped": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_ensemble_output(
+        input_row: ProbabilityInput,
+        *,
+        path_count: int,
+        steps: int,
+        seed: int,
+        history_fragments: tuple[tuple[float, ...], ...] | None = None,
+    ) -> ProbabilityOutput:
+        del path_count, steps, seed, history_fragments
+        if input_row.state_id == "state-blocked-down":
+            raise AssertionError("blocked threshold state reached MC")
+        return ProbabilityOutput(
+            state_id=input_row.state_id,
+            asof_ts=input_row.asof_ts,
+            p_finish=0.64,
+            p_no_touch=0.57,
+            z_path=input_row.z_path,
+            model_version="ensemble-v1",
+            seed=1,
+            diagnostics={
+                "model": "ensemble-v1",
+                "generator_version": "four-generator-ensemble-v1",
+                "path_count": 4_000,
+                "paths_per_generator": 1_000,
+                "generator_count": 4,
+                "steps": 300,
+                "effective_weights": {},
+                "generator_summary": {},
+                "generator_runs": [],
+                "effective_generator_values": {},
+                "u_gen": 0.03,
+                "mc_dispersion": 0.08,
+                "uncertainty_buffer": 0.055,
+                "path_diagnosis": "OK",
+                "sparse_scope": False,
+            },
+        )
+
+    monkeypatch.setattr(
+        "polymarket_engine.probability.gpu_worker.run_four_generator_ensemble",
+        fake_ensemble_output,
+    )
+
+    payload = run_cuda_probability_worker_cycle(
+        duckdb_path=tmp_path / "unused.duckdb",
+        probability_status_path=probability_status_path,
+        probability_inputs_path=probability_inputs_path,
+        probability_event_path=probability_event_path,
+        budget=ProbabilityWorkerBudget(max_total_paths=20_000),
+    )
+
+    rows_by_state = {row["state_id"]: row for row in payload["rows"]}
+    blocked = rows_by_state["state-blocked-down"]
+
+    assert rows_by_state["state-ready-up"]["probability_kind"] == "MC"
+    assert blocked["probability_kind"] == "NOWCAST"
+    assert blocked["probability_state"] == "BLOCKED"
+    assert blocked["k_stable"] is False
+    assert blocked["flags"] == ["THRESHOLD_MUTATION_ERROR"]
+    assert blocked["threshold_diagnostics"]["reason_for_change"] == (
+        "threshold_changed_without_rule_hash_change"
+    )
 
 
 def test_worker_budget_rejects_soft_max_below_target() -> None:
