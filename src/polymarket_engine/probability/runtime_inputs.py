@@ -6,7 +6,7 @@ from typing import Literal
 
 from polymarket_engine.probability.schema import ProbabilityInput
 
-ProbabilityState = Literal["READY", "BLOCKED"]
+ProbabilityState = Literal["READY", "BLOCKED", "BLOCKED_OR_STALE"]
 
 
 @dataclass(frozen=True)

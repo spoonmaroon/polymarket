@@ -11,6 +11,7 @@ from polymarket_engine.probability.gpu_worker import PROBABILITY_INPUTS_SCHEMA_V
 from polymarket_engine.probability.gpu_worker import _budget_diagnostics
 from polymarket_engine.probability.gpu_worker import _clamp_path_count
 from polymarket_engine.probability.gpu_worker import _event_payload_from_row
+from polymarket_engine.probability.gpu_worker import _latest_probability_inputs_from_snapshot
 from polymarket_engine.probability.gpu_worker import _path_budget_per_input
 from polymarket_engine.probability.gpu_worker import run_cuda_probability_worker_cycle
 from polymarket_engine.probability.gpu_worker import run_cuda_probability_worker_loop
@@ -429,6 +430,59 @@ def test_worker_preserves_blocked_threshold_rows_without_running_mc(
     assert blocked["threshold_diagnostics"]["reason_for_change"] == (
         "threshold_changed_without_rule_hash_change"
     )
+
+
+def test_gpu_snapshot_adapter_accepts_blocked_or_stale_state(tmp_path: Path) -> None:
+    asof_ts = datetime.now(UTC)
+    probability_inputs_path = tmp_path / "hot_probability_inputs.json"
+    probability_input = ProbabilityInput(
+        state_id="state-blocked-or-stale",
+        asof_ts=asof_ts,
+        asset="BTC",
+        side="UP",
+        comparison_operator=">=",
+        seconds_left=300.0,
+        settlement_price=70_100.0,
+        threshold=70_000.0,
+        sigma_tau=0.012,
+        executable_price=0.52,
+        source_age_ms=100,
+        book_age_ms=100,
+        z_path=0.12,
+    )
+    probability_inputs_path.write_text(
+        json.dumps(
+            {
+                "schema_version": HOT_PROBABILITY_INPUTS_SCHEMA_VERSION,
+                "generated_at": asof_ts.isoformat(),
+                "inputs": [
+                    {
+                        "contract": "BTC 5m UP",
+                        "contract_id": "btc-up",
+                        "market_slug": "btc-updown-5m-1780752000",
+                        "start_ts": asof_ts.isoformat(),
+                        "expiry_ts": (asof_ts + timedelta(minutes=5)).isoformat(),
+                        "flags": ["STALE_INPUT"],
+                        "k_stable": True,
+                        "probability_input": probability_input.to_json_dict(),
+                        "probability_state": "BLOCKED_OR_STALE",
+                    }
+                ],
+                "skipped": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    inputs, skipped = _latest_probability_inputs_from_snapshot(
+        path=probability_inputs_path,
+        limit=10,
+        max_state_age_seconds=60 * 60,
+        max_snapshot_age_seconds=60,
+    )
+
+    assert skipped == 0
+    assert inputs[0].probability_state == "BLOCKED_OR_STALE"
 
 
 def test_worker_budget_rejects_soft_max_below_target() -> None:

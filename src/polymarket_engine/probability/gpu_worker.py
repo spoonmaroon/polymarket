@@ -1556,8 +1556,8 @@ def _optional_str(value: object, field_name: str) -> str | None:
 def _probability_state(value: object) -> ProbabilityState:
     if value is None:
         return "READY"
-    if value not in {"READY", "BLOCKED"}:
-        raise ValueError("probability_state must be READY or BLOCKED")
+    if value not in {"READY", "BLOCKED", "BLOCKED_OR_STALE"}:
+        raise ValueError("probability_state must be READY, BLOCKED, or BLOCKED_OR_STALE")
     return cast(ProbabilityState, value)
 
 

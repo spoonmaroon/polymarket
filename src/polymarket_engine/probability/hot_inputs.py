@@ -61,18 +61,20 @@ def write_hot_probability_inputs(
         probability_state: ProbabilityState = "READY"
         k_stable = True
         flags = ("OK",)
-        if (
+        threshold_mutated_without_rule_change = (
             previous_assignment is not None
             and previous_assignment.rule_hash == state.contract.rule_hash
             and previous_assignment.threshold != state.threshold
-        ):
+        )
+        if threshold_mutated_without_rule_change:
             probability_state = "BLOCKED"
             k_stable = False
             flags = (THRESHOLD_MUTATION_ERROR,)
-        threshold_assignments[state.contract.contract_id] = _ThresholdAssignment(
-            threshold=state.threshold,
-            rule_hash=state.contract.rule_hash,
-        )
+        else:
+            threshold_assignments[state.contract.contract_id] = _ThresholdAssignment(
+                threshold=state.threshold,
+                rule_hash=state.contract.rule_hash,
+            )
         runtime_input = ProbabilityRuntimeInput(
             probability_input=probability_input,
             contract_id=state.contract.contract_id,
@@ -408,8 +410,8 @@ def _required_str(value: dict[str, Any], field_name: str) -> str:
 def _probability_state(value: object) -> ProbabilityState:
     if value is None:
         return "READY"
-    if value not in {"READY", "BLOCKED"}:
-        raise ValueError("probability_state must be READY or BLOCKED")
+    if value not in {"READY", "BLOCKED", "BLOCKED_OR_STALE"}:
+        raise ValueError("probability_state must be READY, BLOCKED, or BLOCKED_OR_STALE")
     return cast(ProbabilityState, value)
 
 

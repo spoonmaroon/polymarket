@@ -214,6 +214,36 @@ def test_hot_probability_inputs_blocks_threshold_mutation_under_same_rule_hash(
     )
 
 
+def test_hot_probability_inputs_latches_original_threshold_within_batch(
+    tmp_path: Path,
+) -> None:
+    out_path = tmp_path / "inputs.json"
+    first_mutated = replace(_state("UP"), state_id="state-UP-mutated", threshold=103_951.0)
+    second_mutated = replace(
+        _state("UP"),
+        state_id="state-UP-mutated-repeat",
+        threshold=103_951.0,
+    )
+
+    write_hot_probability_inputs(
+        out_path=out_path,
+        states=(_state("UP"), first_mutated, second_mutated),
+        generated_at=datetime.now(timezone.utc),
+    )
+
+    raw = json.loads(out_path.read_text())
+    first_bad = raw["inputs"][1]
+    second_bad = raw["inputs"][2]
+
+    assert first_bad["probability_state"] == "BLOCKED"
+    assert second_bad["probability_state"] == "BLOCKED"
+    assert "THRESHOLD_MUTATION_ERROR" in first_bad["flags"]
+    assert "THRESHOLD_MUTATION_ERROR" in second_bad["flags"]
+    assert first_bad["threshold_diagnostics"]["previous_K"] == 103_950.0
+    assert second_bad["threshold_diagnostics"]["previous_K"] == 103_950.0
+    assert second_bad["threshold_diagnostics"]["new_K"] == 103_951.0
+
+
 def test_hot_probability_inputs_blocks_threshold_mutation_across_writes(
     tmp_path: Path,
 ) -> None:
@@ -282,6 +312,22 @@ def test_hot_probability_inputs_allows_threshold_change_when_rule_hash_changes(
     assert row["threshold_diagnostics"]["new_K"] == 103_951.0
     assert row["threshold_diagnostics"]["rule_hash"] == "hash-v2"
     assert row["threshold_diagnostics"]["reason_for_change"] == "rule_hash_changed"
+
+
+def test_read_hot_probability_inputs_accepts_blocked_or_stale_state(tmp_path: Path) -> None:
+    out_path = tmp_path / "inputs.json"
+    write_hot_probability_inputs(
+        out_path=out_path,
+        states=(_state("UP"),),
+        generated_at=datetime.now(timezone.utc),
+    )
+    raw = json.loads(out_path.read_text())
+    raw["inputs"][0]["probability_state"] = "BLOCKED_OR_STALE"
+    out_path.write_text(json.dumps(raw))
+
+    payload = read_hot_probability_inputs(out_path=out_path, limit=10, max_age_seconds=60)
+
+    assert payload.inputs[0].probability_state == "BLOCKED_OR_STALE"
 
 
 def test_read_hot_probability_inputs_enforces_limit(tmp_path: Path) -> None:
