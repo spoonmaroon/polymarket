@@ -218,30 +218,34 @@ class UrlHttpClient:
         try:
             with urllib.request.urlopen(url, timeout=timeout_seconds) as response:
                 body = response.read().decode("utf-8", errors="replace")
-                payload: dict[str, Any] = {}
                 content_type = response.headers.get("content-type", "")
-                if "json" in content_type:
-                    try:
-                        parsed = json.loads(body)
-                    except json.JSONDecodeError:
-                        parsed = {}
-                    if isinstance(parsed, dict):
-                        payload = parsed
                 return HttpResult(
                     status_code=int(response.status),
-                    json_payload=payload,
+                    json_payload=_parse_json_payload(body, content_type),
                     text=body,
                     content_type=content_type,
                 )
         except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            content_type = exc.headers.get("content-type", "")
             return HttpResult(
                 status_code=int(exc.code),
-                json_payload={},
-                text=exc.read().decode("utf-8", errors="replace"),
-                content_type=exc.headers.get("content-type", ""),
+                json_payload=_parse_json_payload(body, content_type),
+                text=body,
+                content_type=content_type,
             )
         except OSError as exc:
             return HttpResult(status_code=0, json_payload={}, text=f"{type(exc).__name__}: {exc}")
+
+
+def _parse_json_payload(body: str, content_type: str) -> dict[str, Any]:
+    if "json" not in content_type.lower():
+        return {}
+    try:
+        parsed = json.loads(body)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def compose_command(config: RuntimeKeeperConfig, *args: str) -> tuple[str, ...]:
@@ -360,19 +364,20 @@ def _http_error_message(result: HttpResult) -> tuple[str, Any] | None:
 
 
 def _http_error_detail(result: HttpResult) -> str:
-    message = _http_error_message(result)
-    if message is None:
-        return _http_failure_detail(result)
-    field, value = message
-    return f"status={result.status_code} content_type={result.content_type} {field}={value}"
+    return _http_failure_detail(result)
 
 
 def _http_failure_detail(result: HttpResult) -> str:
-    return (
-        f"status={result.status_code} "
-        f"content_type={result.content_type} "
-        f"body_prefix={result.text[:120]}"
-    )
+    parts = [
+        f"status={result.status_code}",
+        f"content_type={result.content_type}",
+    ]
+    message = _http_error_message(result)
+    if message is not None:
+        field, value = message
+        parts.append(f"{field}={value}")
+    parts.append(f"body_prefix={result.text[:120]}")
+    return " ".join(parts)
 
 
 def report_payload(
