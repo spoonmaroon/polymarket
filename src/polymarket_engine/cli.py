@@ -233,6 +233,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     backfill_outcomes.add_argument("--official-outcome-source", default="clob")
     backfill_outcomes.add_argument("--official-timeout-seconds", type=float, default=2.0)
 
+    calibration_report = subparsers.add_parser("calibration-report")
+    calibration_report.add_argument(
+        "--input",
+        type=Path,
+        default=Path("data/research/calibration/asof_decision_states.jsonl"),
+    )
+    calibration_report.add_argument("--out", type=Path, required=True)
+
     runtime_keeper = subparsers.add_parser("runtime-keeper")
     runtime_keeper.add_argument("--repo", type=Path, default=Path("/home/ender/polymarket"))
     runtime_keeper.add_argument("--data-dir", type=Path, default=Path("/home/ender/polymarket-data"))
@@ -289,6 +297,8 @@ async def run_collect_command(argv: list[str] | None = None) -> int:
         return _run_verify_hot_decision_replay(args)
     if args.command == "backfill-outcomes":
         return _run_backfill_outcomes(args)
+    if args.command == "calibration-report":
+        return _run_calibration_report(args)
     if args.command == "runtime-keeper":
         return _run_runtime_keeper(args)
     if args.command == "sync-cluster-artifacts":
@@ -556,6 +566,22 @@ def _run_backfill_outcomes(args: argparse.Namespace) -> int:
     )
     print(json.dumps(report, sort_keys=True, separators=(",", ":")))
     return 0 if report.get("ok") is True else 1
+
+
+def _run_calibration_report(args: argparse.Namespace) -> int:
+    from polymarket_engine.calibration.reports import build_calibration_report
+    from polymarket_engine.calibration.reports import load_calibration_jsonl
+
+    rows = load_calibration_jsonl(args.input)
+    report = build_calibration_report(rows)
+    payload = report.to_json_dict()
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    args.out.write_text(
+        json.dumps(payload, allow_nan=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    print(json.dumps(payload, allow_nan=False, sort_keys=True, separators=(",", ":")))
+    return 0
 
 
 def _run_runtime_keeper(args: argparse.Namespace) -> int:

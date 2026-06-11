@@ -408,6 +408,22 @@ def test_parse_verify_hot_decision_replay_args() -> None:
     assert args.report_out == Path("reports/hot-replay.json")
 
 
+def test_parse_calibration_report_args() -> None:
+    args = parse_args(
+        [
+            "calibration-report",
+            "--input",
+            "data/research/calibration/asof_decision_states.jsonl",
+            "--out",
+            "reports/calibration.json",
+        ]
+    )
+
+    assert args.command == "calibration-report"
+    assert args.input == Path("data/research/calibration/asof_decision_states.jsonl")
+    assert args.out == Path("reports/calibration.json")
+
+
 def test_parse_runtime_keeper_args() -> None:
     args = parse_args(
         [
@@ -1078,6 +1094,45 @@ async def test_run_verify_hot_decision_replay_command_writes_report(
 
 
 @pytest.mark.anyio
+async def test_run_calibration_report_command_writes_output_json(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    input_path = tmp_path / "data" / "research" / "calibration" / "asof_decision_states.jsonl"
+    out_path = tmp_path / "reports" / "nested" / "calibration.json"
+    _write_jsonl(
+        input_path,
+        [
+            _calibration_row(state_id="state-1", p_finish_mc=0.8, final_label=1),
+            _calibration_row(state_id="state-2", p_finish_mc=0.2, final_label=0),
+        ],
+    )
+    original_input = input_path.read_text(encoding="utf-8")
+
+    result = await cli.run_collect_command(
+        [
+            "calibration-report",
+            "--input",
+            str(input_path),
+            "--out",
+            str(out_path),
+        ]
+    )
+
+    assert result == 0
+    assert input_path.read_text(encoding="utf-8") == original_input
+    stdout_payload = json.loads(capsys.readouterr().out)
+    file_payload = json.loads(out_path.read_text(encoding="utf-8"))
+    assert stdout_payload == file_payload
+    assert file_payload["schema_version"] == "polymarket-calibration-report-v1"
+    assert file_payload["input_row_count"] == 2
+    assert file_payload["evaluated_row_count"] == 2
+    assert file_payload["skipped_row_count"] == 0
+    assert round(file_payload["brier_score"], 4) == 0.04
+    assert file_payload["bucket_counts"]["tte_0_60"] == 2
+
+
+@pytest.mark.anyio
 async def test_run_collect_command_rejects_retired_python_collector(tmp_path: Path) -> None:
     with pytest.raises(SystemExit, match="Python live collection is retired"):
         await cli.run_collect_command(
@@ -1301,3 +1356,42 @@ def _write_jsonl(path: Path, rows: list[dict[str, object]]) -> None:
         "".join(f"{json.dumps(row, sort_keys=True)}\n" for row in rows),
         encoding="utf-8",
     )
+
+
+def _calibration_row(
+    *,
+    state_id: str,
+    p_finish_mc: float,
+    final_label: int,
+) -> dict[str, object]:
+    return {
+        "state_id": state_id,
+        "contract_id": "condition-1",
+        "market_slug": "btc-updown-5m-1781102700",
+        "asset": "BTC",
+        "side": "UP",
+        "asof_ts": "2026-06-10T12:00:00+00:00",
+        "expiry_ts": "2026-06-10T12:05:00+00:00",
+        "tte_seconds": 45,
+        "k": 65000.0,
+        "current_price": 65020.0,
+        "distance_to_threshold": 20.0,
+        "z_path": 0.2,
+        "sigma_tau": 0.015,
+        "p_finish_mc": p_finish_mc,
+        "p_no_touch_mc": 0.64,
+        "spread": 0.02,
+        "best_bid": 0.79,
+        "best_ask": 0.81,
+        "midpoint": 0.8,
+        "visible_depth": 1800.0,
+        "orderbook_imbalance": 0.35,
+        "quote_age_ms": 250.0,
+        "source_age_ms": 1000.0,
+        "volatility_regime": "normal",
+        "probability_model_version": "mc-v1",
+        "skip_or_block_reason": None,
+        "final_label": final_label,
+        "resolved_outcome": "UP",
+        "settlement_price_at_expiry": 65080.0,
+    }
