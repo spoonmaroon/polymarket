@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Thread
+from typing import cast
 
 from polymarket_engine.ops.runtime_keeper import HttpResult
 from polymarket_engine.ops.runtime_keeper import KeeperCheck
@@ -66,7 +67,7 @@ def test_url_http_client_preserves_malformed_json_response_evidence() -> None:
     thread = Thread(target=server.serve_forever)
     thread.start()
     try:
-        host, port = server.server_address
+        host, port = cast(tuple[str, int], server.server_address)
         result = UrlHttpClient().get(f"http://{host}:{port}/bad-json", timeout_seconds=1.0)
     finally:
         server.shutdown()
@@ -94,7 +95,7 @@ def test_url_http_client_parses_http_error_json_response_evidence() -> None:
     thread = Thread(target=server.serve_forever)
     thread.start()
     try:
-        host, port = server.server_address
+        host, port = cast(tuple[str, int], server.server_address)
         result = UrlHttpClient().get(f"http://{host}:{port}/error-json", timeout_seconds=1.0)
     finally:
         server.shutdown()
