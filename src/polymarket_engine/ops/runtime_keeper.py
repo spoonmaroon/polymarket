@@ -74,6 +74,7 @@ class HttpResult:
     status_code: int
     json_payload: dict[str, Any]
     text: str
+    content_type: str = ""
 
 
 class HttpClient(Protocol):
@@ -227,12 +228,14 @@ class UrlHttpClient:
                     status_code=int(response.status),
                     json_payload=payload,
                     text=body,
+                    content_type=content_type,
                 )
         except urllib.error.HTTPError as exc:
             return HttpResult(
                 status_code=int(exc.code),
                 json_payload={},
                 text=exc.read().decode("utf-8", errors="replace"),
+                content_type=exc.headers.get("content-type", ""),
             )
         except OSError as exc:
             return HttpResult(status_code=0, json_payload={}, text=f"{type(exc).__name__}: {exc}")
@@ -280,60 +283,86 @@ def evaluate_http_checks(
     live_monitor = (live.json_payload.get("monitor") or {})
     live_orderbooks = live_monitor.get("orderbooks") or []
     probability_rows = probabilities.json_payload.get("rows") or []
+    health_ok = health.status_code == 200 and health.json_payload.get("status") == "ok"
+    ui_ok = ui.status_code == 200 and "<title>Probability Runtime</title>" in ui.text
+    live_ok = (
+        live.status_code == 200
+        and live.json_payload.get("ok") is True
+        and len(live_orderbooks) > 0
+    )
+    probabilities_ok = (
+        probabilities.status_code == 200
+        and probabilities.json_payload.get("ok") is True
+        and probabilities.json_payload.get("state") == "OK"
+        and len(probability_rows) > 0
+    )
+    if live_ok:
+        live_detail = "live rows present"
+    elif _http_response_failed(live):
+        live_detail = _http_failure_detail(live)
+    else:
+        live_detail = "missing live rows"
+
+    if probabilities_ok:
+        probabilities_detail = "probability rows present"
+    elif _http_response_failed(probabilities):
+        probabilities_detail = _http_failure_detail(probabilities)
+    else:
+        probabilities_detail = "missing probability rows"
     return (
         KeeperCheck(
             name="api:/health",
-            ok=health.status_code == 200 and health.json_payload.get("status") == "ok",
+            ok=health_ok,
             detail=(
                 "ok"
-                if health.status_code == 200 and health.json_payload.get("status") == "ok"
-                else f"status={health.status_code}"
+                if health_ok
+                else _http_failure_detail(health)
             ),
         ),
         KeeperCheck(
             name="api:/",
-            ok=ui.status_code == 200 and "<title>Probability Runtime</title>" in ui.text,
+            ok=ui_ok,
             detail=(
                 "ui served"
-                if ui.status_code == 200 and "<title>Probability Runtime</title>" in ui.text
-                else f"status={ui.status_code}"
+                if ui_ok
+                else _http_failure_detail(ui)
             ),
         ),
         KeeperCheck(
             name="api:/api/runtime/live",
-            ok=live.status_code == 200
-            and live.json_payload.get("ok") is True
-            and len(live_orderbooks) > 0,
-            detail=(
-                "live rows present"
-                if live.status_code == 200
-                and live.json_payload.get("ok") is True
-                and len(live_orderbooks) > 0
-                else "missing live rows"
-            ),
+            ok=live_ok,
+            detail=live_detail,
         ),
         KeeperCheck(
             name="api:/api/runtime/probabilities",
-            ok=probabilities.status_code == 200
-            and probabilities.json_payload.get("ok") is True
-            and probabilities.json_payload.get("state") == "OK"
-            and len(probability_rows) > 0,
-            detail=(
-                "probability rows present"
-                if probabilities.status_code == 200
-                and probabilities.json_payload.get("ok") is True
-                and probabilities.json_payload.get("state") == "OK"
-                and len(probability_rows) > 0
-                else "missing probability rows"
-            ),
+            ok=probabilities_ok,
+            detail=probabilities_detail,
         ),
     )
 
 
-def report_payload(checks: Sequence[KeeperCheck], actions: Sequence[str]) -> dict[str, Any]:
+def _http_response_failed(result: HttpResult) -> bool:
+    return result.status_code != 200 or not result.json_payload
+
+
+def _http_failure_detail(result: HttpResult) -> str:
+    return (
+        f"status={result.status_code} "
+        f"content_type={result.content_type} "
+        f"body_prefix={result.text[:120]}"
+    )
+
+
+def report_payload(
+    checks: Sequence[KeeperCheck],
+    actions: Sequence[str],
+    *,
+    generated_at: datetime | None = None,
+) -> dict[str, Any]:
+    now = generated_at or datetime.now(timezone.utc)
     return {
         "schema_version": "polymarket-runtime-keeper-v1",
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": now.isoformat(),
         "ok": all(check.ok for check in checks),
         "actions": list(actions),
         "checks": [asdict(check) for check in checks],
