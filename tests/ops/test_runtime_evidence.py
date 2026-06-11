@@ -101,3 +101,25 @@ def test_semantic_json_failures_include_error_message() -> None:
     assert checks[2].detail == "status=200 content_type=application/json error=duckdb locked"
     assert checks[3].ok is False
     assert checks[3].detail == "status=200 content_type=application/json message=inputs stale"
+
+    detail_checks = evaluate_http_checks(
+        health=HttpResult(200, {"status": "ok"}, "", "application/json"),
+        ui=HttpResult(200, {}, "<title>Probability Runtime</title>", "text/html"),
+        live=HttpResult(
+            200,
+            {"ok": False, "detail": "runtime cache cold"},
+            '{"ok":false,"detail":"runtime cache cold"}',
+            "application/json",
+        ),
+        probabilities=HttpResult(
+            200,
+            {"ok": True, "state": "OK", "rows": [{"id": 1}]},
+            "",
+            "application/json",
+        ),
+    )
+
+    assert detail_checks[2].ok is False
+    assert detail_checks[2].detail == (
+        "status=200 content_type=application/json detail=runtime cache cold"
+    )
