@@ -28,6 +28,8 @@ NORMALIZED_HEALTH_SCHEMA_VERSION = "polymarket-normalized-health-v1"
 VOLATILITY_STATUS_SCHEMA_VERSION = "polymarket-volatility-runtime-v1"
 BUG_REPORT_MAX_REPORTS = 100
 BUG_REPORT_MAX_FILE_BYTES = 1_000_000
+BUG_REPORT_CANDIDATE_SCAN_MULTIPLIER = 3
+BUG_REPORT_MAX_FILES_SCANNED = BUG_REPORT_MAX_REPORTS * BUG_REPORT_CANDIDATE_SCAN_MULTIPLIER
 _PROBABILITY_EVENT_ROWS_CACHE: dict[
     tuple[str, int, int, int],
     tuple[list[dict[str, Any]], list[str]],
@@ -570,6 +572,7 @@ def _last_probability_event_id(rows: Sequence[object]) -> str | None:
 
 def _bug_reports_payload(*, bug_report_dir: Path, limit: int) -> dict[str, Any]:
     clamped_limit = min(max(limit, 0), BUG_REPORT_MAX_REPORTS)
+    candidate_limit = _bug_report_candidate_limit(clamped_limit)
     if not bug_report_dir.exists():
         error = f"{bug_report_dir} missing"
         return {
@@ -578,8 +581,10 @@ def _bug_reports_payload(*, bug_report_dir: Path, limit: int) -> dict[str, Any]:
             "state": "MISSING",
             "path": str(bug_report_dir),
             "limit": clamped_limit,
+            "candidate_limit": candidate_limit,
             "max_reports": BUG_REPORT_MAX_REPORTS,
             "max_file_bytes": BUG_REPORT_MAX_FILE_BYTES,
+            "max_files_scanned": BUG_REPORT_MAX_FILES_SCANNED,
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "reports": [],
             "errors": [error],
@@ -592,16 +597,36 @@ def _bug_reports_payload(*, bug_report_dir: Path, limit: int) -> dict[str, Any]:
             "state": "INVALID",
             "path": str(bug_report_dir),
             "limit": clamped_limit,
+            "candidate_limit": candidate_limit,
             "max_reports": BUG_REPORT_MAX_REPORTS,
             "max_file_bytes": BUG_REPORT_MAX_FILE_BYTES,
+            "max_files_scanned": BUG_REPORT_MAX_FILES_SCANNED,
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "reports": [],
             "errors": [error],
         }
+    if clamped_limit == 0:
+        return {
+            "schema_version": "polymarket-runtime-bug-reports-v1",
+            "ok": True,
+            "state": "OK",
+            "path": str(bug_report_dir),
+            "limit": clamped_limit,
+            "candidate_limit": candidate_limit,
+            "max_reports": BUG_REPORT_MAX_REPORTS,
+            "max_file_bytes": BUG_REPORT_MAX_FILE_BYTES,
+            "max_files_scanned": BUG_REPORT_MAX_FILES_SCANNED,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "reports": [],
+            "errors": [],
+        }
 
     reports: list[dict[str, Any]] = []
     errors: list[str] = []
-    for path, file_size in _newest_json_files(bug_report_dir):
+    for path, file_size in _newest_json_files(
+        bug_report_dir,
+        max_candidates=candidate_limit,
+    ):
         if len(reports) >= clamped_limit:
             break
         payload, error = _read_bug_report_file(path, file_size=file_size)
@@ -621,22 +646,31 @@ def _bug_reports_payload(*, bug_report_dir: Path, limit: int) -> dict[str, Any]:
         "state": state,
         "path": str(bug_report_dir),
         "limit": clamped_limit,
+        "candidate_limit": candidate_limit,
         "max_reports": BUG_REPORT_MAX_REPORTS,
         "max_file_bytes": BUG_REPORT_MAX_FILE_BYTES,
+        "max_files_scanned": BUG_REPORT_MAX_FILES_SCANNED,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "reports": reports,
         "errors": errors,
     }
 
 
-def _newest_json_files(path: Path) -> list[tuple[Path, int]]:
+def _bug_report_candidate_limit(limit: int) -> int:
+    return min(limit * BUG_REPORT_CANDIDATE_SCAN_MULTIPLIER, BUG_REPORT_MAX_FILES_SCANNED)
+
+
+def _newest_json_files(path: Path, *, max_candidates: int) -> list[tuple[Path, int]]:
     candidates: list[tuple[int, str, Path, int]] = []
+    if max_candidates <= 0:
+        return []
     for candidate in path.glob("*.json"):
         try:
             stat = candidate.stat()
         except OSError:
             continue
         candidates.append((stat.st_mtime_ns, candidate.name, candidate, stat.st_size))
+        candidates = sorted(candidates, reverse=True)[:max_candidates]
     return [
         (candidate, file_size)
         for _mtime_ns, _name, candidate, file_size in sorted(candidates, reverse=True)

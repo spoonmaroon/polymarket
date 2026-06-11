@@ -707,6 +707,9 @@ def test_runtime_bug_reports_clamps_limit_and_allows_zero(tmp_path: Path) -> Non
         path = bug_report_dir / f"report-{index:03}.json"
         path.write_text(json.dumps({"bug_id": f"bug-{index:03}"}), encoding="utf-8")
         os.utime(path, (float(index), float(index)))
+    invalid = bug_report_dir / "newest-invalid.json"
+    invalid.write_text("{not-json", encoding="utf-8")
+    os.utime(invalid, (9999.0, 9999.0))
     app = FastAPI()
     app.include_router(build_runtime_router(bug_report_dir=bug_report_dir))
     client = TestClient(app)
@@ -716,10 +719,43 @@ def test_runtime_bug_reports_clamps_limit_and_allows_zero(tmp_path: Path) -> Non
 
     assert zero["ok"] is True
     assert zero["reports"] == []
+    assert zero["errors"] == []
     assert len(clamped["reports"]) == runtime_api_module.BUG_REPORT_MAX_REPORTS
-    assert clamped["reports"][0]["bug_id"] == (
-        f"bug-{runtime_api_module.BUG_REPORT_MAX_REPORTS + 2:03}"
+    assert clamped["reports"][0]["bug_id"] == "bug-102"
+
+
+def test_runtime_bug_reports_bounds_processed_bad_candidates(tmp_path: Path) -> None:
+    bug_report_dir = tmp_path / "bug-reports"
+    bug_report_dir.mkdir()
+    valid = bug_report_dir / "valid.json"
+    valid.write_text(json.dumps({"bug_id": "bug-valid"}), encoding="utf-8")
+    malformed_one = bug_report_dir / "malformed-1.json"
+    malformed_two = bug_report_dir / "malformed-2.json"
+    oversized = bug_report_dir / "oversized.json"
+    malformed_one.write_text("{not-json", encoding="utf-8")
+    malformed_two.write_text("[]", encoding="utf-8")
+    oversized.write_text(
+        "{" + f'"payload":"{"x" * runtime_api_module.BUG_REPORT_MAX_FILE_BYTES}"' + "}",
+        encoding="utf-8",
     )
+    os.utime(valid, (100.0, 100.0))
+    os.utime(malformed_one, (400.0, 400.0))
+    os.utime(oversized, (300.0, 300.0))
+    os.utime(malformed_two, (200.0, 200.0))
+    app = FastAPI()
+    app.include_router(build_runtime_router(bug_report_dir=bug_report_dir))
+
+    response = TestClient(app).get("/api/runtime/bug-reports?limit=1")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["state"] == "INVALID"
+    assert payload["reports"] == []
+    assert payload["candidate_limit"] == 3
+    assert len(payload["errors"]) == 3
+    assert str(malformed_one) in payload["errors"][0]
+    assert "bug-valid" not in response.text
 
 
 def test_runtime_bug_reports_skips_oversized_json_files(tmp_path: Path) -> None:
