@@ -139,6 +139,23 @@ def run_cuda_monte_carlo_batch(
     )
 
 
+def _offload_decision_from_override(
+    value: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    return {
+        "offload_allowed": bool(value.get("offload_allowed")),
+        "reason_codes": list(value.get("reason_codes") or []),
+        "recommended_worker_mode": str(
+            value.get("recommended_worker_mode") or "disabled"
+        ),
+        "recommended_max_total_paths": int(
+            value.get("recommended_max_total_paths") or 0
+        ),
+    }
+
+
 def run_cuda_probability_worker_cycle(
     *,
     duckdb_path: Path,
@@ -151,6 +168,7 @@ def run_cuda_probability_worker_cycle(
     max_input_snapshot_age_seconds: float | None = DEFAULT_INPUT_SNAPSHOT_MAX_AGE_SECONDS,
     probability_event_path: Path | None = None,
     budget: ProbabilityWorkerBudget | None = None,
+    offload_decision_override: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     if limit <= 0:
         raise ValueError("limit must be positive")
@@ -304,12 +322,14 @@ def run_cuda_probability_worker_cycle(
         if isinstance(row.get("state_id"), str)
     }
     for nowcast_row in nowcast_rows:
-        runtime_input = runtime_inputs_by_state_id.get(str(nowcast_row.get("state_id") or ""))
-        if runtime_input is None:
+        nowcast_runtime_input = runtime_inputs_by_state_id.get(
+            str(nowcast_row.get("state_id") or "")
+        )
+        if nowcast_runtime_input is None:
             continue
         event_rows.append(
             _event_payload_from_row(
-                runtime_input=runtime_input,
+                runtime_input=nowcast_runtime_input,
                 row=nowcast_row,
                 generated_at=generated_at,
                 output_id=None,
@@ -348,6 +368,40 @@ def run_cuda_probability_worker_cycle(
                 ),
             ),
         )
+
+    offload_decision = _offload_decision_from_override(offload_decision_override)
+    if offload_decision is not None and not offload_decision["offload_allowed"]:
+        blocked_rows, _ = _merge_missing_retained_mc_rows(
+            fresh_rows=retained_mc_rows,
+            previous_rows=previous_rows,
+            now=generated_at,
+            enabled=True,
+        )
+        payload = _status_payload(
+            generated_at=generated_at,
+            rows=blocked_rows or nowcast_rows,
+            nowcast_rows=nowcast_rows,
+            skipped=quality_skipped,
+            errors=[],
+            rows_seen=len(inputs),
+            rows_written=0,
+            last_good_rows=blocked_rows or previous_rows or None,
+            state_override="OFFLOAD_BLOCKED",
+            retained_mc_rows=len(blocked_rows),
+            budget=_budget_diagnostics(
+                budget=budget,
+                cycle_started_monotonic=cycle_started_monotonic,
+                cycle_started_process=cycle_started_process,
+                requested_total_paths=requested_total_paths,
+                allocated_total_paths=allocated_total_paths,
+                clamped_inputs=clamped_inputs,
+                mc_input_skipped=mc_input_skipped,
+                path_budget_per_input=path_budget_per_input,
+            ),
+        )
+        payload["offload"] = offload_decision
+        _write_status(probability_status_path, payload)
+        return payload
 
     for group in _batch_runtime_inputs(mc_inputs):
         representative = group[0].probability_input
@@ -453,16 +507,16 @@ def run_cuda_probability_worker_cycle(
     )
     for row in rows:
         state_id = str(row.get("state_id") or "")
-        output_id = mc_output_ids_by_state_id.get(state_id)
-        runtime_input = runtime_inputs_by_state_id.get(state_id)
-        if output_id is None or runtime_input is None:
+        event_output_id = mc_output_ids_by_state_id.get(state_id)
+        event_runtime_input = runtime_inputs_by_state_id.get(state_id)
+        if event_output_id is None or event_runtime_input is None:
             continue
         event_rows.append(
             _event_payload_from_row(
-                runtime_input=runtime_input,
+                runtime_input=event_runtime_input,
                 row=row,
                 generated_at=generated_at,
-                output_id=output_id,
+                output_id=event_output_id,
             )
         )
     payload = _status_payload(

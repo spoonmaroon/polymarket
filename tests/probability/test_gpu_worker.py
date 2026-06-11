@@ -192,6 +192,80 @@ def test_worker_publishes_nowcast_rows_for_new_contracts_before_mc_finishes(
     }
 
 
+def test_worker_blocks_expensive_mc_when_offload_gate_blocks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asof_ts = datetime.now(UTC)
+    probability_status_path = tmp_path / "probabilities.json"
+    probability_inputs_path = tmp_path / "probability_inputs.json"
+    probability_event_path = tmp_path / "probability-events.jsonl"
+
+    probability_inputs_path.write_text(
+        json.dumps(
+            {
+                "schema_version": PROBABILITY_INPUTS_SCHEMA_VERSION,
+                "generated_at": asof_ts.isoformat(),
+                "rows": [
+                    {
+                        "contract": "BTC 5m UP",
+                        "contract_id": "btc-up",
+                        "market_slug": "btc-updown-5m",
+                        "start_ts": asof_ts.isoformat(),
+                        "expiry_ts": (asof_ts + timedelta(minutes=5)).isoformat(),
+                        "flags": ["OK"],
+                        "probability_input": ProbabilityInput(
+                            state_id="state-btc-up",
+                            asof_ts=asof_ts,
+                            asset="BTC",
+                            side="UP",
+                            comparison_operator=">=",
+                            seconds_left=300.0,
+                            settlement_price=70_100.0,
+                            threshold=70_000.0,
+                            sigma_tau=0.012,
+                            executable_price=0.52,
+                            source_age_ms=100,
+                            book_age_ms=100,
+                            z_path=0.12,
+                        ).to_json_dict(),
+                        "volatility_regime": "normal",
+                    }
+                ],
+                "skipped": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fail_if_mc_runs(*_: object, **__: object) -> ProbabilityOutput:
+        raise AssertionError("MC should be blocked by offload gate")
+
+    monkeypatch.setattr(
+        "polymarket_engine.probability.gpu_worker.run_four_generator_ensemble",
+        fail_if_mc_runs,
+    )
+
+    payload = run_cuda_probability_worker_cycle(
+        duckdb_path=tmp_path / "unused.duckdb",
+        probability_status_path=probability_status_path,
+        probability_inputs_path=probability_inputs_path,
+        probability_event_path=probability_event_path,
+        budget=ProbabilityWorkerBudget(max_total_paths=80_000),
+        offload_decision_override={
+            "offload_allowed": False,
+            "reason_codes": ["runtime_not_ready"],
+            "recommended_worker_mode": "nowcast_only",
+            "recommended_max_total_paths": 0,
+        },
+    )
+
+    assert payload["state"] == "OFFLOAD_BLOCKED"
+    assert payload["offload"]["offload_allowed"] is False
+    assert payload["offload"]["reason_codes"] == ["runtime_not_ready"]
+    assert payload["rows"][0]["probability_kind"] == "NOWCAST"
+
+
 def test_worker_budget_rejects_soft_max_below_target() -> None:
     with pytest.raises(ValueError, match="cpu_soft_max_percent"):
         ProbabilityWorkerBudget(
