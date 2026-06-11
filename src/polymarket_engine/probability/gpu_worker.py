@@ -490,10 +490,16 @@ def run_cuda_probability_worker_cycle(
     for row in nowcast_rows:
         contract_id = str(row.get("contract_id") or "")
         if contract_id:
+            existing = rows_by_contract_id.get(contract_id)
+            if existing is not None and _is_blocked_runtime_row(existing):
+                continue
             rows_by_contract_id[contract_id] = row
     for row in mc_rows:
         contract_id = str(row.get("contract_id") or "")
         if contract_id:
+            existing = rows_by_contract_id.get(contract_id)
+            if existing is not None and _is_blocked_runtime_row(existing):
+                continue
             rows_by_contract_id[contract_id] = row
     rows = list(rows_by_contract_id.values())
 
@@ -1011,11 +1017,22 @@ def _mc_row_from_output(
 def _mc_eligible_inputs(
     inputs: Sequence[ProbabilityRuntimeInput],
 ) -> tuple[ProbabilityRuntimeInput, ...]:
+    blocked_contract_ids = {
+        runtime_input.contract_id
+        for runtime_input in inputs
+        if runtime_input.probability_state != "READY" or not runtime_input.k_stable
+    }
     return tuple(
         runtime_input
         for runtime_input in inputs
-        if runtime_input.probability_state == "READY" and runtime_input.k_stable
+        if runtime_input.contract_id not in blocked_contract_ids
+        and runtime_input.probability_state == "READY"
+        and runtime_input.k_stable
     )
+
+
+def _is_blocked_runtime_row(row: Mapping[str, Any]) -> bool:
+    return row.get("probability_state") != "READY" or row.get("k_stable") is False
 
 
 def _batch_runtime_inputs(

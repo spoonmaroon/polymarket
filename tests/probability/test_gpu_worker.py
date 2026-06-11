@@ -290,6 +290,7 @@ def test_worker_preserves_blocked_threshold_rows_without_running_mc(
         *,
         state_id: str,
         side: str,
+        contract_id: str,
         probability_state: str = "READY",
         k_stable: bool = True,
         flags: list[str] | None = None,
@@ -311,7 +312,7 @@ def test_worker_preserves_blocked_threshold_rows_without_running_mc(
         )
         row: dict[str, object] = {
             "contract": f"BTC 5m {side}",
-            "contract_id": f"btc-{side.lower()}",
+            "contract_id": contract_id,
             "market_slug": "btc-updown-5m-1780752000",
             "start_ts": asof_ts.isoformat(),
             "expiry_ts": (asof_ts + timedelta(minutes=5)).isoformat(),
@@ -320,7 +321,7 @@ def test_worker_preserves_blocked_threshold_rows_without_running_mc(
             "probability_input": probability_input.to_json_dict(),
             "probability_state": probability_state,
             "threshold_diagnostics": {
-                "contract_id": f"btc-{side.lower()}",
+                "contract_id": contract_id,
                 "market_slug": "btc-updown-5m-1780752000",
                 "asset": "BTC",
                 "side": side,
@@ -346,10 +347,15 @@ def test_worker_preserves_blocked_threshold_rows_without_running_mc(
                 "schema_version": HOT_PROBABILITY_INPUTS_SCHEMA_VERSION,
                 "generated_at": asof_ts.isoformat(),
                 "inputs": [
-                    input_row(state_id="state-ready-up", side="UP"),
                     input_row(
-                        state_id="state-blocked-down",
-                        side="DOWN",
+                        state_id="state-ready-original",
+                        side="UP",
+                        contract_id="btc-up",
+                    ),
+                    input_row(
+                        state_id="state-blocked-mutated",
+                        side="UP",
+                        contract_id="btc-up",
                         probability_state="BLOCKED",
                         k_stable=False,
                         flags=["THRESHOLD_MUTATION_ERROR"],
@@ -370,8 +376,8 @@ def test_worker_preserves_blocked_threshold_rows_without_running_mc(
         history_fragments: tuple[tuple[float, ...], ...] | None = None,
     ) -> ProbabilityOutput:
         del path_count, steps, seed, history_fragments
-        if input_row.state_id == "state-blocked-down":
-            raise AssertionError("blocked threshold state reached MC")
+        if input_row.state_id in {"state-ready-original", "state-blocked-mutated"}:
+            raise AssertionError("blocked contract_id reached MC")
         return ProbabilityOutput(
             state_id=input_row.state_id,
             asof_ts=input_row.asof_ts,
@@ -412,10 +418,10 @@ def test_worker_preserves_blocked_threshold_rows_without_running_mc(
         budget=ProbabilityWorkerBudget(max_total_paths=20_000),
     )
 
-    rows_by_state = {row["state_id"]: row for row in payload["rows"]}
-    blocked = rows_by_state["state-blocked-down"]
-
-    assert rows_by_state["state-ready-up"]["probability_kind"] == "MC"
+    assert len(payload["rows"]) == 1
+    blocked = payload["rows"][0]
+    assert blocked["contract_id"] == "btc-up"
+    assert blocked["state_id"] == "state-blocked-mutated"
     assert blocked["probability_kind"] == "NOWCAST"
     assert blocked["probability_state"] == "BLOCKED"
     assert blocked["k_stable"] is False

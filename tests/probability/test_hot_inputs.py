@@ -218,6 +218,7 @@ def test_hot_probability_inputs_blocks_threshold_mutation_across_writes(
     tmp_path: Path,
 ) -> None:
     out_path = tmp_path / "inputs.json"
+    mutated = replace(_state("UP"), state_id="state-UP-next", threshold=103_951.0)
 
     write_hot_probability_inputs(
         out_path=out_path,
@@ -226,7 +227,12 @@ def test_hot_probability_inputs_blocks_threshold_mutation_across_writes(
     )
     write_hot_probability_inputs(
         out_path=out_path,
-        states=(replace(_state("UP"), state_id="state-UP-next", threshold=103_951.0),),
+        states=(mutated,),
+        generated_at=datetime.now(timezone.utc),
+    )
+    write_hot_probability_inputs(
+        out_path=out_path,
+        states=(replace(mutated, state_id="state-UP-next-repeat"),),
         generated_at=datetime.now(timezone.utc),
     )
 
@@ -238,6 +244,9 @@ def test_hot_probability_inputs_blocks_threshold_mutation_across_writes(
     assert row["k_stable"] is False
     assert row["threshold_diagnostics"]["previous_K"] == 103_950.0
     assert row["threshold_diagnostics"]["new_K"] == 103_951.0
+    assert row["threshold_diagnostics"]["reason_for_change"] == (
+        "threshold_changed_without_rule_hash_change"
+    )
 
 
 def test_hot_probability_inputs_allows_threshold_change_when_rule_hash_changes(
