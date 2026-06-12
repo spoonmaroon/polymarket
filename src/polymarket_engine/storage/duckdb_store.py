@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import fcntl
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -53,6 +54,18 @@ def _configure_connection(conn: duckdb.DuckDBPyConnection) -> None:
             preserve,
             "POLYMARKET_DUCKDB_PRESERVE_INSERTION_ORDER",
         )
+
+
+@contextmanager
+def _duckdb_writer_lock(db_path: Path) -> Iterator[None]:
+    lock_path = db_path.with_name(f"{db_path.name}.write.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def _parse_duckdb_threads(value: str) -> int:
@@ -238,9 +251,10 @@ class DuckDbIngestStore:
         if self._conn is not None:
             yield self._conn
             return
-        with duckdb.connect(str(self.db_path)) as conn:
-            _configure_connection(conn)
-            yield conn
+        with _duckdb_writer_lock(self.db_path):
+            with duckdb.connect(str(self.db_path)) as conn:
+                _configure_connection(conn)
+                yield conn
 
     def apply_schema(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)

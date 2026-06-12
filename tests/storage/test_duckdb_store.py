@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import Event, Thread
 
 import duckdb
 
@@ -29,3 +30,32 @@ def test_duckdb_ingest_store_registers_written_file(tmp_path: Path) -> None:
         rows = conn.sql("select source_key, stream_key, row_count from ops.ingest_files").fetchall()
 
     assert rows == [("coinbase_advanced_ws", "ticker", 2)]
+
+
+def test_temporary_store_connections_wait_for_same_db_writer(tmp_path: Path) -> None:
+    db_path = tmp_path / "collector.duckdb"
+    first_can_release = Event()
+    second_done = Event()
+    second_errors: list[BaseException] = []
+
+    def open_second_connection() -> None:
+        try:
+            with DuckDbIngestStore(db_path, persistent_connection=False)._connection() as conn:
+                conn.execute("select 1")
+        except BaseException as exc:  # pragma: no cover - asserted after thread exits
+            second_errors.append(exc)
+        finally:
+            second_done.set()
+
+    with DuckDbIngestStore(db_path, persistent_connection=False)._connection() as conn:
+        conn.execute("create table if not exists t (value integer)")
+        thread = Thread(target=open_second_connection)
+        thread.start()
+        first_can_release.wait(timeout=0.1)
+        assert not second_done.wait(timeout=0.1)
+
+    second_done.wait(timeout=2.0)
+    thread.join(timeout=2.0)
+
+    assert not thread.is_alive()
+    assert second_errors == []
