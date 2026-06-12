@@ -25,7 +25,9 @@ def _pc_deploy_smoke_namespace() -> dict[str, Any]:
     smoke = script.split(marker, 1)[1].split('\nhealth = wait_json("/health")', 1)[0]
     namespace: dict[str, Any] = {}
     old_port = os.environ.get("POLYMARKET_API_PORT")
+    old_deploy_started = os.environ.get("POLYMARKET_DEPLOY_STARTED_EPOCH")
     os.environ["POLYMARKET_API_PORT"] = "8000"
+    os.environ["POLYMARKET_DEPLOY_STARTED_EPOCH"] = str(_DEPLOY_START.timestamp())
     try:
         exec(smoke, namespace)
     finally:
@@ -33,7 +35,10 @@ def _pc_deploy_smoke_namespace() -> dict[str, Any]:
             os.environ.pop("POLYMARKET_API_PORT", None)
         else:
             os.environ["POLYMARKET_API_PORT"] = old_port
-    namespace["deploy_started_at"] = _DEPLOY_START.timestamp()
+        if old_deploy_started is None:
+            os.environ.pop("POLYMARKET_DEPLOY_STARTED_EPOCH", None)
+        else:
+            os.environ["POLYMARKET_DEPLOY_STARTED_EPOCH"] = old_deploy_started
     return namespace
 
 
@@ -291,7 +296,8 @@ def test_runtime_api_service_is_deployed_with_engine_compose() -> None:
     assert "for _ in range(30):" in pc_script
     assert "except Exception as exc:" in pc_script
     assert 'probabilities = {"error": repr(exc)}' in pc_script
-    assert "deploy_started_at = time.time()" in pc_script
+    assert 'POLYMARKET_DEPLOY_STARTED_EPOCH="\\$(date +%s)"' in pc_script
+    assert 'deploy_started_at = float(os.environ.get("POLYMARKET_DEPLOY_STARTED_EPOCH") or time.time())' in pc_script
     assert "generated_at.timestamp() < deploy_started_at" in pc_script
     assert 'for key in ("rows", "last_good_rows"):' in pc_script
     assert "probability_candidate_rows(probabilities)" in pc_script

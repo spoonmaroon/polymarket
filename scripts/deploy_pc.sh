@@ -467,6 +467,7 @@ export POLYMARKET_DATA_DIR="\$PC_DATA_DIR"
 export POLYMARKET_NORMALIZER_INTERVAL_SECONDS="\$PC_NORMALIZER_INTERVAL_SECONDS"
 export POLYMARKET_REST_BACKUP_INTERVAL_MS="\$PC_REST_BACKUP_INTERVAL_MS"
 export DEPLOY_FORCE=1
+export POLYMARKET_DEPLOY_STARTED_EPOCH="\$(date +%s)"
 
 case "\$PC_DEPLOY_ROLE" in
   thepc-gpu-api)
@@ -520,7 +521,10 @@ import urllib.request
 from datetime import datetime, timezone
 
 base = f"http://127.0.0.1:{os.environ['POLYMARKET_API_PORT']}"
-deploy_started_at = time.time()
+try:
+    deploy_started_at = float(os.environ.get("POLYMARKET_DEPLOY_STARTED_EPOCH") or time.time())
+except ValueError:
+    deploy_started_at = time.time()
 required_generators = {
     "empirical_conditional",
     "block_bootstrap",
