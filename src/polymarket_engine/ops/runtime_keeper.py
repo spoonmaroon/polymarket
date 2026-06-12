@@ -137,22 +137,42 @@ class RuntimeKeeper:
             return payload
         checks.append(KeeperCheck(name="docker:info", ok=True, detail="docker responsive"))
 
+        service_checks: list[KeeperCheck] = []
         for service in self.config.required_services:
-            up_command = compose_command(self.config, "up", "-d", service)
-            result = run_command_safely(
-                runner,
-                up_command,
-                timeout_seconds=self.config.once_timeout_seconds,
+            ps_command = compose_command(self.config, "ps", service, "--services", "--status", "running")
+            service_check = evaluate_required_service(
+                service=service,
+                result=run_command_safely(
+                    runner,
+                    ps_command,
+                    timeout_seconds=self.config.poll_interval_seconds,
+                ),
             )
-            actions.append(f"compose up {service}")
-            if not result.ok:
-                checks.append(
-                    KeeperCheck(
-                        name=f"compose:{service}:up",
-                        ok=False,
-                        detail=result.stderr.strip() or "compose up failed",
-                    )
+            if not service_check.ok:
+                up_command = compose_command(self.config, "up", "-d", service)
+                result = run_command_safely(
+                    runner,
+                    up_command,
+                    timeout_seconds=self.config.once_timeout_seconds,
                 )
+                actions.append(f"compose up {service}")
+                if not result.ok:
+                    checks.append(
+                        KeeperCheck(
+                            name=f"compose:{service}:up",
+                            ok=False,
+                            detail=result.stderr.strip() or "compose up failed",
+                        )
+                    )
+                service_check = evaluate_required_service(
+                    service=service,
+                    result=run_command_safely(
+                        runner,
+                        ps_command,
+                        timeout_seconds=self.config.poll_interval_seconds,
+                    ),
+                )
+            service_checks.append(service_check)
 
         for container in self.config.optional_containers:
             start_result = run_command_safely(
@@ -165,18 +185,7 @@ class RuntimeKeeper:
             else:
                 actions.append(f"docker start {container} skipped")
 
-        for service in self.config.required_services:
-            checks.append(
-                evaluate_required_service(
-                    service=service,
-                    result=run_command_safely(
-                        runner,
-                        (*compose_command(self.config, "ps", service, "--services", "--status", "running"),
-                         ),
-                        timeout_seconds=self.config.poll_interval_seconds,
-                    ),
-                )
-            )
+        checks.extend(service_checks)
 
         for container in self.config.optional_containers:
             checks.append(

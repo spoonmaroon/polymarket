@@ -246,6 +246,39 @@ class FakeRunner:
         return CommandResult(args, 1, "", "unexpected command")
 
 
+class StoppedServiceRunner(FakeRunner):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started_services: set[str] = set()
+
+    def run(self, args: tuple[str, ...], *, timeout_seconds: float) -> CommandResult:
+        self.calls.append(args)
+        if args[:2] == ("docker", "info"):
+            return CommandResult(args, 0, "Server: Docker Desktop", "")
+        if args[-3:-1] == ("up", "-d"):
+            self.started_services.add(args[-1])
+            return CommandResult(args, 0, "", "")
+        if (
+            len(args) >= 6
+            and args[:2] == ("docker", "compose")
+            and args[-4] != "ps"
+            and args[-1] == "running"
+        ):
+            service = args[-4]
+            stdout = service + "\n" if service in self.started_services else ""
+            return CommandResult(args, 0, stdout, "")
+        if args[:2] == ("docker", "start"):
+            return CommandResult(args, 0, args[2] + "\n", "")
+        if args[:2] == ("docker", "ps"):
+            return CommandResult(
+                args,
+                0,
+                "polymarket-rust-collector-gpu-probability-worker-1\n",
+                "",
+            )
+        return CommandResult(args, 1, "", "unexpected command")
+
+
 class FakeHttpClient:
     def get(self, url: str, *, timeout_seconds: float) -> HttpResult:
         if url.endswith("/health"):
@@ -294,7 +327,7 @@ def read_recovery_status(config: RuntimeKeeperConfig) -> dict[str, Any]:
 
 
 def test_runtime_keeper_starts_services_optional_container_and_writes_report(tmp_path: Path) -> None:
-    runner = FakeRunner()
+    runner = StoppedServiceRunner()
     config = RuntimeKeeperConfig(repo=tmp_path / "repo", data_dir=tmp_path / "data")
     keeper = RuntimeKeeper(config=config, runner=runner, http_client=FakeHttpClient())
 
@@ -305,6 +338,18 @@ def test_runtime_keeper_starts_services_optional_container_and_writes_report(tmp
     assert "docker start polymarket-rust-collector-gpu-probability-worker-1" in payload["actions"]
     assert (tmp_path / "data" / "live" / "runtime_keeper.json").is_file()
     assert any(call[:2] == ("docker", "info") for call in runner.calls)
+
+
+def test_runtime_keeper_does_not_compose_up_already_running_services(tmp_path: Path) -> None:
+    runner = FakeRunner()
+    config = RuntimeKeeperConfig(repo=tmp_path / "repo", data_dir=tmp_path / "data")
+    keeper = RuntimeKeeper(config=config, runner=runner, http_client=FakeHttpClient())
+
+    payload = keeper.run_once()
+
+    assert payload["ok"] is True
+    assert not [call for call in runner.calls if call[-3:-1] == ("up", "-d")]
+    assert all(not action.startswith("compose up ") for action in payload["actions"])
 
 
 def test_runtime_keeper_writes_ready_recovery_status_for_healthy_run(tmp_path: Path) -> None:

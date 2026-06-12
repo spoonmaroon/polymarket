@@ -8,9 +8,11 @@ WSL_DISTRO="${POLYMARKET_WSL_DISTRO:-Ubuntu}"
 WINDOWS_USER_DIR="${POLYMARKET_WINDOWS_USER_DIR:-/mnt/c/Users/ender}"
 LOOP_SCRIPT="$BIN_DIR/polymarket-runtime-keeper-loop.sh"
 POWERSHELL_SCRIPT="$WINDOWS_USER_DIR/polymarket-runtime-keeper.ps1"
+SERVICE_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+SERVICE_PATH="$SERVICE_DIR/polymarket-runtime-keeper.service"
 TASK_NAME="Polymarket Runtime Keeper"
 
-mkdir -p "$BIN_DIR" "$DATA_DIR/live"
+mkdir -p "$BIN_DIR" "$DATA_DIR/live" "$SERVICE_DIR"
 
 cd "$REPO"
 python3 -m pip install --user --break-system-packages -e "$REPO"
@@ -37,6 +39,28 @@ exec "\$ENGINE_BIN" runtime-keeper \\
 EOF
 chmod 755 "$LOOP_SCRIPT"
 
+cat > "$SERVICE_PATH" <<EOF
+[Unit]
+Description=Polymarket runtime keeper loop
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=$LOOP_SCRIPT
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=default.target
+EOF
+
+if command -v systemctl >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1; then
+  systemctl --user daemon-reload
+  systemctl --user enable --now polymarket-runtime-keeper.service
+else
+  echo "systemd user service unavailable; Windows scheduled task will remain the fallback" >&2
+fi
+
 if [ ! -d "$WINDOWS_USER_DIR" ]; then
   echo "Windows user directory missing: $WINDOWS_USER_DIR" >&2
   exit 1
@@ -56,5 +80,6 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "\
 Register-ScheduledTask -TaskName '$TASK_NAME' -Action \$action -Trigger \$trigger -Settings \$settings -Force | Out-Null"
 
 echo "Installed $LOOP_SCRIPT"
+echo "Installed $SERVICE_PATH"
 echo "Installed $POWERSHELL_SCRIPT"
 echo "Registered scheduled task: $TASK_NAME"

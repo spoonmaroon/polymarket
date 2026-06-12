@@ -25,6 +25,9 @@ def test_thepc_runtime_keeper_installer_installs_loop_and_task() -> None:
     assert "Polymarket Runtime Keeper" in script
     assert "wsl.exe" in script
     assert "Start-Sleep -Seconds 20" in script
+    assert "polymarket-runtime-keeper.service" in script
+    assert "Restart=always" in script
+    assert "systemctl --user enable --now polymarket-runtime-keeper.service" in script
 
 
 def test_mac_tunnel_checker_reloads_launch_agent_and_checks_health() -> None:
@@ -36,3 +39,17 @@ def test_mac_tunnel_checker_reloads_launch_agent_and_checks_health() -> None:
     assert "launchctl bootstrap" in script
     assert "launchctl kickstart" in script
     assert "http://127.0.0.1:8000/health" in script
+    assert "run_mac_polymarket_tunnel.sh" in script
+    assert "ProgramArguments" in script
+
+
+def test_mac_tunnel_runner_targets_current_thepc_wsl_ip() -> None:
+    script_path = REPO / "scripts" / "run_mac_polymarket_tunnel.sh"
+
+    assert script_path.exists()
+    script = script_path.read_text(encoding="utf-8")
+
+    assert "wsl.exe -d" in script
+    assert "hostname -I" in script
+    assert "127.0.0.1:8000:${wsl_ip}:8000" in script
+    assert "127.0.0.1:8000:127.0.0.1:8000" not in script
