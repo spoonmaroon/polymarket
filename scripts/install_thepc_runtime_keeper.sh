@@ -34,6 +34,7 @@ exec "\$ENGINE_BIN" runtime-keeper \\
   --compose-file "$REPO/deploy/collector/docker-compose.thepc-gpu-api.yml" \\
   --required-service "api" \\
   --required-service "gpu-probability-worker" \\
+  --recovery-required-healthy-cycles 1 \\
   --loop \\
   --loop-interval-seconds 30
 EOF

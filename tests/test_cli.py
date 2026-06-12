@@ -473,6 +473,10 @@ def test_parse_runtime_keeper_args() -> None:
             "--loop",
             "--loop-interval-seconds",
             "15",
+            "--recovery-required-healthy-cycles",
+            "1",
+            "--recovery-warmup-min-seconds",
+            "30",
         ]
     )
 
@@ -489,6 +493,8 @@ def test_parse_runtime_keeper_args() -> None:
     ]
     assert args.loop is True
     assert args.loop_interval_seconds == 15.0
+    assert args.recovery_required_healthy_cycles == 1
+    assert args.recovery_warmup_min_seconds == 30
 
 
 def test_parse_sync_cluster_artifacts_args() -> None:

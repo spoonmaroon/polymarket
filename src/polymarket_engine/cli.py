@@ -276,6 +276,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     runtime_keeper.add_argument("--loop", action="store_true")
     runtime_keeper.add_argument("--loop-interval-seconds", type=float, default=30.0)
+    runtime_keeper.add_argument("--recovery-warmup-min-seconds", type=int, default=60)
+    runtime_keeper.add_argument("--recovery-required-healthy-cycles", type=int, default=3)
 
     cluster_sync = subparsers.add_parser("sync-cluster-artifacts")
     cluster_sync.add_argument(
@@ -620,6 +622,7 @@ def _run_calibration_report(args: argparse.Namespace) -> int:
 
 
 def _run_runtime_keeper(args: argparse.Namespace) -> int:
+    from polymarket_engine.ops.recovery_manager import RecoveryConfig
     from polymarket_engine.ops.runtime_keeper import DEFAULT_OPTIONAL_CONTAINERS
     from polymarket_engine.ops.runtime_keeper import DEFAULT_REQUIRED_SERVICES
     from polymarket_engine.ops.runtime_keeper import RuntimeKeeper
@@ -633,6 +636,10 @@ def _run_runtime_keeper(args: argparse.Namespace) -> int:
         required_services=tuple(args.required_service or DEFAULT_REQUIRED_SERVICES),
         optional_containers=tuple(args.optional_container or DEFAULT_OPTIONAL_CONTAINERS),
         loop_interval_seconds=args.loop_interval_seconds,
+        recovery_config=RecoveryConfig(
+            warmup_min_seconds=args.recovery_warmup_min_seconds,
+            required_healthy_cycles=args.recovery_required_healthy_cycles,
+        ),
     )
     keeper = RuntimeKeeper(config=config)
     if args.loop:
