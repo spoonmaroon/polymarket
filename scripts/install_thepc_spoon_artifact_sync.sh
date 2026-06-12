@@ -3,6 +3,7 @@ set -euo pipefail
 
 SPOON_HOSTNAME="${SPOON_HOSTNAME:-100.126.126.1}"
 SPOON_USER="${SPOON_USER:-spoon}"
+SPOON_ALIAS="${POLYMARKET_SPOON_SSH_ALIAS:-spoon}"
 THEPC_HOME="${THEPC_HOME:-$HOME}"
 BIN_DIR="$THEPC_HOME/bin"
 DATA_DIR="${POLYMARKET_DATA_DIR:-$THEPC_HOME/polymarket-data}"
@@ -17,16 +18,17 @@ chmod 700 "$THEPC_HOME/.ssh"
 touch "$THEPC_HOME/.ssh/config"
 chmod 600 "$THEPC_HOME/.ssh/config"
 
-python3 - "$THEPC_HOME/.ssh/config" "$SPOON_HOSTNAME" "$SPOON_USER" <<'PY'
+python3 - "$THEPC_HOME/.ssh/config" "$SPOON_HOSTNAME" "$SPOON_USER" "$SPOON_ALIAS" <<'PY'
 from pathlib import Path
 import sys
 
 path = Path(sys.argv[1])
 hostname = sys.argv[2]
 user = sys.argv[3]
+alias = sys.argv[4]
 text = path.read_text(encoding="utf-8") if path.exists() else ""
 block = f"""
-Host spoon
+Host {alias}
   HostName {hostname}
   User {user}
   IdentityFile ~/.ssh/id_ed25519
@@ -37,7 +39,7 @@ lines = text.splitlines()
 out = []
 skip = False
 for line in lines:
-    if line.strip().lower() == "host spoon":
+    if line.strip().lower() == f"host {alias}".lower():
         skip = True
         continue
     if skip and line.startswith("Host "):
@@ -51,7 +53,8 @@ cat > "$SYNC_SCRIPT" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 
-src="spoon:/home/spoon/polymarket-data/live"
+SPOON_ALIAS="${POLYMARKET_SPOON_SSH_ALIAS:-spoon}"
+src="$SPOON_ALIAS:/home/spoon/polymarket-data/live"
 dst="${POLYMARKET_DATA_DIR:-$HOME/polymarket-data}/live"
 mkdir -p "$dst"
 for file in status.json normalized_health.json probability_inputs.json probability_fragments.json outcomes.json volatility.json; do

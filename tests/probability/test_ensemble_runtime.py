@@ -89,7 +89,7 @@ def _suite(
 
 
 def test_run_four_generator_ensemble_caps_stress_overlay_so_it_cannot_improve_probability(
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from polymarket_engine.probability import ensemble_runtime
 
@@ -112,7 +112,7 @@ def test_run_four_generator_ensemble_caps_stress_overlay_so_it_cannot_improve_pr
 
 
 def test_run_four_generator_ensemble_marks_sparse_scope_without_fragments(
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from polymarket_engine.probability import ensemble_runtime
 
@@ -135,7 +135,7 @@ def test_run_four_generator_ensemble_marks_sparse_scope_without_fragments(
 
 
 def test_run_four_generator_ensemble_diagnostics_include_four_generators_and_seed_weights(
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from polymarket_engine.probability import ensemble_runtime
 
@@ -180,7 +180,9 @@ def test_run_four_generator_ensemble_diagnostics_include_four_generators_and_see
     json.dumps(diagnostics, sort_keys=True, allow_nan=False)
 
 
-def test_run_four_generator_ensemble_attaches_preview_with_generator_ids(monkeypatch) -> None:
+def test_run_four_generator_ensemble_attaches_preview_with_generator_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from polymarket_engine.probability import ensemble_runtime
 
     monkeypatch.setattr(ensemble_runtime, "run_generator_suite", _suite)
@@ -209,7 +211,7 @@ def test_run_four_generator_ensemble_attaches_preview_with_generator_ids(monkeyp
 
 
 def test_run_four_generator_ensemble_rejects_wrong_actual_path_count(
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from polymarket_engine.probability import ensemble_runtime
 
@@ -251,7 +253,7 @@ def test_run_four_generator_ensemble_rejects_wrong_actual_path_count(
 
 
 def test_run_four_generator_ensemble_rejects_wrong_actual_step_count(
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from polymarket_engine.probability import ensemble_runtime
 

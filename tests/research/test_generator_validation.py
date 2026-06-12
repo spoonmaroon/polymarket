@@ -74,7 +74,7 @@ def test_build_calibration_buckets_reports_underconfidence_near_certain_market()
         bucket_count=10,
     )
 
-    assert rows == (
+    assert rows[:1] == (
         CalibrationBucket(
             lower=0.8,
             upper=0.9,
@@ -83,8 +83,11 @@ def test_build_calibration_buckets_reports_underconfidence_near_certain_market()
             mean_model_probability=0.889,
             mean_market_probability=0.99,
             mean_market_model_gap=0.101,
-            brier=pytest.approx((1.0 - 0.889) ** 2),
+            brier=rows[0].brier,
         ),
+    )
+    assert rows[0].brier == pytest.approx((1.0 - 0.889) ** 2)
+    assert rows[1:] == (
         CalibrationBucket(
             lower=0.9,
             upper=1.0,
@@ -93,9 +96,10 @@ def test_build_calibration_buckets_reports_underconfidence_near_certain_market()
             mean_model_probability=0.91,
             mean_market_probability=0.98,
             mean_market_model_gap=0.07,
-            brier=pytest.approx((1.0 - 0.91) ** 2),
+            brier=rows[1].brier,
         ),
     )
+    assert rows[1].brier == pytest.approx((1.0 - 0.91) ** 2)
 
 
 def test_weight_candidate_marks_sparse_when_labels_are_insufficient() -> None:

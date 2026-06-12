@@ -857,10 +857,30 @@ def _compact_offload_status(path: Path) -> dict[str, Any]:
         "offload_allowed": bool(payload.get("offload_allowed")),
         "reason_codes": _string_list(payload.get("reason_codes")),
         "recommended_worker_mode": str(payload.get("recommended_worker_mode") or "disabled"),
+        "recommended_max_total_paths": payload.get("recommended_max_total_paths"),
+        "input_count": payload.get("input_count"),
+        "mc_eligible_input_count": payload.get("mc_eligible_input_count"),
+        "blocked_input_count": payload.get("blocked_input_count"),
+        "max_input_state_lag_ms": payload.get("max_input_state_lag_ms"),
+        "max_source_age_ms": payload.get("max_source_age_ms"),
+        "max_book_age_ms": payload.get("max_book_age_ms"),
+        "min_seconds_left": payload.get("min_seconds_left"),
+        "blocked_inputs": _dict_list(payload.get("blocked_inputs")),
+        "input_diagnostics": (
+            payload.get("input_diagnostics")
+            if isinstance(payload.get("input_diagnostics"), dict)
+            else None
+        ),
         "generated_at": payload.get("generated_at"),
         "state": payload.get("state"),
         "error": payload.get("error"),
     }
+
+
+def _dict_list(value: object) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [dict(item) for item in value if isinstance(item, dict)]
 
 
 def _string_list(value: object) -> list[str]:

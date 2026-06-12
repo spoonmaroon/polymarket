@@ -275,13 +275,14 @@ if [ ! -f "\$TUI_BIN" ]; then
   exit 1
 fi
 install -m 755 "\$TUI_BIN" "\$PC_BIN_DIR/polymarket-cockpit-tui"
+live_ready_check='import json,sys; p=json.load(sys.stdin); m=p.get("monitor") or {}; gates=p.get("gates") or {}; status=gates.get("status") or p.get("status") or {}; counts=status.get("counts") or {}; orderbooks=m.get("orderbooks") or []; sys.exit(0 if gates.get("ok") is True and (len(orderbooks) > 0 or int(counts.get("orderbooks") or 0) > 0) else 1)'
 
 {
   printf '%s\n' '#!/usr/bin/env bash'
   printf '%s\n' 'set -euo pipefail'
   printf 'cd %q\n' "\$PC_REPO"
   printf '%s\n' "echo 'Checking Polymarket runtime...'"
-  printf 'if curl -fsS --max-time 2 http://127.0.0.1:%s/api/runtime/live?limit=8 2>/dev/null | python3 -c %q >/dev/null 2>&1; then\n' "\$PC_API_PORT" 'import json,sys; p=json.load(sys.stdin); m=p.get("monitor") or {}; sys.exit(0 if p.get("ok") and len(m.get("orderbooks") or []) > 0 else 1)'
+  printf 'if curl -fsS --max-time 2 http://127.0.0.1:%s/api/runtime/live?limit=8 2>/dev/null | python3 -c %q >/dev/null 2>&1; then\n' "\$PC_API_PORT" "\$live_ready_check"
   printf '%s\n' "  echo 'Runtime already live.'"
   printf '%s\n' 'else'
   printf '%s\n' "  echo 'Runtime not live; starting containers...'"
@@ -290,7 +291,7 @@ install -m 755 "\$TUI_BIN" "\$PC_BIN_DIR/polymarket-cockpit-tui"
   printf '%s\n' 'fi'
   printf '%s\n' "echo 'Waiting for runtime API and live market rows...'"
   printf '%s\n' 'for _ in \$(seq 1 45); do'
-  printf '  if curl -fsS --max-time 2 http://127.0.0.1:%s/api/runtime/live?limit=8 2>/dev/null | python3 -c %q >/dev/null 2>&1; then\n' "\$PC_API_PORT" 'import json,sys; p=json.load(sys.stdin); m=p.get("monitor") or {}; sys.exit(0 if p.get("ok") and len(m.get("orderbooks") or []) > 0 else 1)'
+  printf '  if curl -fsS --max-time 2 http://127.0.0.1:%s/api/runtime/live?limit=8 2>/dev/null | python3 -c %q >/dev/null 2>&1; then\n' "\$PC_API_PORT" "\$live_ready_check"
   printf '%s\n' '    break'
   printf '%s\n' '  fi'
   printf '%s\n' '  sleep 1'
@@ -332,306 +333,41 @@ while [ "\$#" -gt 0 ]; do
   esac
 done
 
-PC_REPO="\${PC_REPO:-/home/ender/polymarket}"
-DATA_DIR="\${POLYMARKET_DATA_DIR:-/home/ender/polymarket-data}"
-SOURCE_DB="\${POLYMARKET_DUCKDB_SOURCE_DB:-\$DATA_DIR/db/polymarket.duckdb}"
-SNAPSHOT_DIR="\${POLYMARKET_DUCKDB_UI_SNAPSHOT_DIR:-\$DATA_DIR/duckdb-ui}"
-SNAPSHOT_DB="\$SNAPSHOT_DIR/current-polymarket.duckdb"
-SNAPSHOT_TMP="\$SNAPSHOT_DIR/snapshot.duckdb"
-LOG_DIR="\$DATA_DIR/logs"
-LOG_FILE="\$LOG_DIR/duckdb-ui.log"
-VIEWER_SCRIPT="\$SNAPSHOT_DIR/polymarket_duckdb_viewer.py"
-DUCKDB_BIN="\${DUCKDB_BIN:-\$HOME/.duckdb/cli/latest/duckdb}"
-PC_DEPLOY_ROLE="\${PC_DEPLOY_ROLE:-thepc-gpu-api}"
+SPOON_ALIAS="\${POLYMARKET_SPOON_SSH_ALIAS:-spoon}"
+REMOTE_SCRIPT="\${POLYMARKET_SPOON_DUCKDB_UI_SCRIPT:-/home/spoon/bin/open-polymarket-duckdb-ui.sh}"
+# Default remote start: /home/spoon/bin/open-polymarket-duckdb-ui.sh --port 4213
+# Default local tunnel: 4213:127.0.0.1:4213
+META_URL="http://127.0.0.1:\${PORT}/api/meta"
 
-mkdir -p "\$SNAPSHOT_DIR" "\$LOG_DIR" "\$HOME/bin"
-
-if ! command -v duckdb >/dev/null 2>&1 && [ ! -x "\$DUCKDB_BIN" ]; then
-  curl -fsSL https://install.duckdb.org | sh >> "\$LOG_FILE" 2>&1
-fi
-
-if command -v duckdb >/dev/null 2>&1; then
-  DUCKDB_BIN="\$(command -v duckdb)"
-elif [ -x "\$DUCKDB_BIN" ]; then
-  DUCKDB_BIN="\$DUCKDB_BIN"
-else
-  echo "DuckDB CLI is not installed and could not be found" >&2
-  exit 1
-fi
-
-if [ ! -f "\$SOURCE_DB" ]; then
-  echo "source DuckDB missing: \$SOURCE_DB" >&2
-  exit 1
-fi
-
-quote_sql_string() {
-  printf "%s" "\$1" | sed "s/'/''/g; s/^/'/; s/\$/'/"
+is_spoon_viewer() {
+  curl -fsS --max-time 2 "\$META_URL" 2>/dev/null \\
+    | python3 -c 'import json,sys; meta=json.load(sys.stdin); sys.exit(0 if meta.get("source_host") == "spoon" else 1)' \\
+      >/dev/null 2>&1
 }
 
-restart_refresh_services() {
-  (
-    cd "\$PC_REPO" || exit 1
-    if [ "\$PC_DEPLOY_ROLE" = "full" ]; then
-      docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml up -d --no-deps normalizer >/dev/null
-    else
-      docker compose --env-file deploy/collector/.env \\
-        -f deploy/collector/docker-compose.yml \\
-        -f deploy/collector/docker-compose.thepc-gpu-api.yml \\
-        up -d --no-deps api gpu-probability-worker >/dev/null
-    fi
-  ) || true
-}
-
-cd "\$PC_REPO"
-trap restart_refresh_services EXIT
-if [ "\$PC_DEPLOY_ROLE" = "full" ]; then
-  docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml stop normalizer outcome-refresh >/dev/null
-else
-  docker compose --env-file deploy/collector/.env \\
-    -f deploy/collector/docker-compose.yml \\
-    -f deploy/collector/docker-compose.thepc-gpu-api.yml \\
-    stop collector normalizer outcome-refresh >/dev/null
-fi
-rm -f "\$SNAPSHOT_TMP" "\$SNAPSHOT_TMP.wal"
-"\$DUCKDB_BIN" "\$SNAPSHOT_TMP" -batch -c "ATTACH \$(quote_sql_string "\$SOURCE_DB") AS source_db (READ_ONLY); COPY FROM DATABASE source_db TO snapshot;"
-mv "\$SNAPSHOT_TMP" "\$SNAPSHOT_DB"
-restart_refresh_services
-trap - EXIT
-
-cat > "\$VIEWER_SCRIPT" <<'DUCKDB_VIEWER_PY'
-#!/usr/bin/env python3
-import argparse
-import html
-import json
-import os
-import subprocess
-import urllib.parse
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-
-
-def quote_ident(value: str) -> str:
-    return '"' + value.replace('"', '""') + '"'
-
-
-def quote_literal(value: str) -> str:
-    return "'" + value.replace("'", "''") + "'"
-
-
-class Viewer(BaseHTTPRequestHandler):
-    db_path = ""
-    duckdb_bin = "duckdb"
-
-    def log_message(self, fmt: str, *args: object) -> None:
-        return
-
-    def run_json(self, sql: str) -> list[dict[str, object]]:
-        completed = subprocess.run(
-            [self.duckdb_bin, "-readonly", self.db_path, "-json", "-c", sql],
-            check=True,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        output = completed.stdout.strip()
-        return json.loads(output) if output else []
-
-    def send_json(self, payload: object, status: int = 200) -> None:
-        body = json.dumps(payload, default=str).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def send_html(self) -> None:
-        db_name = html.escape(os.path.basename(self.db_path))
-        body = f"""<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Polymarket DuckDB</title>
-  <style>
-    :root {{ color-scheme: light dark; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }}
-    body {{ margin: 0; background: #f7f7f4; color: #1f2523; }}
-    header {{ padding: 14px 18px; border-bottom: 1px solid #d8ddd7; background: #ffffff; display: flex; justify-content: space-between; align-items: baseline; gap: 16px; }}
-    h1 {{ font-size: 16px; margin: 0; font-weight: 650; }}
-    .muted {{ color: #68716d; font-size: 12px; }}
-    main {{ display: grid; grid-template-columns: 280px minmax(0, 1fr); min-height: calc(100vh - 51px); }}
-    aside {{ border-right: 1px solid #d8ddd7; background: #fcfcfa; overflow: auto; padding: 10px; }}
-    button.table {{ display: block; width: 100%; text-align: left; border: 0; background: transparent; padding: 8px 10px; border-radius: 6px; cursor: pointer; color: inherit; }}
-    button.table:hover, button.table.active {{ background: #e9eee9; }}
-    .schema {{ font-size: 11px; color: #68716d; text-transform: uppercase; margin: 12px 10px 4px; }}
-    section {{ min-width: 0; overflow: hidden; }}
-    .toolbar {{ padding: 10px 12px; border-bottom: 1px solid #d8ddd7; display: flex; align-items: center; gap: 10px; background: #fff; }}
-    .toolbar strong {{ font-size: 14px; }}
-    .toolbar button {{ border: 1px solid #c8d0ca; background: #fff; border-radius: 6px; padding: 6px 9px; cursor: pointer; }}
-    .table-wrap {{ overflow: auto; height: calc(100vh - 101px); }}
-    table {{ border-collapse: collapse; width: max-content; min-width: 100%; font-size: 12px; }}
-    th, td {{ border-bottom: 1px solid #e1e5e0; padding: 6px 8px; max-width: 360px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
-    th {{ position: sticky; top: 0; background: #f0f2ee; text-align: left; z-index: 1; }}
-    td.null {{ color: #9aa19d; font-style: italic; }}
-    .empty {{ padding: 28px; color: #68716d; }}
-    @media (prefers-color-scheme: dark) {{
-      body {{ background: #161917; color: #edf0ed; }}
-      header, .toolbar {{ background: #1d211f; border-color: #343b37; }}
-      aside {{ background: #191d1b; border-color: #343b37; }}
-      button.table:hover, button.table.active {{ background: #29302c; }}
-      th {{ background: #222723; }}
-      th, td {{ border-color: #303832; }}
-      .toolbar button {{ background: #202520; color: inherit; border-color: #465149; }}
-    }}
-  </style>
-</head>
-<body>
-  <header><h1>Polymarket DuckDB</h1><div class="muted">Snapshot: {db_name}</div></header>
-  <main>
-    <aside id="tables"><div class="empty">Loading tables...</div></aside>
-    <section>
-      <div class="toolbar">
-        <strong id="current">Select a table</strong>
-        <span class="muted" id="meta"></span>
-        <button id="prev">Prev</button>
-        <button id="next">Next</button>
-      </div>
-      <div class="table-wrap" id="rows"><div class="empty">Choose a table from the left.</div></div>
-    </section>
-  </main>
-  <script>
-    let selected = null;
-    let offset = 0;
-    const limit = 200;
-    const esc = (v) => String(v ?? '').replace(/[&<>"']/g, c => ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[c]));
-    async function getJson(url) {{
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(await res.text());
-      return res.json();
-    }}
-    function tableButton(t) {{
-      const b = document.createElement('button');
-      b.className = 'table';
-      b.textContent = t.name;
-      b.onclick = () => {{ selected = t; offset = 0; loadRows(); }};
-      return b;
-    }}
-    async function loadTables() {{
-      const tables = await getJson('/api/tables');
-      const root = document.getElementById('tables');
-      root.innerHTML = '';
-      let last = '';
-      for (const t of tables) {{
-        if (t.schema !== last) {{
-          const s = document.createElement('div');
-          s.className = 'schema';
-          s.textContent = t.schema;
-          root.appendChild(s);
-          last = t.schema;
-        }}
-        root.appendChild(tableButton(t));
-      }}
-      if (!tables.length) root.innerHTML = '<div class="empty">No tables found.</div>';
-    }}
-    async function loadRows() {{
-      document.querySelectorAll('button.table').forEach(b => b.classList.toggle('active', selected && b.textContent === selected.name));
-      document.getElementById('current').textContent = selected.schema + '.' + selected.name;
-      document.getElementById('meta').textContent = 'rows ' + (offset + 1) + '-' + (offset + limit);
-      const url = '/api/table?schema=' + encodeURIComponent(selected.schema) + '&table=' + encodeURIComponent(selected.name) + '&limit=' + limit + '&offset=' + offset;
-      const payload = await getJson(url);
-      const cols = payload.columns;
-      const rows = payload.rows;
-      if (!rows.length) {{
-        document.getElementById('rows').innerHTML = '<div class="empty">No rows at this offset.</div>';
-        return;
-      }}
-      let out = '<table><thead><tr>' + cols.map(c => '<th>' + esc(c) + '</th>').join('') + '</tr></thead><tbody>';
-      for (const row of rows) {{
-        out += '<tr>' + cols.map(c => row[c] == null ? '<td class="null">NULL</td>' : '<td title="' + esc(row[c]) + '">' + esc(row[c]) + '</td>').join('') + '</tr>';
-      }}
-      out += '</tbody></table>';
-      document.getElementById('rows').innerHTML = out;
-    }}
-    document.getElementById('prev').onclick = () => {{ if (selected) {{ offset = Math.max(0, offset - limit); loadRows(); }} }};
-    document.getElementById('next').onclick = () => {{ if (selected) {{ offset += limit; loadRows(); }} }};
-    loadTables().catch(e => document.getElementById('tables').innerHTML = '<div class="empty">' + esc(e.message) + '</div>');
-  </script>
-</body>
-</html>"""
-        encoded = body.encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(encoded)))
-        self.end_headers()
-        self.wfile.write(encoded)
-
-    def do_GET(self) -> None:
-        parsed = urllib.parse.urlparse(self.path)
-        params = urllib.parse.parse_qs(parsed.query)
-        try:
-            if parsed.path == "/":
-                self.send_html()
-            elif parsed.path == "/api/tables":
-                self.send_json(self.run_json(
-                    "SELECT table_schema AS schema, table_name AS name, table_type AS type "
-                    "FROM information_schema.tables "
-                    "WHERE table_schema NOT IN ('information_schema', 'pg_catalog') "
-                    "ORDER BY table_schema, table_name"
-                ))
-            elif parsed.path == "/api/table":
-                schema = params.get("schema", ["main"])[0]
-                table = params.get("table", [""])[0]
-                limit = min(max(int(params.get("limit", ["200"])[0]), 1), 1000)
-                offset = max(int(params.get("offset", ["0"])[0]), 0)
-                if not table:
-                    self.send_json({"error": "missing table"}, 400)
-                    return
-                relation = f"{quote_ident(schema)}.{quote_ident(table)}"
-                rows = self.run_json(f"SELECT * FROM {relation} LIMIT {limit} OFFSET {offset}")
-                columns = list(rows[0].keys()) if rows else [
-                    row["column_name"] for row in self.run_json(
-                        "SELECT column_name FROM information_schema.columns "
-                        f"WHERE table_schema = {quote_literal(schema)} "
-                        f"AND table_name = {quote_literal(table)} "
-                        "ORDER BY ordinal_position"
-                    )
-                ]
-                self.send_json({"columns": columns, "rows": rows})
-            else:
-                self.send_json({"error": "not found"}, 404)
-        except Exception as exc:
-            self.send_json({"error": str(exc)}, 500)
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--db", required=True)
-    parser.add_argument("--duckdb-bin", required=True)
-    parser.add_argument("--port", type=int, required=True)
-    args = parser.parse_args()
-    Viewer.db_path = args.db
-    Viewer.duckdb_bin = args.duckdb_bin
-    ThreadingHTTPServer(("127.0.0.1", args.port), Viewer).serve_forever()
-
-
-if __name__ == "__main__":
-    main()
-DUCKDB_VIEWER_PY
-chmod 755 "\$VIEWER_SCRIPT"
-
-pkill -f "duckdb.*ui-catalog.duckdb" >/dev/null 2>&1 || true
-pkill -f "polymarket_duckdb_viewer.py.*--port \$PORT" >/dev/null 2>&1 || true
-nohup python3 "\$VIEWER_SCRIPT" --db "\$SNAPSHOT_DB" --duckdb-bin "\$DUCKDB_BIN" --port "\$PORT" >/dev/null 2>> "\$LOG_FILE" &
-
-for _ in \$(seq 1 30); do
-  if curl -fsS --max-time 2 "http://127.0.0.1:\${PORT}/api/tables" >/dev/null 2>> "\$LOG_FILE"; then
-    echo "Polymarket DuckDB viewer ready at http://127.0.0.1:\${PORT}"
-    echo "Snapshot: \$SNAPSHOT_DB"
-    exit 0
-  fi
+clear_stale_tunnel() {
+  pkill -f "polymarket_duckdb_viewer.py.*--port \${PORT}" >/dev/null 2>&1 || true
+  pkill -f "ssh .* -L \${PORT}:127.0.0.1:\${PORT} .*\${SPOON_ALIAS}" >/dev/null 2>&1 || true
+  pkill -f "ssh .* -L \${PORT}:localhost:\${PORT} .*\${SPOON_ALIAS}" >/dev/null 2>&1 || true
   sleep 0.5
-done
+}
 
-echo "Polymarket DuckDB viewer did not answer on http://127.0.0.1:\${PORT}" >&2
-exit 1
+if ! ssh -n "\$SPOON_ALIAS" "test -x \$REMOTE_SCRIPT" >/dev/null 2>&1; then
+  echo "Spoon DuckDB UI helper is missing or not executable: \$REMOTE_SCRIPT" >&2
+  echo "From the Mac, run: ./scripts/install_spoon_duckdb_ui.sh" >&2
+  exit 1
+fi
+
+ssh -n "\$SPOON_ALIAS" "\$REMOTE_SCRIPT --port \$PORT"
+if ! is_spoon_viewer; then
+  clear_stale_tunnel
+  ssh -o ExitOnForwardFailure=yes -f -N -L "\${PORT}:127.0.0.1:\${PORT}" "\$SPOON_ALIAS"
+fi
+if ! is_spoon_viewer; then
+  echo "Polymarket DuckDB UI tunnel did not verify through \$META_URL" >&2
+  exit 1
+fi
+echo "Polymarket DuckDB UI ready at http://127.0.0.1:\${PORT}"
 DUCKDB_UI_LAUNCHER
 chmod 755 "\$PC_BIN_DIR/open-polymarket-duckdb-ui.sh"
 
@@ -703,7 +439,7 @@ CMD_DUCKDB_UI_LAUNCHER
 \$shortcut.TargetPath = \$launcherPath
 \$shortcut.Arguments = ''
 \$shortcut.WorkingDirectory = [Environment]::GetFolderPath('UserProfile')
-\$shortcut.IconLocation = 'C:\WINDOWS\System32\cmd.exe,0'
+\$shortcut.IconLocation = 'C:\WINDOWS\System32\shell32.dll,13'
 \$shortcut.WindowStyle = 1
 \$shortcut.Save()
 
@@ -713,7 +449,7 @@ CMD_DUCKDB_UI_LAUNCHER
 \$shortcut.TargetPath = \$launcherPath
 \$shortcut.Arguments = ''
 \$shortcut.WorkingDirectory = [Environment]::GetFolderPath('UserProfile')
-\$shortcut.IconLocation = 'C:\WINDOWS\System32\cmd.exe,0'
+\$shortcut.IconLocation = 'C:\WINDOWS\System32\shell32.dll,220'
 \$shortcut.WindowStyle = 1
 \$shortcut.Save()
 PS1
@@ -846,6 +582,141 @@ def row_is_recent(row: dict[str, object], now: datetime) -> bool:
     return (now - generated_at).total_seconds() <= 90
 
 
+def row_contract(row: dict[str, object]) -> tuple[str, str] | None:
+    asset = row.get("asset")
+    side = row.get("side")
+    if not isinstance(asset, str) or not isinstance(side, str):
+        return None
+    return (asset.upper(), side.upper())
+
+
+def contract_pairs(rows: object) -> set[tuple[str, str]]:
+    if not isinstance(rows, list):
+        return set()
+    pairs: set[tuple[str, str]] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        pair = row_contract(row)
+        if pair is not None:
+            pairs.add(pair)
+    return pairs
+
+
+def row_has_required_generators(row: dict[str, object]) -> bool:
+    generators = row.get("prior_fragment_generators")
+    if not isinstance(generators, list):
+        return False
+    return required_generators.issubset({str(generator) for generator in generators})
+
+
+def row_has_simulation_preview(row: dict[str, object]) -> bool:
+    preview = row.get("simulation_preview")
+    if not isinstance(preview, dict):
+        return False
+    sampled_paths = preview.get("sampled_paths")
+    return isinstance(sampled_paths, list) and bool(sampled_paths)
+
+
+def row_is_recent_mc(row: dict[str, object], now: datetime) -> bool:
+    return (
+        row.get("model_version") == "ensemble-v1"
+        and str(row.get("probability_kind") or "MC").upper() == "MC"
+        and row_is_recent(row, now)
+        and row_has_required_generators(row)
+        and row_has_simulation_preview(row)
+    )
+
+
+def offload_has_block_reasons(offload: dict[str, object]) -> bool:
+    reason_codes = offload.get("reason_codes")
+    if isinstance(reason_codes, list) and any(str(reason) for reason in reason_codes):
+        return True
+    for key in ("blocked_inputs",):
+        blocked_inputs = offload.get(key)
+        if isinstance(blocked_inputs, list) and any(
+            isinstance(item, dict) and item.get("reason_codes")
+            for item in blocked_inputs
+        ):
+            return True
+    diagnostics = offload.get("input_diagnostics")
+    if isinstance(diagnostics, dict):
+        blocked_inputs = diagnostics.get("blocked_inputs")
+        if isinstance(blocked_inputs, list) and any(
+            isinstance(item, dict) and item.get("reason_codes")
+            for item in blocked_inputs
+        ):
+            return True
+    return False
+
+
+def live_smoke_passed(live: dict[str, object]) -> bool:
+    raw_monitor = live.get("monitor")
+    monitor = raw_monitor if isinstance(raw_monitor, dict) else {}
+    raw_gates = live.get("gates")
+    gates = raw_gates if isinstance(raw_gates, dict) else {}
+    raw_status = gates.get("status")
+    status = raw_status if isinstance(raw_status, dict) else {}
+    raw_counts = status.get("counts")
+    counts = raw_counts if isinstance(raw_counts, dict) else {}
+    orderbooks = monitor.get("orderbooks")
+    has_orderbooks = isinstance(orderbooks, list) and bool(orderbooks)
+    try:
+        orderbook_count = int(counts.get("orderbooks") or 0)
+    except (TypeError, ValueError):
+        orderbook_count = 0
+    return gates.get("ok") is True and (has_orderbooks or orderbook_count > 0)
+
+
+def probability_smoke_passed(probabilities: dict[str, object], now: datetime) -> bool:
+    if probabilities.get("ok") is not True:
+        return False
+    state = probabilities.get("state")
+    if state not in {"OK", "NOWCAST", "OFFLOAD_BLOCKED"}:
+        return False
+    probability_rows = probability_candidate_rows(probabilities)
+    recent_rows = [
+        row for row in probability_rows if isinstance(row, dict) and row_is_recent(row, now)
+    ]
+    if not recent_rows:
+        return False
+    recent_mc_rows = [
+        row for row in recent_rows if isinstance(row, dict) and row_is_recent_mc(row, now)
+    ]
+    raw_offload = probabilities.get("offload")
+    if not isinstance(raw_offload, dict):
+        return state == "OK" and bool(recent_mc_rows)
+    offload = raw_offload
+    if state in {"NOWCAST", "OFFLOAD_BLOCKED"} and not offload_has_block_reasons(offload):
+        return False
+    mc_eligible_input_count = int(offload.get("mc_eligible_input_count") or 0)
+    offload_allowed = bool(offload.get("offload_allowed"))
+    if mc_eligible_input_count > 0 and not offload_allowed:
+        return (
+            probabilities.get("state") in {"NOWCAST", "OFFLOAD_BLOCKED"}
+            and offload_has_block_reasons(offload)
+        )
+    if mc_eligible_input_count > 0 and offload_allowed:
+        if not recent_mc_rows:
+            return False
+        blocked_required_contracts = contract_pairs(offload.get("blocked_inputs")) & required_contracts
+        eligible_required_contracts = required_contracts - blocked_required_contracts
+        recent_contracts = contract_pairs(recent_rows)
+        recent_mc_contracts = contract_pairs(recent_mc_rows)
+        if (
+            mc_eligible_input_count >= len(required_contracts)
+            and eligible_required_contracts == required_contracts
+            and required_contracts.issubset(recent_contracts)
+        ):
+            required_recent_mc_contracts = required_contracts & recent_mc_contracts
+            return required_contracts.issubset(required_recent_mc_contracts)
+        return bool(recent_mc_rows)
+    return (
+        state in {"NOWCAST", "OFFLOAD_BLOCKED"}
+        and offload_has_block_reasons(offload)
+    )
+
+
 health = wait_json("/health")
 if health.get("status") != "ok":
     raise SystemExit(f"health smoke failed: {health}")
@@ -858,13 +729,7 @@ for _ in range(30):
         live = {"error": repr(exc)}
         time.sleep(1)
         continue
-    monitor = live.get("monitor")
-    has_orderbooks = (
-        isinstance(monitor, dict)
-        and isinstance(monitor.get("orderbooks"), list)
-        and bool(monitor.get("orderbooks"))
-    )
-    if live.get("ok") is True and has_orderbooks:
+    if live_smoke_passed(live):
         break
     time.sleep(1)
 else:
@@ -878,21 +743,8 @@ for _ in range(30):
         probabilities = {"error": repr(exc)}
         time.sleep(1)
         continue
-    probability_rows = probability_candidate_rows(probabilities)
     now = datetime.now(timezone.utc)
-    recent_ensemble_contracts = {
-        (str(row.get("asset")), str(row.get("side")).upper())
-        for row in probability_rows
-        if isinstance(row, dict)
-        and row.get("model_version") == "ensemble-v1"
-        and row_is_recent(row, now)
-        and required_generators.issubset(set(row.get("prior_fragment_generators") or []))
-    }
-    if (
-        probabilities.get("ok") is True
-        and probabilities.get("state") in {"OK", "NOWCAST"}
-        and required_contracts.issubset(recent_ensemble_contracts)
-    ):
+    if probability_smoke_passed(probabilities, now):
         break
     time.sleep(1)
 else:

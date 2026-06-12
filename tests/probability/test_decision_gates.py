@@ -32,6 +32,9 @@ def _ensemble(
     return EnsembleProbability(
         p_finish=p_finish,
         p_no_touch=p_no_touch,
+        risk_adjusted_p_finish=p_finish,
+        risk_adjusted_p_no_touch=p_no_touch,
+        risk_adjustment=0.0,
         u_gen_finish=u_gen if u_gen_finish is None else u_gen_finish,
         u_gen_touch=u_gen_touch,
         u_gen=u_gen,

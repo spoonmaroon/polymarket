@@ -1010,107 +1010,323 @@ queue_length
 
 ⸻
 
-# 7. Probability and ML Plan
+# 7. Hybrid Monte Carlo, ML Calibration, And BART Research Plan
 
-Do not replace Monte Carlo yet
+This roadmap is offline research, calibration, and uncertainty work only. It is
+not live trading, live decision-gate authority, private-key handling, signing,
+or order placement. Any edge, wait, block, or uncertainty language below means
+replay-safe reporting or paper-first review until a separate approved plan
+changes that boundary.
 
-The project should move toward:
+Monte Carlo remains the base probability engine. ML is a correction,
+calibration, and meta-model layer. BART is an offline uncertainty-aware
+research benchmark.
 
-Monte Carlo = base probability engine
-ML = calibration/meta-model layer
+Target stack:
 
-The first ML system should not directly output buy/sell.
+```text
+as-of market state, using data timestamped <= t
+    -> Monte Carlo path engine
+    -> p_finish_MC, p_no_touch_MC, z_path, sigma_tau, generator dispersion
+    -> ML calibration / meta-model
+    -> calibrated p_finish research estimate
+    -> uncertainty report
+    -> offline executable-edge analysis / paper-first review
+```
 
-It should output:
+Future movement, settlement, and later market quotes are labels only. They must
+not be used as decision-time features. Polymarket order-book features can be
+inputs only if their quote timestamps are at or before the as-of timestamp.
 
-calibrated probability of final win/loss
+## Core Diagnosis: Calibration, Not Replacement
 
-The decision layer should still compute:
+The observed probability problem is mostly a calibration problem, not a reason
+to replace Monte Carlo. If the model predicts 80% across similar historical
+states and only 65% resolve as wins, the model is overconfident in that slice.
+If 90% resolve as wins, it is underconfident.
 
-edge = p_finish_final - executable_price - costs - uncertainty_buffer - path_risk_buffer
+Calibration must be measured by bucket, not only overall:
 
-⸻
+- TTE bucket
+- z_path bucket
+- distance from threshold
+- volatility regime
+- UP vs DOWN
+- asset: BTC vs ETH
+- spread/depth bucket
+- order-book imbalance bucket
+- final 30-60 second window
+- high-congestion threshold states
+- source-quality state
 
-ML roadmap
+Recommended metrics:
 
-Phase 0: Dataset first
+- Brier score
+- log loss
+- calibration curve
+- reliability diagram
+- expected calibration error
+- bucket-level realized win rate
+- bucket sample count
 
-Before training ML, log every as-of decision state and final label.
+## Monte Carlo Suspicion: Paths May Be Too Narrow
 
-Required dataset fields:
+When the model is too confident while TTE is still meaningful, first inspect
+`sigma_tau`, path generator dispersion, and final-window stress assumptions.
 
-state_id
-contract_id
-market_slug
-asset
-side
-asof_ts
-expiry_ts
-TTE
-K
-current_price
-distance_to_threshold
-z_path
-sigma_tau
-p_finish_MC
-p_no_touch_MC
-MC_generator_dispersion
-spread
-best_bid
-best_ask
-midpoint
-target_size_vwap
-visible_depth
-orderbook_imbalance
-quote_age_ms
-source_age_ms
-source_disagreement
-threshold_cross_count
-near_threshold_congestion
-recent_wick_size
-volatility_regime
-event_window_flag
-probability_model_version
-final_label
-resolved_outcome
-settlement_price_at_expiry
-skip_or_block_reason
+If `sigma_tau` is too small, simulated paths are too narrow, `p_finish` becomes
+too confident, and wick or reversal risk is understated. If `sigma_tau` is too
+large, probabilities collapse toward 50% and useful states may be skipped in
+offline reports.
 
-⸻
+Short-dated BTC/ETH binary contracts are sensitive to:
 
-Phase 1: Calibration reports
+- sudden wicks
+- final-window chaos
+- liquidation moves
+- threshold pinning
+- microstructure pressure near K
+- source disagreement
+- thin order-book depth
 
-Before training models, build calibration curves by:
+If Monte Carlo says `p_finish_MC = 0.91` but comparable historical buckets
+resolve near 76%, that does not mean Monte Carlo should be abandoned. It may
+mean the path generator is too calm, the volatility floor is too low, final-
+window risk is under-modeled, fat tails are missing, sparse-bucket uncertainty
+is ignored, or order-book pressure is missing.
 
-TTE bucket
-z_path bucket
-distance bucket
-volatility regime
-asset
-side
-spread/depth bucket
-order-book imbalance bucket
-final 30-60 second window
-threshold congestion bucket
+## Replay-Safe Dataset First
 
-Metrics:
+Before training any model, log every as-of decision state and final label.
 
-Brier score
-log loss
-calibration curve
-expected calibration error
-bucket win rate
-sample count per bucket
+Required fields:
 
-⸻
+- state_id
+- contract_id
+- market_slug
+- asset
+- side
+- asof_ts
+- expiry_ts
+- TTE
+- K
+- K_source
+- rule_hash
+- current_price
+- distance_to_threshold
+- z_path
+- sigma_tau
+- sigma_valid
+- sigma_age_ms
+- short_realized_vol
+- medium_realized_vol
+- long_realized_vol
+- volatility_regime
+- p_finish_MC
+- p_no_touch_MC
+- MC_generator_dispersion
+- spread
+- best_bid
+- best_ask
+- midpoint
+- target_size_ask_vwap
+- target_size_bid_vwap
+- visible_depth
+- orderbook_imbalance
+- quote_age_ms
+- source_age_ms
+- source_disagreement
+- threshold_cross_count
+- near_threshold_congestion
+- recent_wick_size
+- event_window_flag
+- probability_model_version
+- feature_version
+- runtime_phase
+- offload_allowed
+- skip_or_block_reason
+- final_label
+- resolved_outcome
+- settlement_price_at_expiry
 
-Calibration model training is deferred. Do not implement a baseline or tree
-calibrator from this observations pass; continue only with replay-safe dataset
-and report plumbing.
+The dataset must be replay-safe: only data available at or before `asof_ts` can
+be an input feature. Future settlement, price movement, and later quotes are
+labels only.
 
-Future modeling validation, architecture, and baseline choices belong to a
-separate approved plan. This observations pass does not define model families,
-training order, or calibration-output behavior.
+## Model Roadmap
+
+The model order should stay conservative:
+
+1. Phase 0: runtime stability and clean data logging.
+2. Phase 1: raw Monte Carlo calibration reports.
+3. Phase 2: logistic regression calibrator.
+4. Phase 3: XGBoost / LightGBM calibrator.
+5. Phase 4: BART uncertainty-aware offline calibrator.
+6. Phase 5: neural networks later, only if justified.
+
+Do not start with neural networks. The data is noisy, regimes change, labels
+are sparse, and look-ahead risk is high.
+
+The first supervised target should be final binary settlement:
+
+```text
+y = 1 if contract resolves as win
+y = 0 if contract resolves as loss
+```
+
+The calibration model should learn when Monte Carlo is systematically wrong:
+
+```text
+p_finish_final = f(
+    p_finish_MC,
+    p_no_touch_MC,
+    z_path,
+    sigma_tau,
+    TTE,
+    distance_to_threshold,
+    realized_volatility,
+    order_book_features,
+    source_quality_features,
+    threshold_congestion_features
+)
+```
+
+The model must not directly output buy/sell instructions. It should output a
+calibrated probability estimate and uncertainty diagnostics for offline
+analysis. Any later paper-trading or supervised decision layer must remain
+separate, explicit, and gated by runtime readiness.
+
+## Logistic Regression Baseline
+
+First calibrator:
+
+```text
+MC_Calibrator_LogReg_v1
+```
+
+Use logistic regression because it is simple, interpretable, fast, harder to
+overfit, and a strong calibration baseline. Inputs should include
+`logit(p_finish_MC)`, `p_no_touch_MC`, generator dispersion, TTE, `z_path`,
+`sigma_tau`, distance from threshold, spread, order-book imbalance, and
+volatility regime. Output is `p_finish_calibrated`.
+
+## XGBoost / LightGBM Benchmark
+
+Second calibrator:
+
+```text
+MC_Calibrator_GBDT_v1
+```
+
+Use XGBoost or LightGBM after the linear baseline. This benchmark can learn
+nonlinear interactions such as high `p_finish_MC` being trustworthy only when
+spread is low, ask depth is strong, `z_path` is high, `p_no_touch` is stable,
+TTE is inside a favorable bucket, sigma is valid, and threshold congestion is
+low.
+
+After training, probability outputs should be evaluated with sigmoid
+calibration, isotonic calibration, and walk-forward calibration.
+
+## BART Offline Uncertainty Benchmark
+
+BART means Bayesian Additive Regression Trees. It should be explored after
+logistic regression and XGBoost/LightGBM, not before.
+
+Model name:
+
+```text
+MC_Calibrator_BART_v1
+```
+
+BART should not replace Monte Carlo and should not enter the live TUI/runtime
+loop until it proves useful out of sample under a separate plan. Its first role
+is an offline uncertainty-aware calibration benchmark.
+
+Useful BART outputs:
+
+- p_mean
+- p_median
+- p_10
+- p_25
+- p_75
+- p_90
+- posterior_width
+- uncertainty_score
+
+BART should answer whether posterior uncertainty identifies dangerous sparse
+buckets, unstable near-threshold states, high-congestion states, or false
+confidence beyond what MC generator dispersion already explains.
+
+Offline uncertainty analysis can compare:
+
+```text
+edge_mean = p_mean - executable_price - costs - path_risk_buffer
+edge_conservative = p_lower_bound - executable_price - costs - path_risk_buffer
+uncertainty_buffer = f(posterior_width)
+```
+
+These are offline report metrics unless a later reviewed paper-first decision
+contract explicitly promotes them.
+
+## Validation Rules
+
+Because this is time-series market data, do not randomly shuffle. Use
+walk-forward validation:
+
+```text
+Train: Week 1
+Validate: Week 2
+Train: Weeks 1-2
+Validate: Week 3
+Train: Weeks 1-3
+Validate: Week 4
+```
+
+Add a purge/embargo window because 5-minute contracts and nearby decision
+states can overlap.
+
+Validation rules:
+
+- no random shuffle
+- no future labels in features
+- no later Polymarket prices as decision features
+- no future settlement data as input
+- no leakage from overlapping windows
+- all features must be as-of the decision timestamp
+
+## Order-Book Data Caution
+
+Order-book data is useful, but the model must not blindly learn:
+
+```text
+Polymarket price = probability
+```
+
+The goal is to estimate true settlement probability better than executable
+market price, not to predict future Polymarket price. First label final
+outcome: win or lose. Later execution/PnL models can be separate research
+tasks.
+
+## Practical Implementation Order
+
+1. Keep Monte Carlo outputs: `p_finish_MC`, `p_no_touch_MC`, `z_path`,
+   `sigma_tau`, and generator dispersion.
+2. Log every as-of decision state and final label.
+3. Build calibration reports by TTE, `z_path`, distance, volatility regime,
+   asset, side, order-book state, spread/depth, threshold congestion, and final
+   30-60 second window.
+4. Fix obvious Monte Carlo issues: volatility floor, final-window buckets, fat
+   tails, wick stress, sparse-bucket penalty, generator dispersion buffer,
+   sigma instability, K mutation, and invalid/stale inputs.
+5. Train `MC_Calibrator_LogReg_v1`.
+6. Train `MC_Calibrator_GBDT_v1`.
+7. Calibrate GBDT probabilities with sigmoid, isotonic, and walk-forward
+   calibration.
+8. Explore `MC_Calibrator_BART_v1` offline.
+9. Compare uncertainty metrics against realized outcomes and MC generator
+   dispersion.
+10. Keep all modeling outputs offline research until runtime stability, replay
+    equivalence, and a separate paper-first authority contract are approved.
 
 ⸻
 

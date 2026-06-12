@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   filterGraphableProbabilityRows,
+  filterGraphableProbabilityRowsIncludingNowcast,
   mergeGraphableProbabilityPayloadRows,
   mergeProbabilityEventsIntoPayload,
   probabilityRuntimeStateLabel,
@@ -77,6 +78,32 @@ assert.deepEqual(
     nowMs,
   ).map((row) => row.contract_id),
   ["eth-up"],
+);
+
+assert.deepEqual(
+  visibleProbabilityDiagnosticRows(
+    filterGraphableProbabilityRowsIncludingNowcast(
+      {
+        ok: true,
+        state: "NOWCAST",
+        rows: [],
+        nowcast_rows: [
+          {
+            contract_id: "btc-nowcast",
+            asset: "BTC",
+            side: "UP",
+            start_ts: "2026-06-05T13:20:00Z",
+            expiry_ts: "2026-06-05T13:25:00Z",
+            valid_until: "2026-06-05T13:20:30Z",
+            probability_kind: "NOWCAST",
+          },
+        ],
+      },
+      nowMs,
+    ),
+    nowMs,
+  ).map((row) => row.contract_id),
+  ["btc-nowcast"],
 );
 
 assert.deepEqual(

@@ -6,16 +6,21 @@ Python collection. The active read-only runtime is the Rust SDK state manager.
 It is intentionally scoped to BTC/ETH 5m current and next windows
 until the warm-state path and durable persistence are stable.
 
-Current live runtime note, 2026-06-03: the active runtime moved from spoon to
-THEPC over Tailscale. The known operator API host is configurable; THEPC is
-reachable as user `ender` at `100.72.104.49`, but this runbook section should
-not be read as an instruction to SSH, deploy, restart, or manage the PC.
+Current live runtime note, 2026-06-12: spoon is the live collector and canonical
+artifact source. THEPC is the API and GPU probability-worker host. THEPC reads
+synced live artifacts from `/home/ender/polymarket-data/live` and writes CUDA
+probability outputs there for the browser/TUI API surface. The known operator
+API host is configurable; THEPC is reachable as user `ender` at
+`100.72.104.49`, but this runbook section should not be read as an instruction
+to SSH, deploy, restart, or manage the PC unless that is the active task.
 
 Persistent data lives outside the repo at `/home/spoon/polymarket-data`.
 The Rust collector writes raw WebSocket journals and state snapshots under
 `/home/spoon/polymarket-data/raw`; DuckDB replay/research tables live under
 `/home/spoon/polymarket-data/db` and are populated separately by the raw Rust
 event normalizer.
+THEPC's mirrored live inputs and probability outputs live under
+`/home/ender/polymarket-data/live`.
 
 ## Time Policy
 
@@ -54,8 +59,11 @@ them without compiling Rust on the host.
 
 ### THEPC Deploy
 
-THEPC is the active runtime host. Do not use blind auto-pull for this lane.
-THEPC deploys are GitHub-pull based. The Mac pushes `main`; THEPC WSL fetches
+THEPC is the active API/GPU runtime host, not the collector authority. It reads
+Spoon-owned live artifacts from `/home/ender/polymarket-data/live`, runs the
+FastAPI API and `gpu-probability-worker`, and serves the browser/TUI API
+surface. Do not use blind auto-pull for this lane. THEPC deploys are
+GitHub-pull based. The Mac pushes `main`; THEPC WSL fetches
 `git@github.com:AnimeWeeb9000/polymarket.git`, checks out the exact pushed SHA,
 then builds and restarts from that checkout. Do not deploy local-only commits.
 The same deploy also installs the matching
@@ -63,6 +71,9 @@ The same deploy also installs the matching
 the Windows desktop shortcut opens the TUI for the deployed commit.
 `./scripts/deploy_pc.sh` is the only supported CUDA runtime deployment path; the
 generic spoon deploy path does not start gpu-probability-worker by default.
+Docker Desktop on Windows may not show the WSL Docker containers for this lane;
+verify from Ubuntu WSL with `docker compose`, not from the Windows Desktop UI
+alone.
 
 ```bash
 cd /Users/goon/polymarket
@@ -85,17 +96,28 @@ Set `PC_DEPLOY_BUILD_IMAGES=0` only when matching
 `dist/docker/polymarket-cockpit-tui-<sha>` already exist for the checked-out
 commit.
 
-### THEPC DuckDB Viewer
+### Spoon DuckDB Viewer
 
-THEPC can expose the live Polymarket DuckDB data through a local read-only
-browser viewer at `http://127.0.0.1:4213`.
+Spoon owns the live collector, normalizer, and DuckDB research database. The
+DuckDB browser viewer therefore snapshots from spoon's live database at
+`/home/spoon/polymarket-data/db/polymarket.duckdb`, not from THEPC's older
+local copy.
 
 The launcher does not open the live DuckDB file directly. It briefly pauses
 `normalizer` and `outcome-refresh`, creates
-`/home/ender/polymarket-data/duckdb-ui/current-polymarket.duckdb` by attaching
-the source database read-only and running `COPY FROM DATABASE`, restarts the
-paused services, then starts a localhost-only table browser backed by DuckDB CLI
-read-only JSON queries against the snapshot.
+`/home/spoon/polymarket-data/duckdb-ui/current-polymarket.duckdb` with a
+low-priority filesystem copy of the paused source DB, restarts the paused
+services via a trap, then starts a localhost-only table browser backed by
+DuckDB CLI read-only JSON queries against the snapshot. The viewer exposes
+`/api/meta` so launchers can verify they are connected to the spoon snapshot;
+the page header shows `Source: spoon` and the snapshot generation time.
+
+Install or refresh the spoon helper from the Mac:
+
+```bash
+cd /Users/goon/polymarket
+./scripts/install_spoon_duckdb_ui.sh
+```
 
 On THEPC, open the desktop shortcut:
 
@@ -109,9 +131,10 @@ On the Mac, run:
 ./scripts/open_duckdb_ui_mac.sh
 ```
 
-The Mac script starts the THEPC helper, opens an SSH tunnel from Mac
-`localhost:4213` to THEPC `localhost:4213`, and opens
-`http://127.0.0.1:4213`.
+The THEPC and Mac launchers start the spoon helper, verify `/api/meta`, open an
+SSH tunnel from local `localhost:4213` to spoon `localhost:4213`, and then open
+`http://127.0.0.1:4213`. THEPC does not serve a local DuckDB snapshot in the
+default `thepc-gpu-api` role.
 
 ### Spoon Deploy
 
@@ -436,6 +459,11 @@ uses `PC_DEPLOY_ROLE=thepc-gpu-api`, starts only `api` and
 `gpu-probability-worker`, stops THEPC `collector`, `normalizer`, and
 `outcome-refresh`, and installs the artifact sync loop that pulls Spoon-owned
 live artifacts.
+The sync loop should be automatic through the user service
+`polymarket-spoon-artifact-sync.service` when user systemd is available in WSL.
+If user systemd is unavailable, the installer falls back to a `nohup` loop,
+writes its PID to `/home/ender/polymarket-data/live/artifact-sync.pid`, and logs
+to `/home/ender/polymarket-data/logs/artifact-sync.log`.
 
 THEPC probability CPU control is a soft CPU target, not a hard Docker CPU cap.
 The default is `POLYMARKET_PROBABILITY_CPU_TARGET_PERCENT=15.0` with
@@ -459,7 +487,8 @@ deploys require SHA-tagged image artifacts under `dist/docker`, including
 `polymarket-rust-collector-<sha>.tar`, `polymarket-normalizer-<sha>.tar`,
 `polymarket-cuda-probability-<sha>.tar`, and
 `polymarket-cockpit-tui-<sha>`. In the default `remote-build` mode, the script
-ships a git bundle to THEPC and builds those images inside WSL.
+has THEPC WSL fetch GitHub `main` at the exact pushed SHA and builds those
+images inside WSL. Local image copying is only for `PC_DEPLOY_MODE=image-tar`.
 
 Use the deploy defaults or compose overrides to keep each host in its lane:
 
@@ -491,6 +520,74 @@ polymarket-engine sync-cluster-artifacts \
 Run with `--execute` only from the declared source node. Do not run two
 normalizers, two collectors, or two probability writers against the same
 canonical path. That single-writer rule is the split-brain guard.
+
+### Live Path And GPU Worker Checks
+
+Run these checks inside THEPC Ubuntu WSL. Docker Desktop's Windows UI can miss
+or mislabel the containers; WSL `docker compose` is the source of truth for
+this lane.
+
+```bash
+cd /home/ender/polymarket
+docker compose --env-file deploy/collector/.env \
+  -f deploy/collector/docker-compose.yml \
+  -f deploy/collector/docker-compose.thepc-gpu-api.yml ps
+curl -sS 'http://127.0.0.1:8000/api/runtime/live?limit=8' | jq '{status, recovery, offload, probability_state: .probability.state}'
+curl -sS 'http://127.0.0.1:8000/api/runtime/offload' | jq '{offload_allowed, reason_codes, mc_eligible_input_count, blocked_input_count, max_input_state_lag_ms, blocked_inputs}'
+curl -sS 'http://127.0.0.1:8000/api/runtime/probabilities?limit=8' | jq '{state, lanes, rows_written, budget, offload, first_row: .rows[0]}'
+docker logs --tail=80 gpu-probability-worker
+nvidia-smi
+```
+
+Expected healthy MC:
+
+```text
+api and gpu-probability-worker are running
+offload.offload_allowed is true
+offload.mc_eligible_input_count is greater than 0
+probabilities.lanes includes MC
+probabilities.budget.allocated_total_paths is greater than 0
+at least one row has simulation_preview.sampled_paths
+```
+
+Expected blocked or partial state:
+
+```text
+NOWCAST rows remain visible
+blocked rows list block_reasons
+offload.blocked_inputs names stale assets and reasons
+GPU utilization can be low while offload is blocked
+```
+
+Check artifact sync and freshness from THEPC WSL:
+
+```bash
+systemctl --user is-active polymarket-spoon-artifact-sync.service
+systemctl --user status polymarket-spoon-artifact-sync.service --no-pager
+journalctl --user -u polymarket-spoon-artifact-sync.service -n 80 --no-pager
+for file in status.json normalized_health.json probability_inputs.json probability_fragments.json outcomes.json volatility.json; do
+  stat -c '%n %y' "/home/ender/polymarket-data/live/$file"
+done
+```
+
+If user systemd is unavailable, use the fallback loop checks:
+
+```bash
+cat /home/ender/polymarket-data/live/artifact-sync.pid
+tail -80 /home/ender/polymarket-data/logs/artifact-sync.log
+```
+
+The artifact sync copies Spoon-owned `status.json`, `normalized_health.json`,
+`probability_inputs.json`, `probability_fragments.json`, `outcomes.json`, and
+`volatility.json` into `/home/ender/polymarket-data/live`. Treat stale file
+mtimes or stale API age fields as input freshness failures before debugging CUDA
+itself.
+
+Volatility currently updates on the live artifact cadence. Judge it by
+`volatility.json` freshness, API age fields, and offload block reasons before
+making the volatility path faster. If the file is fresh but the API reports
+stale volatility, debug API parsing or worker status first; if the file itself
+is old, debug Spoon generation or the Spoon-to-THEPC sync loop.
 
 ## Runtime keeper
 

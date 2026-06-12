@@ -24,7 +24,8 @@ In scope:
 - Expose recovery/offload/bug report state through API and TUI.
 - Add K immutability diagnostics and sigma validity diagnostics.
 - Add calibration dataset logging and reports after runtime reliability is covered.
-- Add the first calibration model only after replay-safe data exists.
+- Defer calibration model implementation to a separate plan after replay-safe
+  data exists.
 
 Out of scope:
 
@@ -1811,17 +1812,6 @@ git commit -m "calibration: add probability calibration reports"
 
 ---
 
-## Task 14: Removed - First ML Calibrator Deferred
-
-**Files:** none.
-
-The first ML calibrator is intentionally not part of this recovery pass. Enoch
-has separate plans for calibrator work, so this task must not create
-`src/polymarket_engine/calibration/models.py`, `tests/calibration/test_models.py`,
-or any `MC_Calibrator_LogReg_v1` artifacts.
-
----
-
 ## Task 15: End-To-End Verification And Deploy Check
 
 **Files:**
@@ -1938,8 +1928,7 @@ git commit -m "docs: document runtime recovery and offload gates"
 12. Task 11: recovery writer integration.
 13. Task 12: calibration dataset.
 14. Task 13: calibration reports.
-15. Task 14: removed; first ML calibrator deferred.
-16. Task 15: verification and deployed smoke checks.
+15. Task 15: verification and deployed smoke checks.
 
 ## Risk Controls
 
@@ -1954,7 +1943,7 @@ git commit -m "docs: document runtime recovery and offload gates"
 
 ## Self-Review
 
-- Spec coverage: every BUG section in `docs/observations.md` maps to at least one task. BUG-001 maps to Tasks 1, 6, 7, and 10. BUG-002 maps to Tasks 1, 6, and 10. BUG-003 maps to Tasks 2, 5, 11, and 15. BUG-004 maps to Tasks 3 and 4. BUG-005 maps to Task 9. BUG-006 maps to Task 8. BUG-007 maps to Tasks 12, 13, and 14. BUG-008 maps to Tasks 2, 5, and 11. BUG-009 maps to Task 10.
+- Spec coverage: every BUG section in `docs/observations.md` maps to at least one task. BUG-001 maps to Tasks 1, 6, 7, and 10. BUG-002 maps to Tasks 1, 6, and 10. BUG-003 maps to Tasks 2, 5, 11, and 15. BUG-004 maps to Tasks 3 and 4. BUG-005 maps to Task 9. BUG-006 maps to Task 8. BUG-007 maps to Tasks 12 and 13. BUG-008 maps to Tasks 2, 5, and 11. BUG-009 maps to Task 10.
 - Placeholder scan: no `TODO`, `TBD`, or `implement later` placeholders are used as plan content.
 - Type consistency: runtime phases use `RuntimePhase`; offload result uses `OffloadDecision`; API surfaces use recovery/offload status JSON names consistently.
 - Scope check: this is a master plan with independent tasks. Runtime stability tasks should be implemented before calibration tasks.

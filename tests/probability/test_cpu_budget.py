@@ -1,9 +1,20 @@
 from __future__ import annotations
 
+from typing import TypedDict
+
 import pytest
 
 from polymarket_engine.probability.cpu_budget import adjust_total_path_budget
 from polymarket_engine.probability.cpu_budget import cycle_cpu_percent
+
+
+class InvalidBudgetKwargs(TypedDict):
+    current_total_paths: int
+    configured_max_total_paths: int
+    min_total_paths: int
+    cpu_percent: float
+    target_percent: float
+    soft_max_percent: float
 
 
 def test_cycle_cpu_percent_measures_process_time_over_wall_time() -> None:
@@ -179,6 +190,6 @@ def test_adjust_total_path_budget_respects_ceiling() -> None:
         },
     ),
 )
-def test_adjust_total_path_budget_validates_inputs(kwargs: dict[str, float | int]) -> None:
+def test_adjust_total_path_budget_validates_inputs(kwargs: InvalidBudgetKwargs) -> None:
     with pytest.raises(ValueError):
         adjust_total_path_budget(**kwargs)

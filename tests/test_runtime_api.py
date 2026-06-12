@@ -550,6 +550,101 @@ def test_runtime_live_includes_compact_recovery_and_offload(tmp_path: Path) -> N
     assert payload["offload"]["offload_allowed"] is True
 
 
+def test_runtime_live_preserves_offload_input_diagnostics(tmp_path: Path) -> None:
+    status_path = tmp_path / "status.json"
+    normalized_health_path = tmp_path / "normalized_health.json"
+    probability_status_path = tmp_path / "probabilities.json"
+    offload_status_path = tmp_path / "offload_status.json"
+    recovery_status_path = tmp_path / "recovery_status.json"
+    target_cache_path = tmp_path / "targets.json"
+    volatility_status_path = tmp_path / "volatility.json"
+    now = datetime.now(timezone.utc).isoformat()
+    status_path.write_text(
+        json.dumps({"schema_version": "x", "ok": True, "generated_at": now, "counts": {}}),
+        encoding="utf-8",
+    )
+    normalized_health_path.write_text(
+        json.dumps(
+            {
+                "schema_version": runtime_api_module.NORMALIZED_HEALTH_SCHEMA_VERSION,
+                "generated_at": now,
+                "tables": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    probability_status_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "polymarket-probability-runtime-v1",
+                "generated_at": now,
+                "rows": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    recovery_status_path.write_text(
+        json.dumps({"runtime_phase": "READY", "ready": True, "reasons": [], "generated_at": now}),
+        encoding="utf-8",
+    )
+    offload_status_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "polymarket-offload-runtime-v1",
+                "generated_at": now,
+                "offload_allowed": True,
+                "reason_codes": [],
+                "recommended_worker_mode": "gpu_mc",
+                "recommended_max_total_paths": 80000,
+                "input_count": 2,
+                "mc_eligible_input_count": 1,
+                "blocked_input_count": 1,
+                "max_input_state_lag_ms": 4200,
+                "max_source_age_ms": 1300,
+                "max_book_age_ms": 250,
+                "min_seconds_left": 38.5,
+                "blocked_inputs": [{"state_id": "state-btc", "reason_codes": ["price_stale"]}],
+                "input_diagnostics": {
+                    "input_count": 2,
+                    "mc_eligible_input_count": 1,
+                    "blocked_input_count": 1,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    app = FastAPI()
+    app.include_router(
+        build_runtime_router(
+            status_path=status_path,
+            duckdb_path=tmp_path / "missing.duckdb",
+            normalized_health_path=normalized_health_path,
+            probability_status_path=probability_status_path,
+            probability_inputs_path=None,
+            target_cache_path=target_cache_path,
+            volatility_status_path=volatility_status_path,
+            recovery_status_path=recovery_status_path,
+            offload_status_path=offload_status_path,
+        )
+    )
+    response = TestClient(app).get("/api/runtime/live?limit=8")
+
+    assert response.status_code == 200
+    payload = response.json()
+
+    assert payload["offload"]["recommended_max_total_paths"] == 80000
+    assert payload["offload"]["input_count"] == 2
+    assert payload["offload"]["mc_eligible_input_count"] == 1
+    assert payload["offload"]["blocked_input_count"] == 1
+    assert payload["offload"]["max_input_state_lag_ms"] == 4200
+    assert payload["offload"]["max_source_age_ms"] == 1300
+    assert payload["offload"]["max_book_age_ms"] == 250
+    assert payload["offload"]["min_seconds_left"] == 38.5
+    assert payload["offload"]["blocked_inputs"][0]["reason_codes"] == ["price_stale"]
+    assert payload["offload"]["input_diagnostics"]["input_count"] == 2
+
+
 def test_runtime_api_optional_status_missing_fallbacks(tmp_path: Path) -> None:
     status_path = tmp_path / "live" / "status.json"
     status_path.parent.mkdir(parents=True)

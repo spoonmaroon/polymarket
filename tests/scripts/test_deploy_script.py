@@ -1,10 +1,90 @@
+import os
 import shutil
 import subprocess
+from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
 ROOT = Path(__file__).parents[2]
+_DEPLOY_START = datetime(2026, 6, 11, 12, 0, tzinfo=UTC)
+_NOW = _DEPLOY_START + timedelta(seconds=30)
+_REQUIRED_GENERATORS = [
+    "empirical_conditional",
+    "block_bootstrap",
+    "filtered_historical",
+    "stress_overlay",
+]
+
+
+def _pc_deploy_smoke_namespace() -> dict[str, Any]:
+    script = (ROOT / "scripts" / "deploy_pc.sh").read_text(encoding="utf-8")
+    marker = 'POLYMARKET_API_PORT="\\$PC_API_PORT" python3 - <<\'PY\'\n'
+    smoke = script.split(marker, 1)[1].split('\nhealth = wait_json("/health")', 1)[0]
+    namespace: dict[str, Any] = {}
+    old_port = os.environ.get("POLYMARKET_API_PORT")
+    os.environ["POLYMARKET_API_PORT"] = "8000"
+    try:
+        exec(smoke, namespace)
+    finally:
+        if old_port is None:
+            os.environ.pop("POLYMARKET_API_PORT", None)
+        else:
+            os.environ["POLYMARKET_API_PORT"] = old_port
+    namespace["deploy_started_at"] = _DEPLOY_START.timestamp()
+    return namespace
+
+
+def _probability_smoke_passed() -> Callable[[dict[str, object], datetime], bool]:
+    return cast(
+        Callable[[dict[str, object], datetime], bool],
+        _pc_deploy_smoke_namespace()["probability_smoke_passed"],
+    )
+
+
+def _live_smoke_passed() -> Callable[[dict[str, object]], bool]:
+    return cast(
+        Callable[[dict[str, object]], bool],
+        _pc_deploy_smoke_namespace()["live_smoke_passed"],
+    )
+
+
+def _probability_row(
+    asset: str,
+    side: str,
+    *,
+    generated_at: datetime = _NOW,
+    probability_kind: str = "MC",
+    preview: bool = True,
+) -> dict[str, object]:
+    row: dict[str, object] = {
+        "asset": asset,
+        "side": side,
+        "generated_at": generated_at.isoformat(),
+        "valid_until": (_NOW + timedelta(seconds=60)).isoformat(),
+        "model_version": "ensemble-v1" if probability_kind == "MC" else "fast-nowcast-v1",
+        "probability_kind": probability_kind,
+        "prior_fragment_generators": list(_REQUIRED_GENERATORS),
+    }
+    if preview:
+        row["simulation_preview"] = {"sampled_paths": [{"points": [1.0, 2.0]}]}
+    return row
+
+
+def _probability_payload(
+    rows: list[dict[str, object]],
+    *,
+    offload: dict[str, object],
+    state: str = "OK",
+) -> dict[str, object]:
+    return {
+        "ok": True,
+        "state": state,
+        "rows": rows,
+        "offload": offload,
+    }
 
 
 def test_deploy_script_has_configurable_long_smoke_window() -> None:
@@ -211,12 +291,16 @@ def test_runtime_api_service_is_deployed_with_engine_compose() -> None:
     assert "for _ in range(30):" in pc_script
     assert "except Exception as exc:" in pc_script
     assert 'probabilities = {"error": repr(exc)}' in pc_script
+    assert "deploy_started_at = time.time()" in pc_script
+    assert "generated_at.timestamp() < deploy_started_at" in pc_script
     assert 'for key in ("rows", "last_good_rows"):' in pc_script
     assert "probability_candidate_rows(probabilities)" in pc_script
     assert "row_is_recent(row, now)" in pc_script
     assert 'row.get("model_version") == "ensemble-v1"' in pc_script
-    assert 'required_generators.issubset(set(row.get("prior_fragment_generators") or []))' in pc_script
-    assert 'probabilities.get("state") in {"OK", "NOWCAST"}' in pc_script
+    assert "row_has_required_generators(row)" in pc_script
+    assert "row_has_simulation_preview(row)" in pc_script
+    assert 'state = probabilities.get("state")' in pc_script
+    assert 'state not in {"OK", "NOWCAST", "OFFLOAD_BLOCKED"}' in pc_script
     assert 'parse_ts(row.get("valid_until"))' in pc_script
     assert 'parse_ts(row.get("generated_at"))' in pc_script
     assert "runtime probabilities smoke failed" in pc_script
@@ -265,6 +349,147 @@ def test_pc_deploy_defaults_to_gpu_api_overlay_and_sync() -> None:
     ) in script
 
 
+def test_pc_deploy_probability_smoke_accepts_hybrid_mc_truth() -> None:
+    script = (ROOT / "scripts" / "deploy_pc.sh").read_text(encoding="utf-8")
+
+    assert "def probability_smoke_passed(" in script
+    assert "def live_smoke_passed(" in script
+    assert "def row_has_required_generators(" in script
+    assert "def row_has_simulation_preview(" in script
+    assert "def offload_has_block_reasons(" in script
+    assert 'mc_eligible_input_count = int(offload.get("mc_eligible_input_count") or 0)' in script
+    assert 'offload_allowed = bool(offload.get("offload_allowed"))' in script
+    assert 'state = probabilities.get("state")' in script
+    assert 'state not in {"OK", "NOWCAST", "OFFLOAD_BLOCKED"}' in script
+    assert 'state in {"NOWCAST", "OFFLOAD_BLOCKED"} and not offload_has_block_reasons(offload)' in script
+    assert "recent_rows" in script
+    assert "recent_mc_rows" in script
+    assert "return bool(recent_mc_rows)" in script
+    assert "eligible_required_contracts" in script
+    assert "required_recent_mc_contracts" in script
+    assert "offload_has_block_reasons(offload)" in script
+    assert "required_contracts.issubset(recent_ensemble_contracts)" not in script
+
+
+def test_pc_deploy_live_smoke_uses_nested_gate_readiness() -> None:
+    live_smoke_passed = _live_smoke_passed()
+
+    assert live_smoke_passed(
+        {
+            "ok": False,
+            "gates": {"ok": True, "status": {"counts": {"orderbooks": 4}}},
+            "monitor": {"orderbooks": []},
+        }
+    )
+    assert live_smoke_passed(
+        {
+            "ok": False,
+            "gates": {"ok": True, "status": {"counts": {"orderbooks": 0}}},
+            "monitor": {"orderbooks": [{"asset": "BTC"}]},
+        }
+    )
+    assert not live_smoke_passed(
+        {
+            "ok": True,
+            "gates": {"ok": False, "status": {"counts": {"orderbooks": 4}}},
+            "monitor": {"orderbooks": [{"asset": "BTC"}]},
+        }
+    )
+
+
+def test_pc_deploy_probability_smoke_behavior() -> None:
+    probability_smoke_passed = _probability_smoke_passed()
+    full_mc_rows = [
+        _probability_row("BTC", "UP"),
+        _probability_row("BTC", "DOWN"),
+        _probability_row("ETH", "UP"),
+        _probability_row("ETH", "DOWN"),
+    ]
+    full_offload = {
+        "offload_allowed": True,
+        "mc_eligible_input_count": 4,
+        "blocked_input_count": 0,
+        "blocked_inputs": [],
+    }
+
+    assert probability_smoke_passed(
+        _probability_payload(full_mc_rows, offload=full_offload),
+        _NOW,
+    )
+    assert not probability_smoke_passed(
+        _probability_payload(
+            [
+                _probability_row(
+                    "BTC",
+                    "UP",
+                    generated_at=_DEPLOY_START - timedelta(seconds=1),
+                )
+            ],
+            offload={"offload_allowed": True, "mc_eligible_input_count": 1},
+        ),
+        _NOW,
+    )
+    assert not probability_smoke_passed(
+        _probability_payload(
+            [_probability_row("BTC", "UP", probability_kind="NOWCAST", preview=False)],
+            offload={"offload_allowed": True, "mc_eligible_input_count": 1},
+            state="NOWCAST",
+        ),
+        _NOW,
+    )
+    assert probability_smoke_passed(
+        _probability_payload(
+            [_probability_row("BTC", "UP", probability_kind="NOWCAST", preview=False)],
+            offload={
+                "offload_allowed": False,
+                "mc_eligible_input_count": 0,
+                "reason_codes": ["probability_inputs_stale"],
+                "blocked_inputs": [
+                    {"asset": "BTC", "side": "UP", "reason_codes": ["price_stale"]}
+                ],
+            },
+            state="OFFLOAD_BLOCKED",
+        ),
+        _NOW,
+    )
+    assert not probability_smoke_passed(
+        _probability_payload(
+            [_probability_row("BTC", "UP", probability_kind="NOWCAST", preview=False)],
+            offload={"offload_allowed": False, "mc_eligible_input_count": 0},
+            state="OFFLOAD_BLOCKED",
+        ),
+        _NOW,
+    )
+    assert not probability_smoke_passed(
+        _probability_payload(
+            [_probability_row("BTC", "UP")],
+            offload={"offload_allowed": True, "mc_eligible_input_count": 1},
+            state="NOWCAST",
+        ),
+        _NOW,
+    )
+    assert not probability_smoke_passed(
+        {
+            "ok": True,
+            "state": "OFFLOAD_BLOCKED",
+            "rows": [_probability_row("BTC", "UP")],
+        },
+        _NOW,
+    )
+    assert not probability_smoke_passed(
+        _probability_payload(
+            [
+                _probability_row("BTC", "UP"),
+                _probability_row("BTC", "DOWN"),
+                _probability_row("ETH", "UP"),
+                _probability_row("ETH", "DOWN", probability_kind="NOWCAST", preview=False),
+            ],
+            offload=full_offload,
+        ),
+        _NOW,
+    )
+
+
 def test_pc_deploy_fetches_exact_main_sha_from_github_ssh() -> None:
     script = (ROOT / "scripts" / "deploy_pc.sh").read_text(encoding="utf-8")
 
@@ -290,7 +515,9 @@ def test_thepc_spoon_artifact_sync_installer_is_role_safe() -> None:
         "status.json normalized_health.json probability_inputs.json "
         "probability_fragments.json outcomes.json volatility.json"
     ) in script
-    assert "Host spoon" in script
+    assert 'SPOON_ALIAS="${POLYMARKET_SPOON_SSH_ALIAS:-spoon}"' in script
+    assert '"$SPOON_ALIAS"' in script
+    assert "Host {alias}" in script
     assert 'SPOON_HOSTNAME="${SPOON_HOSTNAME:-100.126.126.1}"' in script
     assert "HostName {hostname}" in script
     assert 'SPOON_USER="${SPOON_USER:-spoon}"' in script
@@ -446,35 +673,82 @@ def test_pc_image_build_script_exports_docker_tarballs_and_manifest() -> None:
     assert "saved_tars=" in script
 
 
-def test_pc_deploy_installs_duckdb_ui_snapshot_launcher() -> None:
+def test_pc_deploy_installs_spoon_duckdb_ui_launcher() -> None:
     script = (ROOT / "scripts" / "deploy_pc.sh").read_text(encoding="utf-8")
+    duckdb_block_start = script.index('cat > "\\$PC_BIN_DIR/open-polymarket-duckdb-ui.sh"')
+    duckdb_block_end = script.index('cat > "\\$PC_BIN_DIR/open-polymarket-duckdb-ui-window.sh"')
+    duckdb_block = script[duckdb_block_start:duckdb_block_end]
 
-    assert "open-polymarket-duckdb-ui.sh" in script
-    assert "open-polymarket-duckdb-ui-window.sh" in script
     assert "open-polymarket-duckdb-ui.cmd" in script
     assert "Polymarket DuckDB UI.lnk" in script
-    assert "https://install.duckdb.org" in script
-    assert "polymarket_duckdb_viewer.py" in script
-    assert "ThreadingHTTPServer" in script
-    assert 'curl -fsS --max-time 2 "http://127.0.0.1:\\${PORT}/api/tables"' in script
-    assert 'SNAPSHOT_TMP="\\$SNAPSHOT_DIR/snapshot.duckdb"' in script
-    assert "ATTACH \\$(quote_sql_string \"\\$SOURCE_DB\") AS source_db (READ_ONLY)" in script
-    assert "COPY FROM DATABASE source_db TO snapshot" in script
-    assert 'subprocess.run(' in script
-    assert '"-readonly", self.db_path, "-json", "-c", sql' in script
-    assert 'PC_DEPLOY_ROLE="\\${PC_DEPLOY_ROLE:-thepc-gpu-api}"' in script
-    assert "stop collector normalizer outcome-refresh" in script
-    assert "up -d --no-deps normalizer" in script
-    assert "up -d --no-deps api gpu-probability-worker" in script
+    assert (
+        'SPOON_ALIAS="${POLYMARKET_SPOON_SSH_ALIAS:-spoon}"' in duckdb_block
+        or 'SPOON_ALIAS="\\${POLYMARKET_SPOON_SSH_ALIAS:-spoon}"' in duckdb_block
+    )
+    assert '"$SPOON_ALIAS"' in duckdb_block or '"\\$SPOON_ALIAS"' in duckdb_block
+    assert (
+        'ssh -n "$SPOON_ALIAS" "test -x $REMOTE_SCRIPT"' in duckdb_block
+        or 'ssh -n "\\$SPOON_ALIAS" "test -x \\$REMOTE_SCRIPT"' in duckdb_block
+    )
+    assert (
+        'ssh -n "$SPOON_ALIAS" "$REMOTE_SCRIPT --port $PORT"' in duckdb_block
+        or 'ssh -n "\\$SPOON_ALIAS" "\\$REMOTE_SCRIPT --port \\$PORT"' in duckdb_block
+    )
+    assert "ssh -o ExitOnForwardFailure=yes -f -N -L" in duckdb_block
+    assert "/api/meta" in duckdb_block
+    assert "is_spoon_viewer" in duckdb_block
+    assert "clear_stale_tunnel" in duckdb_block
+    assert "polymarket_duckdb_viewer.py.*--port" in duckdb_block
+    assert "pkill -f" in duckdb_block
+    assert "tunnel did not verify" in duckdb_block
+    assert "./scripts/install_spoon_duckdb_ui.sh" in duckdb_block
+    assert "4213:127.0.0.1:4213" in duckdb_block
+    assert "/home/spoon/bin/open-polymarket-duckdb-ui.sh --port 4213" in duckdb_block
+    assert "start \"\" \"http://127.0.0.1:4213\"" in script
+
+
+def test_pc_default_duckdb_ui_no_longer_snapshots_thepc_local_db() -> None:
+    script = (ROOT / "scripts" / "deploy_pc.sh").read_text(encoding="utf-8")
+
+    duckdb_block_start = script.index('cat > "\\$PC_BIN_DIR/open-polymarket-duckdb-ui.sh"')
+    duckdb_block_end = script.index('cat > "\\$PC_BIN_DIR/open-polymarket-duckdb-ui-window.sh"')
+    duckdb_block = script[duckdb_block_start:duckdb_block_end]
+
+    assert 'SOURCE_DB="\\${POLYMARKET_DUCKDB_SOURCE_DB:-\\$DATA_DIR/db/polymarket.duckdb}"' not in duckdb_block
+    assert "COPY FROM DATABASE source_db TO snapshot" not in duckdb_block
+    assert 'VIEWER_SCRIPT="\\$SNAPSHOT_DIR/polymarket_duckdb_viewer.py"' not in duckdb_block
+    assert "ThreadingHTTPServer" not in duckdb_block
 
 
 def test_pc_deploy_duckdb_ui_avoids_js_templates_in_outer_heredoc() -> None:
     script = (ROOT / "scripts" / "deploy_pc.sh").read_text(encoding="utf-8")
+    installer = (ROOT / "scripts" / "install_spoon_duckdb_ui.sh").read_text(
+        encoding="utf-8"
+    )
 
     assert "${{" not in script
     assert "`" not in script
-    assert "'rows ' + (offset + 1) + '-' + (offset + limit)" in script
-    assert "'/api/table?schema=' + encodeURIComponent(selected.schema)" in script
+    assert "'rows ' + (offset + 1) + '-' + (offset + limit)" not in script
+    assert "'/api/table?schema=' + encodeURIComponent(selected.schema)" not in script
+    assert "'rows ' + (offset + 1) + '-' + (offset + limit)" in installer
+    assert "'/api/table?schema=' + encodeURIComponent(selected.schema)" in installer
+
+
+def test_pc_deploy_duckdb_ui_shortcut_uses_database_icon() -> None:
+    script = (ROOT / "scripts" / "deploy_pc.sh").read_text(encoding="utf-8")
+
+    shortcut_block_start = script.index(
+        r"\$shortcutPath = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Polymarket DuckDB UI.lnk'"
+    )
+    shortcut_save_start = script.index(r"\$shortcut.Save()", shortcut_block_start)
+    shortcut_block = script[shortcut_block_start:shortcut_save_start]
+
+    assert (
+        r"\$shortcut.IconLocation = 'C:\WINDOWS\System32\shell32.dll,220'"
+        in shortcut_block
+        or r'\$shortcut.IconLocation = "C:\WINDOWS\System32\shell32.dll,220"'
+        in shortcut_block
+    )
 
 
 def test_prebuilt_image_deploy_script_loads_images_and_uses_deploy_fast_path() -> None:
@@ -612,7 +886,7 @@ def test_pc_deploy_script_runs_prebuilt_deploy_gate_with_pc_cadence() -> None:
     assert "docker-compose.thepc-gpu-api.yml" in script
     assert "stop collector normalizer outcome-refresh" in script
     assert "up -d --no-build api gpu-probability-worker" in script
-    assert "for _ in \\$(seq 1 30); do" in script
+    assert "for _ in \\$(seq 1 45); do" in script
     assert "--expected-prewarm-windows 2" in script
 
 
@@ -634,7 +908,12 @@ def test_pc_deploy_script_refreshes_tui_desktop_launcher() -> None:
     ) in script
     assert "python3 -c %q" in script
     assert 'm=p.get("monitor") or {}' in script
-    assert 'len(m.get("orderbooks") or []) > 0' in script
+    assert 'gates=p.get("gates") or {}' in script
+    assert 'status=gates.get("status") or p.get("status") or {}' in script
+    assert 'counts=status.get("counts") or {}' in script
+    assert 'gates.get("ok") is True' in script
+    assert 'counts.get("orderbooks")' in script
+    assert 'p.get("ok") and len(m.get("orderbooks") or []) > 0' not in script
     assert 'p.get("status",{}).get("counts",{})' not in script
     assert "--engine-api-url http://127.0.0.1:%s --poll-interval-ms 250" in script
     assert '"\\$PC_API_PORT"' in script
