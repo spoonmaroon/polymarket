@@ -24,7 +24,7 @@ CUDA_PROBABILITY_IMAGE="${POLYMARKET_CUDA_PROBABILITY_IMAGE:-polymarket-cuda-pro
 DEPLOY_ROLE="${POLYMARKET_DEPLOY_ROLE:-spoon-cpu-authority}"
 LOG() { echo "[$(date -Iseconds)] $*" | tee -a "$LOG_FILE"; }
 
-mkdir -p "$REPO/logs" "$DATA_DIR/raw" "$DATA_DIR/db" "$DATA_DIR/live" "$DATA_DIR/logs" "$(dirname "$DEPLOYED_MARKER")"
+mkdir -p "$REPO/logs" "$DATA_DIR/raw" "$DATA_DIR/db" "$DATA_DIR/live" "$DATA_DIR/live/bug-reports" "$DATA_DIR/logs" "$(dirname "$DEPLOYED_MARKER")"
 touch "$DATA_DIR/raw/.polymarket_archive_root"
 
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then

@@ -1,7 +1,8 @@
 use std::time::Duration;
 
 use crate::status::{
-    RuntimeGates, RuntimeLive, RuntimeMonitor, RuntimeOutcomes, RuntimeProbabilities, RuntimeStatus,
+    RuntimeBugReports, RuntimeGates, RuntimeLive, RuntimeMonitor, RuntimeOutcomes,
+    RuntimeProbabilities, RuntimeStatus,
 };
 
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
@@ -64,6 +65,11 @@ impl EngineClient {
 
     pub async fn outcomes(&self, limit: usize) -> anyhow::Result<RuntimeOutcomes> {
         self.get_json(&format!("/api/runtime/outcomes?limit={limit}"))
+            .await
+    }
+
+    pub async fn bug_reports(&self, limit: usize) -> anyhow::Result<RuntimeBugReports> {
+        self.get_json(&format!("/api/runtime/bug-reports?limit={limit}"))
             .await
     }
 
@@ -259,6 +265,59 @@ mod tests {
         assert_eq!(
             request_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
             "GET /api/runtime/monitor?limit=8 HTTP/1.1"
+        );
+    }
+
+    #[tokio::test]
+    async fn bug_reports_request_includes_limit_and_parses_payload() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (request_tx, request_rx) = mpsc::channel();
+        let _server = thread::spawn(move || {
+            let Ok((mut stream, _peer)) = listener.accept() else {
+                return;
+            };
+
+            let mut buffer = [0; 512];
+            let bytes_read = stream.read(&mut buffer).unwrap();
+            let request = String::from_utf8_lossy(&buffer[..bytes_read]).to_string();
+            let first_line = request.lines().next().unwrap_or_default().to_string();
+            request_tx.send(first_line).unwrap();
+
+            let body = r#"{
+                "schema_version": "polymarket-runtime-bug-reports-v1",
+                "ok": true,
+                "state": "OK",
+                "path": "/var/lib/polymarket/live/bug-reports",
+                "generated_at": "2026-06-12T03:00:00+00:00",
+                "reports": [{
+                    "bug_id": "BUG-009",
+                    "severity": "warning",
+                    "title": "offload mismatch",
+                    "component": "probability",
+                    "source_path": "/var/lib/polymarket/live/bug-reports/bug-009.json"
+                }],
+                "errors": []
+            }"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+
+        let client = EngineClient::with_request_timeout(
+            format!("http://{address}"),
+            Duration::from_millis(500),
+        );
+
+        let reports = client.bug_reports(5).await.unwrap();
+
+        assert_eq!(reports.reports[0].bug_id.as_deref(), Some("BUG-009"));
+        assert_eq!(
+            request_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            "GET /api/runtime/bug-reports?limit=5 HTTP/1.1"
         );
     }
 }

@@ -203,7 +203,7 @@ set_env() {
   mv "\$tmp" "\$file"
 }
 
-mkdir -p "\$PC_DATA_DIR/raw" "\$PC_DATA_DIR/db" "\$PC_DATA_DIR/live" "\$PC_DATA_DIR/logs" "\$PC_DIST_DIR" "\$PC_BIN_DIR"
+mkdir -p "\$PC_DATA_DIR/raw" "\$PC_DATA_DIR/db" "\$PC_DATA_DIR/live" "\$PC_DATA_DIR/live/bug-reports" "\$PC_DATA_DIR/logs" "\$PC_DIST_DIR" "\$PC_BIN_DIR"
 touch "\$PC_DATA_DIR/raw/.polymarket_archive_root"
 
 if ! git ls-remote "\$PC_GIT_REMOTE" HEAD >/dev/null 2>&1; then

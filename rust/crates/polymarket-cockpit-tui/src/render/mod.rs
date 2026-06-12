@@ -52,6 +52,6 @@ pub fn render(frame: &mut Frame<'_>, app: &AppState) {
         }
     }
     systems::render(frame, body.systems, app);
-    logs::render(frame, body.logs, app);
+    logs::render_compact(frame, body.logs, app);
     footer::render(frame, shell.footer);
 }

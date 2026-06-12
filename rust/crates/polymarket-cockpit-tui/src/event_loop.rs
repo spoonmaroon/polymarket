@@ -16,16 +16,18 @@ use crate::{
     render,
     state::{AppState, MainTab},
     status::{
-        RuntimeDisplayLag, RuntimeGates, RuntimeLive, RuntimeMonitor, RuntimeOffloadSummary,
-        RuntimeOutcomes, RuntimeProbabilities, RuntimeRecoverySummary, RuntimeStatus,
-        RuntimeVolatility,
+        RuntimeBugReports, RuntimeDisplayLag, RuntimeGates, RuntimeLive, RuntimeMonitor,
+        RuntimeOffloadSummary, RuntimeOutcomes, RuntimeProbabilities, RuntimeRecoverySummary,
+        RuntimeStatus, RuntimeVolatility,
     },
 };
 
 type Tui = Terminal<CrosstermBackend<Stdout>>;
 const PROBABILITY_POLL_INTERVAL: Duration = Duration::from_secs(3);
 const OUTCOME_POLL_INTERVAL: Duration = Duration::from_secs(5);
+const BUG_REPORT_POLL_INTERVAL: Duration = Duration::from_secs(10);
 const OUTCOME_HISTORY_LIMIT: usize = 512;
+const BUG_REPORT_LIMIT: usize = 20;
 
 pub async fn run(mut app: AppState, engine_api_url: String, poll_interval_ms: u64) -> Result<()> {
     let mut terminal = TerminalGuard::enter()?;
@@ -152,6 +154,30 @@ fn apply_key(app: &mut AppState, key_code: KeyCode) -> bool {
             app.select_next_outcome();
             false
         }
+        KeyCode::Up if app.active_tab == MainTab::Logs => {
+            app.scroll_logs_up(1);
+            false
+        }
+        KeyCode::Down if app.active_tab == MainTab::Logs => {
+            app.scroll_logs_down(1);
+            false
+        }
+        KeyCode::PageUp if app.active_tab == MainTab::Logs => {
+            app.scroll_logs_up(10);
+            false
+        }
+        KeyCode::PageDown if app.active_tab == MainTab::Logs => {
+            app.scroll_logs_down(10);
+            false
+        }
+        KeyCode::Home if app.active_tab == MainTab::Logs => {
+            app.scroll_logs_up(usize::MAX);
+            false
+        }
+        KeyCode::End | KeyCode::Char('f') if app.active_tab == MainTab::Logs => {
+            app.follow_logs();
+            false
+        }
         KeyCode::Enter | KeyCode::Char(' ') if app.active_tab == MainTab::Outcomes => {
             app.toggle_selected_outcome();
             false
@@ -160,7 +186,7 @@ fn apply_key(app: &mut AppState, key_code: KeyCode) -> bool {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct RuntimeUpdate {
     status: Option<RuntimeStatus>,
     gates: Option<RuntimeGates>,
@@ -168,6 +194,7 @@ struct RuntimeUpdate {
     volatility: Option<RuntimeVolatility>,
     probabilities: Option<RuntimeProbabilities>,
     outcomes: Option<RuntimeOutcomes>,
+    bug_reports: Option<RuntimeBugReports>,
     display_lag: Option<RuntimeDisplayLag>,
     recovery: Option<RuntimeRecoverySummary>,
     offload: Option<RuntimeOffloadSummary>,
@@ -214,6 +241,20 @@ impl RuntimeLiveTask {
                     }
                 }
             });
+            let bug_report_client = client.clone();
+            let bug_report_tx = runtime_tx.clone();
+            let bug_report_handle = tokio::spawn(async move {
+                let mut interval = tokio::time::interval(BUG_REPORT_POLL_INTERVAL);
+                loop {
+                    interval.tick().await;
+                    if bug_report_tx
+                        .send(poll_bug_report_runtime(&bug_report_client).await)
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            });
 
             loop {
                 if let Err(error) =
@@ -232,6 +273,7 @@ impl RuntimeLiveTask {
             }
             probability_handle.abort();
             outcome_handle.abort();
+            bug_report_handle.abort();
         });
 
         Self { handle }
@@ -291,6 +333,10 @@ fn apply_runtime_update(app: &mut AppState, update: RuntimeUpdate) -> bool {
 
     if let Some(probabilities) = update.probabilities {
         changed |= replace_if_changed(&mut app.runtime_probabilities, probabilities);
+    }
+
+    if let Some(bug_reports) = update.bug_reports {
+        changed |= app.apply_bug_reports(&bug_reports);
     }
 
     if let Some(display_lag) = update.display_lag {
@@ -392,6 +438,7 @@ async fn poll_runtime(client: &EngineClient) -> RuntimeUpdate {
         volatility,
         probabilities,
         outcomes,
+        bug_reports: None,
         display_lag,
         recovery,
         offload,
@@ -453,6 +500,7 @@ fn runtime_update_from_live(live: RuntimeLive) -> RuntimeUpdate {
         volatility: Some(live.volatility),
         probabilities: None,
         outcomes: None,
+        bug_reports: None,
         display_lag: Some(display_lag),
         recovery: meaningful_runtime_recovery(live.recovery),
         offload: meaningful_runtime_offload(live.offload),
@@ -500,6 +548,7 @@ fn runtime_update_from_stream_error(error: &str) -> RuntimeUpdate {
         volatility: None,
         probabilities: None,
         outcomes: None,
+        bug_reports: None,
         display_lag: None,
         recovery: None,
         offload: None,
@@ -521,6 +570,7 @@ async fn poll_probability_runtime(client: &EngineClient) -> RuntimeUpdate {
         volatility: None,
         probabilities: None,
         outcomes: None,
+        bug_reports: None,
         display_lag: None,
         recovery: None,
         offload: None,
@@ -548,6 +598,7 @@ async fn poll_outcome_runtime(client: &EngineClient) -> RuntimeUpdate {
         volatility: None,
         probabilities: None,
         outcomes: None,
+        bug_reports: None,
         display_lag: None,
         recovery: None,
         offload: None,
@@ -562,6 +613,18 @@ async fn poll_outcome_runtime(client: &EngineClient) -> RuntimeUpdate {
     if !errors.is_empty() {
         update.error = Some(errors.join("; "));
     }
+    update
+}
+
+async fn poll_bug_report_runtime(client: &EngineClient) -> RuntimeUpdate {
+    let bug_reports_result = client.bug_reports(BUG_REPORT_LIMIT).await;
+    let mut update = RuntimeUpdate::default();
+
+    match bug_reports_result {
+        Ok(bug_reports) => update.bug_reports = Some(bug_reports),
+        Err(error) => update.error = Some(format!("bug-reports: {error}")),
+    }
+
     update
 }
 
@@ -606,10 +669,10 @@ mod tests {
     use crate::{
         state::{AppState, MainTab},
         status::{
-            RuntimeCounts, RuntimeDisplayLag, RuntimeGates, RuntimeLive, RuntimeMonitor,
-            RuntimeOffloadSummary, RuntimeOrderbookRow, RuntimeOutcomeRow, RuntimeOutcomes,
-            RuntimePriceRow, RuntimeProbabilities, RuntimeProbabilityRow, RuntimeRecoverySummary,
-            RuntimeStatus,
+            RuntimeBugReport, RuntimeBugReports, RuntimeCounts, RuntimeDisplayLag, RuntimeGates,
+            RuntimeLive, RuntimeMonitor, RuntimeOffloadSummary, RuntimeOrderbookRow,
+            RuntimeOutcomeRow, RuntimeOutcomes, RuntimePriceRow, RuntimeProbabilities,
+            RuntimeProbabilityRow, RuntimeRecoverySummary, RuntimeStatus,
         },
     };
 
@@ -903,6 +966,7 @@ mod tests {
             volatility: None,
             probabilities: None,
             outcomes: None,
+            bug_reports: None,
             display_lag: Some(RuntimeDisplayLag {
                 status_age_ms: Some(10),
                 ..RuntimeDisplayLag::default()
@@ -922,6 +986,7 @@ mod tests {
             volatility: None,
             probabilities: Some(probabilities()),
             outcomes: Some(outcomes()),
+            bug_reports: None,
             display_lag: Some(RuntimeDisplayLag {
                 status_age_ms: Some(12),
                 ..RuntimeDisplayLag::default()
@@ -1001,6 +1066,7 @@ mod tests {
                 volatility: None,
                 probabilities: None,
                 outcomes: None,
+                bug_reports: None,
                 display_lag: None,
                 recovery: None,
                 offload: None,
@@ -1055,6 +1121,7 @@ mod tests {
                 volatility: None,
                 probabilities: None,
                 outcomes: None,
+                bug_reports: None,
                 display_lag: None,
                 recovery: None,
                 offload: None,
@@ -1139,6 +1206,7 @@ mod tests {
                         mismatch: None,
                     }],
                 }),
+                bug_reports: None,
                 display_lag: None,
                 recovery: None,
                 offload: None,
@@ -1174,6 +1242,7 @@ mod tests {
             volatility: None,
             probabilities: Some(probabilities()),
             outcomes: Some(outcomes()),
+            bug_reports: None,
             display_lag: Some(RuntimeDisplayLag {
                 status_age_ms: Some(12),
                 ..RuntimeDisplayLag::default()
@@ -1277,6 +1346,65 @@ mod tests {
 
         assert!(!apply_key(&mut app, KeyCode::Up));
         assert_eq!(app.selected_outcome_index, Some(0));
+    }
+
+    #[test]
+    fn apply_runtime_update_appends_bug_reports_to_logs() {
+        let mut app = AppState::default();
+
+        let changed = apply_runtime_update(
+            &mut app,
+            RuntimeUpdate {
+                bug_reports: Some(RuntimeBugReports {
+                    ok: true,
+                    state: "OK".to_string(),
+                    reports: vec![RuntimeBugReport {
+                        bug_id: Some("BUG-009".to_string()),
+                        severity: Some("warning".to_string()),
+                        title: Some("offload mismatch".to_string()),
+                        component: Some("probability".to_string()),
+                        created_at: Some("2026-06-12T02:59:50+00:00".to_string()),
+                        source_path: Some(
+                            "/var/lib/polymarket/live/bug-reports/bug-009.json".to_string(),
+                        ),
+                    }],
+                    ..RuntimeBugReports::default()
+                }),
+                ..RuntimeUpdate::default()
+            },
+        );
+
+        assert!(changed);
+        assert_eq!(
+            app.logs,
+            vec![
+                "BUG BUG-009 warning probability offload mismatch /var/lib/polymarket/live/bug-reports/bug-009.json"
+                    .to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn apply_key_scrolls_logs_tab_and_end_follows_tail() {
+        let mut app = AppState {
+            active_tab: MainTab::Logs,
+            ..Default::default()
+        };
+        app.append_log("one");
+        app.append_log("two");
+        app.append_log("three");
+
+        assert!(!apply_key(&mut app, KeyCode::Up));
+        assert_eq!(app.log_window_start(2), 0);
+
+        assert!(!apply_key(&mut app, KeyCode::Down));
+        assert_eq!(app.log_window_start(2), 1);
+
+        assert!(!apply_key(&mut app, KeyCode::PageUp));
+        assert_eq!(app.log_window_start(2), 0);
+
+        assert!(!apply_key(&mut app, KeyCode::End));
+        assert_eq!(app.log_window_start(2), 1);
     }
 
     fn delayed_runtime_api_url(delay: Duration) -> String {

@@ -269,6 +269,7 @@ def test_runtime_api_service_is_deployed_with_engine_compose() -> None:
     assert "POLYMARKET_DUCKDB_PATH: /var/lib/polymarket/db/polymarket.duckdb" in compose
     assert "POLYMARKET_OUTCOME_STATUS_PATH: /var/lib/polymarket/live/outcomes.json" in compose
     assert "POLYMARKET_VOLATILITY_STATUS_PATH: /var/lib/polymarket/live/volatility.json" in compose
+    assert "POLYMARKET_BUG_REPORT_DIR: /var/lib/polymarket/live/bug-reports" in compose
     assert "OPENBLAS_NUM_THREADS" in compose
     assert "OMP_NUM_THREADS" in compose
     assert "MKL_NUM_THREADS" in compose
@@ -277,9 +278,12 @@ def test_runtime_api_service_is_deployed_with_engine_compose() -> None:
     assert "mem_limit: \"${POLYMARKET_GPU_WORKER_MEM_LIMIT:-1536m}\"" in compose
     assert "${POLYMARKET_API_PORT:-8000}:8000" in compose
     assert "POLYMARKET_API_PORT=8000" in env_example
+    assert "POLYMARKET_BUG_REPORT_DIR=/var/lib/polymarket/live/bug-reports" in env_example
     assert "POLYMARKET_ENABLE_CONTAINER_STATUS=1" in env_example
     assert "POLYMARKET_ENABLE_RUNTIME_PROBABILITIES=0" in env_example
     assert "POLYMARKET_ALLOW_RUNTIME_PROBABILITY_COMPUTE=0" in env_example
+    assert '"$DATA_DIR/live/bug-reports"' in script
+    assert '"\\$PC_DATA_DIR/live/bug-reports"' in pc_script
     assert "set_env POLYMARKET_ENABLE_RUNTIME_PROBABILITIES 1 deploy/collector/.env" in pc_script
     assert 'DEPLOY_ROLE="${POLYMARKET_DEPLOY_ROLE:-spoon-cpu-authority}"' in script
     assert "docker-compose.spoon-cpu-authority.yml" in script

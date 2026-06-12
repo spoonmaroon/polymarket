@@ -157,6 +157,38 @@ pub struct RuntimeOutcomes {
     pub rows: Vec<RuntimeOutcomeRow>,
 }
 
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+pub struct RuntimeBugReports {
+    #[serde(default)]
+    pub ok: bool,
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub path: String,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub generated_at: Option<String>,
+    #[serde(default)]
+    pub reports: Vec<RuntimeBugReport>,
+    #[serde(default)]
+    pub errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+pub struct RuntimeBugReport {
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub bug_id: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub severity: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub title: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub component: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub created_at: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_scalar_string")]
+    pub source_path: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct RuntimeOutcomeRow {
     pub market: String,
@@ -328,8 +360,8 @@ impl RuntimeStatus {
 #[cfg(test)]
 mod tests {
     use super::{
-        RuntimeGates, RuntimeLive, RuntimeMonitor, RuntimeOutcomes, RuntimeProbabilities,
-        RuntimeStatus,
+        RuntimeBugReports, RuntimeGates, RuntimeLive, RuntimeMonitor, RuntimeOutcomes,
+        RuntimeProbabilities, RuntimeStatus,
     };
 
     #[test]
@@ -502,6 +534,37 @@ mod tests {
         assert_eq!(probabilities.rows[0].contract, "BTC 5m UP");
         assert_eq!(probabilities.rows[0].p_finish, 0.57);
         assert_eq!(probabilities.rows[0].flags, vec!["OK"]);
+    }
+
+    #[test]
+    fn bug_reports_payload_parses_report_summaries() {
+        let payload = r#"{
+            "schema_version": "polymarket-runtime-bug-reports-v1",
+            "ok": true,
+            "state": "OK",
+            "path": "/var/lib/polymarket/live/bug-reports",
+            "generated_at": "2026-06-12T03:00:00+00:00",
+            "reports": [{
+                "bug_id": "BUG-009",
+                "severity": "warning",
+                "title": "offload mismatch",
+                "component": "probability",
+                "created_at": "2026-06-12T02:59:50+00:00",
+                "source_path": "/var/lib/polymarket/live/bug-reports/bug-009.json"
+            }],
+            "errors": []
+        }"#;
+
+        let reports: RuntimeBugReports = serde_json::from_str(payload).unwrap();
+
+        assert!(reports.ok);
+        assert_eq!(reports.reports[0].bug_id.as_deref(), Some("BUG-009"));
+        assert_eq!(reports.reports[0].severity.as_deref(), Some("warning"));
+        assert_eq!(reports.reports[0].component.as_deref(), Some("probability"));
+        assert_eq!(
+            reports.reports[0].source_path.as_deref(),
+            Some("/var/lib/polymarket/live/bug-reports/bug-009.json")
+        );
     }
 
     #[test]

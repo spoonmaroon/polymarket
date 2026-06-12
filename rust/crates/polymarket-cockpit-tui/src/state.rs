@@ -7,9 +7,10 @@ use crate::outcome_view::{
     outcome_display_items, outcome_toggle_target_at,
 };
 use crate::status::{
-    RuntimeDisplayLag, RuntimeGates, RuntimeMonitor, RuntimeOffloadSummary, RuntimeOrderbookRow,
-    RuntimeOutcomeRow, RuntimeOutcomes, RuntimePriceRow, RuntimeProbabilities,
-    RuntimeRecoverySummary, RuntimeStatus, RuntimeVolatility,
+    RuntimeBugReport, RuntimeBugReports, RuntimeDisplayLag, RuntimeGates, RuntimeMonitor,
+    RuntimeOffloadSummary, RuntimeOrderbookRow, RuntimeOutcomeRow, RuntimeOutcomes,
+    RuntimePriceRow, RuntimeProbabilities, RuntimeRecoverySummary, RuntimeStatus,
+    RuntimeVolatility,
 };
 
 const EXPIRED_MARKET_HANDOFF_SECONDS: i64 = 60;
@@ -17,6 +18,7 @@ const PENDING_OUTCOME_FRESHNESS_SECONDS: i64 = 20;
 const RESOLVED_OUTCOME_RETENTION_SECONDS: i64 = 30;
 const MAX_PRICE_HISTORY_POINTS: usize = 240;
 const MAX_VISIBLE_MARKET_GROUPS_PER_ASSET: usize = 3;
+const MAX_LOG_LINES: usize = 500;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MainTab {
@@ -60,6 +62,8 @@ pub struct PriceHistoryPoint {
 pub struct AppState {
     pub active_tab: MainTab,
     pub logs: Vec<String>,
+    pub log_scroll_offset: usize,
+    pub seen_bug_report_keys: HashSet<String>,
     pub runtime_status: Option<RuntimeStatus>,
     pub runtime_gates: Option<RuntimeGates>,
     pub runtime_monitor: Option<RuntimeMonitor>,
@@ -84,6 +88,8 @@ impl Default for AppState {
         Self {
             active_tab: MainTab::Live,
             logs: Vec::new(),
+            log_scroll_offset: 0,
+            seen_bug_report_keys: HashSet::new(),
             runtime_status: None,
             runtime_gates: None,
             runtime_monitor: None,
@@ -122,6 +128,72 @@ impl AppState {
             .position(|tab| *tab == self.active_tab)
             .unwrap_or_default();
         self.active_tab = tabs[(current + tabs.len() - 1) % tabs.len()];
+    }
+
+    pub fn append_log(&mut self, line: impl Into<String>) -> bool {
+        let line = line.into();
+        if line.trim().is_empty() {
+            return false;
+        }
+
+        let was_following = self.log_scroll_offset == 0;
+        self.logs.push(line);
+        while self.logs.len() > MAX_LOG_LINES {
+            self.logs.remove(0);
+        }
+
+        if was_following {
+            self.log_scroll_offset = 0;
+        } else {
+            self.log_scroll_offset = (self.log_scroll_offset + 1).min(self.max_log_scroll_offset());
+        }
+        true
+    }
+
+    pub fn apply_bug_reports(&mut self, bug_reports: &RuntimeBugReports) -> bool {
+        let mut changed = false;
+        if let Some(line) = bug_reports_status_log_line(bug_reports) {
+            let key = bug_reports_status_key(bug_reports);
+            if self.seen_bug_report_keys.insert(key) {
+                changed |= self.append_log(line);
+            }
+        }
+        for report in bug_reports.reports.iter().rev() {
+            let key = bug_report_key(report);
+            if !self.seen_bug_report_keys.insert(key) {
+                continue;
+            }
+            changed |= self.append_log(bug_report_log_line(report));
+        }
+        changed
+    }
+
+    pub fn scroll_logs_up(&mut self, lines: usize) {
+        self.log_scroll_offset = self
+            .log_scroll_offset
+            .saturating_add(lines)
+            .min(self.max_log_scroll_offset());
+    }
+
+    pub fn scroll_logs_down(&mut self, lines: usize) {
+        self.log_scroll_offset = self.log_scroll_offset.saturating_sub(lines);
+    }
+
+    pub fn follow_logs(&mut self) {
+        self.log_scroll_offset = 0;
+    }
+
+    pub fn log_window_start(&self, visible_rows: usize) -> usize {
+        if self.logs.is_empty() {
+            return 0;
+        }
+        let visible_rows = visible_rows.max(1).min(self.logs.len());
+        let max_start = self.logs.len() - visible_rows;
+        max_start.saturating_sub(self.log_scroll_offset.min(max_start))
+    }
+
+    fn max_log_scroll_offset(&self) -> usize {
+        self.logs.len().saturating_sub(1)
     }
 
     pub fn sync_market_selection(&mut self) {
@@ -711,6 +783,77 @@ fn orderbook_identity(orderbook: &RuntimeOrderbookRow) -> String {
     }
 }
 
+fn bug_report_key(report: &RuntimeBugReport) -> String {
+    report
+        .source_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| format!("path={value}"))
+        .unwrap_or_else(|| {
+            format!(
+                "bug={} created={} title={}",
+                bug_report_field(&report.bug_id),
+                bug_report_field(&report.created_at),
+                bug_report_field(&report.title)
+            )
+        })
+}
+
+fn bug_report_log_line(report: &RuntimeBugReport) -> String {
+    format!(
+        "BUG {} {} {} {} {}",
+        bug_report_field(&report.bug_id),
+        bug_report_field(&report.severity),
+        bug_report_field(&report.component),
+        bug_report_field(&report.title),
+        bug_report_field(&report.source_path),
+    )
+}
+
+fn bug_reports_status_key(bug_reports: &RuntimeBugReports) -> String {
+    format!(
+        "bug-report-status state={} path={} errors={}",
+        bug_reports.state.trim(),
+        bug_reports.path.trim(),
+        bug_reports.errors.join("|")
+    )
+}
+
+fn bug_reports_status_log_line(bug_reports: &RuntimeBugReports) -> Option<String> {
+    if bug_reports.ok && !bug_reports.reports.is_empty() && bug_reports.errors.is_empty() {
+        return None;
+    }
+
+    let state = if bug_reports.state.trim().is_empty() {
+        "-"
+    } else {
+        bug_reports.state.trim()
+    };
+    let path = if bug_reports.path.trim().is_empty() {
+        "-"
+    } else {
+        bug_reports.path.trim()
+    };
+    let detail = bug_reports
+        .errors
+        .first()
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|error| !error.is_empty())
+        .unwrap_or("no reports");
+
+    Some(format!("BUG_REPORTS {state} {path} {detail}"))
+}
+
+fn bug_report_field(value: &Option<String>) -> &str {
+    value
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("-")
+}
+
 fn parse_runtime_timestamp(timestamp: &str) -> Option<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(timestamp)
         .ok()
@@ -911,8 +1054,8 @@ mod tests {
     use crate::{
         outcome_view::{default_outcome_section_key, outcome_section_key},
         status::{
-            RuntimeMonitor, RuntimeOrderbookRow, RuntimeOutcomeRow, RuntimeOutcomes,
-            RuntimePriceRow,
+            RuntimeBugReport, RuntimeBugReports, RuntimeMonitor, RuntimeOrderbookRow,
+            RuntimeOutcomeRow, RuntimeOutcomes, RuntimePriceRow,
         },
     };
 
@@ -931,6 +1074,91 @@ mod tests {
             labels,
             vec!["Live", "Systems", "Market", "Outcomes", "Logs"]
         );
+    }
+
+    fn bug_report(
+        bug_id: &str,
+        severity: &str,
+        component: &str,
+        title: &str,
+        source_path: &str,
+    ) -> RuntimeBugReport {
+        RuntimeBugReport {
+            bug_id: Some(bug_id.to_string()),
+            severity: Some(severity.to_string()),
+            title: Some(title.to_string()),
+            component: Some(component.to_string()),
+            created_at: Some("2026-06-12T02:59:50+00:00".to_string()),
+            source_path: Some(source_path.to_string()),
+        }
+    }
+
+    #[test]
+    fn bug_reports_append_once_to_logs() {
+        let reports = RuntimeBugReports {
+            ok: true,
+            state: "OK".to_string(),
+            reports: vec![bug_report(
+                "BUG-009",
+                "warning",
+                "probability",
+                "offload mismatch",
+                "/var/lib/polymarket/live/bug-reports/bug-009.json",
+            )],
+            ..RuntimeBugReports::default()
+        };
+        let mut app = AppState::default();
+
+        assert!(app.apply_bug_reports(&reports));
+        assert!(!app.apply_bug_reports(&reports));
+
+        assert_eq!(app.logs.len(), 1);
+        assert_eq!(
+            app.logs[0],
+            "BUG BUG-009 warning probability offload mismatch /var/lib/polymarket/live/bug-reports/bug-009.json"
+        );
+    }
+
+    #[test]
+    fn bug_report_status_errors_append_once_to_logs() {
+        let reports = RuntimeBugReports {
+            ok: false,
+            state: "MISSING".to_string(),
+            path: "/var/lib/polymarket/live/bug-reports".to_string(),
+            errors: vec!["/var/lib/polymarket/live/bug-reports missing".to_string()],
+            ..RuntimeBugReports::default()
+        };
+        let mut app = AppState::default();
+
+        assert!(app.apply_bug_reports(&reports));
+        assert!(!app.apply_bug_reports(&reports));
+
+        assert_eq!(
+            app.logs,
+            vec![
+                "BUG_REPORTS MISSING /var/lib/polymarket/live/bug-reports /var/lib/polymarket/live/bug-reports missing"
+                    .to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn logs_follow_bottom_until_operator_scrolls_up() {
+        let mut app = AppState::default();
+        app.append_log("one");
+        app.append_log("two");
+        app.append_log("three");
+
+        assert_eq!(app.log_window_start(2), 1);
+
+        app.scroll_logs_up(1);
+        assert_eq!(app.log_window_start(2), 0);
+
+        app.append_log("four");
+        assert_eq!(app.log_window_start(2), 0);
+
+        app.follow_logs();
+        assert_eq!(app.log_window_start(2), 2);
     }
 
     #[test]
