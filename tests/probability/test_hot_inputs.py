@@ -186,6 +186,28 @@ def test_hot_probability_inputs_skip_quality_blocked_states(tmp_path: Path) -> N
     assert [row.contract_id for row in payload.inputs] == ["btc-market:UP"]
 
 
+def test_hot_probability_inputs_keep_incomplete_orderbook_when_sigma_valid(
+    tmp_path: Path,
+) -> None:
+    out_path = tmp_path / "inputs.json"
+    incomplete_orderbook = replace(
+        _state("UP"),
+        data_quality_flags=("incomplete_orderbook",),
+    )
+
+    write_hot_probability_inputs(
+        out_path=out_path,
+        states=(incomplete_orderbook,),
+        generated_at=datetime.now(timezone.utc),
+    )
+
+    payload = read_hot_probability_inputs(out_path=out_path, limit=10, max_age_seconds=60)
+
+    assert payload.skipped == 0
+    assert [row.contract_id for row in payload.inputs] == ["btc-market:UP"]
+    assert payload.inputs[0].sigma_valid is True
+
+
 @pytest.mark.parametrize(
     ("invalid_case", "expected_sigma_tau", "expected_failure_reason"),
     [

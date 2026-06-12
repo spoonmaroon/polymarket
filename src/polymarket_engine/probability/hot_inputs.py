@@ -24,7 +24,7 @@ MAX_FUTURE_GENERATED_AT_SECONDS = 5.0
 THRESHOLD_MUTATION_ERROR = "THRESHOLD_MUTATION_ERROR"
 SIGMA_INVALID_BLOCK_REASON = "sigma_invalid"
 DIAGNOSTIC_SIGMA_TAU_FLOOR = 0.00005
-VOLATILITY_QUALITY_FLAGS = frozenset({"missing_volatility"})
+VOLATILITY_QUALITY_FLAGS = frozenset({"incomplete_orderbook", "missing_volatility"})
 
 
 @dataclass(frozen=True)
@@ -72,12 +72,11 @@ def write_hot_probability_inputs(
             skipped += 1
             continue
         sigma_diagnostics = _sigma_diagnostics(state)
-        probability_source_state = state
+        probability_source_state = replace(state, data_quality_flags=())
         if not sigma_diagnostics.sigma_valid:
             probability_source_state = replace(
-                state,
+                probability_source_state,
                 sigma_tau=DIAGNOSTIC_SIGMA_TAU_FLOOR,
-                data_quality_flags=(),
             )
         probability_input = ProbabilityInput.from_decision_state(probability_source_state)
         previous_assignment = threshold_assignments.get(state.contract.contract_id)

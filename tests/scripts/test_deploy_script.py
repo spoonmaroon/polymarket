@@ -996,6 +996,23 @@ def test_deploy_script_supports_prebuilt_images_with_build_fallback() -> None:
     assert 'export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-1}"' in script
 
 
+def test_build_deploy_overrides_stale_env_image_pins_with_target_sha() -> None:
+    script = (ROOT / "scripts" / "deploy.sh").read_text(encoding="utf-8")
+
+    assert 'DEPLOY_SHORT_SHA="${REMOTE:0:12}"' in script
+    assert 'if [ "$USE_PREBUILT" != "1" ]; then' in script
+    assert (
+        'POLYMARKET_COLLECTOR_IMAGE="${POLYMARKET_COLLECTOR_IMAGE:-'
+        'polymarket-rust-collector:$DEPLOY_SHORT_SHA}"'
+    ) in script
+    assert (
+        'POLYMARKET_NORMALIZER_IMAGE="${POLYMARKET_NORMALIZER_IMAGE:-'
+        'polymarket-normalizer:$DEPLOY_SHORT_SHA}"'
+    ) in script
+    assert 'COLLECTOR_IMAGE="$POLYMARKET_COLLECTOR_IMAGE"' in script
+    assert 'NORMALIZER_IMAGE="$POLYMARKET_NORMALIZER_IMAGE"' in script
+
+
 def test_normalizer_hot_loop_omits_state_snapshot_backfill() -> None:
     entrypoint = (
         ROOT / "deploy" / "normalizer" / "normalizer-entrypoint.sh"
