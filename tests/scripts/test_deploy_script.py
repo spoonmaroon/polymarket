@@ -297,7 +297,8 @@ def test_runtime_api_service_is_deployed_with_engine_compose() -> None:
     assert "has_orderbooks" in pc_script
     assert 'live = {"error": repr(exc)}' in pc_script
     assert 'get_json("/api/runtime/probabilities?limit=8")' in pc_script
-    assert "for _ in range(30):" in pc_script
+    assert 'os.environ.get("POLYMARKET_PROBABILITY_SMOKE_ATTEMPTS") or "90"' in pc_script
+    assert "for _ in range(probability_smoke_attempts):" in pc_script
     assert "except Exception as exc:" in pc_script
     assert 'probabilities = {"error": repr(exc)}' in pc_script
     assert 'POLYMARKET_DEPLOY_STARTED_EPOCH="\\$(date +%s)"' in pc_script

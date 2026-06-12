@@ -23,6 +23,7 @@ DEFAULT_REPO = Path("/home/ender/polymarket")
 DEFAULT_DATA_DIR = Path("/home/ender/polymarket-data")
 DEFAULT_REQUIRED_SERVICES = ("collector", "normalizer", "outcome-refresh", "api")
 DEFAULT_OPTIONAL_CONTAINERS = ("polymarket-rust-collector-gpu-probability-worker-1",)
+_WARM_PROBABILITY_STATES = {"NOWCAST", "OFFLOAD_BLOCKED", "STALE_INPUTS"}
 
 
 @dataclass(frozen=True)
@@ -550,7 +551,7 @@ def _probabilities_recovery_ok(
     state = probabilities.json_payload.get("state")
     if state == "OK":
         return probability_row_count > 0
-    if state != "OFFLOAD_BLOCKED":
+    if state not in _WARM_PROBABILITY_STATES:
         return False
 
     offload = probabilities.json_payload.get("offload")
@@ -564,10 +565,34 @@ def _probabilities_recovery_ok(
     if "no_probability_inputs" in reason_codes:
         return False
 
-    lanes = probabilities.json_payload.get("lanes")
+    return _has_warm_probability_rows(
+        probabilities.json_payload,
+        probability_row_count=probability_row_count,
+    )
+
+
+def _has_warm_probability_rows(
+    payload: dict[str, Any],
+    *,
+    probability_row_count: int,
+) -> bool:
+    lanes = payload.get("lanes")
     nowcast_count = lanes.get("NOWCAST", 0) if isinstance(lanes, dict) else 0
-    last_good_rows = probabilities.json_payload.get("last_good_rows") or []
-    return probability_row_count > 0 or bool(last_good_rows) or int(nowcast_count or 0) > 0
+    mc_count = lanes.get("MC", 0) if isinstance(lanes, dict) else 0
+    last_good_rows = payload.get("last_good_rows") or []
+    return (
+        probability_row_count > 0
+        or bool(last_good_rows)
+        or _positive_intish(nowcast_count)
+        or _positive_intish(mc_count)
+    )
+
+
+def _positive_intish(value: object) -> bool:
+    try:
+        return int(value or 0) > 0
+    except (TypeError, ValueError):
+        return False
 
 
 def _failed_check_mentions(checks: Sequence[KeeperCheck], *needles: str) -> bool:
@@ -606,7 +631,7 @@ def _probability_check_detail(
     probability_row_count: int,
 ) -> str:
     if probabilities_ok:
-        if probabilities.json_payload.get("state") == "OFFLOAD_BLOCKED":
+        if probabilities.json_payload.get("state") != "OK":
             return "probability runtime warm"
         return "probability rows present"
     if _http_error_message(probabilities) is not None or _http_response_failed(probabilities):

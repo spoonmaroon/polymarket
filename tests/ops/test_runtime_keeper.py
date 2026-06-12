@@ -210,6 +210,51 @@ def test_http_checks_accept_offload_blocked_when_nowcast_rows_are_fresh() -> Non
     assert probability_check.detail == "probability runtime warm"
 
 
+@pytest.mark.parametrize("state", ["NOWCAST", "STALE_INPUTS"])
+def test_http_checks_accept_warm_probability_state_with_retained_mc_rows(
+    state: str,
+) -> None:
+    checks = evaluate_http_checks(
+        health=HttpResult(200, {"status": "ok"}, ""),
+        ui=HttpResult(200, {}, "<title>Probability Runtime</title>"),
+        live=HttpResult(
+            200,
+            {"ok": True, "monitor": {"orderbooks": [{"id": 1}]}},
+            "",
+        ),
+        probabilities=HttpResult(
+            200,
+            {
+                "ok": True,
+                "state": state,
+                "rows": [
+                    {
+                        "contract": "BTC 5m UP",
+                        "probability_kind": "MC",
+                    }
+                ],
+                "lanes": {"MC": 2, "NOWCAST": 2},
+                "last_good_rows": [
+                    {
+                        "contract": "BTC 5m UP",
+                        "probability_kind": "MC",
+                    }
+                ],
+                "offload": {
+                    "offload_allowed": True,
+                    "reason_codes": [],
+                    "mc_eligible_input_count": 2,
+                },
+            },
+            "",
+        ),
+    )
+
+    probability_check = checks[-1]
+    assert probability_check.ok is True
+    assert probability_check.detail == "probability runtime warm"
+
+
 class FakeRunner:
     def __init__(self) -> None:
         self.calls: list[tuple[str, ...]] = []

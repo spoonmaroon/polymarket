@@ -525,6 +525,12 @@ try:
     deploy_started_at = float(os.environ.get("POLYMARKET_DEPLOY_STARTED_EPOCH") or time.time())
 except ValueError:
     deploy_started_at = time.time()
+try:
+    probability_smoke_attempts = int(
+        os.environ.get("POLYMARKET_PROBABILITY_SMOKE_ATTEMPTS") or "90"
+    )
+except ValueError:
+    probability_smoke_attempts = 90
 required_generators = {
     "empirical_conditional",
     "block_bootstrap",
@@ -748,7 +754,7 @@ else:
     raise SystemExit(f"runtime live smoke failed: {live}")
 
 probabilities = {}
-for _ in range(30):
+for _ in range(probability_smoke_attempts):
     try:
         probabilities = get_json("/api/runtime/probabilities?limit=8")
     except Exception as exc:
