@@ -32,7 +32,7 @@ class VolatilityConfig:
     contraction_threshold: float = 0.80
     expansion_multiplier: float = 1.15
     contraction_multiplier: float = 0.95
-    max_price_gap_seconds: float = 5.0
+    max_price_gap_seconds: float = 12.0
     max_reference_age_seconds: float = 10.0
 
     def __post_init__(self) -> None:

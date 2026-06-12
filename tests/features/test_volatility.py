@@ -286,6 +286,22 @@ def test_build_volatility_snapshot_normalizes_returns_by_actual_event_interval()
     )
 
 
+def test_build_volatility_snapshot_tolerates_live_chainlink_cadence_gaps() -> None:
+    snapshot = build_volatility_snapshot(
+        prices=(
+            _price(100.0, event_seconds=0),
+            _price(100.1, event_seconds=8),
+            _price(100.2, event_seconds=16),
+        ),
+        asof_ts=BASE_TS + timedelta(seconds=16),
+        seconds_left=120.0,
+    )
+
+    assert snapshot.sigma_tau is not None
+    assert snapshot.sigma_tau > 0
+    assert snapshot.regime != "missing_continuous_reference_source"
+
+
 def test_build_volatility_snapshot_observed_ts_is_latest_observed_allowed_price() -> None:
     asof_ts = BASE_TS + timedelta(seconds=10)
     snapshot = build_volatility_snapshot(
