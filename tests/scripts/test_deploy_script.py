@@ -367,7 +367,10 @@ def test_pc_deploy_probability_smoke_accepts_hybrid_mc_truth() -> None:
     assert 'offload_allowed = bool(offload.get("offload_allowed"))' in script
     assert 'state = probabilities.get("state")' in script
     assert 'state not in {"OK", "NOWCAST", "OFFLOAD_BLOCKED"}' in script
-    assert 'state in {"NOWCAST", "OFFLOAD_BLOCKED"} and not offload_has_block_reasons(offload)' in script
+    assert 'state in {"NOWCAST", "OFFLOAD_BLOCKED"}' in script
+    assert "not offload_has_block_reasons(offload)" in script
+    assert 'state == "NOWCAST"' in script
+    assert "required_contracts.issubset(contract_pairs(recent_mc_rows))" in script
     assert "recent_rows" in script
     assert "recent_mc_rows" in script
     assert "return bool(recent_mc_rows)" in script
@@ -439,6 +442,14 @@ def test_pc_deploy_probability_smoke_behavior() -> None:
         _probability_payload(
             [_probability_row("BTC", "UP", probability_kind="NOWCAST", preview=False)],
             offload={"offload_allowed": True, "mc_eligible_input_count": 1},
+            state="NOWCAST",
+        ),
+        _NOW,
+    )
+    assert probability_smoke_passed(
+        _probability_payload(
+            full_mc_rows,
+            offload=full_offload,
             state="NOWCAST",
         ),
         _NOW,

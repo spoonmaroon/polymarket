@@ -691,10 +691,18 @@ def probability_smoke_passed(probabilities: dict[str, object], now: datetime) ->
     if not isinstance(raw_offload, dict):
         return state == "OK" and bool(recent_mc_rows)
     offload = raw_offload
-    if state in {"NOWCAST", "OFFLOAD_BLOCKED"} and not offload_has_block_reasons(offload):
+    offload_allowed = bool(offload.get("offload_allowed"))
+    if (
+        state in {"NOWCAST", "OFFLOAD_BLOCKED"}
+        and not offload_has_block_reasons(offload)
+        and not (
+            state == "NOWCAST"
+            and offload_allowed
+            and required_contracts.issubset(contract_pairs(recent_mc_rows))
+        )
+    ):
         return False
     mc_eligible_input_count = int(offload.get("mc_eligible_input_count") or 0)
-    offload_allowed = bool(offload.get("offload_allowed"))
     if mc_eligible_input_count > 0 and not offload_allowed:
         return (
             probabilities.get("state") in {"NOWCAST", "OFFLOAD_BLOCKED"}
