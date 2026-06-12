@@ -109,6 +109,22 @@ def test_deploy_skip_requires_deployed_marker_to_match_target_commit() -> None:
     assert "deployed marker differs from target commit; redeploying" in text
 
 
+def test_spoon_deploy_sha_images_ignore_stale_env_pins() -> None:
+    script = ROOT / "scripts" / "deploy.sh"
+    text = script.read_text(encoding="utf-8")
+
+    assert 'COLLECTOR_IMAGE="polymarket-rust-collector:$DEPLOY_SHORT_SHA"' in text
+    assert 'NORMALIZER_IMAGE="polymarket-normalizer:$DEPLOY_SHORT_SHA"' in text
+    assert 'CUDA_PROBABILITY_IMAGE="polymarket-cuda-probability:$DEPLOY_SHORT_SHA"' in text
+    assert 'export POLYMARKET_COLLECTOR_IMAGE="$COLLECTOR_IMAGE"' in text
+    assert 'export POLYMARKET_NORMALIZER_IMAGE="$NORMALIZER_IMAGE"' in text
+    assert 'export POLYMARKET_CUDA_PROBABILITY_IMAGE="$CUDA_PROBABILITY_IMAGE"' in text
+    assert (
+        'export POLYMARKET_COLLECTOR_IMAGE="${POLYMARKET_COLLECTOR_IMAGE:-'
+        not in text
+    )
+
+
 def test_collector_container_healthcheck_uses_status_validator() -> None:
     dockerfile = (ROOT / "deploy" / "collector" / "Dockerfile").read_text(
         encoding="utf-8"
@@ -1004,16 +1020,11 @@ def test_build_deploy_overrides_stale_env_image_pins_with_target_sha() -> None:
 
     assert 'DEPLOY_SHORT_SHA="${REMOTE:0:12}"' in script
     assert 'if [ "$USE_PREBUILT" != "1" ]; then' in script
-    assert (
-        'POLYMARKET_COLLECTOR_IMAGE="${POLYMARKET_COLLECTOR_IMAGE:-'
-        'polymarket-rust-collector:$DEPLOY_SHORT_SHA}"'
-    ) in script
-    assert (
-        'POLYMARKET_NORMALIZER_IMAGE="${POLYMARKET_NORMALIZER_IMAGE:-'
-        'polymarket-normalizer:$DEPLOY_SHORT_SHA}"'
-    ) in script
-    assert 'COLLECTOR_IMAGE="$POLYMARKET_COLLECTOR_IMAGE"' in script
-    assert 'NORMALIZER_IMAGE="$POLYMARKET_NORMALIZER_IMAGE"' in script
+    assert 'COLLECTOR_IMAGE="polymarket-rust-collector:$DEPLOY_SHORT_SHA"' in script
+    assert 'NORMALIZER_IMAGE="polymarket-normalizer:$DEPLOY_SHORT_SHA"' in script
+    assert 'CUDA_PROBABILITY_IMAGE="polymarket-cuda-probability:$DEPLOY_SHORT_SHA"' in script
+    assert 'COLLECTOR_IMAGE="$POLYMARKET_COLLECTOR_IMAGE"' not in script
+    assert 'NORMALIZER_IMAGE="$POLYMARKET_NORMALIZER_IMAGE"' not in script
 
 
 def test_normalizer_hot_loop_omits_state_snapshot_backfill() -> None:
