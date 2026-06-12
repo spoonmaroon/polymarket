@@ -26,6 +26,10 @@ from polymarket_engine.validation.outcomes import build_outcome_history_payload
 
 NORMALIZED_HEALTH_SCHEMA_VERSION = "polymarket-normalized-health-v1"
 VOLATILITY_STATUS_SCHEMA_VERSION = "polymarket-volatility-runtime-v1"
+BUG_REPORT_MAX_REPORTS = 100
+BUG_REPORT_MAX_FILE_BYTES = 1_000_000
+BUG_REPORT_CANDIDATE_SCAN_MULTIPLIER = 3
+BUG_REPORT_MAX_FILES_SCANNED = BUG_REPORT_MAX_REPORTS * BUG_REPORT_CANDIDATE_SCAN_MULTIPLIER
 _PROBABILITY_EVENT_ROWS_CACHE: dict[
     tuple[str, int, int, int],
     tuple[list[dict[str, Any]], list[str]],
@@ -44,6 +48,9 @@ def build_runtime_router(
     outcome_status_path: Path = Path("data/live/outcomes.json"),
     target_cache_path: Path = Path("data/live/targets.json"),
     volatility_status_path: Path = Path("data/live/volatility.json"),
+    recovery_status_path: Path = Path("data/live/recovery_status.json"),
+    offload_status_path: Path = Path("data/live/offload_status.json"),
+    bug_report_dir: Path = Path("data/live/bug-reports"),
     data_dir: Path = Path("data"),
     enable_container_status: bool = False,
     enable_runtime_probabilities: bool = False,
@@ -147,6 +154,30 @@ def build_runtime_router(
             normalized_health_path=normalized_health_path,
         )
 
+    @router.get("/recovery")
+    def runtime_recovery() -> dict[str, Any]:
+        return _read_optional_status_payload(
+            recovery_status_path,
+            missing_state="MISSING",
+            default={
+                "runtime_phase": "UNKNOWN",
+                "ready": False,
+                "reasons": ["recovery_status_missing"],
+            },
+        )
+
+    @router.get("/offload")
+    def runtime_offload() -> dict[str, Any]:
+        return _read_optional_status_payload(
+            offload_status_path,
+            missing_state="MISSING",
+            default={
+                "offload_allowed": False,
+                "reason_codes": ["offload_status_missing"],
+                "recommended_worker_mode": "disabled",
+            },
+        )
+
     @router.get("/live")
     def runtime_live(limit: int = 8) -> dict[str, Any]:
         return _runtime_live_payload(
@@ -157,6 +188,8 @@ def build_runtime_router(
             probability_inputs_path=probability_inputs_path,
             target_cache_path=target_cache_path,
             volatility_status_path=volatility_status_path,
+            recovery_status_path=recovery_status_path,
+            offload_status_path=offload_status_path,
             limit=limit,
         )
 
@@ -179,6 +212,8 @@ def build_runtime_router(
                     probability_inputs_path=probability_inputs_path,
                     target_cache_path=target_cache_path,
                     volatility_status_path=volatility_status_path,
+                    recovery_status_path=recovery_status_path,
+                    offload_status_path=offload_status_path,
                     limit=limit,
                 )
                 yield f"event: live\ndata: {json.dumps(payload, separators=(',', ':'))}\n\n"
@@ -316,6 +351,10 @@ def build_runtime_router(
             limit=limit,
             outcome_status_path=outcome_status_path,
         )
+
+    @router.get("/bug-reports")
+    def runtime_bug_reports(limit: int = 20) -> dict[str, Any]:
+        return _bug_reports_payload(bug_report_dir=bug_report_dir, limit=limit)
 
     @router.get("/storage")
     def storage() -> dict[str, Any]:
@@ -531,6 +570,137 @@ def _last_probability_event_id(rows: Sequence[object]) -> str | None:
     return None
 
 
+def _bug_reports_payload(*, bug_report_dir: Path, limit: int) -> dict[str, Any]:
+    clamped_limit = min(max(limit, 0), BUG_REPORT_MAX_REPORTS)
+    candidate_limit = _bug_report_candidate_limit(clamped_limit)
+    if not bug_report_dir.exists():
+        error = f"{bug_report_dir} missing"
+        return {
+            "schema_version": "polymarket-runtime-bug-reports-v1",
+            "ok": False,
+            "state": "MISSING",
+            "path": str(bug_report_dir),
+            "limit": clamped_limit,
+            "candidate_limit": candidate_limit,
+            "max_reports": BUG_REPORT_MAX_REPORTS,
+            "max_file_bytes": BUG_REPORT_MAX_FILE_BYTES,
+            "max_files_scanned": BUG_REPORT_MAX_FILES_SCANNED,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "reports": [],
+            "errors": [error],
+        }
+    if not bug_report_dir.is_dir():
+        error = f"{bug_report_dir} is not a directory"
+        return {
+            "schema_version": "polymarket-runtime-bug-reports-v1",
+            "ok": False,
+            "state": "INVALID",
+            "path": str(bug_report_dir),
+            "limit": clamped_limit,
+            "candidate_limit": candidate_limit,
+            "max_reports": BUG_REPORT_MAX_REPORTS,
+            "max_file_bytes": BUG_REPORT_MAX_FILE_BYTES,
+            "max_files_scanned": BUG_REPORT_MAX_FILES_SCANNED,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "reports": [],
+            "errors": [error],
+        }
+    if clamped_limit == 0:
+        return {
+            "schema_version": "polymarket-runtime-bug-reports-v1",
+            "ok": True,
+            "state": "OK",
+            "path": str(bug_report_dir),
+            "limit": clamped_limit,
+            "candidate_limit": candidate_limit,
+            "max_reports": BUG_REPORT_MAX_REPORTS,
+            "max_file_bytes": BUG_REPORT_MAX_FILE_BYTES,
+            "max_files_scanned": BUG_REPORT_MAX_FILES_SCANNED,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "reports": [],
+            "errors": [],
+        }
+
+    reports: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for path, file_size in _newest_json_files(
+        bug_report_dir,
+        max_candidates=candidate_limit,
+    ):
+        if len(reports) >= clamped_limit:
+            break
+        payload, error = _read_bug_report_file(path, file_size=file_size)
+        if payload is None:
+            errors.append(error)
+            continue
+        reports.append({**payload, "source_path": str(path)})
+
+    state = "OK"
+    if errors and reports:
+        state = "PARTIAL"
+    elif errors:
+        state = "INVALID"
+    return {
+        "schema_version": "polymarket-runtime-bug-reports-v1",
+        "ok": not errors,
+        "state": state,
+        "path": str(bug_report_dir),
+        "limit": clamped_limit,
+        "candidate_limit": candidate_limit,
+        "max_reports": BUG_REPORT_MAX_REPORTS,
+        "max_file_bytes": BUG_REPORT_MAX_FILE_BYTES,
+        "max_files_scanned": BUG_REPORT_MAX_FILES_SCANNED,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "reports": reports,
+        "errors": errors,
+    }
+
+
+def _bug_report_candidate_limit(limit: int) -> int:
+    return min(limit * BUG_REPORT_CANDIDATE_SCAN_MULTIPLIER, BUG_REPORT_MAX_FILES_SCANNED)
+
+
+def _newest_json_files(path: Path, *, max_candidates: int) -> list[tuple[Path, int]]:
+    candidates: list[tuple[int, str, Path, int]] = []
+    if max_candidates <= 0:
+        return []
+    for candidate in path.glob("*.json"):
+        try:
+            stat = candidate.stat()
+        except OSError:
+            continue
+        candidates.append((stat.st_mtime_ns, candidate.name, candidate, stat.st_size))
+        candidates = sorted(candidates, reverse=True)[:max_candidates]
+    return [
+        (candidate, file_size)
+        for _mtime_ns, _name, candidate, file_size in sorted(candidates, reverse=True)
+    ]
+
+
+def _read_bug_report_file(
+    path: Path,
+    *,
+    file_size: int,
+) -> tuple[dict[str, Any] | None, str]:
+    if file_size > BUG_REPORT_MAX_FILE_BYTES:
+        return (
+            None,
+            (
+                f"{path}: file size {file_size} bytes exceeds max size "
+                f"{BUG_REPORT_MAX_FILE_BYTES} bytes"
+            ),
+        )
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        return None, f"{path}: JSON parse failed: {_format_error(exc)}"
+    except OSError as exc:
+        return None, f"{path}: file read failed: {_format_error(exc)}"
+    if not isinstance(payload, dict):
+        return None, f"{path}: JSON root must be an object"
+    return payload, ""
+
+
 def _runtime_live_payload(
     *,
     status_path: Path,
@@ -540,6 +710,8 @@ def _runtime_live_payload(
     probability_inputs_path: Path | None,
     target_cache_path: Path,
     volatility_status_path: Path,
+    recovery_status_path: Path,
+    offload_status_path: Path,
     limit: int,
 ) -> dict[str, Any]:
     started = time.perf_counter()
@@ -609,17 +781,112 @@ def _runtime_live_payload(
         volatility_status_path=volatility_status_path,
         limit=limit,
     )
+    recovery = _compact_recovery_status(recovery_status_path)
+    offload = _compact_offload_status(offload_status_path)
     return {
         "ok": bool(status.get("ok"))
         and bool(gates.get("ok"))
-        and bool(monitor.get("orderbooks", [])),
+        and bool(monitor.get("orderbooks", []))
+        and bool(recovery.get("ready"))
+        and bool(offload.get("offload_allowed")),
         "server_sent_at": server_sent_at.isoformat(),
         "status": status,
         "gates": gates,
         "monitor": monitor,
         "volatility": volatility,
+        "recovery": recovery,
+        "offload": offload,
         "latency": latency,
     }
+
+
+def _read_optional_status_payload(
+    path: Path,
+    *,
+    missing_state: str,
+    default: dict[str, Any],
+) -> dict[str, Any]:
+    payload, read_error = _read_json_or_error(path)
+    if payload is not None:
+        return payload
+
+    state = read_error["state"]
+    if state == "MISSING":
+        state = missing_state
+    return {
+        **default,
+        "ok": False,
+        "state": state,
+        "error": read_error["error"],
+        "path": str(path),
+    }
+
+
+def _compact_recovery_status(path: Path) -> dict[str, Any]:
+    payload = _read_optional_status_payload(
+        path,
+        missing_state="MISSING",
+        default={
+            "runtime_phase": "UNKNOWN",
+            "ready": False,
+            "reasons": ["recovery_status_missing"],
+        },
+    )
+    return {
+        "runtime_phase": str(payload.get("runtime_phase") or "UNKNOWN"),
+        "ready": bool(payload.get("ready")),
+        "reasons": _string_list(payload.get("reasons")),
+        "boot_id": payload.get("boot_id"),
+        "generated_at": payload.get("generated_at"),
+        "state": payload.get("state"),
+        "error": payload.get("error"),
+    }
+
+
+def _compact_offload_status(path: Path) -> dict[str, Any]:
+    payload = _read_optional_status_payload(
+        path,
+        missing_state="MISSING",
+        default={
+            "offload_allowed": False,
+            "reason_codes": ["offload_status_missing"],
+            "recommended_worker_mode": "disabled",
+        },
+    )
+    return {
+        "offload_allowed": bool(payload.get("offload_allowed")),
+        "reason_codes": _string_list(payload.get("reason_codes")),
+        "recommended_worker_mode": str(payload.get("recommended_worker_mode") or "disabled"),
+        "recommended_max_total_paths": payload.get("recommended_max_total_paths"),
+        "input_count": payload.get("input_count"),
+        "mc_eligible_input_count": payload.get("mc_eligible_input_count"),
+        "blocked_input_count": payload.get("blocked_input_count"),
+        "max_input_state_lag_ms": payload.get("max_input_state_lag_ms"),
+        "max_source_age_ms": payload.get("max_source_age_ms"),
+        "max_book_age_ms": payload.get("max_book_age_ms"),
+        "min_seconds_left": payload.get("min_seconds_left"),
+        "blocked_inputs": _dict_list(payload.get("blocked_inputs")),
+        "input_diagnostics": (
+            payload.get("input_diagnostics")
+            if isinstance(payload.get("input_diagnostics"), dict)
+            else None
+        ),
+        "generated_at": payload.get("generated_at"),
+        "state": payload.get("state"),
+        "error": payload.get("error"),
+    }
+
+
+def _dict_list(value: object) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [dict(item) for item in value if isinstance(item, dict)]
+
+
+def _string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value]
 
 
 def _enrich_monitor_thresholds_from_probability_inputs(

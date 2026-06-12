@@ -467,6 +467,16 @@ def test_runtime_monitor_parseable_schema_malformed_status_returns_empty_envelop
 def test_runtime_live_combines_status_gates_monitor_and_latency(tmp_path: Path) -> None:
     status_path = tmp_path / "status.json"
     _write_status(status_path)
+    status_path.with_name("recovery_status.json").write_text(
+        json.dumps({"runtime_phase": "READY", "ready": True, "reasons": []}),
+        encoding="utf-8",
+    )
+    status_path.with_name("offload_status.json").write_text(
+        json.dumps(
+            {"offload_allowed": True, "reason_codes": [], "recommended_worker_mode": "gpu_mc"}
+        ),
+        encoding="utf-8",
+    )
     app = create_app(status_path=status_path)
 
     response = TestClient(app).get("/api/runtime/live?limit=8")
@@ -480,6 +490,489 @@ def test_runtime_live_combines_status_gates_monitor_and_latency(tmp_path: Path) 
     assert payload["latency"]["status_age_ms"] >= 0
     assert payload["latency"]["api_build_ms"] >= 0
     assert payload["latency"]["server_sent_at"].endswith("+00:00")
+
+
+def test_runtime_api_exposes_recovery_status(tmp_path: Path) -> None:
+    recovery_path = tmp_path / "live" / "recovery_status.json"
+    recovery_path.parent.mkdir(parents=True)
+    recovery_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "polymarket-recovery-runtime-v1",
+                "generated_at": "2026-06-11T12:00:00+00:00",
+                "runtime_phase": "WARMING",
+                "ready": False,
+                "reasons": ["warmup_active"],
+                "boot_id": "boot-1",
+            }
+        ),
+        encoding="utf-8",
+    )
+    app = FastAPI()
+    app.include_router(build_runtime_router(data_dir=tmp_path, recovery_status_path=recovery_path))
+    client = TestClient(app)
+
+    response = client.get("/api/runtime/recovery")
+
+    assert response.status_code == 200
+    assert response.json()["runtime_phase"] == "WARMING"
+    assert response.json()["reasons"] == ["warmup_active"]
+
+
+def test_runtime_live_includes_compact_recovery_and_offload(tmp_path: Path) -> None:
+    live_dir = tmp_path / "live"
+    live_dir.mkdir(parents=True)
+    recovery_path = live_dir / "recovery_status.json"
+    offload_path = live_dir / "offload_status.json"
+    recovery_path.write_text(
+        json.dumps({"runtime_phase": "READY", "ready": True, "reasons": [], "boot_id": "boot-1"}),
+        encoding="utf-8",
+    )
+    offload_path.write_text(
+        json.dumps(
+            {"offload_allowed": True, "reason_codes": [], "recommended_worker_mode": "gpu_mc"}
+        ),
+        encoding="utf-8",
+    )
+    app = FastAPI()
+    app.include_router(
+        build_runtime_router(
+            data_dir=tmp_path,
+            recovery_status_path=recovery_path,
+            offload_status_path=offload_path,
+        )
+    )
+    client = TestClient(app)
+
+    payload = client.get("/api/runtime/live").json()
+
+    assert payload["recovery"]["runtime_phase"] == "READY"
+    assert payload["offload"]["offload_allowed"] is True
+
+
+def test_runtime_live_preserves_offload_input_diagnostics(tmp_path: Path) -> None:
+    status_path = tmp_path / "status.json"
+    normalized_health_path = tmp_path / "normalized_health.json"
+    probability_status_path = tmp_path / "probabilities.json"
+    offload_status_path = tmp_path / "offload_status.json"
+    recovery_status_path = tmp_path / "recovery_status.json"
+    target_cache_path = tmp_path / "targets.json"
+    volatility_status_path = tmp_path / "volatility.json"
+    now = datetime.now(timezone.utc).isoformat()
+    status_path.write_text(
+        json.dumps({"schema_version": "x", "ok": True, "generated_at": now, "counts": {}}),
+        encoding="utf-8",
+    )
+    normalized_health_path.write_text(
+        json.dumps(
+            {
+                "schema_version": runtime_api_module.NORMALIZED_HEALTH_SCHEMA_VERSION,
+                "generated_at": now,
+                "tables": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    probability_status_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "polymarket-probability-runtime-v1",
+                "generated_at": now,
+                "rows": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    recovery_status_path.write_text(
+        json.dumps({"runtime_phase": "READY", "ready": True, "reasons": [], "generated_at": now}),
+        encoding="utf-8",
+    )
+    offload_status_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "polymarket-offload-runtime-v1",
+                "generated_at": now,
+                "offload_allowed": True,
+                "reason_codes": [],
+                "recommended_worker_mode": "gpu_mc",
+                "recommended_max_total_paths": 80000,
+                "input_count": 2,
+                "mc_eligible_input_count": 1,
+                "blocked_input_count": 1,
+                "max_input_state_lag_ms": 4200,
+                "max_source_age_ms": 1300,
+                "max_book_age_ms": 250,
+                "min_seconds_left": 38.5,
+                "blocked_inputs": [{"state_id": "state-btc", "reason_codes": ["price_stale"]}],
+                "input_diagnostics": {
+                    "input_count": 2,
+                    "mc_eligible_input_count": 1,
+                    "blocked_input_count": 1,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    app = FastAPI()
+    app.include_router(
+        build_runtime_router(
+            status_path=status_path,
+            duckdb_path=tmp_path / "missing.duckdb",
+            normalized_health_path=normalized_health_path,
+            probability_status_path=probability_status_path,
+            probability_inputs_path=None,
+            target_cache_path=target_cache_path,
+            volatility_status_path=volatility_status_path,
+            recovery_status_path=recovery_status_path,
+            offload_status_path=offload_status_path,
+        )
+    )
+    response = TestClient(app).get("/api/runtime/live?limit=8")
+
+    assert response.status_code == 200
+    payload = response.json()
+
+    assert payload["offload"]["recommended_max_total_paths"] == 80000
+    assert payload["offload"]["input_count"] == 2
+    assert payload["offload"]["mc_eligible_input_count"] == 1
+    assert payload["offload"]["blocked_input_count"] == 1
+    assert payload["offload"]["max_input_state_lag_ms"] == 4200
+    assert payload["offload"]["max_source_age_ms"] == 1300
+    assert payload["offload"]["max_book_age_ms"] == 250
+    assert payload["offload"]["min_seconds_left"] == 38.5
+    assert payload["offload"]["blocked_inputs"][0]["reason_codes"] == ["price_stale"]
+    assert payload["offload"]["input_diagnostics"]["input_count"] == 2
+
+
+def test_runtime_api_optional_status_missing_fallbacks(tmp_path: Path) -> None:
+    status_path = tmp_path / "live" / "status.json"
+    status_path.parent.mkdir(parents=True)
+    _write_status(status_path)
+    recovery_path = status_path.with_name("missing_recovery_status.json")
+    offload_path = status_path.with_name("missing_offload_status.json")
+    app = FastAPI()
+    app.include_router(
+        build_runtime_router(
+            status_path=status_path,
+            data_dir=tmp_path,
+            recovery_status_path=recovery_path,
+            offload_status_path=offload_path,
+        )
+    )
+    client = TestClient(app)
+
+    recovery = client.get("/api/runtime/recovery")
+    offload = client.get("/api/runtime/offload")
+    live = client.get("/api/runtime/live")
+
+    assert recovery.status_code == 200
+    assert offload.status_code == 200
+    assert live.status_code == 200
+    recovery_payload = recovery.json()
+    offload_payload = offload.json()
+    live_payload = live.json()
+    assert recovery_payload["state"] == "MISSING"
+    assert recovery_payload["runtime_phase"] == "UNKNOWN"
+    assert recovery_payload["ready"] is False
+    assert recovery_payload["reasons"] == ["recovery_status_missing"]
+    assert offload_payload["state"] == "MISSING"
+    assert offload_payload["offload_allowed"] is False
+    assert offload_payload["reason_codes"] == ["offload_status_missing"]
+    assert offload_payload["recommended_worker_mode"] == "disabled"
+    assert live_payload["recovery"]["state"] == "MISSING"
+    assert live_payload["recovery"]["runtime_phase"] == "UNKNOWN"
+    assert live_payload["recovery"]["reasons"] == ["recovery_status_missing"]
+    assert live_payload["offload"]["state"] == "MISSING"
+    assert live_payload["offload"]["offload_allowed"] is False
+    assert live_payload["offload"]["reason_codes"] == ["offload_status_missing"]
+    assert live_payload["ok"] is False
+
+
+@pytest.mark.parametrize("invalid_json", ["{not-json", "[]", '"not-an-object"'])
+def test_runtime_api_optional_status_invalid_fallbacks(
+    tmp_path: Path,
+    invalid_json: str,
+) -> None:
+    status_path = tmp_path / "live" / "status.json"
+    status_path.parent.mkdir(parents=True)
+    _write_status(status_path)
+    recovery_path = status_path.with_name("recovery_status.json")
+    offload_path = status_path.with_name("offload_status.json")
+    recovery_path.write_text(invalid_json, encoding="utf-8")
+    offload_path.write_text(invalid_json, encoding="utf-8")
+    app = FastAPI()
+    app.include_router(
+        build_runtime_router(
+            status_path=status_path,
+            data_dir=tmp_path,
+            recovery_status_path=recovery_path,
+            offload_status_path=offload_path,
+        )
+    )
+    client = TestClient(app)
+
+    recovery = client.get("/api/runtime/recovery")
+    offload = client.get("/api/runtime/offload")
+    live = client.get("/api/runtime/live")
+
+    assert recovery.status_code == 200
+    assert offload.status_code == 200
+    assert live.status_code == 200
+    recovery_payload = recovery.json()
+    offload_payload = offload.json()
+    live_payload = live.json()
+    assert recovery_payload["state"] == "INVALID"
+    assert recovery_payload["error"]
+    assert recovery_payload["runtime_phase"] == "UNKNOWN"
+    assert recovery_payload["ready"] is False
+    assert recovery_payload["reasons"] == ["recovery_status_missing"]
+    assert offload_payload["state"] == "INVALID"
+    assert offload_payload["error"]
+    assert offload_payload["offload_allowed"] is False
+    assert offload_payload["reason_codes"] == ["offload_status_missing"]
+    assert offload_payload["recommended_worker_mode"] == "disabled"
+    assert live_payload["recovery"]["state"] == "INVALID"
+    assert live_payload["recovery"]["error"]
+    assert live_payload["recovery"]["runtime_phase"] == "UNKNOWN"
+    assert live_payload["recovery"]["reasons"] == ["recovery_status_missing"]
+    assert live_payload["offload"]["state"] == "INVALID"
+    assert live_payload["offload"]["error"]
+    assert live_payload["offload"]["offload_allowed"] is False
+    assert live_payload["offload"]["reason_codes"] == ["offload_status_missing"]
+    assert live_payload["ok"] is False
+
+
+def test_runtime_live_ok_requires_recovery_ready_and_offload_allowed(
+    tmp_path: Path,
+) -> None:
+    status_path = tmp_path / "live" / "status.json"
+    status_path.parent.mkdir(parents=True)
+    _write_status(status_path)
+    recovery_path = status_path.with_name("recovery_status.json")
+    offload_path = status_path.with_name("offload_status.json")
+    recovery_path.write_text(
+        json.dumps(
+            {
+                "runtime_phase": "WARMING",
+                "ready": False,
+                "reasons": ["warmup_active"],
+                "boot_id": "boot-1",
+            }
+        ),
+        encoding="utf-8",
+    )
+    offload_path.write_text(
+        json.dumps(
+            {
+                "offload_allowed": False,
+                "reason_codes": ["runtime_not_ready"],
+                "recommended_worker_mode": "nowcast_only",
+            }
+        ),
+        encoding="utf-8",
+    )
+    app = FastAPI()
+    app.include_router(
+        build_runtime_router(
+            status_path=status_path,
+            data_dir=tmp_path,
+            recovery_status_path=recovery_path,
+            offload_status_path=offload_path,
+        )
+    )
+
+    payload = TestClient(app).get("/api/runtime/live").json()
+
+    assert payload["status"]["ok"] is True
+    assert payload["gates"]["ok"] is True
+    assert payload["monitor"]["orderbooks"]
+    assert payload["recovery"]["ready"] is False
+    assert payload["offload"]["offload_allowed"] is False
+    assert payload["ok"] is False
+
+
+def test_runtime_bug_reports_missing_dir_returns_controlled_state(tmp_path: Path) -> None:
+    missing_dir = tmp_path / "missing-bug-reports"
+    app = FastAPI()
+    app.include_router(build_runtime_router(bug_report_dir=missing_dir))
+
+    response = TestClient(app).get("/api/runtime/bug-reports")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["state"] == "MISSING"
+    assert payload["path"] == str(missing_dir)
+    assert payload["reports"] == []
+    assert payload["errors"] == [f"{missing_dir} missing"]
+
+
+def test_runtime_bug_reports_lists_newest_json_reports(tmp_path: Path) -> None:
+    bug_report_dir = tmp_path / "bug-reports"
+    bug_report_dir.mkdir()
+    older = bug_report_dir / "older.json"
+    newer = bug_report_dir / "newer.json"
+    malformed = bug_report_dir / "malformed.json"
+    older.write_text(json.dumps({"bug_id": "bug-old", "severity": "WARN"}), encoding="utf-8")
+    newer.write_text(json.dumps({"bug_id": "bug-new", "severity": "CRITICAL"}), encoding="utf-8")
+    malformed.write_text("{not-json", encoding="utf-8")
+    os.utime(older, (100.0, 100.0))
+    os.utime(newer, (300.0, 300.0))
+    os.utime(malformed, (200.0, 200.0))
+    app = FastAPI()
+    app.include_router(build_runtime_router(bug_report_dir=bug_report_dir))
+
+    response = TestClient(app).get("/api/runtime/bug-reports?limit=2")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["state"] == "PARTIAL"
+    assert payload["path"] == str(bug_report_dir)
+    assert [report["bug_id"] for report in payload["reports"]] == ["bug-new", "bug-old"]
+    assert payload["reports"][0]["source_path"] == str(newer)
+    assert len(payload["errors"]) == 1
+    assert str(malformed) in payload["errors"][0]
+
+
+def test_runtime_bug_reports_report_non_object_json_without_crashing(
+    tmp_path: Path,
+) -> None:
+    bug_report_dir = tmp_path / "bug-reports"
+    bug_report_dir.mkdir()
+    invalid = bug_report_dir / "array.json"
+    invalid.write_text("[]", encoding="utf-8")
+    app = FastAPI()
+    app.include_router(build_runtime_router(bug_report_dir=bug_report_dir))
+
+    response = TestClient(app).get("/api/runtime/bug-reports")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["state"] == "INVALID"
+    assert payload["reports"] == []
+    assert payload["errors"] == [f"{invalid}: JSON root must be an object"]
+
+
+def test_runtime_bug_reports_clamps_limit_and_allows_zero(tmp_path: Path) -> None:
+    bug_report_dir = tmp_path / "bug-reports"
+    bug_report_dir.mkdir()
+    for index in range(runtime_api_module.BUG_REPORT_MAX_REPORTS + 3):
+        path = bug_report_dir / f"report-{index:03}.json"
+        path.write_text(json.dumps({"bug_id": f"bug-{index:03}"}), encoding="utf-8")
+        os.utime(path, (float(index), float(index)))
+    invalid = bug_report_dir / "newest-invalid.json"
+    invalid.write_text("{not-json", encoding="utf-8")
+    os.utime(invalid, (9999.0, 9999.0))
+    app = FastAPI()
+    app.include_router(build_runtime_router(bug_report_dir=bug_report_dir))
+    client = TestClient(app)
+
+    zero = client.get("/api/runtime/bug-reports?limit=0").json()
+    clamped = client.get("/api/runtime/bug-reports?limit=999999").json()
+
+    assert zero["ok"] is True
+    assert zero["reports"] == []
+    assert zero["errors"] == []
+    assert len(clamped["reports"]) == runtime_api_module.BUG_REPORT_MAX_REPORTS
+    assert clamped["reports"][0]["bug_id"] == "bug-102"
+
+
+def test_runtime_bug_reports_bounds_processed_bad_candidates(tmp_path: Path) -> None:
+    bug_report_dir = tmp_path / "bug-reports"
+    bug_report_dir.mkdir()
+    valid = bug_report_dir / "valid.json"
+    valid.write_text(json.dumps({"bug_id": "bug-valid"}), encoding="utf-8")
+    malformed_one = bug_report_dir / "malformed-1.json"
+    malformed_two = bug_report_dir / "malformed-2.json"
+    oversized = bug_report_dir / "oversized.json"
+    malformed_one.write_text("{not-json", encoding="utf-8")
+    malformed_two.write_text("[]", encoding="utf-8")
+    oversized.write_text(
+        "{" + f'"payload":"{"x" * runtime_api_module.BUG_REPORT_MAX_FILE_BYTES}"' + "}",
+        encoding="utf-8",
+    )
+    os.utime(valid, (100.0, 100.0))
+    os.utime(malformed_one, (400.0, 400.0))
+    os.utime(oversized, (300.0, 300.0))
+    os.utime(malformed_two, (200.0, 200.0))
+    app = FastAPI()
+    app.include_router(build_runtime_router(bug_report_dir=bug_report_dir))
+
+    response = TestClient(app).get("/api/runtime/bug-reports?limit=1")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["state"] == "INVALID"
+    assert payload["reports"] == []
+    assert payload["candidate_limit"] == 3
+    assert len(payload["errors"]) == 3
+    assert str(malformed_one) in payload["errors"][0]
+    assert "bug-valid" not in response.text
+
+
+def test_runtime_bug_reports_skips_oversized_json_files(tmp_path: Path) -> None:
+    bug_report_dir = tmp_path / "bug-reports"
+    bug_report_dir.mkdir()
+    oversized = bug_report_dir / "oversized.json"
+    valid = bug_report_dir / "valid.json"
+    oversized.write_text(
+        "{" + f'"payload":"{"x" * runtime_api_module.BUG_REPORT_MAX_FILE_BYTES}"' + "}",
+        encoding="utf-8",
+    )
+    valid.write_text(json.dumps({"bug_id": "bug-valid"}), encoding="utf-8")
+    os.utime(oversized, (300.0, 300.0))
+    os.utime(valid, (200.0, 200.0))
+    app = FastAPI()
+    app.include_router(build_runtime_router(bug_report_dir=bug_report_dir))
+
+    response = TestClient(app).get("/api/runtime/bug-reports?limit=2")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["state"] == "PARTIAL"
+    assert [report["bug_id"] for report in payload["reports"]] == ["bug-valid"]
+    assert len(payload["errors"]) == 1
+    assert str(oversized) in payload["errors"][0]
+    assert "exceeds max size" in payload["errors"][0]
+
+
+def test_create_app_uses_configured_bug_report_dir(tmp_path: Path) -> None:
+    bug_report_dir = tmp_path / "configured-bugs"
+    bug_report_dir.mkdir()
+    report_path = bug_report_dir / "report.json"
+    report_path.write_text(json.dumps({"bug_id": "bug-configured"}), encoding="utf-8")
+
+    response = TestClient(create_app(bug_report_dir=bug_report_dir)).get(
+        "/api/runtime/bug-reports"
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["path"] == str(bug_report_dir)
+    assert payload["reports"][0]["bug_id"] == "bug-configured"
+
+
+def test_create_app_from_env_uses_bug_report_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bug_report_dir = tmp_path / "env-bugs"
+    bug_report_dir.mkdir()
+    report_path = bug_report_dir / "report.json"
+    report_path.write_text(json.dumps({"bug_id": "bug-env"}), encoding="utf-8")
+    monkeypatch.setenv("POLYMARKET_BUG_REPORT_DIR", str(bug_report_dir))
+
+    response = TestClient(create_app_from_env()).get("/api/runtime/bug-reports")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["path"] == str(bug_report_dir)
+    assert payload["reports"][0]["bug_id"] == "bug-env"
 
 
 def test_runtime_live_includes_volatility_diagnostics(tmp_path: Path) -> None:
@@ -609,6 +1102,16 @@ def test_runtime_live_reads_status_once_for_status_backed_payload(
 ) -> None:
     status_path = tmp_path / "status.json"
     _write_status(status_path)
+    status_path.with_name("recovery_status.json").write_text(
+        json.dumps({"runtime_phase": "READY", "ready": True, "reasons": []}),
+        encoding="utf-8",
+    )
+    status_path.with_name("offload_status.json").write_text(
+        json.dumps(
+            {"offload_allowed": True, "reason_codes": [], "recommended_worker_mode": "gpu_mc"}
+        ),
+        encoding="utf-8",
+    )
     read_count = 0
     real_read_text = Path.read_text
 
@@ -629,9 +1132,30 @@ def test_runtime_live_reads_status_once_for_status_backed_payload(
 
 
 def test_runtime_live_stream_emits_sse_payload(tmp_path: Path) -> None:
-    status_path = tmp_path / "status.json"
+    status_path = tmp_path / "live" / "status.json"
+    status_path.parent.mkdir(parents=True)
     _write_status(status_path)
-    app = create_app(status_path=status_path)
+    recovery_path = status_path.with_name("recovery_status.json")
+    offload_path = status_path.with_name("offload_status.json")
+    recovery_path.write_text(
+        json.dumps({"runtime_phase": "READY", "ready": True, "reasons": [], "boot_id": "boot-1"}),
+        encoding="utf-8",
+    )
+    offload_path.write_text(
+        json.dumps(
+            {"offload_allowed": True, "reason_codes": [], "recommended_worker_mode": "gpu_mc"}
+        ),
+        encoding="utf-8",
+    )
+    app = FastAPI()
+    app.include_router(
+        build_runtime_router(
+            status_path=status_path,
+            data_dir=tmp_path,
+            recovery_status_path=recovery_path,
+            offload_status_path=offload_path,
+        )
+    )
 
     with TestClient(app).stream(
         "GET",
@@ -642,8 +1166,12 @@ def test_runtime_live_stream_emits_sse_payload(tmp_path: Path) -> None:
     assert response.status_code == 200
     assert "event: live" in body
     assert "data: " in body
-    assert '"status"' in body
-    assert '"monitor"' in body
+    data_line = next(line for line in body.splitlines() if line.startswith("data: "))
+    payload = json.loads(data_line.removeprefix("data: "))
+    assert payload["status"]["counts"]["orderbooks"] == 1
+    assert payload["monitor"]["orderbooks"][0]["contract_id"] == "btc-5m-up"
+    assert payload["recovery"]["runtime_phase"] == "READY"
+    assert payload["offload"]["offload_allowed"] is True
 
 
 def test_runtime_outcomes_returns_market_level_history(tmp_path: Path) -> None:

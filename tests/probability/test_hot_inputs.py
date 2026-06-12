@@ -186,6 +186,257 @@ def test_hot_probability_inputs_skip_quality_blocked_states(tmp_path: Path) -> N
     assert [row.contract_id for row in payload.inputs] == ["btc-market:UP"]
 
 
+@pytest.mark.parametrize(
+    ("invalid_case", "expected_sigma_tau", "expected_failure_reason"),
+    [
+        ("missing", None, "sigma_missing"),
+        ("nan", None, "sigma_nonfinite"),
+        ("zero", 0.0, "sigma_non_positive"),
+        ("stale", 0.002, "stale_reference_source"),
+    ],
+)
+def test_hot_probability_inputs_blocks_invalid_sigma_with_diagnostics(
+    tmp_path: Path,
+    invalid_case: str,
+    expected_sigma_tau: float | None,
+    expected_failure_reason: str,
+) -> None:
+    out_path = tmp_path / "inputs.json"
+    base_state = _state("UP")
+    if invalid_case == "missing":
+        invalid_sigma_state = replace(base_state, sigma_tau=None)
+    elif invalid_case == "nan":
+        invalid_sigma_state = replace(base_state, sigma_tau=float("nan"))
+    elif invalid_case == "zero":
+        invalid_sigma_state = replace(base_state, sigma_tau=0.0)
+    elif invalid_case == "stale":
+        invalid_sigma_state = replace(
+            base_state,
+            volatility_regime="stale_reference_source",
+        )
+    else:
+        raise AssertionError(f"unknown invalid sigma case: {invalid_case}")
+
+    write_hot_probability_inputs(
+        out_path=out_path,
+        states=(invalid_sigma_state,),
+        generated_at=datetime.now(timezone.utc),
+    )
+
+    raw_text = out_path.read_text()
+    raw = json.loads(raw_text)
+    row = raw["inputs"][0]
+
+    assert "NaN" not in raw_text
+    assert row["sigma_tau"] == expected_sigma_tau
+    assert row["sigma_valid"] is False
+    assert row["sigma_age_ms"] == 0
+    if invalid_case == "stale":
+        assert row["last_sigma_update_ts"] is None
+    else:
+        assert row["last_sigma_update_ts"] == "2026-05-31T20:03:00+00:00"
+    assert row["short_vol"] == 0.01
+    assert row["medium_vol"] == 0.012
+    assert row["long_vol"] == 0.015
+    assert row["volatility_floor_applied"] is False
+    assert row["regime_multiplier_applied"] is False
+    assert row["failure_reason"] == expected_failure_reason
+    assert row["input_sample_count"] == 2
+    assert row["probability_state"] == "BLOCKED_OR_STALE"
+    assert row["offload_allowed"] is False
+    assert "sigma_invalid" in row["block_reasons"]
+
+    payload = read_hot_probability_inputs(out_path=out_path, limit=10, max_age_seconds=60)
+
+    assert payload.skipped == 0
+    assert payload.inputs[0].probability_state == "BLOCKED_OR_STALE"
+    assert payload.inputs[0].sigma_valid is False
+    assert payload.inputs[0].offload_allowed is False
+    assert "sigma_invalid" in payload.inputs[0].block_reasons
+
+
+def test_hot_probability_inputs_keeps_missing_volatility_as_blocked_diagnostic(
+    tmp_path: Path,
+) -> None:
+    out_path = tmp_path / "inputs.json"
+    missing_volatility = replace(
+        _state("UP"),
+        sigma_tau=None,
+        short_realized_vol=float("nan"),
+        medium_realized_vol=float("inf"),
+        long_realized_vol=float("-inf"),
+        volatility_regime="missing_reference_source",
+        data_quality_flags=("missing_volatility",),
+    )
+
+    write_hot_probability_inputs(
+        out_path=out_path,
+        states=(missing_volatility,),
+        generated_at=datetime.now(timezone.utc),
+    )
+
+    raw_text = out_path.read_text()
+    raw = json.loads(raw_text)
+    row = raw["inputs"][0]
+
+    assert raw["skipped"] == 0
+    assert "NaN" not in raw_text
+    assert "Infinity" not in raw_text
+    assert row["probability_state"] == "BLOCKED_OR_STALE"
+    assert row["offload_allowed"] is False
+    assert row["sigma_tau"] is None
+    assert row["sigma_valid"] is False
+    assert row["short_vol"] is None
+    assert row["medium_vol"] is None
+    assert row["long_vol"] is None
+    assert row["failure_reason"] == "sigma_missing"
+    assert "sigma_invalid" in row["block_reasons"]
+
+
+def test_hot_probability_inputs_blocks_threshold_mutation_under_same_rule_hash(
+    tmp_path: Path,
+) -> None:
+    out_path = tmp_path / "inputs.json"
+    mutated = replace(_state("UP"), state_id="state-UP-mutated", threshold=103_951.0)
+
+    write_hot_probability_inputs(
+        out_path=out_path,
+        states=(_state("UP"), mutated),
+        generated_at=datetime.now(timezone.utc),
+    )
+
+    raw = json.loads(out_path.read_text())
+    row = raw["inputs"][1]
+
+    assert raw["skipped"] == 0
+    assert row["contract_id"] == "btc-market:UP"
+    assert row["probability_state"] == "BLOCKED"
+    assert "THRESHOLD_MUTATION_ERROR" in row["flags"]
+    assert row["k_stable"] is False
+    assert row["threshold_diagnostics"]["previous_K"] == 103_950.0
+    assert row["threshold_diagnostics"]["new_K"] == 103_951.0
+    assert row["threshold_diagnostics"]["rule_hash"] == "hash"
+    assert row["threshold_diagnostics"]["reason_for_change"] == (
+        "threshold_changed_without_rule_hash_change"
+    )
+
+
+def test_hot_probability_inputs_latches_original_threshold_within_batch(
+    tmp_path: Path,
+) -> None:
+    out_path = tmp_path / "inputs.json"
+    first_mutated = replace(_state("UP"), state_id="state-UP-mutated", threshold=103_951.0)
+    second_mutated = replace(
+        _state("UP"),
+        state_id="state-UP-mutated-repeat",
+        threshold=103_951.0,
+    )
+
+    write_hot_probability_inputs(
+        out_path=out_path,
+        states=(_state("UP"), first_mutated, second_mutated),
+        generated_at=datetime.now(timezone.utc),
+    )
+
+    raw = json.loads(out_path.read_text())
+    first_bad = raw["inputs"][1]
+    second_bad = raw["inputs"][2]
+
+    assert first_bad["probability_state"] == "BLOCKED"
+    assert second_bad["probability_state"] == "BLOCKED"
+    assert "THRESHOLD_MUTATION_ERROR" in first_bad["flags"]
+    assert "THRESHOLD_MUTATION_ERROR" in second_bad["flags"]
+    assert first_bad["threshold_diagnostics"]["previous_K"] == 103_950.0
+    assert second_bad["threshold_diagnostics"]["previous_K"] == 103_950.0
+    assert second_bad["threshold_diagnostics"]["new_K"] == 103_951.0
+
+
+def test_hot_probability_inputs_blocks_threshold_mutation_across_writes(
+    tmp_path: Path,
+) -> None:
+    out_path = tmp_path / "inputs.json"
+    mutated = replace(_state("UP"), state_id="state-UP-next", threshold=103_951.0)
+
+    write_hot_probability_inputs(
+        out_path=out_path,
+        states=(_state("UP"),),
+        generated_at=datetime.now(timezone.utc),
+    )
+    write_hot_probability_inputs(
+        out_path=out_path,
+        states=(mutated,),
+        generated_at=datetime.now(timezone.utc),
+    )
+    write_hot_probability_inputs(
+        out_path=out_path,
+        states=(replace(mutated, state_id="state-UP-next-repeat"),),
+        generated_at=datetime.now(timezone.utc),
+    )
+
+    raw = json.loads(out_path.read_text())
+    row = raw["inputs"][0]
+
+    assert row["probability_state"] == "BLOCKED"
+    assert "THRESHOLD_MUTATION_ERROR" in row["flags"]
+    assert row["k_stable"] is False
+    assert row["threshold_diagnostics"]["previous_K"] == 103_950.0
+    assert row["threshold_diagnostics"]["new_K"] == 103_951.0
+    assert row["threshold_diagnostics"]["reason_for_change"] == (
+        "threshold_changed_without_rule_hash_change"
+    )
+
+
+def test_hot_probability_inputs_allows_threshold_change_when_rule_hash_changes(
+    tmp_path: Path,
+) -> None:
+    out_path = tmp_path / "inputs.json"
+    changed_rule_contract = replace(_contract("UP"), rule_hash="hash-v2")
+    changed_rule_state = replace(
+        _state("UP"),
+        contract=changed_rule_contract,
+        state_id="state-UP-rule-v2",
+        threshold=103_951.0,
+    )
+
+    write_hot_probability_inputs(
+        out_path=out_path,
+        states=(_state("UP"),),
+        generated_at=datetime.now(timezone.utc),
+    )
+    write_hot_probability_inputs(
+        out_path=out_path,
+        states=(changed_rule_state,),
+        generated_at=datetime.now(timezone.utc),
+    )
+
+    raw = json.loads(out_path.read_text())
+    row = raw["inputs"][0]
+
+    assert row["probability_state"] == "READY"
+    assert row["flags"] == ["OK"]
+    assert row["k_stable"] is True
+    assert row["threshold_diagnostics"]["previous_K"] == 103_950.0
+    assert row["threshold_diagnostics"]["new_K"] == 103_951.0
+    assert row["threshold_diagnostics"]["rule_hash"] == "hash-v2"
+    assert row["threshold_diagnostics"]["reason_for_change"] == "rule_hash_changed"
+
+
+def test_read_hot_probability_inputs_accepts_blocked_or_stale_state(tmp_path: Path) -> None:
+    out_path = tmp_path / "inputs.json"
+    write_hot_probability_inputs(
+        out_path=out_path,
+        states=(_state("UP"),),
+        generated_at=datetime.now(timezone.utc),
+    )
+    raw = json.loads(out_path.read_text())
+    raw["inputs"][0]["probability_state"] = "BLOCKED_OR_STALE"
+    out_path.write_text(json.dumps(raw))
+
+    payload = read_hot_probability_inputs(out_path=out_path, limit=10, max_age_seconds=60)
+
+    assert payload.inputs[0].probability_state == "BLOCKED_OR_STALE"
+
+
 def test_read_hot_probability_inputs_enforces_limit(tmp_path: Path) -> None:
     out_path = tmp_path / "inputs.json"
 

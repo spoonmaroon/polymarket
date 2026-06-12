@@ -118,6 +118,16 @@ def test_spoon_docs_include_read_only_cockpit_tui() -> None:
 
     assert "polymarket-cockpit-tui" in text
     assert "--engine-api-url" in text
+
+
+def test_spoon_docs_describe_spoon_duckdb_viewer_authority() -> None:
+    text = (ROOT / "docs" / "SPOON_DEPLOYMENT.md").read_text(encoding="utf-8")
+
+    assert "### Spoon DuckDB Viewer" in text
+    assert "/home/spoon/polymarket-data/db/polymarket.duckdb" in text
+    assert "./scripts/install_spoon_duckdb_ui.sh" in text
+    assert "/api/meta" in text
+    assert "THEPC does not serve a local DuckDB snapshot" in text
     assert "read-only" in text
     assert "POLYMARKET_ENABLE_CONTAINER_STATUS=1" in text
 

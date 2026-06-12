@@ -114,6 +114,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=Path("data/live/probabilities.json"),
     )
     cuda_probability_worker.add_argument(
+        "--recovery-status-path",
+        type=Path,
+        default=Path("data/live/recovery_status.json"),
+    )
+    cuda_probability_worker.add_argument(
+        "--offload-status-path",
+        type=Path,
+        default=Path("data/live/offload_status.json"),
+    )
+    cuda_probability_worker.add_argument(
         "--probability-inputs-path",
         type=Path,
         default=Path("data/live/probability_inputs.json"),
@@ -233,10 +243,25 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     backfill_outcomes.add_argument("--official-outcome-source", default="clob")
     backfill_outcomes.add_argument("--official-timeout-seconds", type=float, default=2.0)
 
+    calibration_report = subparsers.add_parser("calibration-report")
+    calibration_report.add_argument(
+        "--input",
+        type=Path,
+        default=Path("data/research/calibration/asof_decision_states.jsonl"),
+    )
+    calibration_report.add_argument("--out", type=Path, required=True)
+
     runtime_keeper = subparsers.add_parser("runtime-keeper")
     runtime_keeper.add_argument("--repo", type=Path, default=Path("/home/ender/polymarket"))
     runtime_keeper.add_argument("--data-dir", type=Path, default=Path("/home/ender/polymarket-data"))
     runtime_keeper.add_argument("--api-base-url", default="http://127.0.0.1:8000")
+    runtime_keeper.add_argument(
+        "--compose-file",
+        type=Path,
+        action="append",
+        default=None,
+        help="Docker Compose file to use. Repeatable, preserving order.",
+    )
     runtime_keeper.add_argument(
         "--required-service",
         action="append",
@@ -289,6 +314,8 @@ async def run_collect_command(argv: list[str] | None = None) -> int:
         return _run_verify_hot_decision_replay(args)
     if args.command == "backfill-outcomes":
         return _run_backfill_outcomes(args)
+    if args.command == "calibration-report":
+        return _run_calibration_report(args)
     if args.command == "runtime-keeper":
         return _run_runtime_keeper(args)
     if args.command == "sync-cluster-artifacts":
@@ -404,6 +431,8 @@ def _run_cuda_probability_worker(args: argparse.Namespace) -> int:
         payload = run_cuda_probability_worker_cycle(
             duckdb_path=args.duckdb_path,
             probability_status_path=args.probability_status_path,
+            recovery_status_path=args.recovery_status_path,
+            offload_status_path=args.offload_status_path,
             probability_inputs_path=args.probability_inputs_path,
             probability_fragments_path=args.probability_fragments_path,
             limit=args.limit,
@@ -417,6 +446,8 @@ def _run_cuda_probability_worker(args: argparse.Namespace) -> int:
     run_cuda_probability_worker_loop(
         duckdb_path=args.duckdb_path,
         probability_status_path=args.probability_status_path,
+        recovery_status_path=args.recovery_status_path,
+        offload_status_path=args.offload_status_path,
         probability_inputs_path=args.probability_inputs_path,
         probability_fragments_path=args.probability_fragments_path,
         interval_seconds=args.interval_seconds,
@@ -558,6 +589,36 @@ def _run_backfill_outcomes(args: argparse.Namespace) -> int:
     return 0 if report.get("ok") is True else 1
 
 
+def _run_calibration_report(args: argparse.Namespace) -> int:
+    from polymarket_engine.calibration.reports import build_calibration_report
+    from polymarket_engine.calibration.reports import load_calibration_jsonl
+
+    try:
+        rows = load_calibration_jsonl(args.input)
+    except ValueError as exc:
+        payload: dict[str, object] = {"ok": False, "error": str(exc)}
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_text(
+            json.dumps(payload, allow_nan=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        print(
+            json.dumps(payload, allow_nan=False, sort_keys=True, separators=(",", ":")),
+            file=sys.stderr,
+        )
+        return 1
+
+    report = build_calibration_report(rows)
+    payload = report.to_json_dict()
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    args.out.write_text(
+        json.dumps(payload, allow_nan=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    print(json.dumps(payload, allow_nan=False, sort_keys=True, separators=(",", ":")))
+    return 0
+
+
 def _run_runtime_keeper(args: argparse.Namespace) -> int:
     from polymarket_engine.ops.runtime_keeper import DEFAULT_OPTIONAL_CONTAINERS
     from polymarket_engine.ops.runtime_keeper import DEFAULT_REQUIRED_SERVICES
@@ -568,6 +629,7 @@ def _run_runtime_keeper(args: argparse.Namespace) -> int:
         repo=args.repo,
         data_dir=args.data_dir,
         api_base_url=args.api_base_url,
+        compose_files=tuple(args.compose_file or ()),
         required_services=tuple(args.required_service or DEFAULT_REQUIRED_SERVICES),
         optional_containers=tuple(args.optional_container or DEFAULT_OPTIONAL_CONTAINERS),
         loop_interval_seconds=args.loop_interval_seconds,

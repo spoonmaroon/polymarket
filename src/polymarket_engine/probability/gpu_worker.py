@@ -31,6 +31,10 @@ from polymarket_engine.probability.grid_cache import grid_entry_from_probability
 from polymarket_engine.probability.grid_cache import grid_runtime_row
 from polymarket_engine.probability.hot_inputs import HOT_PROBABILITY_INPUTS_SCHEMA_VERSION
 from polymarket_engine.probability.latency import ProbabilityLatencyTrace
+from polymarket_engine.probability.offload_gate import OffloadDecision
+from polymarket_engine.probability.offload_gate import OffloadGateConfig
+from polymarket_engine.probability.offload_gate import OffloadGateInputs
+from polymarket_engine.probability.offload_gate import evaluate_offload_readiness
 from polymarket_engine.probability.path_policy import runtime_path_count_for_state
 from polymarket_engine.probability.pair_coherence import normalize_binary_probability_pairs
 from polymarket_engine.probability.runtime import DEFAULT_PROBABILITY_GRID_VALID_SECONDS
@@ -45,7 +49,10 @@ from polymarket_engine.probability.runtime import _steps_for_input
 from polymarket_engine.probability.runtime import latest_probability_inputs
 from polymarket_engine.probability.runtime import probability_gate_diagnostics
 from polymarket_engine.probability.runtime_inputs import ProbabilityRuntimeInput
+from polymarket_engine.probability.runtime_inputs import ProbabilityState
+from polymarket_engine.probability.runtime_inputs import ThresholdDiagnostics
 from polymarket_engine.probability.schema import ProbabilityInput, ProbabilityOutput
+from polymarket_engine.ops.recovery_manager import RuntimePhase
 from polymarket_engine.storage.atomic import durable_replace
 
 
@@ -65,6 +72,16 @@ DEFAULT_SUSTAINED_BREACH_CYCLES = 3
 DEFAULT_FRAGMENT_MAX_ROWS = 250_000
 DEFAULT_MIN_FRAGMENT_COUNT = 2
 DEFAULT_CPU_THREADS = 1
+DEFAULT_MAX_INPUT_STATE_LAG_MS = 10_000
+DEFAULT_MIN_SECONDS_LEFT_FOR_MC = 20.0
+
+
+@dataclass(frozen=True)
+class _InputMcEligibility:
+    runtime_input: ProbabilityRuntimeInput
+    allowed: bool
+    reason_codes: tuple[str, ...]
+    input_state_lag_ms: int
 
 
 @dataclass(frozen=True)
@@ -139,18 +156,400 @@ def run_cuda_monte_carlo_batch(
     )
 
 
+def _offload_decision_from_override(
+    value: Mapping[str, Any] | None,
+    *,
+    generated_at: datetime,
+) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    return {
+        "schema_version": "polymarket-offload-runtime-v1",
+        "generated_at": generated_at.isoformat(),
+        "offload_allowed": bool(value.get("offload_allowed")),
+        "reason_codes": list(value.get("reason_codes") or []),
+        "recommended_worker_mode": str(
+            value.get("recommended_worker_mode") or "disabled"
+        ),
+        "recommended_max_total_paths": int(
+            value.get("recommended_max_total_paths") or 0
+        ),
+    }
+
+
+def _offload_decision_from_inputs(
+    *,
+    inputs: Sequence[ProbabilityRuntimeInput],
+    budget: ProbabilityWorkerBudget,
+    generated_at: datetime,
+    recovery_status_path: Path,
+) -> dict[str, Any]:
+    if not inputs:
+        return _blocked_offload_decision(
+            reason_codes=("no_probability_inputs",),
+            recommended_worker_mode="disabled",
+            generated_at=generated_at,
+        )
+
+    recovery_status = _read_recovery_status(recovery_status_path)
+    runtime_phase = recovery_status.runtime_phase
+    gate_inputs = OffloadGateInputs(
+        runtime_phase=runtime_phase,
+        uptime_seconds=recovery_status.uptime_seconds,
+        consecutive_healthy_cycles=recovery_status.consecutive_healthy_cycles,
+        price_age_ms=0,
+        orderbook_age_ms=0,
+        probability_input_age_ms=0,
+        volatility_age_ms=0,
+        target_status_age_ms=0,
+        sigma_tau_valid=True,
+        sigma_tau_age_ms=0,
+        k_stable=True,
+        api_status="OK",
+        normalized_health_status="OK",
+        duckdb_status="OK",
+        websocket_status="OK",
+        cpu_percent=None,
+        memory_mb=None,
+        queue_length=None,
+        recent_api_blocked=False,
+        recent_decode_error=False,
+        configured_max_total_paths=(
+            budget.configured_max_total_paths
+            if budget.configured_max_total_paths is not None
+            else budget.max_total_paths
+        ),
+        min_total_paths=budget.min_total_paths,
+    )
+    decision = evaluate_offload_readiness(gate_inputs, OffloadGateConfig())
+    reason_codes = _dedupe_reasons(
+        (*decision.reason_codes, *recovery_status.reasons)
+    )
+    if reason_codes:
+        worker_mode = (
+            "nowcast_only"
+            if not _hard_offload_reasons(reason_codes)
+            else "disabled"
+        )
+        return _blocked_offload_decision(
+            reason_codes=reason_codes,
+            recommended_worker_mode=worker_mode,
+            generated_at=generated_at,
+        )
+    return _offload_decision_payload(decision, generated_at=generated_at)
+
+
+@dataclass(frozen=True)
+class _RecoveryStatus:
+    runtime_phase: RuntimePhase
+    uptime_seconds: float
+    consecutive_healthy_cycles: int
+    reasons: tuple[str, ...]
+
+
+def _read_recovery_status(path: Path) -> _RecoveryStatus:
+    try:
+        raw_payload = path.read_text(encoding="utf-8")
+    except (FileNotFoundError, OSError):
+        return _missing_recovery_status()
+    try:
+        payload = json.loads(raw_payload)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return _invalid_recovery_status()
+    if not isinstance(payload, Mapping):
+        return _invalid_recovery_status()
+    runtime_phase = _recovery_phase(payload.get("runtime_phase"))
+    try:
+        reasons = _string_list(payload.get("reasons", []), "reasons")
+        uptime_seconds = _nonnegative_float(
+            payload.get("uptime_seconds", 0.0), "uptime_seconds"
+        )
+        consecutive_healthy_cycles = _nonnegative_int(
+            payload.get("consecutive_healthy_cycles", 0),
+            "consecutive_healthy_cycles",
+        )
+    except (TypeError, ValueError):
+        return _invalid_recovery_status()
+    if payload.get("ready") is not True and "runtime_not_ready" not in reasons:
+        reasons.append("runtime_not_ready")
+    return _RecoveryStatus(
+        runtime_phase=runtime_phase,
+        uptime_seconds=uptime_seconds,
+        consecutive_healthy_cycles=consecutive_healthy_cycles,
+        reasons=tuple(reasons),
+    )
+
+
+def _missing_recovery_status() -> _RecoveryStatus:
+    return _RecoveryStatus(
+        runtime_phase=RuntimePhase.WARMING,
+        uptime_seconds=0.0,
+        consecutive_healthy_cycles=0,
+        reasons=("recovery_status_missing",),
+    )
+
+
+def _invalid_recovery_status() -> _RecoveryStatus:
+    return _RecoveryStatus(
+        runtime_phase=RuntimePhase.WARMING,
+        uptime_seconds=0.0,
+        consecutive_healthy_cycles=0,
+        reasons=("recovery_status_invalid",),
+    )
+
+
+def _recovery_phase(value: object) -> RuntimePhase:
+    try:
+        return RuntimePhase(str(value))
+    except ValueError:
+        return RuntimePhase.WARMING
+
+
+def _runtime_input_age_ms(
+    runtime_input: ProbabilityRuntimeInput,
+    generated_at: datetime,
+) -> int:
+    return max(
+        0,
+        int((generated_at - runtime_input.probability_input.asof_ts).total_seconds() * 1000),
+    )
+
+
+def _input_mc_eligibility(
+    runtime_input: ProbabilityRuntimeInput,
+    *,
+    generated_at: datetime,
+    gate_config: OffloadGateConfig,
+) -> _InputMcEligibility:
+    probability_input = runtime_input.probability_input
+    input_state_lag_ms = _runtime_input_age_ms(runtime_input, generated_at)
+    effective_seconds_left = max(
+        0.0,
+        (runtime_input.expiry_ts - generated_at).total_seconds(),
+    )
+    reasons: list[str] = list(_runtime_input_mc_block_reasons(runtime_input))
+    if effective_seconds_left <= 0.0 or probability_input.seconds_left <= 0:
+        reasons.append("probability_input_expired")
+    elif effective_seconds_left < DEFAULT_MIN_SECONDS_LEFT_FOR_MC:
+        reasons.append("near_expiry")
+    if input_state_lag_ms > DEFAULT_MAX_INPUT_STATE_LAG_MS:
+        reasons.append("probability_inputs_stale")
+    if probability_input.source_age_ms > gate_config.max_price_age_ms:
+        reasons.append("price_stale")
+    if probability_input.book_age_ms > gate_config.max_orderbook_age_ms:
+        reasons.append("orderbook_stale")
+    if runtime_input.sigma_age_ms > gate_config.max_sigma_tau_age_ms:
+        reasons.append("sigma_stale")
+    return _InputMcEligibility(
+        runtime_input=runtime_input,
+        allowed=not reasons,
+        reason_codes=_dedupe_reasons(tuple(reasons)),
+        input_state_lag_ms=input_state_lag_ms,
+    )
+
+
+def _input_mc_eligibilities(
+    inputs: Sequence[ProbabilityRuntimeInput],
+    *,
+    generated_at: datetime,
+    gate_config: OffloadGateConfig,
+) -> tuple[_InputMcEligibility, ...]:
+    return tuple(
+        _input_mc_eligibility(
+            runtime_input,
+            generated_at=generated_at,
+            gate_config=gate_config,
+        )
+        for runtime_input in inputs
+    )
+
+
+def _eligible_mc_inputs(
+    eligibilities: Sequence[_InputMcEligibility],
+) -> tuple[ProbabilityRuntimeInput, ...]:
+    blocked_contract_ids = {
+        eligibility.runtime_input.contract_id
+        for eligibility in eligibilities
+        if not eligibility.allowed
+    }
+    return tuple(
+        eligibility.runtime_input
+        for eligibility in eligibilities
+        if eligibility.allowed
+        and eligibility.runtime_input.contract_id not in blocked_contract_ids
+    )
+
+
+def _offload_input_diagnostics(
+    eligibilities: Sequence[_InputMcEligibility],
+) -> dict[str, Any]:
+    blocked = [eligibility for eligibility in eligibilities if not eligibility.allowed]
+    diagnostics = {
+        "input_count": len(eligibilities),
+        "mc_eligible_input_count": len(eligibilities) - len(blocked),
+        "blocked_input_count": len(blocked),
+        "max_input_state_lag_ms": max(
+            (eligibility.input_state_lag_ms for eligibility in eligibilities),
+            default=None,
+        ),
+        "max_source_age_ms": max(
+            (
+                eligibility.runtime_input.probability_input.source_age_ms
+                for eligibility in eligibilities
+            ),
+            default=None,
+        ),
+        "max_book_age_ms": max(
+            (
+                eligibility.runtime_input.probability_input.book_age_ms
+                for eligibility in eligibilities
+            ),
+            default=None,
+        ),
+        "min_seconds_left": min(
+            (
+                eligibility.runtime_input.probability_input.seconds_left
+                for eligibility in eligibilities
+            ),
+            default=None,
+        ),
+        "blocked_inputs": [
+            {
+                "state_id": eligibility.runtime_input.probability_input.state_id,
+                "contract_id": eligibility.runtime_input.contract_id,
+                "market_slug": eligibility.runtime_input.market_slug,
+                "asset": eligibility.runtime_input.probability_input.asset,
+                "side": eligibility.runtime_input.probability_input.side,
+                "reason_codes": list(eligibility.reason_codes),
+                "input_state_lag_ms": eligibility.input_state_lag_ms,
+                "source_age_ms": eligibility.runtime_input.probability_input.source_age_ms,
+                "book_age_ms": eligibility.runtime_input.probability_input.book_age_ms,
+                "seconds_left": eligibility.runtime_input.probability_input.seconds_left,
+            }
+            for eligibility in blocked[:12]
+        ],
+    }
+    return diagnostics
+
+
+def _with_offload_input_diagnostics(
+    payload: dict[str, Any],
+    eligibilities: Sequence[_InputMcEligibility],
+) -> dict[str, Any]:
+    diagnostics = _offload_input_diagnostics(eligibilities)
+    merged = dict(payload)
+    merged.update(diagnostics)
+    merged["input_diagnostics"] = diagnostics
+    return merged
+
+
+def _eligibility_reason_codes(
+    eligibilities: Sequence[_InputMcEligibility],
+) -> tuple[str, ...]:
+    return _dedupe_reasons(
+        tuple(
+            reason
+            for eligibility in eligibilities
+            for reason in eligibility.reason_codes
+        )
+    )
+
+
+def _runtime_input_mc_block_reasons(
+    runtime_input: ProbabilityRuntimeInput,
+) -> tuple[str, ...]:
+    reasons: list[str] = []
+    if runtime_input.probability_state != "READY":
+        reasons.append("runtime_not_ready")
+    if not runtime_input.k_stable:
+        reasons.append("k_unstable")
+    if not runtime_input.sigma_valid:
+        reasons.append("sigma_invalid")
+    if not runtime_input.offload_allowed:
+        reasons.extend(runtime_input.block_reasons or ("runtime_not_ready",))
+    reasons.extend(runtime_input.block_reasons)
+    return _dedupe_reasons(tuple(reasons))
+
+
+def _dedupe_reasons(reasons: tuple[str, ...]) -> tuple[str, ...]:
+    deduped: list[str] = []
+    for reason in reasons:
+        if reason and reason not in deduped:
+            deduped.append(reason)
+    return tuple(deduped)
+
+
+def _hard_offload_reasons(reasons: tuple[str, ...]) -> bool:
+    return bool(
+        {
+            "sigma_invalid",
+            "k_unstable",
+            "duckdb_unhealthy",
+            "price_stale",
+            "orderbook_stale",
+            "probability_inputs_stale",
+            "volatility_stale",
+            "target_stale",
+            "sigma_stale",
+            "api_unhealthy",
+            "normalized_health_unhealthy",
+            "websocket_unhealthy",
+            "api_blocked_recent",
+            "decode_error_recent",
+        }.intersection(reasons)
+    )
+
+
+def _blocked_offload_decision(
+    *,
+    reason_codes: tuple[str, ...],
+    recommended_worker_mode: str,
+    generated_at: datetime,
+) -> dict[str, Any]:
+    return {
+        "schema_version": "polymarket-offload-runtime-v1",
+        "generated_at": generated_at.isoformat(),
+        "offload_allowed": False,
+        "reason_codes": list(reason_codes),
+        "recommended_worker_mode": recommended_worker_mode,
+        "recommended_max_total_paths": 0,
+    }
+
+
+def _offload_decision_payload(
+    decision: OffloadDecision,
+    *,
+    generated_at: datetime,
+) -> dict[str, Any]:
+    return {
+        "schema_version": "polymarket-offload-runtime-v1",
+        "generated_at": generated_at.isoformat(),
+        "offload_allowed": decision.offload_allowed,
+        "reason_codes": list(decision.reason_codes),
+        "recommended_worker_mode": decision.recommended_worker_mode,
+        "recommended_max_total_paths": decision.recommended_max_total_paths,
+    }
+
+
+def _write_offload_status(path: Path, payload: Mapping[str, Any]) -> None:
+    _write_status(path, dict(payload))
+
+
 def run_cuda_probability_worker_cycle(
     *,
     duckdb_path: Path,
     probability_status_path: Path,
     probability_inputs_path: Path | None = None,
     probability_fragments_path: Path | None = None,
+    recovery_status_path: Path | None = None,
+    offload_status_path: Path | None = None,
     limit: int = DEFAULT_GPU_PROBABILITY_LIMIT,
     valid_seconds: int = int(DEFAULT_PROBABILITY_GRID_VALID_SECONDS),
     max_state_age_seconds: float | None = DEFAULT_PROBABILITY_MAX_STATE_AGE_SECONDS,
     max_input_snapshot_age_seconds: float | None = DEFAULT_INPUT_SNAPSHOT_MAX_AGE_SECONDS,
     probability_event_path: Path | None = None,
     budget: ProbabilityWorkerBudget | None = None,
+    offload_decision_override: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     if limit <= 0:
         raise ValueError("limit must be positive")
@@ -166,6 +565,12 @@ def run_cuda_probability_worker_cycle(
     mc_input_skipped = 0
     path_budget_per_input = 0
     previous_rows = _read_status_rows(probability_status_path)
+    recovery_status_path = recovery_status_path or probability_status_path.with_name(
+        "recovery_status.json"
+    )
+    offload_status_path = offload_status_path or probability_status_path.with_name(
+        "offload_status.json"
+    )
     probability_event_path = probability_event_path or probability_status_path.with_name(
         "probability-events.jsonl"
     )
@@ -194,6 +599,12 @@ def run_cuda_probability_worker_cycle(
             )
     except (duckdb.Error, json.JSONDecodeError, OSError, TypeError, ValueError) as exc:
         input_error = f"probability input unavailable: {type(exc).__name__}: {exc}"
+        input_error_offload_decision = _blocked_offload_decision(
+            reason_codes=("probability_input_unavailable",),
+            recommended_worker_mode="disabled",
+            generated_at=generated_at,
+        )
+        _write_offload_status(offload_status_path, input_error_offload_decision)
         input_gap_rows = _retained_mc_rows(
             previous_rows,
             now=generated_at,
@@ -246,11 +657,28 @@ def run_cuda_probability_worker_cycle(
         _write_status(probability_status_path, payload)
         return payload
 
-    prior_fragments, prior_fragment_error = _load_probability_fragments(
-        path=probability_fragments_path,
-        max_age_seconds=max_input_snapshot_age_seconds,
+    offload_decision: dict[str, Any] | None = _offload_decision_from_override(
+        offload_decision_override,
+        generated_at=generated_at,
     )
-    mc_inputs = tuple(inputs)
+    if offload_decision is None:
+        offload_decision = _offload_decision_from_inputs(
+            inputs=inputs,
+            budget=budget,
+            generated_at=generated_at,
+            recovery_status_path=recovery_status_path,
+        )
+    assert offload_decision is not None
+    gate_config = OffloadGateConfig()
+    eligibilities = _input_mc_eligibilities(
+        inputs,
+        generated_at=generated_at,
+        gate_config=gate_config,
+    )
+    offload_decision = _with_offload_input_diagnostics(offload_decision, eligibilities)
+
+    global_offload_allowed = bool(offload_decision["offload_allowed"])
+    mc_inputs = _eligible_mc_inputs(eligibilities) if global_offload_allowed else ()
     if len(mc_inputs) > budget.max_total_paths:
         mc_input_skipped = len(mc_inputs) - budget.max_total_paths
         mc_inputs = mc_inputs[: budget.max_total_paths]
@@ -258,6 +686,11 @@ def run_cuda_probability_worker_cycle(
         input_count=len(mc_inputs),
         budget=budget,
     )
+    if (not global_offload_allowed or not mc_inputs) and not offload_decision.get(
+        "reason_codes"
+    ):
+        offload_decision["reason_codes"] = list(_eligibility_reason_codes(eligibilities))
+    _write_offload_status(offload_status_path, offload_decision)
 
     if not inputs:
         input_gap_rows = _retained_mc_rows(
@@ -290,8 +723,16 @@ def run_cuda_probability_worker_cycle(
             _write_status(probability_status_path, payload)
             return payload
 
+    eligibility_by_state_id = {
+        eligibility.runtime_input.probability_input.state_id: eligibility
+        for eligibility in eligibilities
+    }
     for runtime_input in inputs:
         nowcast_row = _nowcast_row(runtime_input, generated_at=generated_at)
+        eligibility = eligibility_by_state_id.get(runtime_input.probability_input.state_id)
+        if eligibility is not None and not eligibility.allowed:
+            nowcast_row["offload_allowed"] = False
+            nowcast_row["block_reasons"] = list(eligibility.reason_codes)
         nowcast_rows.append(nowcast_row)
     nowcast_rows = normalize_binary_probability_pairs(nowcast_rows)
     runtime_inputs_by_state_id = {
@@ -304,12 +745,14 @@ def run_cuda_probability_worker_cycle(
         if isinstance(row.get("state_id"), str)
     }
     for nowcast_row in nowcast_rows:
-        runtime_input = runtime_inputs_by_state_id.get(str(nowcast_row.get("state_id") or ""))
-        if runtime_input is None:
+        nowcast_runtime_input = runtime_inputs_by_state_id.get(
+            str(nowcast_row.get("state_id") or "")
+        )
+        if nowcast_runtime_input is None:
             continue
         event_rows.append(
             _event_payload_from_row(
-                runtime_input=runtime_input,
+                runtime_input=nowcast_runtime_input,
                 row=nowcast_row,
                 generated_at=generated_at,
                 output_id=None,
@@ -323,31 +766,75 @@ def run_cuda_probability_worker_cycle(
             now=generated_at,
             enabled=True,
         )
-        _write_status(
-            probability_status_path,
-            _status_payload(
-                generated_at=generated_at,
-                rows=nowcast_mc_rows,
-                nowcast_rows=nowcast_rows,
-                skipped=quality_skipped,
-                errors=[],
-                rows_seen=len(inputs),
-                rows_written=0,
-                last_good_rows=nowcast_mc_rows or previous_rows or None,
-                state_override="NOWCAST",
-                retained_mc_rows=len(nowcast_mc_rows),
-                budget=_budget_diagnostics(
-                    budget=budget,
-                    cycle_started_monotonic=cycle_started_monotonic,
-                    cycle_started_process=cycle_started_process,
-                    requested_total_paths=requested_total_paths,
-                    allocated_total_paths=allocated_total_paths,
-                    clamped_inputs=clamped_inputs,
-                    mc_input_skipped=mc_input_skipped,
-                    path_budget_per_input=path_budget_per_input,
-                ),
+        nowcast_payload = _status_payload(
+            generated_at=generated_at,
+            rows=nowcast_mc_rows,
+            nowcast_rows=nowcast_rows,
+            skipped=quality_skipped,
+            errors=[],
+            rows_seen=len(inputs),
+            rows_written=0,
+            last_good_rows=nowcast_mc_rows or previous_rows or None,
+            state_override="NOWCAST",
+            retained_mc_rows=len(nowcast_mc_rows),
+            budget=_budget_diagnostics(
+                budget=budget,
+                cycle_started_monotonic=cycle_started_monotonic,
+                cycle_started_process=cycle_started_process,
+                requested_total_paths=requested_total_paths,
+                allocated_total_paths=allocated_total_paths,
+                clamped_inputs=clamped_inputs,
+                mc_input_skipped=mc_input_skipped,
+                path_budget_per_input=path_budget_per_input,
             ),
         )
+        nowcast_payload["offload"] = offload_decision
+        _write_status(
+            probability_status_path,
+            nowcast_payload,
+        )
+
+    if not global_offload_allowed or not mc_inputs:
+        blocked_rows, _ = _merge_missing_retained_mc_rows(
+            fresh_rows=retained_mc_rows,
+            previous_rows=previous_rows,
+            now=generated_at,
+            enabled=True,
+        )
+        reason_codes = tuple(offload_decision.get("reason_codes") or ())
+        if not reason_codes:
+            reason_codes = _eligibility_reason_codes(eligibilities)
+            offload_decision["reason_codes"] = list(reason_codes)
+        payload = _status_payload(
+            generated_at=generated_at,
+            rows=blocked_rows or nowcast_rows,
+            nowcast_rows=nowcast_rows,
+            skipped=quality_skipped,
+            errors=[],
+            rows_seen=len(inputs),
+            rows_written=0,
+            last_good_rows=blocked_rows or previous_rows or None,
+            state_override="OFFLOAD_BLOCKED",
+            retained_mc_rows=len(blocked_rows),
+            budget=_budget_diagnostics(
+                budget=budget,
+                cycle_started_monotonic=cycle_started_monotonic,
+                cycle_started_process=cycle_started_process,
+                requested_total_paths=requested_total_paths,
+                allocated_total_paths=allocated_total_paths,
+                clamped_inputs=clamped_inputs,
+                mc_input_skipped=mc_input_skipped,
+                path_budget_per_input=path_budget_per_input,
+            ),
+        )
+        payload["offload"] = offload_decision
+        _write_status(probability_status_path, payload)
+        return payload
+
+    prior_fragments, prior_fragment_error = _load_probability_fragments(
+        path=probability_fragments_path,
+        max_age_seconds=max_input_snapshot_age_seconds,
+    )
 
     for group in _batch_runtime_inputs(mc_inputs):
         representative = group[0].probability_input
@@ -433,10 +920,16 @@ def run_cuda_probability_worker_cycle(
     for row in nowcast_rows:
         contract_id = str(row.get("contract_id") or "")
         if contract_id:
+            existing = rows_by_contract_id.get(contract_id)
+            if existing is not None and _is_blocked_runtime_row(existing):
+                continue
             rows_by_contract_id[contract_id] = row
     for row in mc_rows:
         contract_id = str(row.get("contract_id") or "")
         if contract_id:
+            existing = rows_by_contract_id.get(contract_id)
+            if existing is not None and _is_blocked_runtime_row(existing):
+                continue
             rows_by_contract_id[contract_id] = row
     rows = list(rows_by_contract_id.values())
 
@@ -453,16 +946,16 @@ def run_cuda_probability_worker_cycle(
     )
     for row in rows:
         state_id = str(row.get("state_id") or "")
-        output_id = mc_output_ids_by_state_id.get(state_id)
-        runtime_input = runtime_inputs_by_state_id.get(state_id)
-        if output_id is None or runtime_input is None:
+        event_output_id = mc_output_ids_by_state_id.get(state_id)
+        event_runtime_input = runtime_inputs_by_state_id.get(state_id)
+        if event_output_id is None or event_runtime_input is None:
             continue
         event_rows.append(
             _event_payload_from_row(
-                runtime_input=runtime_input,
+                runtime_input=event_runtime_input,
                 row=row,
                 generated_at=generated_at,
-                output_id=output_id,
+                output_id=event_output_id,
             )
         )
     payload = _status_payload(
@@ -487,6 +980,7 @@ def run_cuda_probability_worker_cycle(
             path_budget_per_input=path_budget_per_input,
         ),
     )
+    payload["offload"] = offload_decision
     _write_status(probability_status_path, payload)
     if event_rows:
         _append_probability_event_rows(probability_event_path, event_rows)
@@ -569,6 +1063,8 @@ def run_cuda_probability_worker_loop(
     probability_status_path: Path,
     probability_inputs_path: Path | None = None,
     probability_fragments_path: Path | None = None,
+    recovery_status_path: Path | None = None,
+    offload_status_path: Path | None = None,
     interval_seconds: float = DEFAULT_GPU_PROBABILITY_INTERVAL_SECONDS,
     limit: int = DEFAULT_GPU_PROBABILITY_LIMIT,
     valid_seconds: int = int(DEFAULT_PROBABILITY_GRID_VALID_SECONDS),
@@ -600,6 +1096,8 @@ def run_cuda_probability_worker_loop(
                 probability_status_path=probability_status_path,
                 probability_inputs_path=probability_inputs_path,
                 probability_fragments_path=probability_fragments_path,
+                recovery_status_path=recovery_status_path,
+                offload_status_path=offload_status_path,
                 limit=limit,
                 valid_seconds=valid_seconds,
                 max_state_age_seconds=max_state_age_seconds,
@@ -608,6 +1106,14 @@ def run_cuda_probability_worker_loop(
                 budget=loop_budget,
             )
         except duckdb.Error as exc:
+            _write_offload_status(
+                offload_status_path or probability_status_path.with_name("offload_status.json"),
+                _blocked_offload_decision(
+                    reason_codes=("duckdb_unhealthy",),
+                    recommended_worker_mode="disabled",
+                    generated_at=generated_at,
+                ),
+            )
             payload = _status_payload(
                 generated_at=generated_at,
                 rows=[],
@@ -770,7 +1276,7 @@ def _nowcast_row(
         status_written_ts=generated_at,
         ui_seen_ts=None,
     )
-    return {
+    row = {
         "contract": runtime_input.contract,
         "state_id": probability_input.state_id,
         "contract_id": runtime_input.contract_id,
@@ -794,6 +1300,12 @@ def _nowcast_row(
         "source_age_ms": probability_input.source_age_ms,
         "book_age_ms": probability_input.book_age_ms,
         "flags": list(runtime_input.flags) if runtime_input.flags else ["OK"],
+        "probability_state": runtime_input.probability_state,
+        "k_stable": runtime_input.k_stable,
+        "sigma_valid": runtime_input.sigma_valid,
+        "sigma_age_ms": runtime_input.sigma_age_ms,
+        "offload_allowed": runtime_input.offload_allowed,
+        "block_reasons": list(runtime_input.block_reasons),
         "backend": nowcast.backend,
         "probability_kind": nowcast.probability_kind,
         "model_version": nowcast.model_version,
@@ -809,6 +1321,11 @@ def _nowcast_row(
         "dynamic_edge": nowcast.dynamic_edge,
         "dynamic_required_edge": nowcast.dynamic_required_edge,
     }
+    if runtime_input.threshold_diagnostics is not None:
+        row["threshold_diagnostics"] = _threshold_diagnostics_to_json_dict(
+            runtime_input.threshold_diagnostics
+        )
+    return row
 
 
 def _mc_row_from_output(
@@ -921,6 +1438,13 @@ def _mc_row_from_output(
             "executable_price": probability_input.executable_price,
             "source_age_ms": probability_input.source_age_ms,
             "book_age_ms": probability_input.book_age_ms,
+            "flags": list(runtime_input.flags) if runtime_input.flags else ["OK"],
+            "probability_state": runtime_input.probability_state,
+            "k_stable": runtime_input.k_stable,
+            "sigma_valid": runtime_input.sigma_valid,
+            "sigma_age_ms": runtime_input.sigma_age_ms,
+            "offload_allowed": runtime_input.offload_allowed,
+            "block_reasons": list(runtime_input.block_reasons),
             "path_count": effective_path_count,
             "paths_per_generator": paths_per_generator,
             "generator_count": generator_count,
@@ -933,8 +1457,22 @@ def _mc_row_from_output(
             "dynamic_required_edge": nowcast_row["dynamic_required_edge"],
         }
     )
+    if runtime_input.threshold_diagnostics is not None:
+        row["threshold_diagnostics"] = _threshold_diagnostics_to_json_dict(
+            runtime_input.threshold_diagnostics
+        )
     row["output_id"] = output_id
     return row, output_id
+
+
+def _is_blocked_runtime_row(row: Mapping[str, Any]) -> bool:
+    return (
+        row.get("probability_state") != "READY"
+        or row.get("k_stable") is False
+        or row.get("sigma_valid") is False
+        or row.get("offload_allowed") is False
+        or bool(row.get("block_reasons"))
+    )
 
 
 def _batch_runtime_inputs(
@@ -1389,6 +1927,41 @@ def _latest_probability_inputs_from_snapshot(
                     "volatility_regime",
                 ),
                 flags=tuple(_string_list(row.get("flags", ["OK"]), "flags")),
+                probability_state=_probability_state(row.get("probability_state")),
+                k_stable=_optional_bool(row.get("k_stable"), "k_stable", default=True),
+                threshold_diagnostics=_optional_threshold_diagnostics(
+                    row.get("threshold_diagnostics")
+                ),
+                sigma_tau=_optional_float(row.get("sigma_tau"), "sigma_tau"),
+                sigma_valid=_optional_bool(row.get("sigma_valid"), "sigma_valid", default=True),
+                sigma_age_ms=_nonnegative_int(row.get("sigma_age_ms", 0), "sigma_age_ms"),
+                last_sigma_update_ts=_optional_datetime(row.get("last_sigma_update_ts")),
+                short_vol=_optional_float(row.get("short_vol"), "short_vol"),
+                medium_vol=_optional_float(row.get("medium_vol"), "medium_vol"),
+                long_vol=_optional_float(row.get("long_vol"), "long_vol"),
+                volatility_floor_applied=_optional_bool(
+                    row.get("volatility_floor_applied"),
+                    "volatility_floor_applied",
+                    default=False,
+                ),
+                regime_multiplier_applied=_optional_bool(
+                    row.get("regime_multiplier_applied"),
+                    "regime_multiplier_applied",
+                    default=False,
+                ),
+                failure_reason=_optional_str(row.get("failure_reason"), "failure_reason"),
+                input_sample_count=_nonnegative_int(
+                    row.get("input_sample_count", 0),
+                    "input_sample_count",
+                ),
+                offload_allowed=_optional_bool(
+                    row.get("offload_allowed"),
+                    "offload_allowed",
+                    default=True,
+                ),
+                block_reasons=tuple(
+                    _string_list(row.get("block_reasons", []), "block_reasons")
+                ),
             )
         )
         if len(inputs) >= limit:
@@ -1450,6 +2023,68 @@ def _optional_str(value: object, field_name: str) -> str | None:
     return _nonempty_str(value, field_name)
 
 
+def _probability_state(value: object) -> ProbabilityState:
+    if value is None:
+        return "READY"
+    if value not in {"READY", "BLOCKED", "BLOCKED_OR_STALE"}:
+        raise ValueError("probability_state must be READY, BLOCKED, or BLOCKED_OR_STALE")
+    return cast(ProbabilityState, value)
+
+
+def _optional_bool(value: object, field_name: str, *, default: bool) -> bool:
+    if value is None:
+        return default
+    if not isinstance(value, bool):
+        raise ValueError(f"{field_name} must be a boolean")
+    return value
+
+
+def _threshold_diagnostics_to_json_dict(
+    diagnostics: ThresholdDiagnostics,
+) -> dict[str, Any]:
+    return {
+        "contract_id": diagnostics.contract_id,
+        "market_slug": diagnostics.market_slug,
+        "asset": diagnostics.asset,
+        "side": diagnostics.side,
+        "K": diagnostics.K,
+        "K_source": diagnostics.K_source,
+        "rule_hash": diagnostics.rule_hash,
+        "timestamp": diagnostics.timestamp.isoformat(),
+        "previous_K": diagnostics.previous_K,
+        "new_K": diagnostics.new_K,
+        "reason_for_change": diagnostics.reason_for_change,
+    }
+
+
+def _optional_threshold_diagnostics(value: object) -> ThresholdDiagnostics | None:
+    if value is None:
+        return None
+    payload = _mapping(value, "threshold_diagnostics")
+    return ThresholdDiagnostics(
+        contract_id=_nonempty_str(payload.get("contract_id"), "contract_id"),
+        market_slug=_nonempty_str(payload.get("market_slug"), "market_slug"),
+        asset=_nonempty_str(payload.get("asset"), "asset"),
+        side=_nonempty_str(payload.get("side"), "side"),
+        K=_float(payload.get("K"), "K"),
+        K_source=_optional_str(payload.get("K_source"), "K_source"),
+        rule_hash=_nonempty_str(payload.get("rule_hash"), "rule_hash"),
+        timestamp=_parse_datetime(payload.get("timestamp")),
+        previous_K=_optional_float(payload.get("previous_K"), "previous_K"),
+        new_K=_float(payload.get("new_K"), "new_K"),
+        reason_for_change=_nonempty_str(
+            payload.get("reason_for_change"),
+            "reason_for_change",
+        ),
+    )
+
+
+def _optional_float(value: object, field_name: str) -> float | None:
+    if value is None:
+        return None
+    return _float(value, field_name)
+
+
 def _string_list(value: object, field_name: str) -> list[str]:
     if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
         raise ValueError(f"{field_name} must be a list of strings")
@@ -1460,6 +2095,13 @@ def _string_list(value: object, field_name: str) -> list[str]:
 
 def _nonnegative_int(value: object, field_name: str) -> int:
     number = _int(value, field_name)
+    if number < 0:
+        raise ValueError(f"{field_name} must be nonnegative")
+    return number
+
+
+def _nonnegative_float(value: object, field_name: str) -> float:
+    number = _float(value, field_name)
     if number < 0:
         raise ValueError(f"{field_name} must be nonnegative")
     return number

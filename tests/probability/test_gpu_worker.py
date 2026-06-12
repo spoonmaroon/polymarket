@@ -11,13 +11,74 @@ from polymarket_engine.probability.gpu_worker import PROBABILITY_INPUTS_SCHEMA_V
 from polymarket_engine.probability.gpu_worker import _budget_diagnostics
 from polymarket_engine.probability.gpu_worker import _clamp_path_count
 from polymarket_engine.probability.gpu_worker import _event_payload_from_row
+from polymarket_engine.probability.gpu_worker import _latest_probability_inputs_from_snapshot
 from polymarket_engine.probability.gpu_worker import _path_budget_per_input
 from polymarket_engine.probability.gpu_worker import run_cuda_probability_worker_cycle
 from polymarket_engine.probability.gpu_worker import run_cuda_probability_worker_loop
+from polymarket_engine.probability.hot_inputs import HOT_PROBABILITY_INPUTS_SCHEMA_VERSION
 from polymarket_engine.probability.generator_fragments import GeneratorFragment
 from polymarket_engine.probability.generator_fragments import write_probability_fragments
 from polymarket_engine.probability.runtime_inputs import ProbabilityRuntimeInput
 from polymarket_engine.probability.schema import ProbabilityInput, ProbabilityOutput
+
+
+def _write_ready_recovery_status(path: Path) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "runtime_phase": "READY",
+                "ready": True,
+                "reasons": [],
+                "uptime_seconds": 300.0,
+                "consecutive_healthy_cycles": 3,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def _runtime_input_snapshot_row(
+    *,
+    asof_ts: datetime,
+    state_id: str,
+    asset: str,
+    side: str,
+    source_age_ms: int = 100,
+    book_age_ms: int = 100,
+    seconds_left: float = 300.0,
+    expiry_offset_seconds: float = 300.0,
+    probability_state: str = "READY",
+    offload_allowed: bool = True,
+    block_reasons: list[str] | None = None,
+) -> dict[str, object]:
+    probability_input = ProbabilityInput(
+        state_id=state_id,
+        asof_ts=asof_ts,
+        asset=asset,
+        side=side,
+        comparison_operator=">=" if side == "UP" else "<",
+        seconds_left=seconds_left,
+        settlement_price=70_100.0 if asset == "BTC" else 3_600.0,
+        threshold=70_000.0 if asset == "BTC" else 3_580.0,
+        sigma_tau=0.012,
+        executable_price=0.52 if side == "UP" else 0.48,
+        source_age_ms=source_age_ms,
+        book_age_ms=book_age_ms,
+        z_path=0.12,
+    )
+    return {
+        "contract": f"{asset} 5m {side}",
+        "contract_id": f"{asset.lower()}-{side.lower()}",
+        "market_slug": f"{asset.lower()}-updown-5m",
+        "start_ts": asof_ts.isoformat(),
+        "expiry_ts": (asof_ts + timedelta(seconds=expiry_offset_seconds)).isoformat(),
+        "flags": ["OK"] if probability_state == "READY" else ["BLOCKED"],
+        "probability_state": probability_state,
+        "offload_allowed": offload_allowed,
+        "block_reasons": block_reasons or [],
+        "probability_input": probability_input.to_json_dict(),
+        "volatility_regime": "normal",
+    }
 
 
 def test_event_payload_includes_simulation_preview_for_mc_rows() -> None:
@@ -122,6 +183,9 @@ def test_worker_publishes_nowcast_rows_for_new_contracts_before_mc_finishes(
     probability_status_path = tmp_path / "probabilities.json"
     probability_inputs_path = tmp_path / "probability_inputs.json"
     probability_event_path = tmp_path / "probability-events.jsonl"
+    offload_status_path = tmp_path / "offload_status.json"
+    offload_status_path = tmp_path / "offload_status.json"
+    _write_ready_recovery_status(probability_status_path.with_name("recovery_status.json"))
 
     def input_row(state_id: str, side: str, start_offset_minutes: int) -> dict[str, object]:
         probability_input = ProbabilityInput(
@@ -178,6 +242,7 @@ def test_worker_publishes_nowcast_rows_for_new_contracts_before_mc_finishes(
     payload = run_cuda_probability_worker_cycle(
         duckdb_path=tmp_path / "unused.duckdb",
         probability_status_path=probability_status_path,
+        offload_status_path=offload_status_path,
         probability_inputs_path=probability_inputs_path,
         probability_event_path=probability_event_path,
         budget=ProbabilityWorkerBudget(max_total_paths=80_000),
@@ -190,6 +255,756 @@ def test_worker_publishes_nowcast_rows_for_new_contracts_before_mc_finishes(
         "btc-updown-5m-0",
         "btc-updown-5m-5",
     }
+
+
+def test_worker_runs_mc_for_fresh_input_when_sibling_source_is_stale(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime.now(UTC)
+    asof_ts = now - timedelta(seconds=4)
+    probability_status_path = tmp_path / "probabilities.json"
+    probability_inputs_path = tmp_path / "probability_inputs.json"
+    probability_event_path = tmp_path / "probability-events.jsonl"
+    offload_status_path = tmp_path / "offload_status.json"
+    _write_ready_recovery_status(probability_status_path.with_name("recovery_status.json"))
+    probability_inputs_path.write_text(
+        json.dumps(
+            {
+                "schema_version": PROBABILITY_INPUTS_SCHEMA_VERSION,
+                "generated_at": now.isoformat(),
+                "rows": [
+                    _runtime_input_snapshot_row(
+                        asof_ts=asof_ts,
+                        state_id="state-btc-stale",
+                        asset="BTC",
+                        side="UP",
+                        source_age_ms=1300,
+                    ),
+                    _runtime_input_snapshot_row(
+                        asof_ts=asof_ts,
+                        state_id="state-eth-fresh",
+                        asset="ETH",
+                        side="UP",
+                        source_age_ms=100,
+                    ),
+                ],
+                "skipped": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_ensemble(
+        probability_input: ProbabilityInput,
+        *,
+        path_count: int,
+        steps: int,
+        seed: int,
+        history_fragments: object | None,
+    ) -> ProbabilityOutput:
+        return ProbabilityOutput(
+            state_id=probability_input.state_id,
+            asof_ts=probability_input.asof_ts,
+            p_finish=0.62,
+            p_no_touch=0.58,
+            z_path=probability_input.z_path,
+            model_version="ensemble-v1",
+            seed=seed,
+            diagnostics={
+                "path_count": path_count,
+                "paths_per_generator": path_count,
+                "generator_count": 4,
+                "simulation_preview": {
+                    "sampled_paths": [
+                        {
+                            "index": 0,
+                            "terminal_win": True,
+                            "no_touch_win": True,
+                            "points": [
+                                probability_input.settlement_price,
+                                probability_input.threshold,
+                            ],
+                        }
+                    ],
+                    "start_price": probability_input.settlement_price,
+                    "threshold": probability_input.threshold,
+                    "steps": steps,
+                    "terminal_win_count": 1,
+                },
+            },
+        )
+
+    monkeypatch.setattr(
+        "polymarket_engine.probability.gpu_worker.run_four_generator_ensemble",
+        fake_ensemble,
+    )
+
+    payload = run_cuda_probability_worker_cycle(
+        duckdb_path=tmp_path / "unused.duckdb",
+        probability_status_path=probability_status_path,
+        offload_status_path=offload_status_path,
+        probability_inputs_path=probability_inputs_path,
+        probability_event_path=probability_event_path,
+        budget=ProbabilityWorkerBudget(max_total_paths=80_000),
+    )
+
+    rows_by_state = {row["state_id"]: row for row in payload["rows"]}
+    assert rows_by_state["state-eth-fresh"]["probability_kind"] == "MC"
+    assert rows_by_state["state-eth-fresh"]["simulation_preview"]["sampled_paths"]
+    assert rows_by_state["state-btc-stale"]["probability_kind"] == "NOWCAST"
+    assert rows_by_state["state-btc-stale"]["block_reasons"] == ["price_stale"]
+    assert payload["offload"]["offload_allowed"] is True
+    assert payload["offload"]["mc_eligible_input_count"] == 1
+    assert payload["offload"]["blocked_input_count"] == 1
+    persisted_offload = json.loads(offload_status_path.read_text(encoding="utf-8"))
+    assert persisted_offload["mc_eligible_input_count"] == 1
+    assert persisted_offload["blocked_input_count"] == 1
+
+
+def test_worker_blocks_expired_probability_input_even_when_snapshot_is_fresh(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime.now(UTC)
+    asof_ts = now - timedelta(seconds=25)
+    probability_status_path = tmp_path / "probabilities.json"
+    probability_inputs_path = tmp_path / "probability_inputs.json"
+    probability_event_path = tmp_path / "probability-events.jsonl"
+    offload_status_path = tmp_path / "offload_status.json"
+    _write_ready_recovery_status(probability_status_path.with_name("recovery_status.json"))
+    probability_inputs_path.write_text(
+        json.dumps(
+            {
+                "schema_version": PROBABILITY_INPUTS_SCHEMA_VERSION,
+                "generated_at": now.isoformat(),
+                "rows": [
+                    _runtime_input_snapshot_row(
+                        asof_ts=asof_ts,
+                        state_id="state-expired",
+                        asset="BTC",
+                        side="UP",
+                        seconds_left=0.0,
+                        expiry_offset_seconds=-1.0,
+                    )
+                ],
+                "skipped": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fail_if_mc_runs(*_: object, **__: object) -> ProbabilityOutput:
+        raise AssertionError("MC must not run for expired probability input")
+
+    monkeypatch.setattr(
+        "polymarket_engine.probability.gpu_worker.run_four_generator_ensemble",
+        fail_if_mc_runs,
+    )
+
+    payload = run_cuda_probability_worker_cycle(
+        duckdb_path=tmp_path / "unused.duckdb",
+        probability_status_path=probability_status_path,
+        offload_status_path=offload_status_path,
+        probability_inputs_path=probability_inputs_path,
+        probability_event_path=probability_event_path,
+        budget=ProbabilityWorkerBudget(max_total_paths=80_000),
+    )
+
+    assert payload["state"] == "OFFLOAD_BLOCKED"
+    assert payload["rows"][0]["probability_kind"] == "NOWCAST"
+    assert "probability_input_expired" in payload["rows"][0]["block_reasons"]
+    assert "probability_input_expired" in payload["offload"]["reason_codes"]
+    assert payload["offload"]["mc_eligible_input_count"] == 0
+    persisted_offload = json.loads(offload_status_path.read_text(encoding="utf-8"))
+    assert "probability_input_expired" in persisted_offload["reason_codes"]
+
+
+def test_worker_blocks_near_expiry_input_using_effective_worker_time(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime.now(UTC)
+    asof_ts = now - timedelta(seconds=4)
+    probability_status_path = tmp_path / "probabilities.json"
+    probability_inputs_path = tmp_path / "probability_inputs.json"
+    probability_event_path = tmp_path / "probability-events.jsonl"
+    offload_status_path = tmp_path / "offload_status.json"
+    _write_ready_recovery_status(probability_status_path.with_name("recovery_status.json"))
+    probability_inputs_path.write_text(
+        json.dumps(
+            {
+                "schema_version": PROBABILITY_INPUTS_SCHEMA_VERSION,
+                "generated_at": now.isoformat(),
+                "rows": [
+                    _runtime_input_snapshot_row(
+                        asof_ts=asof_ts,
+                        state_id="state-near-expiry",
+                        asset="BTC",
+                        side="UP",
+                        seconds_left=21.0,
+                        expiry_offset_seconds=17.0,
+                    )
+                ],
+                "skipped": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fail_if_mc_runs(*_: object, **__: object) -> ProbabilityOutput:
+        raise AssertionError("MC must not run inside the near-expiry window")
+
+    monkeypatch.setattr(
+        "polymarket_engine.probability.gpu_worker.run_four_generator_ensemble",
+        fail_if_mc_runs,
+    )
+
+    payload = run_cuda_probability_worker_cycle(
+        duckdb_path=tmp_path / "unused.duckdb",
+        probability_status_path=probability_status_path,
+        offload_status_path=offload_status_path,
+        probability_inputs_path=probability_inputs_path,
+        probability_event_path=probability_event_path,
+        budget=ProbabilityWorkerBudget(max_total_paths=80_000),
+    )
+
+    assert payload["state"] == "OFFLOAD_BLOCKED"
+    assert payload["rows"][0]["probability_kind"] == "NOWCAST"
+    assert "near_expiry" in payload["rows"][0]["block_reasons"]
+    assert "near_expiry" in payload["offload"]["reason_codes"]
+    assert payload["offload"]["mc_eligible_input_count"] == 0
+    persisted_offload = json.loads(offload_status_path.read_text(encoding="utf-8"))
+    assert "near_expiry" in persisted_offload["reason_codes"]
+
+
+def test_worker_blocks_expensive_mc_when_offload_gate_blocks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asof_ts = datetime.now(UTC)
+    probability_status_path = tmp_path / "probabilities.json"
+    offload_status_path = tmp_path / "offload_status.json"
+    probability_inputs_path = tmp_path / "probability_inputs.json"
+    probability_event_path = tmp_path / "probability-events.jsonl"
+
+    probability_inputs_path.write_text(
+        json.dumps(
+            {
+                "schema_version": PROBABILITY_INPUTS_SCHEMA_VERSION,
+                "generated_at": asof_ts.isoformat(),
+                "rows": [
+                    {
+                        "contract": "BTC 5m UP",
+                        "contract_id": "btc-up",
+                        "market_slug": "btc-updown-5m",
+                        "start_ts": asof_ts.isoformat(),
+                        "expiry_ts": (asof_ts + timedelta(minutes=5)).isoformat(),
+                        "flags": ["OK"],
+                        "offload_allowed": False,
+                        "block_reasons": ["runtime_not_ready"],
+                        "probability_input": ProbabilityInput(
+                            state_id="state-btc-up",
+                            asof_ts=asof_ts,
+                            asset="BTC",
+                            side="UP",
+                            comparison_operator=">=",
+                            seconds_left=300.0,
+                            settlement_price=70_100.0,
+                            threshold=70_000.0,
+                            sigma_tau=0.012,
+                            executable_price=0.52,
+                            source_age_ms=100,
+                            book_age_ms=100,
+                            z_path=0.12,
+                        ).to_json_dict(),
+                        "volatility_regime": "normal",
+                    }
+                ],
+                "skipped": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fail_if_mc_runs(*_: object, **__: object) -> ProbabilityOutput:
+        raise AssertionError("MC should be blocked by offload gate")
+
+    monkeypatch.setattr(
+        "polymarket_engine.probability.gpu_worker.run_four_generator_ensemble",
+        fail_if_mc_runs,
+    )
+
+    def fail_if_fragments_load(*_: object, **__: object) -> tuple[tuple[object, ...], None]:
+        raise AssertionError("fragments should not load when offload gate blocks")
+
+    monkeypatch.setattr(
+        "polymarket_engine.probability.gpu_worker._load_probability_fragments",
+        fail_if_fragments_load,
+    )
+
+    payload = run_cuda_probability_worker_cycle(
+        duckdb_path=tmp_path / "unused.duckdb",
+        probability_status_path=probability_status_path,
+        offload_status_path=offload_status_path,
+        probability_inputs_path=probability_inputs_path,
+        probability_event_path=probability_event_path,
+        budget=ProbabilityWorkerBudget(max_total_paths=80_000),
+    )
+
+    assert payload["state"] == "OFFLOAD_BLOCKED"
+    assert payload["offload"]["offload_allowed"] is False
+    assert "runtime_not_ready" in payload["offload"]["reason_codes"]
+    assert "recovery_status_missing" in payload["offload"]["reason_codes"]
+    assert payload["offload"]["recommended_worker_mode"] == "nowcast_only"
+    assert payload["offload"]["recommended_max_total_paths"] == 0
+    assert payload["rows"][0]["probability_kind"] == "NOWCAST"
+    persisted_offload = json.loads(offload_status_path.read_text(encoding="utf-8"))
+    assert persisted_offload == payload["offload"]
+
+
+def test_worker_blocks_expensive_mc_until_recovery_is_ready(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asof_ts = datetime.now(UTC)
+    probability_status_path = tmp_path / "probabilities.json"
+    recovery_status_path = tmp_path / "recovery_status.json"
+    probability_inputs_path = tmp_path / "probability_inputs.json"
+
+    probability_inputs_path.write_text(
+        json.dumps(
+            {
+                "schema_version": PROBABILITY_INPUTS_SCHEMA_VERSION,
+                "generated_at": asof_ts.isoformat(),
+                "rows": [
+                    {
+                        "contract": "BTC 5m UP",
+                        "contract_id": "btc-up",
+                        "market_slug": "btc-updown-5m",
+                        "start_ts": asof_ts.isoformat(),
+                        "expiry_ts": (asof_ts + timedelta(minutes=5)).isoformat(),
+                        "flags": ["OK"],
+                        "probability_input": ProbabilityInput(
+                            state_id="state-btc-up",
+                            asof_ts=asof_ts,
+                            asset="BTC",
+                            side="UP",
+                            comparison_operator=">=",
+                            seconds_left=300.0,
+                            settlement_price=70_100.0,
+                            threshold=70_000.0,
+                            sigma_tau=0.012,
+                            executable_price=0.52,
+                            source_age_ms=100,
+                            book_age_ms=100,
+                            z_path=0.12,
+                        ).to_json_dict(),
+                        "volatility_regime": "normal",
+                    }
+                ],
+                "skipped": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    recovery_status_path.write_text(
+        json.dumps(
+            {
+                "runtime_phase": "WARMING",
+                "ready": False,
+                "reasons": ["warmup_active"],
+                "uptime_seconds": 30.0,
+                "consecutive_healthy_cycles": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fail_if_mc_runs(*_: object, **__: object) -> ProbabilityOutput:
+        raise AssertionError("MC should be blocked while recovery is warming")
+
+    monkeypatch.setattr(
+        "polymarket_engine.probability.gpu_worker.run_four_generator_ensemble",
+        fail_if_mc_runs,
+    )
+
+    payload = run_cuda_probability_worker_cycle(
+        duckdb_path=tmp_path / "unused.duckdb",
+        probability_status_path=probability_status_path,
+        recovery_status_path=recovery_status_path,
+        probability_inputs_path=probability_inputs_path,
+        budget=ProbabilityWorkerBudget(max_total_paths=80_000),
+    )
+
+    assert payload["state"] == "OFFLOAD_BLOCKED"
+    assert payload["offload"]["offload_allowed"] is False
+    assert "runtime_not_ready" in payload["offload"]["reason_codes"]
+    assert "warmup_active" in payload["offload"]["reason_codes"]
+    assert payload["rows"][0]["probability_kind"] == "NOWCAST"
+
+
+def test_worker_blocks_expensive_mc_when_recovery_status_is_invalid(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asof_ts = datetime.now(UTC)
+    probability_status_path = tmp_path / "probabilities.json"
+    recovery_status_path = tmp_path / "recovery_status.json"
+    probability_inputs_path = tmp_path / "probability_inputs.json"
+    probability_event_path = tmp_path / "probability-events.jsonl"
+    probability_fragments_path = tmp_path / "probability_fragments.json"
+
+    probability_inputs_path.write_text(
+        json.dumps(
+            {
+                "schema_version": PROBABILITY_INPUTS_SCHEMA_VERSION,
+                "generated_at": asof_ts.isoformat(),
+                "rows": [
+                    {
+                        "contract": "BTC 5m UP",
+                        "contract_id": "btc-up",
+                        "market_slug": "btc-updown-5m",
+                        "start_ts": asof_ts.isoformat(),
+                        "expiry_ts": (asof_ts + timedelta(minutes=5)).isoformat(),
+                        "flags": ["OK"],
+                        "probability_input": ProbabilityInput(
+                            state_id="state-btc-up",
+                            asof_ts=asof_ts,
+                            asset="BTC",
+                            side="UP",
+                            comparison_operator=">=",
+                            seconds_left=300.0,
+                            settlement_price=70_100.0,
+                            threshold=70_000.0,
+                            sigma_tau=0.012,
+                            executable_price=0.52,
+                            source_age_ms=100,
+                            book_age_ms=100,
+                            z_path=0.12,
+                        ).to_json_dict(),
+                        "volatility_regime": "normal",
+                    }
+                ],
+                "skipped": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    recovery_status_path.write_text(
+        json.dumps(
+            {
+                "runtime_phase": "READY",
+                "ready": True,
+                "reasons": [],
+                "uptime_seconds": -1.0,
+                "consecutive_healthy_cycles": 3,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fail_if_mc_runs(*_: object, **__: object) -> ProbabilityOutput:
+        raise AssertionError("MC should be blocked when recovery status is invalid")
+
+    monkeypatch.setattr(
+        "polymarket_engine.probability.gpu_worker.run_four_generator_ensemble",
+        fail_if_mc_runs,
+    )
+
+    def fail_if_fragments_load(*_: object, **__: object) -> tuple[tuple[object, ...], None]:
+        raise AssertionError("fragments should not load when recovery status is invalid")
+
+    monkeypatch.setattr(
+        "polymarket_engine.probability.gpu_worker._load_probability_fragments",
+        fail_if_fragments_load,
+    )
+
+    payload = run_cuda_probability_worker_cycle(
+        duckdb_path=tmp_path / "unused.duckdb",
+        probability_status_path=probability_status_path,
+        recovery_status_path=recovery_status_path,
+        probability_inputs_path=probability_inputs_path,
+        probability_fragments_path=probability_fragments_path,
+        probability_event_path=probability_event_path,
+        budget=ProbabilityWorkerBudget(max_total_paths=80_000),
+    )
+
+    assert payload["state"] == "OFFLOAD_BLOCKED"
+    assert payload["offload"]["offload_allowed"] is False
+    assert "recovery_status_invalid" in payload["offload"]["reason_codes"]
+    assert payload["rows"][0]["probability_kind"] == "NOWCAST"
+
+
+def test_snapshot_adapter_preserves_runtime_safety_fields(tmp_path: Path) -> None:
+    asof_ts = datetime.now(UTC)
+    probability_inputs_path = tmp_path / "probability_inputs.json"
+    probability_inputs_path.write_text(
+        json.dumps(
+            {
+                "schema_version": PROBABILITY_INPUTS_SCHEMA_VERSION,
+                "generated_at": asof_ts.isoformat(),
+                "rows": [
+                    {
+                        "contract": "BTC 5m UP",
+                        "contract_id": "btc-up",
+                        "market_slug": "btc-updown-5m",
+                        "start_ts": asof_ts.isoformat(),
+                        "expiry_ts": (asof_ts + timedelta(minutes=5)).isoformat(),
+                        "flags": ["SIGMA_INVALID"],
+                        "sigma_tau": None,
+                        "sigma_valid": False,
+                        "sigma_age_ms": 2500,
+                        "offload_allowed": False,
+                        "block_reasons": ["sigma_invalid"],
+                        "probability_input": ProbabilityInput(
+                            state_id="state-btc-up",
+                            asof_ts=asof_ts,
+                            asset="BTC",
+                            side="UP",
+                            comparison_operator=">=",
+                            seconds_left=300.0,
+                            settlement_price=70_100.0,
+                            threshold=70_000.0,
+                            sigma_tau=0.012,
+                            executable_price=0.52,
+                            source_age_ms=100,
+                            book_age_ms=100,
+                            z_path=0.12,
+                        ).to_json_dict(),
+                        "probability_state": "BLOCKED",
+                        "volatility_regime": "normal",
+                    }
+                ],
+                "skipped": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    inputs, skipped = _latest_probability_inputs_from_snapshot(
+        path=probability_inputs_path,
+        limit=4,
+        max_state_age_seconds=600,
+        max_snapshot_age_seconds=30,
+    )
+
+    assert skipped == 0
+    assert len(inputs) == 1
+    runtime_input = inputs[0]
+    assert runtime_input.sigma_valid is False
+    assert runtime_input.sigma_age_ms == 2500
+    assert runtime_input.offload_allowed is False
+    assert runtime_input.block_reasons == ("sigma_invalid",)
+    assert runtime_input.probability_state == "BLOCKED"
+
+
+def test_worker_preserves_blocked_threshold_rows_without_running_mc(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asof_ts = datetime.now(UTC)
+    probability_status_path = tmp_path / "probabilities.json"
+    probability_inputs_path = tmp_path / "hot_probability_inputs.json"
+    probability_event_path = tmp_path / "probability-events.jsonl"
+    _write_ready_recovery_status(probability_status_path.with_name("recovery_status.json"))
+
+    def input_row(
+        *,
+        state_id: str,
+        side: str,
+        contract_id: str,
+        probability_state: str = "READY",
+        k_stable: bool = True,
+        flags: list[str] | None = None,
+    ) -> dict[str, object]:
+        probability_input = ProbabilityInput(
+            state_id=state_id,
+            asof_ts=asof_ts,
+            asset="BTC",
+            side=side,
+            comparison_operator=">=" if side == "UP" else "<",
+            seconds_left=300.0,
+            settlement_price=70_100.0,
+            threshold=70_000.0 if k_stable else 70_001.0,
+            sigma_tau=0.012,
+            executable_price=0.52 if side == "UP" else 0.48,
+            source_age_ms=100,
+            book_age_ms=100,
+            z_path=0.12,
+        )
+        row: dict[str, object] = {
+            "contract": f"BTC 5m {side}",
+            "contract_id": contract_id,
+            "market_slug": "btc-updown-5m-1780752000",
+            "start_ts": asof_ts.isoformat(),
+            "expiry_ts": (asof_ts + timedelta(minutes=5)).isoformat(),
+            "flags": flags or ["OK"],
+            "k_stable": k_stable,
+            "probability_input": probability_input.to_json_dict(),
+            "probability_state": probability_state,
+            "threshold_diagnostics": {
+                "contract_id": contract_id,
+                "market_slug": "btc-updown-5m-1780752000",
+                "asset": "BTC",
+                "side": side,
+                "K": probability_input.threshold,
+                "K_source": "polymarket_rtds_chainlink",
+                "rule_hash": "hash",
+                "timestamp": asof_ts.isoformat(),
+                "previous_K": 70_000.0 if not k_stable else None,
+                "new_K": probability_input.threshold,
+                "reason_for_change": (
+                    "threshold_changed_without_rule_hash_change"
+                    if not k_stable
+                    else "initial_assignment"
+                ),
+            },
+            "volatility_regime": "normal",
+        }
+        return row
+
+    probability_inputs_path.write_text(
+        json.dumps(
+            {
+                "schema_version": HOT_PROBABILITY_INPUTS_SCHEMA_VERSION,
+                "generated_at": asof_ts.isoformat(),
+                "inputs": [
+                    input_row(
+                        state_id="state-ready-original",
+                        side="UP",
+                        contract_id="btc-up",
+                    ),
+                    input_row(
+                        state_id="state-blocked-mutated",
+                        side="UP",
+                        contract_id="btc-up",
+                        probability_state="BLOCKED",
+                        k_stable=False,
+                        flags=["THRESHOLD_MUTATION_ERROR"],
+                    ),
+                ],
+                "skipped": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_ensemble_output(
+        input_row: ProbabilityInput,
+        *,
+        path_count: int,
+        steps: int,
+        seed: int,
+        history_fragments: tuple[tuple[float, ...], ...] | None = None,
+    ) -> ProbabilityOutput:
+        del path_count, steps, seed, history_fragments
+        if input_row.state_id in {"state-ready-original", "state-blocked-mutated"}:
+            raise AssertionError("blocked contract_id reached MC")
+        return ProbabilityOutput(
+            state_id=input_row.state_id,
+            asof_ts=input_row.asof_ts,
+            p_finish=0.64,
+            p_no_touch=0.57,
+            z_path=input_row.z_path,
+            model_version="ensemble-v1",
+            seed=1,
+            diagnostics={
+                "model": "ensemble-v1",
+                "generator_version": "four-generator-ensemble-v1",
+                "path_count": 4_000,
+                "paths_per_generator": 1_000,
+                "generator_count": 4,
+                "steps": 300,
+                "effective_weights": {},
+                "generator_summary": {},
+                "generator_runs": [],
+                "effective_generator_values": {},
+                "u_gen": 0.03,
+                "mc_dispersion": 0.08,
+                "uncertainty_buffer": 0.055,
+                "path_diagnosis": "OK",
+                "sparse_scope": False,
+            },
+        )
+
+    monkeypatch.setattr(
+        "polymarket_engine.probability.gpu_worker.run_four_generator_ensemble",
+        fake_ensemble_output,
+    )
+
+    payload = run_cuda_probability_worker_cycle(
+        duckdb_path=tmp_path / "unused.duckdb",
+        probability_status_path=probability_status_path,
+        probability_inputs_path=probability_inputs_path,
+        probability_event_path=probability_event_path,
+        budget=ProbabilityWorkerBudget(max_total_paths=20_000),
+    )
+
+    assert payload["state"] == "OFFLOAD_BLOCKED"
+    assert {row["probability_kind"] for row in payload["rows"]} == {"NOWCAST"}
+    blocked = next(row for row in payload["rows"] if row["state_id"] == "state-blocked-mutated")
+    assert blocked["contract_id"] == "btc-up"
+    assert blocked["probability_kind"] == "NOWCAST"
+    assert blocked["probability_state"] == "BLOCKED"
+    assert blocked["k_stable"] is False
+    assert blocked["flags"] == ["THRESHOLD_MUTATION_ERROR"]
+    assert blocked["threshold_diagnostics"]["reason_for_change"] == (
+        "threshold_changed_without_rule_hash_change"
+    )
+
+
+def test_gpu_snapshot_adapter_accepts_blocked_or_stale_state(tmp_path: Path) -> None:
+    asof_ts = datetime.now(UTC)
+    probability_inputs_path = tmp_path / "hot_probability_inputs.json"
+    probability_input = ProbabilityInput(
+        state_id="state-blocked-or-stale",
+        asof_ts=asof_ts,
+        asset="BTC",
+        side="UP",
+        comparison_operator=">=",
+        seconds_left=300.0,
+        settlement_price=70_100.0,
+        threshold=70_000.0,
+        sigma_tau=0.012,
+        executable_price=0.52,
+        source_age_ms=100,
+        book_age_ms=100,
+        z_path=0.12,
+    )
+    probability_inputs_path.write_text(
+        json.dumps(
+            {
+                "schema_version": HOT_PROBABILITY_INPUTS_SCHEMA_VERSION,
+                "generated_at": asof_ts.isoformat(),
+                "inputs": [
+                    {
+                        "contract": "BTC 5m UP",
+                        "contract_id": "btc-up",
+                        "market_slug": "btc-updown-5m-1780752000",
+                        "start_ts": asof_ts.isoformat(),
+                        "expiry_ts": (asof_ts + timedelta(minutes=5)).isoformat(),
+                        "flags": ["STALE_INPUT"],
+                        "k_stable": True,
+                        "probability_input": probability_input.to_json_dict(),
+                        "probability_state": "BLOCKED_OR_STALE",
+                    }
+                ],
+                "skipped": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    inputs, skipped = _latest_probability_inputs_from_snapshot(
+        path=probability_inputs_path,
+        limit=10,
+        max_state_age_seconds=60 * 60,
+        max_snapshot_age_seconds=60,
+    )
+
+    assert skipped == 0
+    assert inputs[0].probability_state == "BLOCKED_OR_STALE"
 
 
 def test_worker_budget_rejects_soft_max_below_target() -> None:
@@ -398,6 +1213,7 @@ def test_worker_writes_ensemble_v1_rows_and_events(
     probability_status_path = tmp_path / "probabilities.json"
     probability_inputs_path = tmp_path / "probability_inputs.json"
     probability_event_path = tmp_path / "probability-events.jsonl"
+    _write_ready_recovery_status(probability_status_path.with_name("recovery_status.json"))
     probability_input = ProbabilityInput(
         state_id="state-btc-up",
         asof_ts=asof_ts,
@@ -559,6 +1375,7 @@ def test_worker_passes_asof_safe_fragments_into_ensemble(
     probability_status_path = tmp_path / "probabilities.json"
     probability_inputs_path = tmp_path / "probability_inputs.json"
     probability_fragments_path = tmp_path / "probability_fragments.json"
+    _write_ready_recovery_status(probability_status_path.with_name("recovery_status.json"))
     probability_input = ProbabilityInput(
         state_id="state-btc-up",
         asof_ts=asof_ts,

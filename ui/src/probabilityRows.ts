@@ -10,6 +10,7 @@ export type ProbabilityPayloadForGraph<Row extends ProbabilityRowForGraph> = {
   ok?: boolean;
   state?: string;
   rows?: Row[];
+  nowcast_rows?: Row[];
   previous_mc_retained?: boolean;
   retained_mc_rows?: number;
 };
@@ -55,6 +56,7 @@ export type ProbabilityValueRow = ProbabilityRowForGraph & {
   effective_weights?: Record<string, number>;
   generator_metadata?: unknown;
   generator_summary?: unknown;
+  block_reasons?: unknown[];
   simulation_preview?: unknown;
 };
 
@@ -84,12 +86,37 @@ export function filterGraphableProbabilityRows<Row extends ProbabilityRowForGrap
   payload: ProbabilityPayloadForGraph<Row> | null,
   nowMs = Date.now(),
 ): Row[] {
-  if (!Array.isArray(payload?.rows)) {
+  if (!payload) {
     return [];
   }
+  const rows = Array.isArray(payload.rows) ? payload.rows : [];
   const allowExpiredValidity =
     payload.previous_mc_retained === true && Number(payload.retained_mc_rows ?? 0) > 0;
-  return payload.rows
+  return graphableRowsFrom(rows, nowMs, allowExpiredValidity);
+}
+
+export function filterGraphableProbabilityRowsIncludingNowcast<
+  Row extends ProbabilityRowForGraph,
+>(
+  payload: ProbabilityPayloadForGraph<Row> | null,
+  nowMs = Date.now(),
+): Row[] {
+  if (!payload) {
+    return [];
+  }
+  const nowcastRows = Array.isArray(payload.nowcast_rows) ? payload.nowcast_rows : [];
+  return [
+    ...filterGraphableProbabilityRows(payload, nowMs),
+    ...graphableRowsFrom(nowcastRows, nowMs, false),
+  ];
+}
+
+function graphableRowsFrom<Row extends ProbabilityRowForGraph>(
+  rows: Row[],
+  nowMs: number,
+  allowExpiredValidity: boolean,
+) {
+  return rows
     .filter((row): row is Row => isRecord(row))
     .filter((row) => isGraphableProbabilityRow(row, nowMs, allowExpiredValidity));
 }
@@ -325,6 +352,84 @@ export function probabilityRuntimeStateLabel(value?: string | null) {
   }
 }
 
+export type LivePathStatusInput = {
+  probabilityState?: string;
+  rows?: ProbabilityValueRow[];
+  offload?: {
+    offload_allowed?: boolean;
+    reason_codes?: unknown[];
+    recommended_worker_mode?: string;
+    input_count?: number;
+    mc_eligible_input_count?: number;
+    blocked_input_count?: number;
+    max_input_state_lag_ms?: number;
+  };
+};
+
+export type LivePathStatus = {
+  state: "LIVE_PATHS" | "PARTIAL_PATHS" | "PATHS_BLOCKED" | "NOWCAST_ONLY" | "PATHS_PENDING";
+  label: string;
+  detail: string;
+  reasons: string[];
+};
+
+export function livePathStatus(input: LivePathStatusInput): LivePathStatus {
+  const rows = Array.isArray(input.rows) ? input.rows : [];
+  const mcRows = rows.filter((row) => probabilityKind(row) !== "NOWCAST");
+  const previewRows = mcRows.filter((row) => hasSampledPathPreview(row.simulation_preview));
+  const nowcastRows = rows.filter((row) => probabilityKind(row) === "NOWCAST");
+  const reasons = Array.isArray(input.offload?.reason_codes)
+    ? input.offload.reason_codes.map(String).filter(Boolean)
+    : [];
+  const eligibleCount = numericCount(input.offload?.mc_eligible_input_count);
+  const blockedCount = numericCount(input.offload?.blocked_input_count);
+  const inputCount = numericCount(input.offload?.input_count);
+  const hasBlockedInputs = blockedCount !== undefined && blockedCount > 0;
+  const hasEligibleInputs = eligibleCount !== undefined && eligibleCount > 0;
+
+  if (previewRows.length > 0) {
+    const partial =
+      previewRows.length < mcRows.length ||
+      nowcastRows.length > 0 ||
+      hasBlockedInputs ||
+      (inputCount !== undefined &&
+        eligibleCount !== undefined &&
+        eligibleCount < inputCount);
+    return {
+      state: partial ? "PARTIAL_PATHS" : "LIVE_PATHS",
+      label: partial ? "Partial paths" : "Live paths",
+      detail: `${previewRows.length} preview row${previewRows.length === 1 ? "" : "s"}`,
+      reasons,
+    };
+  }
+  if (
+    input.offload?.offload_allowed === false ||
+    input.probabilityState === "OFFLOAD_BLOCKED" ||
+    (hasBlockedInputs && !hasEligibleInputs)
+  ) {
+    return {
+      state: "PATHS_BLOCKED",
+      label: "Live paths blocked",
+      detail: reasons.length > 0 ? reasons.join(", ") : "offload blocked",
+      reasons,
+    };
+  }
+  if (nowcastRows.length > 0) {
+    return {
+      state: "NOWCAST_ONLY",
+      label: "Nowcast only",
+      detail: hasEligibleInputs ? "MC preview pending" : "no sampled paths yet",
+      reasons,
+    };
+  }
+  return {
+    state: "PATHS_PENDING",
+    label: "Paths pending",
+    detail: "waiting for probability rows",
+    reasons,
+  };
+}
+
 export function mergeProbabilityEventsIntoPayload<Row extends ProbabilityValueRow>(
   payload: ProbabilityPayloadForEvents<Row> | null,
   events: Row[],
@@ -518,6 +623,15 @@ function newestPayloadGeneratedAt(
 
 function parsePreview(value: unknown): { sampled_paths?: unknown[] } | null {
   return isRecord(value) ? value : null;
+}
+
+function hasSampledPathPreview(value: unknown) {
+  const preview = parsePreview(value);
+  return Array.isArray(preview?.sampled_paths) && preview.sampled_paths.length > 0;
+}
+
+function numericCount(value: unknown) {
+  return isFiniteNumber(value) ? value : undefined;
 }
 
 function activeWindowRows<Row extends ProbabilityValueRow>(rows: Row[], nowMs: number) {

@@ -8,6 +8,17 @@ from datetime import datetime, timezone
 from polymarket_engine.domain.market_state import PriceObservation, VolatilitySnapshot
 
 VOLATILITY_REFERENCE_SOURCE_KEY = "polymarket_rtds_chainlink"
+VOLATILITY_FAILURE_REGIMES = frozenset(
+    {
+        "missing_reference_source",
+        "missing_continuous_reference_source",
+        "stale_reference_source",
+    }
+)
+
+
+def is_volatility_failure_regime(regime: str | None) -> bool:
+    return regime in VOLATILITY_FAILURE_REGIMES
 
 
 @dataclass(frozen=True)

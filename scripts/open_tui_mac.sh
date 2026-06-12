@@ -6,7 +6,8 @@ REPO="${POLYMARKET_REPO:-/Users/goon/polymarket}"
 RUST_DIR="$REPO/rust"
 TUI_BIN="$RUST_DIR/target/release/polymarket-cockpit-tui"
 BUILD_MARKER="$RUST_DIR/target/release/.polymarket-cockpit-tui.git-head"
-API_URL="${POLYMARKET_ENGINE_API_URL:-http://100.72.104.49:8000}"
+API_URL="${POLYMARKET_ENGINE_API_URL:-http://127.0.0.1:8000}"
+TUNNEL_CHECK="${POLYMARKET_TUNNEL_CHECK:-$REPO/scripts/check_mac_polymarket_tunnel.sh}"
 POLL_INTERVAL_MS="${POLYMARKET_TUI_POLL_INTERVAL_MS:-250}"
 LOG_DIR="$HOME/Library/Logs"
 LOG_FILE="$LOG_DIR/polymarket-tui-mac-launch.log"
@@ -22,6 +23,18 @@ last_built_head="$(cat "$BUILD_MARKER" 2>/dev/null || true)"
   echo "head=$current_head"
   echo "built_head=${last_built_head:-missing}"
 } >> "$LOG_FILE"
+
+if [[ "$API_URL" == "http://127.0.0.1:8000" && -x "$TUNNEL_CHECK" ]]; then
+  echo "Starting THEPC API tunnel..."
+  if ! "$TUNNEL_CHECK" >> "$LOG_FILE" 2>&1; then
+    echo
+    echo "Could not start the THEPC API tunnel."
+    echo "Log: $LOG_FILE"
+    echo
+    read -r "?Press Return to close."
+    exit 1
+  fi
+fi
 
 echo "Checking THEPC Polymarket runtime..."
 if ! curl -fsS --max-time 4 "$API_URL/api/runtime/live?limit=1" >/dev/null 2>> "$LOG_FILE"; then

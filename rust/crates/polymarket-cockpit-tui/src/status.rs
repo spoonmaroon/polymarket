@@ -51,9 +51,35 @@ pub struct RuntimeLive {
     pub gates: RuntimeGates,
     pub monitor: RuntimeMonitor,
     #[serde(default)]
+    pub recovery: RuntimeRecoverySummary,
+    #[serde(default)]
+    pub offload: RuntimeOffloadSummary,
+    #[serde(default)]
     pub volatility: RuntimeVolatility,
     #[serde(default)]
     pub latency: RuntimeDisplayLag,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+pub struct RuntimeRecoverySummary {
+    #[serde(default)]
+    pub runtime_phase: String,
+    #[serde(default)]
+    pub ready: bool,
+    #[serde(default)]
+    pub reasons: Vec<String>,
+    #[serde(default)]
+    pub boot_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+pub struct RuntimeOffloadSummary {
+    #[serde(default)]
+    pub offload_allowed: bool,
+    #[serde(default)]
+    pub reason_codes: Vec<String>,
+    #[serde(default)]
+    pub recommended_worker_mode: String,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
@@ -543,6 +569,35 @@ mod tests {
             Some("polymarket_rtds_chainlink")
         );
         assert_eq!(live.volatility.lookback_limit, Some(180));
+    }
+
+    #[test]
+    fn live_payload_parses_recovery_and_offload_summaries() {
+        let payload = r#"{
+            "ok": false,
+            "status": {
+                "ok": false,
+                "schema_kind": "rust-live-probe-state-manager-v1",
+                "mode": "state-manager",
+                "age_ms": 12,
+                "counts": {"prices": 2, "orderbooks": 4, "current": 2, "next": 2, "next_next": 0, "websocket_status": 2},
+                "latency_marks": [],
+                "health_flags": ["warmup_active"]
+            },
+            "gates": {"ok": false, "failures": ["warmup_active"]},
+            "monitor": {
+                "generated_at": "2026-06-03T21:00:00+00:00",
+                "price_rows": [],
+                "orderbooks": []
+            },
+            "recovery": {"runtime_phase": "WARMING", "ready": false, "reasons": ["warmup_active"], "boot_id": "boot-1"},
+            "offload": {"offload_allowed": false, "reason_codes": ["runtime_not_ready"], "recommended_worker_mode": "nowcast_only"}
+        }"#;
+
+        let live: RuntimeLive = serde_json::from_str(payload).unwrap();
+
+        assert_eq!(live.recovery.runtime_phase, "WARMING");
+        assert!(!live.offload.offload_allowed);
     }
 
     #[test]

@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   filterGraphableProbabilityRows,
+  filterGraphableProbabilityRowsIncludingNowcast,
   generatorBreakdownRows,
+  livePathStatus,
   mergeGraphableProbabilityPayloadRows,
   mergeProbabilityEventsIntoPayload,
   pairCoherenceLabel,
@@ -28,6 +30,7 @@ const MC_REFRESH_HOLD_MS = 15_000;
 const ROLLOVER_ROW_HOLD_MS = 30_000;
 
 type JsonRecord = Record<string, unknown>;
+type Tone = "neutral" | "good" | "warn" | "bad";
 
 type ApiState<T> = {
   status: "loading" | "ready" | "error";
@@ -56,6 +59,33 @@ type RuntimeGates = {
   errors?: unknown[];
   checks?: unknown[];
   reasons?: unknown[];
+};
+
+type RuntimeRecovery = {
+  runtime_phase?: string;
+  ready?: boolean;
+  reasons?: unknown[];
+  error?: string | null;
+  state?: string | null;
+  generated_at?: string;
+};
+
+type RuntimeOffload = {
+  offload_allowed?: boolean;
+  reason_codes?: unknown[];
+  recommended_worker_mode?: string;
+  recommended_max_total_paths?: number;
+  input_count?: number;
+  mc_eligible_input_count?: number;
+  blocked_input_count?: number;
+  max_input_state_lag_ms?: number;
+  max_source_age_ms?: number;
+  max_book_age_ms?: number;
+  min_seconds_left?: number;
+  blocked_inputs?: JsonRecord[];
+  error?: string | null;
+  state?: string | null;
+  generated_at?: string;
 };
 
 type RuntimeMonitor = {
@@ -117,6 +147,8 @@ type RuntimeLivePayload = {
   gates?: RuntimeGates;
   monitor?: RuntimeMonitor;
   volatility?: RuntimeVolatility;
+  recovery?: RuntimeRecovery;
+  offload?: RuntimeOffload;
   latency?: JsonRecord;
 };
 
@@ -224,6 +256,7 @@ type ProbabilityRow = {
   generator_metadata?: JsonRecord;
   cache_metadata?: JsonRecord;
   grid_cache?: JsonRecord;
+  block_reasons?: unknown[];
   simulation_preview?: unknown;
 };
 
@@ -255,6 +288,7 @@ type ProbabilityPayload = {
   grid_cache?: JsonRecord;
   cache?: JsonRecord;
   budget?: ProbabilityBudget;
+  offload?: RuntimeOffload;
 };
 
 type ProbabilityBudget = {
@@ -464,6 +498,7 @@ export function App() {
         <SelectedDetails
           row={selectedRow}
           probabilities={probabilities.payload}
+          liveOffload={live.payload?.offload}
           marketRows={marketRows}
           onSelectProbability={setSelectedId}
         />
@@ -530,9 +565,36 @@ function StatusStrip({
     probabilityPayload?.generated_at ??
     livePayload?.status?.generated_at ??
     livePayload?.server_sent_at;
+  const gateReasons = statusReasons(
+    livePayload?.gates?.failures,
+    livePayload?.gates?.errors,
+    livePayload?.gates?.reasons,
+  );
+  const recoveryReasons = statusReasons(livePayload?.recovery?.reasons);
+  const offloadReasons = statusReasons(livePayload?.offload?.reason_codes);
+  const pathStatus = livePathStatus({
+    probabilityState: probabilityPayload?.state,
+    rows,
+    offload: livePayload?.offload ?? probabilityPayload?.offload,
+  });
   return (
     <section className="status-strip" aria-label="Runtime status">
       <Metric label="Live state" value={liveState} tone={liveTone(livePayload?.ok, live.status)} />
+      <Metric
+        label="Gates"
+        value={formatBooleanStatus(livePayload?.gates?.ok, "OK", "Blocked", "Unknown")}
+        tone={booleanTone(livePayload?.gates?.ok)}
+      />
+      <Metric
+        label="Recovery"
+        value={formatRecoveryStatus(livePayload?.recovery)}
+        tone={booleanTone(livePayload?.recovery?.ready)}
+      />
+      <Metric
+        label="Offload"
+        value={formatOffloadStatus(livePayload?.offload)}
+        tone={booleanTone(livePayload?.offload?.offload_allowed)}
+      />
       <Metric label="Generated" value={formatTimestamp(generatedAt)} />
       <Metric
         label="Monte Carlo"
@@ -541,8 +603,24 @@ function StatusStrip({
       />
       <Metric label="Rows" value={formatInteger(rowCount)} />
       <Metric label="Paths" value={formatPathBudget(probabilityPayload?.budget, rows)} />
+      <Metric label="Live paths" value={pathStatus.label} tone={pathStatusTone(pathStatus.state)} />
       <Metric label="Cache" value={formatCacheState(probabilityPayload, rows)} />
       <Metric label="API build" value={formatLatency(livePayload?.latency)} />
+      {livePayload?.gates?.ok === false ? (
+        <div className="status-note">Gates: {gateReasons || "blocked"}</div>
+      ) : null}
+      {livePayload?.recovery?.ready === false ? (
+        <div className="status-note">Recovery: {recoveryReasons || "not ready"}</div>
+      ) : null}
+      {livePayload?.offload?.offload_allowed === false ? (
+        <div className="status-note">
+          Offload: {livePayload.offload.recommended_worker_mode || "blocked"}
+          {offloadReasons ? ` (${offloadReasons})` : ""}
+        </div>
+      ) : null}
+      {pathStatus.state !== "LIVE_PATHS" ? (
+        <div className="status-note status-note-info">Paths: {pathStatus.detail}</div>
+      ) : null}
       {live.error ? <div className="status-note">Live API: {live.error}</div> : null}
       {probabilities.error ? (
         <div className="status-note">Monte Carlo API: {probabilities.error}</div>
@@ -710,11 +788,13 @@ function ProbabilityTable({
 function SelectedDetails({
   row,
   probabilities,
+  liveOffload,
   marketRows,
   onSelectProbability,
 }: {
   row: ProbabilityRow | null;
   probabilities: ProbabilityPayload | null;
+  liveOffload?: RuntimeOffload;
   marketRows: MarketMonitorRow[];
   onSelectProbability: (key: string) => void;
 }) {
@@ -758,6 +838,8 @@ function SelectedDetails({
         <Metric label="Generators" value={formatInteger(metadata.generatorCount)} />
       </div>
 
+      <LivePathDiagnostics offload={liveOffload ?? probabilities?.offload} row={row} />
+
       <ContractPairSelector
         rows={pairRows}
         selectedKey={selectionKey(row)}
@@ -777,6 +859,40 @@ function SelectedDetails({
         <Metric label="model" value={row.model_version ?? probabilities?.model_version ?? "-"} />
         <Metric label="skipped" value={formatInteger(probabilities?.skipped)} />
       </div>
+    </section>
+  );
+}
+
+function LivePathDiagnostics({
+  offload,
+  row,
+}: {
+  offload?: RuntimeOffload;
+  row: ProbabilityRow;
+}) {
+  const blockedInputs = Array.isArray(offload?.blocked_inputs) ? offload.blocked_inputs : [];
+  const rowReasons = statusReasons(row.block_reasons);
+  const pathStatus = livePathStatus({
+    rows: [row],
+    offload,
+  });
+  if (!offload && !rowReasons) {
+    return null;
+  }
+  return (
+    <section className="live-path-diagnostics" aria-label="Live path diagnostics">
+      <Metric label="Path status" value={pathStatus.state} tone={pathStatusTone(pathStatus.state)} />
+      <Metric label="Path detail" value={`${pathStatus.label} - ${pathStatus.detail}`} />
+      <Metric label="MC eligible" value={formatInteger(offload?.mc_eligible_input_count)} />
+      <Metric label="Blocked inputs" value={formatInteger(offload?.blocked_input_count)} />
+      <Metric label="Input lag" value={formatAgeMs(offload?.max_input_state_lag_ms)} />
+      <Metric label="Source age" value={formatAgeMs(offload?.max_source_age_ms)} />
+      {rowReasons ? <span className="blocked-chip">Row: {rowReasons}</span> : null}
+      {blockedInputs.slice(0, 4).map((item, index) => (
+        <span className="blocked-chip" key={`${String(item.state_id ?? index)}-${index}`}>
+          {String(item.asset ?? "?")} {String(item.side ?? "?")}: {statusReasons(item.reason_codes)}
+        </span>
+      ))}
     </section>
   );
 }
@@ -1291,7 +1407,17 @@ function MonteCarloCanvas({
     [row, preview],
   );
   if (!preview || !geometry) {
-    return <ProbabilityFallbackChart row={row} />;
+    const rowReasons = statusReasons(row.block_reasons);
+    return (
+      <div className="path-chart path-chart-fallback">
+        <ProbabilityFallbackChart row={row} embedded />
+        <div className="path-blocked-caption">
+          {row.probability_kind === "NOWCAST"
+            ? `No sampled paths for NOWCAST row${rowReasons ? `: ${rowReasons}` : ""}`
+            : "No sampled paths in latest MC payload"}
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -1350,22 +1476,39 @@ function MonteCarloCanvas({
   );
 }
 
-function ProbabilityFallbackChart({ row }: { row: ProbabilityRow }) {
+function ProbabilityFallbackChart({
+  row,
+  embedded = false,
+}: {
+  row: ProbabilityRow;
+  embedded?: boolean;
+}) {
   const finishProbability = normalizedProbability(probabilityDisplayValue(row));
+  const noPreview = embedded;
+  const label = noPreview
+    ? row.probability_kind === "NOWCAST"
+      ? "Nowcast estimate"
+      : "No sampled paths"
+    : "Monte Carlo";
+  const heading = noPreview
+    ? row.probability_kind === "NOWCAST"
+      ? "No sampled paths for nowcast"
+      : "No sampled paths in payload"
+    : "Cached Monte Carlo snapshot";
   const bars = [
     {
-      label: "Monte Carlo",
+      label,
       value: finishProbability,
       className: "fallback-finish",
     },
   ];
   return (
-    <div className="path-chart fallback-chart">
+    <div className={embedded ? "fallback-chart fallback-chart-embedded" : "path-chart fallback-chart"}>
       <div className="chart-labels">
-        <span>Cached Monte Carlo snapshot</span>
+        <span>{heading}</span>
         <span>{formatTimestamp(row.asof_ts)}</span>
       </div>
-      <svg viewBox="0 0 760 310" role="img" aria-label="Cached Monte Carlo fallback chart">
+      <svg viewBox="0 0 760 310" role="img" aria-label={heading}>
         {[0, 0.25, 0.5, 0.75, 1].map((tick) => {
           const x = 150 + tick * 540;
           return (
@@ -1402,7 +1545,7 @@ function ProbabilityFallbackChart({ row }: { row: ProbabilityRow }) {
         })}
       </svg>
       <div className="chart-caption">
-        <span>Sampled path preview not attached in this poll</span>
+        <span>{noPreview ? "Rendered as probability only" : "Sampled path preview not attached in this poll"}</span>
         <span>z {formatSigned(row.z_path)}</span>
       </div>
     </div>
@@ -1436,7 +1579,7 @@ function Metric({
 }: {
   label: string;
   value: string;
-  tone?: "neutral" | "good" | "warn";
+  tone?: Tone;
 }) {
   return (
     <div className={`metric metric-${tone}`}>
@@ -1543,8 +1686,8 @@ function retainPreviousProbabilityRows(
   next: ApiState<ProbabilityPayload>,
   previous: ApiState<ProbabilityPayload>,
 ): ApiState<ProbabilityPayload> {
-  const previousRows = safeRows(previous.payload);
-  const nextRows = safeRows(next.payload);
+  const nextRows = safeMonteCarloRows(next.payload);
+  const previousMcRows = safeMonteCarloRows(previous.payload);
   const previousRawRows = Array.isArray(previous.payload?.rows) ? previous.payload.rows : [];
   const nowMs = Date.now();
   const holdUntilMs = (previous.updatedAt ?? nowMs) + MC_REFRESH_HOLD_MS;
@@ -1561,7 +1704,7 @@ function retainPreviousProbabilityRows(
       updatedAt: previous.updatedAt,
     };
   }
-  if (next.payload && previousRows.length > 0 && nextRows.length > 0) {
+  if (next.payload && previousMcRows.length > 0 && nextRows.length > 0) {
     const retainedPayload = mergeGraphableProbabilityPayloadRows(
       previous.payload,
       next.payload,
@@ -1614,6 +1757,16 @@ function markProbabilityRowsHeldForRefresh(
 }
 
 function safeRows(payload: ProbabilityPayload | null, nowMs = Date.now()): ProbabilityRow[] {
+  return visibleProbabilityDiagnosticRows(
+    filterGraphableProbabilityRowsIncludingNowcast(payload, nowMs),
+    nowMs,
+  );
+}
+
+function safeMonteCarloRows(
+  payload: ProbabilityPayload | null,
+  nowMs = Date.now(),
+): ProbabilityRow[] {
   return visibleProbabilityDiagnosticRows(filterGraphableProbabilityRows(payload, nowMs), nowMs);
 }
 
@@ -2163,6 +2316,47 @@ function formatProbabilityRuntimeState(state: ApiState<ProbabilityPayload>) {
   return "Waiting for Monte Carlo";
 }
 
+function formatBooleanStatus(
+  value: boolean | undefined,
+  trueLabel: string,
+  falseLabel: string,
+  unknownLabel: string,
+) {
+  if (value === true) {
+    return trueLabel;
+  }
+  if (value === false) {
+    return falseLabel;
+  }
+  return unknownLabel;
+}
+
+function formatRecoveryStatus(recovery?: RuntimeRecovery) {
+  const phase = cleanString(recovery?.runtime_phase) ?? cleanString(recovery?.state);
+  if (phase) {
+    return phase;
+  }
+  return formatBooleanStatus(recovery?.ready, "READY", "Blocked", "Unknown");
+}
+
+function formatOffloadStatus(offload?: RuntimeOffload) {
+  if (offload?.offload_allowed === true) {
+    return cleanString(offload.recommended_worker_mode) ?? "Allowed";
+  }
+  if (offload?.offload_allowed === false) {
+    return cleanString(offload.recommended_worker_mode) ?? "Blocked";
+  }
+  return cleanString(offload?.state) ?? "Unknown";
+}
+
+function statusReasons(...values: unknown[]) {
+  return values
+    .flatMap(unknownList)
+    .map(compactValue)
+    .filter(Boolean)
+    .join(", ");
+}
+
 function parseSimulationPreview(value: unknown): SimulationPreview | null {
   if (!isRecord(value)) {
     return null;
@@ -2492,6 +2686,16 @@ function formatAge(ageMs?: number) {
   return `${ageMs}ms`;
 }
 
+function formatAgeMs(value: unknown) {
+  if (!isFiniteNumber(value)) {
+    return "-";
+  }
+  if (value >= 1000) {
+    return `${(value / 1000).toFixed(1)}s`;
+  }
+  return `${Math.round(value)}ms`;
+}
+
 function formatCacheState(payload: ProbabilityPayload | null, rows: ProbabilityRow[]) {
   if (!payload) {
     return "pending";
@@ -2605,6 +2809,29 @@ function liveTone(ok: boolean | undefined, status: ApiState<RuntimeLivePayload>[
     return "warn";
   }
   return ok === true ? "good" : "neutral";
+}
+
+function booleanTone(value: boolean | undefined): Tone {
+  if (value === true) {
+    return "good";
+  }
+  if (value === false) {
+    return "warn";
+  }
+  return "neutral";
+}
+
+function pathStatusTone(state: string): Tone {
+  if (state === "LIVE_PATHS") {
+    return "good";
+  }
+  if (state === "PARTIAL_PATHS" || state === "NOWCAST_ONLY") {
+    return "warn";
+  }
+  if (state === "PATHS_BLOCKED") {
+    return "bad";
+  }
+  return "neutral";
 }
 
 function probabilityTone(payload: ProbabilityPayload | null) {

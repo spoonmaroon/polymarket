@@ -215,6 +215,14 @@ h3 {
   color: #e4c36f;
 }
 
+.metric-bad {
+  border-color: rgba(222, 91, 91, 0.45);
+}
+
+.metric-bad strong {
+  color: #f1a4a4;
+}
+
 .hero-metrics,
 .simulation-footer,
 .detail-grid {
@@ -222,6 +230,29 @@ h3 {
   grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
   gap: 5px;
   padding: 6px 10px;
+}
+
+.live-path-diagnostics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+  margin: 0;
+  border-top: 1px solid #2a2f34;
+  padding: 6px 10px;
+}
+
+.blocked-chip {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid #4a3c25;
+  border-radius: 4px;
+  padding: 4px 6px;
+  background: #17130d;
+  color: #dfca90;
+  font-size: 10px;
+  font-weight: 750;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .pair-selector {
@@ -565,6 +596,21 @@ button.probability-row:hover,
   display: grid;
   grid-template-rows: auto 1fr auto;
   padding: 8px;
+}
+
+.path-chart-fallback {
+  position: relative;
+}
+
+.fallback-chart-embedded {
+  display: contents;
+}
+
+.path-blocked-caption {
+  border-top: 1px solid #2a2f34;
+  padding: 5px 8px 0;
+  color: #dfca90;
+  font-size: 11px;
 }
 
 .chart-labels,
@@ -1061,6 +1107,7 @@ svg {
   .hero-metrics,
   .simulation-footer,
   .detail-grid,
+  .live-path-diagnostics,
   .mc-metric-grid,
   .ensemble-legend {
     grid-template-columns: 1fr 1fr;
