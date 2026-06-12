@@ -244,9 +244,9 @@ def test_normalizer_sidecar_is_deployed_and_health_checked() -> None:
     assert "--normalized-health-path" in compose
     assert "/var/lib/polymarket/live/normalized_health.json" in compose
     assert 'DEPLOY_ROLE="${POLYMARKET_DEPLOY_ROLE:-spoon-cpu-authority}"' in script
-    assert 'printf \'%s\\n\' "collector normalizer"' in script
+    assert 'printf \'%s\\n\' "collector normalizer outcome-refresh"' in script
     assert "compose_for_role up -d --build $START_SERVICES" in script
-    assert "outcome_refresh_stopped()" in script
+    assert "outcome_refresh_running()" in script
     assert "outcome_status_fresh()" in script
     assert "--normalized-health-path" in script
     assert "$DATA_DIR/live/normalized_health.json" in script
@@ -287,7 +287,10 @@ def test_runtime_api_service_is_deployed_with_engine_compose() -> None:
     assert "set_env POLYMARKET_ENABLE_RUNTIME_PROBABILITIES 1 deploy/collector/.env" in pc_script
     assert 'DEPLOY_ROLE="${POLYMARKET_DEPLOY_ROLE:-spoon-cpu-authority}"' in script
     assert "docker-compose.spoon-cpu-authority.yml" in script
-    assert 'printf \'%s\\n\' "collector normalizer api gpu-probability-worker"' in script
+    assert (
+        'printf \'%s\\n\' "collector normalizer outcome-refresh api gpu-probability-worker"'
+        in script
+    )
     assert "compose_for_role logs --tail=80 $START_SERVICES" in script
     assert "docker compose --env-file deploy/collector/.env" in pc_script
     assert "-f deploy/collector/docker-compose.thepc-gpu-api.yml ps" in pc_script
@@ -325,7 +328,7 @@ def test_spoon_deploy_defaults_to_cpu_authority_overlay() -> None:
 
     assert 'DEPLOY_ROLE="${POLYMARKET_DEPLOY_ROLE:-spoon-cpu-authority}"' in script
     assert "docker-compose.spoon-cpu-authority.yml" in script
-    assert 'printf \'%s\\n\' "collector normalizer"' in script
+    assert 'printf \'%s\\n\' "collector normalizer outcome-refresh"' in script
     assert "stop_services_excluded_by_role" in script
     assert 'compose -f "$COMPOSE_FILE" stop api gpu-probability-worker' in script
 
@@ -1070,7 +1073,7 @@ def test_normalizer_defaults_to_quarter_second_checkpointed_cadence() -> None:
     assert 'ENABLE_OUTCOME_REFRESH="${POLYMARKET_ENABLE_OUTCOME_REFRESH:-0}"' in entrypoint
 
 
-def test_outcome_refresh_is_owned_by_hot_normalizer_with_sidecar_fallback() -> None:
+def test_outcome_refresh_runs_as_dedicated_service_by_default() -> None:
     env_example = (ROOT / "deploy" / "collector" / ".env.example").read_text(
         encoding="utf-8"
     )
@@ -1083,7 +1086,7 @@ def test_outcome_refresh_is_owned_by_hot_normalizer_with_sidecar_fallback() -> N
         "/var/lib/polymarket/live/probability_inputs.json"
         in env_example
     )
-    assert "POLYMARKET_ENABLE_OUTCOME_REFRESH=1" in env_example
+    assert "POLYMARKET_ENABLE_OUTCOME_REFRESH=0" in env_example
     assert "POLYMARKET_OUTCOME_REFRESH_INTERVAL_SECONDS=30" in env_example
     assert "POLYMARKET_DUCKDB_THREADS=1" in env_example
     assert "POLYMARKET_DUCKDB_MEMORY_LIMIT=512MiB" in env_example
@@ -1100,7 +1103,7 @@ def test_outcome_refresh_is_owned_by_hot_normalizer_with_sidecar_fallback() -> N
     )
     assert (
         "POLYMARKET_ENABLE_OUTCOME_REFRESH: "
-        "${POLYMARKET_ENABLE_OUTCOME_REFRESH:-1}"
+        "${POLYMARKET_ENABLE_OUTCOME_REFRESH:-0}"
         in compose
     )
     assert "--enable-outcome-refresh" not in compose
@@ -1110,13 +1113,13 @@ def test_deploy_script_requires_running_normalizer_before_success() -> None:
     script = (ROOT / "scripts" / "deploy.sh").read_text(encoding="utf-8")
 
     assert "normalizer_running()" in script
-    assert "outcome_refresh_stopped()" in script
+    assert "outcome_refresh_running()" in script
     assert "outcome_status_fresh()" in script
     assert "ps --services --status running normalizer" in script
     assert "ps --services --status running outcome-refresh" in script
     assert "normalizer_running \\" in script
     assert "&& normalizer_uses_sidecar \\" in script
-    assert "&& outcome_refresh_stopped \\" in script
+    assert "&& outcome_refresh_running \\" in script
     assert "&& outcome_status_fresh \\" in script
 
 
@@ -1127,5 +1130,5 @@ def test_deploy_script_rejects_old_normalize_rust_events_normalizer() -> None:
     assert "run-rust-normalizer-sidecar" in script
     assert "compose_for_role top normalizer" in script
     assert "ps -eo args" not in script
-    assert "&& outcome_refresh_stopped \\" in script
+    assert "&& outcome_refresh_running \\" in script
     assert "&& outcome_status_fresh \\" in script

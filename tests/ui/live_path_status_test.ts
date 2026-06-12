@@ -86,6 +86,23 @@ assert.deepEqual(
   },
 );
 
+assert.deepEqual(
+  livePathStatus({
+    probabilityState: "OFFLOAD_BLOCKED",
+    rows: [
+      { contract_id: "btc-up", probability_kind: "MC" },
+      { contract_id: "btc-down", probability_kind: "MC" },
+    ],
+    offload: { offload_allowed: false, reason_codes: ["probability_inputs_stale"] },
+  }),
+  {
+    state: "PARTIAL_PATHS",
+    label: "Partial paths",
+    detail: "2 MC rows, preview pending",
+    reasons: ["probability_inputs_stale"],
+  },
+);
+
 assert.equal(
   livePathStatus({
     rows: [{ contract_id: "btc-up", probability_kind: "NOWCAST" }],

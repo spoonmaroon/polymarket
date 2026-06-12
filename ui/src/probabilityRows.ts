@@ -402,6 +402,14 @@ export function livePathStatus(input: LivePathStatusInput): LivePathStatus {
       reasons,
     };
   }
+  if (mcRows.length > 0) {
+    return {
+      state: "PARTIAL_PATHS",
+      label: "Partial paths",
+      detail: `${mcRows.length} MC row${mcRows.length === 1 ? "" : "s"}, preview pending`,
+      reasons,
+    };
+  }
   if (
     input.offload?.offload_allowed === false ||
     input.probabilityState === "OFFLOAD_BLOCKED" ||

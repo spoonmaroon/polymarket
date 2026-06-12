@@ -61,10 +61,10 @@ compose_for_role() {
 deploy_start_services() {
   case "$DEPLOY_ROLE" in
     spoon-cpu-authority)
-      printf '%s\n' "collector normalizer"
+      printf '%s\n' "collector normalizer outcome-refresh"
       ;;
     full)
-      printf '%s\n' "collector normalizer api gpu-probability-worker"
+      printf '%s\n' "collector normalizer outcome-refresh api gpu-probability-worker"
       ;;
     *)
       LOG "unsupported POLYMARKET_DEPLOY_ROLE=$DEPLOY_ROLE"
@@ -83,8 +83,8 @@ normalizer_uses_sidecar() {
     | grep "$NORMALIZER_SIDECAR_COMMAND" >> "$LOG_FILE" 2>&1
 }
 
-outcome_refresh_stopped() {
-  ! compose_for_role ps --services --status running outcome-refresh 2>> "$LOG_FILE" \
+outcome_refresh_running() {
+  compose_for_role ps --services --status running outcome-refresh 2>> "$LOG_FILE" \
     | grep -qx outcome-refresh
 }
 
@@ -192,7 +192,7 @@ if [ "$USE_PREBUILT" != "1" ] && [ "$LOCAL" = "$REMOTE" ] && [ "$DEPLOYED_SHA" =
   stop_services_excluded_by_role
   if normalizer_running \
     && normalizer_uses_sidecar \
-    && outcome_refresh_stopped \
+    && outcome_refresh_running \
     && outcome_status_fresh \
     && python3 "$REPO/scripts/check_collector_status.py" \
     --status-path "$STATUS_PATH" \
@@ -271,7 +271,7 @@ fi
 for _ in $(seq 1 "$DEPLOY_SMOKE_ATTEMPTS"); do
   if normalizer_running \
     && normalizer_uses_sidecar \
-    && outcome_refresh_stopped \
+    && outcome_refresh_running \
     && outcome_status_fresh \
     && python3 "$REPO/scripts/check_collector_status.py" \
     --status-path "$STATUS_PATH" \
