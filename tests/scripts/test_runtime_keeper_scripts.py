@@ -20,6 +20,7 @@ def test_thepc_runtime_keeper_installer_installs_loop_and_task() -> None:
     assert '--compose-file "$REPO/deploy/collector/docker-compose.thepc-gpu-api.yml"' in script
     assert '--required-service "api"' in script
     assert '--required-service "gpu-probability-worker"' in script
+    assert '--recovery-warmup-min-seconds 15' in script
     assert '--recovery-required-healthy-cycles 1' in script
     assert "--loop" in script
     assert "Register-ScheduledTask" in script
