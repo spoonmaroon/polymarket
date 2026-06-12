@@ -34,7 +34,7 @@ _HARD_OR_DATA_INTEGRITY_BLOCKERS = {
 class OffloadGateConfig:
     warmup_min_seconds: int = 60
     required_healthy_cycles: int = 3
-    max_price_age_ms: int = 1_000
+    max_price_age_ms: int = 2_000
     max_orderbook_age_ms: int = 1_000
     max_probability_input_age_ms: int = DEFAULT_MAX_PROBABILITY_INPUT_AGE_MS
     max_volatility_age_ms: int = 12_000

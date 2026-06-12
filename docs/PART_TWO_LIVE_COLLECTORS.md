@@ -45,7 +45,7 @@ polymarket-live-probe \
   --forever \
   --status-interval-ms 100 \
   --rest-backup-interval-ms 1000 \
-  --state-snapshot-interval-ms 5000 \
+  --state-snapshot-interval-ms 1000 \
   --state-snapshot-dir /var/lib/polymarket/raw/polymarket_state_manager/state_snapshot \
   --decision-snapshot-dir /var/lib/polymarket/raw \
   --out /var/lib/polymarket/live/status.json

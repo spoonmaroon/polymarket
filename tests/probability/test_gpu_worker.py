@@ -283,7 +283,7 @@ def test_worker_runs_mc_for_fresh_input_when_sibling_source_is_stale(
                         state_id="state-btc-stale",
                         asset="BTC",
                         side="UP",
-                        source_age_ms=1300,
+                        source_age_ms=2500,
                     ),
                     _runtime_input_snapshot_row(
                         asof_ts=asof_ts,

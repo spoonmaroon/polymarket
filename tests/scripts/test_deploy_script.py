@@ -146,7 +146,7 @@ def test_collector_entrypoint_enables_state_snapshot_journal() -> None:
     assert '"$STATE_SNAPSHOT_DIR"' in entrypoint
 
 
-def test_collector_fast_status_keeps_five_second_snapshot_journal() -> None:
+def test_collector_fast_status_keeps_one_second_snapshot_journal() -> None:
     env_example = (ROOT / "deploy" / "collector" / ".env.example").read_text(
         encoding="utf-8"
     )
@@ -160,10 +160,10 @@ def test_collector_fast_status_keeps_five_second_snapshot_journal() -> None:
     assert "POLYMARKET_STATUS_INTERVAL_MS=100" in env_example
     assert "POLYMARKET_STATUS_INTERVAL_MS:-100" in compose
     assert 'STATUS_INTERVAL_MS="${POLYMARKET_STATUS_INTERVAL_MS:-100}"' in entrypoint
-    assert "POLYMARKET_STATE_SNAPSHOT_INTERVAL_MS=5000" in env_example
-    assert "POLYMARKET_STATE_SNAPSHOT_INTERVAL_MS:-5000" in compose
+    assert "POLYMARKET_STATE_SNAPSHOT_INTERVAL_MS=1000" in env_example
+    assert "POLYMARKET_STATE_SNAPSHOT_INTERVAL_MS:-1000" in compose
     assert (
-        'STATE_SNAPSHOT_INTERVAL_MS="${POLYMARKET_STATE_SNAPSHOT_INTERVAL_MS:-5000}"'
+        'STATE_SNAPSHOT_INTERVAL_MS="${POLYMARKET_STATE_SNAPSHOT_INTERVAL_MS:-1000}"'
         in entrypoint
     )
     assert "--state-snapshot-interval-ms" in entrypoint

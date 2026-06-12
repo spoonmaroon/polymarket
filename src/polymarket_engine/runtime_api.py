@@ -443,14 +443,52 @@ def _probability_status_payload(
             "skipped": 0,
             "errors": ["probability status shape invalid: rows must be a list"],
         }
-    display_rows = rows
+    display_rows = list(rows)
     last_good_rows = status_payload.get("last_good_rows")
     if not display_rows and isinstance(last_good_rows, list):
         display_rows = [row for row in last_good_rows if isinstance(row, dict)]
+    else:
+        display_rows = _fill_missing_probability_display_rows_from_nowcasts(
+            display_rows,
+            status_payload.get("nowcast_rows"),
+        )
     limited = dict(status_payload)
     limited["rows"] = display_rows[:limit]
     limited["cached"] = False
     return limited
+
+
+def _fill_missing_probability_display_rows_from_nowcasts(
+    display_rows: list[Any],
+    nowcast_rows: object,
+) -> list[Any]:
+    if not isinstance(nowcast_rows, list):
+        return display_rows
+    seen_keys = {
+        key
+        for row in display_rows
+        if isinstance(row, dict)
+        for key in [_probability_display_row_key(row)]
+        if key is not None
+    }
+    merged = list(display_rows)
+    for row in nowcast_rows:
+        if not isinstance(row, dict):
+            continue
+        key = _probability_display_row_key(row)
+        if key is None or key in seen_keys:
+            continue
+        seen_keys.add(key)
+        merged.append(row)
+    return merged
+
+
+def _probability_display_row_key(row: dict[str, Any]) -> tuple[str, str] | None:
+    for field in ("contract_id", "state_id", "contract"):
+        value = row.get(field)
+        if value:
+            return (field, str(value))
+    return None
 
 
 def _probability_events_payload(

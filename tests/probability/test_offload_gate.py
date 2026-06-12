@@ -85,6 +85,15 @@ def test_offload_blocks_probability_inputs_after_live_cadence_budget() -> None:
     assert "probability_inputs_stale" in decision.reason_codes
 
 
+def test_offload_default_price_freshness_allows_observed_live_cadence() -> None:
+    decision = evaluate_offload_readiness(
+        base_inputs(price_age_ms=1_500),
+        OffloadGateConfig(),
+    )
+    assert decision.offload_allowed is True
+    assert "price_stale" not in decision.reason_codes
+
+
 def test_offload_allows_connected_websocket_status() -> None:
     decision = evaluate_offload_readiness(
         base_inputs(websocket_status="CONNECTED"),

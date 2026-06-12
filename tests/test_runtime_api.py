@@ -1706,6 +1706,91 @@ def test_runtime_probabilities_reads_live_probability_status_file(tmp_path: Path
     assert payload["rows"] == [{"contract": "BTC 5m UP", "output_id": "btc-up"}]
 
 
+def test_runtime_probabilities_fills_missing_display_rows_from_nowcast_rows(
+    tmp_path: Path,
+) -> None:
+    probability_status_path = tmp_path / "live" / "probabilities.json"
+    probability_status_path.parent.mkdir()
+    probability_status_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "polymarket-probability-runtime-v1",
+                "ok": True,
+                "state": "OK",
+                "generated_at": datetime.now(UTC).isoformat(),
+                "cached": False,
+                "model_version": "fixture-mc-v1",
+                "rows": [
+                    {
+                        "contract": "ETH 5m UP",
+                        "contract_id": "eth-up",
+                        "state_id": "eth-up-state",
+                        "asset": "ETH",
+                        "probability_kind": "MC",
+                    },
+                    {
+                        "contract": "ETH 5m DOWN",
+                        "contract_id": "eth-down",
+                        "state_id": "eth-down-state",
+                        "asset": "ETH",
+                        "probability_kind": "MC",
+                    },
+                ],
+                "nowcast_rows": [
+                    {
+                        "contract": "BTC 5m UP",
+                        "contract_id": "btc-up",
+                        "state_id": "btc-up-state",
+                        "asset": "BTC",
+                        "probability_kind": "NOWCAST",
+                    },
+                    {
+                        "contract": "BTC 5m DOWN",
+                        "contract_id": "btc-down",
+                        "state_id": "btc-down-state",
+                        "asset": "BTC",
+                        "probability_kind": "NOWCAST",
+                    },
+                    {
+                        "contract": "ETH 5m UP",
+                        "contract_id": "eth-up",
+                        "state_id": "eth-up-state",
+                        "asset": "ETH",
+                        "probability_kind": "NOWCAST",
+                    },
+                    {
+                        "contract": "ETH 5m DOWN",
+                        "contract_id": "eth-down",
+                        "state_id": "eth-down-state",
+                        "asset": "ETH",
+                        "probability_kind": "NOWCAST",
+                    },
+                ],
+                "skipped": 0,
+                "errors": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    app = create_app(
+        status_path=tmp_path / "missing-status.json",
+        duckdb_path=tmp_path / "missing.duckdb",
+        probability_status_path=probability_status_path,
+        enable_runtime_probabilities=True,
+    )
+
+    response = TestClient(app).get("/api/runtime/probabilities?limit=4")
+
+    assert response.status_code == 200
+    payload = response.json()
+    rows_by_contract_id = {row["contract_id"]: row for row in payload["rows"]}
+    assert set(rows_by_contract_id) == {"btc-up", "btc-down", "eth-up", "eth-down"}
+    assert rows_by_contract_id["eth-up"]["probability_kind"] == "MC"
+    assert rows_by_contract_id["eth-down"]["probability_kind"] == "MC"
+    assert rows_by_contract_id["btc-up"]["probability_kind"] == "NOWCAST"
+    assert rows_by_contract_id["btc-down"]["probability_kind"] == "NOWCAST"
+
+
 def test_runtime_probabilities_uses_last_good_rows_when_status_rows_empty(
     tmp_path: Path,
 ) -> None:
