@@ -25,6 +25,9 @@ def test_thepc_runtime_keeper_installer_installs_loop_and_task() -> None:
     assert "Polymarket Runtime Keeper" in script
     assert "wsl.exe" in script
     assert "Start-Sleep -Seconds 20" in script
+    assert "while (\\$true)" in script
+    assert "systemctl --user start polymarket-runtime-keeper.service" in script
+    assert "sleep 3600" in script
     assert "polymarket-runtime-keeper.service" in script
     assert "Restart=always" in script
     assert "systemctl --user enable --now polymarket-runtime-keeper.service" in script

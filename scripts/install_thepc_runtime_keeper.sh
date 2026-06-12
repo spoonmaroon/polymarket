@@ -68,15 +68,18 @@ fi
 POWERSHELL_SCRIPT_WINDOWS="$(wslpath -w "$POWERSHELL_SCRIPT")"
 
 cat > "$POWERSHELL_SCRIPT" <<EOF
-\$ErrorActionPreference = 'Stop'
-Start-Sleep -Seconds 20
-& wsl.exe -d $WSL_DISTRO -- "$LOOP_SCRIPT"
+\$ErrorActionPreference = 'Continue'
+while (\$true) {
+  Start-Sleep -Seconds 20
+  & wsl.exe -d $WSL_DISTRO -- bash -lc 'systemctl --user start polymarket-runtime-keeper.service polymarket-spoon-artifact-sync.service >/dev/null 2>&1 || true; exec sleep 3600'
+  Start-Sleep -Seconds 15
+}
 EOF
 
 powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "\
 \$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -ExecutionPolicy Bypass -File \"$POWERSHELL_SCRIPT_WINDOWS\"'; \
 \$trigger = New-ScheduledTaskTrigger -AtLogOn; \
-\$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1); \
+\$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit (New-TimeSpan -Seconds 0); \
 Register-ScheduledTask -TaskName '$TASK_NAME' -Action \$action -Trigger \$trigger -Settings \$settings -Force | Out-Null"
 
 echo "Installed $LOOP_SCRIPT"
