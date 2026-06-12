@@ -74,6 +74,10 @@ DEFAULT_MIN_FRAGMENT_COUNT = 2
 DEFAULT_CPU_THREADS = 1
 DEFAULT_MAX_INPUT_STATE_LAG_MS = 10_000
 DEFAULT_MIN_SECONDS_LEFT_FOR_MC = 20.0
+_RECOVERY_STATUS_GATE_CONFIG = OffloadGateConfig(
+    warmup_min_seconds=0,
+    required_healthy_cycles=0,
+)
 
 
 @dataclass(frozen=True)
@@ -221,7 +225,10 @@ def _offload_decision_from_inputs(
         ),
         min_total_paths=budget.min_total_paths,
     )
-    decision = evaluate_offload_readiness(gate_inputs, OffloadGateConfig())
+    decision = evaluate_offload_readiness(
+        gate_inputs,
+        _RECOVERY_STATUS_GATE_CONFIG,
+    )
     reason_codes = _dedupe_reasons(
         (*decision.reason_codes, *recovery_status.reasons)
     )

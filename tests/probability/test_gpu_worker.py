@@ -22,7 +22,11 @@ from polymarket_engine.probability.runtime_inputs import ProbabilityRuntimeInput
 from polymarket_engine.probability.schema import ProbabilityInput, ProbabilityOutput
 
 
-def _write_ready_recovery_status(path: Path) -> None:
+def _write_ready_recovery_status(
+    path: Path,
+    *,
+    consecutive_healthy_cycles: int = 3,
+) -> None:
     path.write_text(
         json.dumps(
             {
@@ -30,7 +34,7 @@ def _write_ready_recovery_status(path: Path) -> None:
                 "ready": True,
                 "reasons": [],
                 "uptime_seconds": 300.0,
-                "consecutive_healthy_cycles": 3,
+                "consecutive_healthy_cycles": consecutive_healthy_cycles,
             }
         ),
         encoding="utf-8",
@@ -642,6 +646,82 @@ def test_worker_blocks_expensive_mc_until_recovery_is_ready(
     assert "runtime_not_ready" in payload["offload"]["reason_codes"]
     assert "warmup_active" in payload["offload"]["reason_codes"]
     assert payload["rows"][0]["probability_kind"] == "NOWCAST"
+
+
+def test_worker_trusts_ready_recovery_status_after_one_configured_cycle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asof_ts = datetime.now(UTC)
+    probability_status_path = tmp_path / "probabilities.json"
+    recovery_status_path = tmp_path / "recovery_status.json"
+    probability_inputs_path = tmp_path / "probability_inputs.json"
+    offload_status_path = tmp_path / "offload_status.json"
+    _write_ready_recovery_status(
+        recovery_status_path,
+        consecutive_healthy_cycles=1,
+    )
+    probability_inputs_path.write_text(
+        json.dumps(
+            {
+                "schema_version": PROBABILITY_INPUTS_SCHEMA_VERSION,
+                "generated_at": asof_ts.isoformat(),
+                "rows": [
+                    _runtime_input_snapshot_row(
+                        asof_ts=asof_ts,
+                        state_id="state-btc-up",
+                        asset="BTC",
+                        side="UP",
+                    )
+                ],
+                "skipped": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_ensemble(
+        probability_input: ProbabilityInput,
+        *,
+        path_count: int,
+        steps: int,
+        seed: int,
+        history_fragments: object | None,
+    ) -> ProbabilityOutput:
+        return ProbabilityOutput(
+            state_id=probability_input.state_id,
+            asof_ts=probability_input.asof_ts,
+            p_finish=0.62,
+            p_no_touch=0.58,
+            z_path=probability_input.z_path,
+            model_version="ensemble-v1",
+            seed=seed,
+            diagnostics={
+                "path_count": path_count,
+                "paths_per_generator": path_count,
+                "generator_count": 4,
+                "steps": steps,
+                "simulation_preview": {"sampled_paths": []},
+            },
+        )
+
+    monkeypatch.setattr(
+        "polymarket_engine.probability.gpu_worker.run_four_generator_ensemble",
+        fake_ensemble,
+    )
+
+    payload = run_cuda_probability_worker_cycle(
+        duckdb_path=tmp_path / "unused.duckdb",
+        probability_status_path=probability_status_path,
+        recovery_status_path=recovery_status_path,
+        offload_status_path=offload_status_path,
+        probability_inputs_path=probability_inputs_path,
+        budget=ProbabilityWorkerBudget(max_total_paths=80_000),
+    )
+
+    assert payload["rows"][0]["probability_kind"] == "MC"
+    assert payload["offload"]["offload_allowed"] is True
+    assert "insufficient_healthy_cycles" not in payload["offload"]["reason_codes"]
 
 
 def test_worker_blocks_expensive_mc_when_recovery_status_is_invalid(
