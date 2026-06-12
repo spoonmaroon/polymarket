@@ -4,7 +4,7 @@ import json
 import math
 import tempfile
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Sequence, cast
 
@@ -25,6 +25,8 @@ THRESHOLD_MUTATION_ERROR = "THRESHOLD_MUTATION_ERROR"
 SIGMA_INVALID_BLOCK_REASON = "sigma_invalid"
 DIAGNOSTIC_SIGMA_TAU_FLOOR = 0.00005
 VOLATILITY_QUALITY_FLAGS = frozenset({"incomplete_orderbook", "missing_volatility"})
+START_PRICE_REFINEMENT_GRACE_SECONDS = 15.0
+EARLY_START_PRICE_REFINEMENT_REASON = "early_start_price_refinement"
 
 
 @dataclass(frozen=True)
@@ -39,6 +41,10 @@ class HotProbabilityInputPayload:
 class _ThresholdAssignment:
     threshold: float
     rule_hash: str
+    source_key: str | None
+    timestamp: datetime | None
+    reason_for_change: str | None
+    from_previous_snapshot: bool
 
 
 @dataclass(frozen=True)
@@ -80,25 +86,34 @@ def write_hot_probability_inputs(
             )
         probability_input = ProbabilityInput.from_decision_state(probability_source_state)
         previous_assignment = threshold_assignments.get(state.contract.contract_id)
+        threshold_mutated_without_rule_change = (
+            previous_assignment is not None
+            and previous_assignment.rule_hash == state.contract.rule_hash
+            and previous_assignment.threshold != state.threshold
+        )
+        accepted_mutation_reason = (
+            _accepted_threshold_mutation_reason(
+                state=state,
+                previous_assignment=previous_assignment,
+            )
+            if threshold_mutated_without_rule_change
+            else None
+        )
         threshold_diagnostics = _threshold_diagnostics(
             state=state,
             previous_assignment=previous_assignment,
+            accepted_mutation_reason=accepted_mutation_reason,
         )
         probability_state: ProbabilityState = "READY"
         offload_allowed = True
         k_stable = True
         flags = ("OK",)
         block_reasons: tuple[str, ...] = ()
-        threshold_mutated_without_rule_change = (
-            previous_assignment is not None
-            and previous_assignment.rule_hash == state.contract.rule_hash
-            and previous_assignment.threshold != state.threshold
-        )
         if not sigma_diagnostics.sigma_valid:
             probability_state = "BLOCKED_OR_STALE"
             offload_allowed = False
             block_reasons = (SIGMA_INVALID_BLOCK_REASON,)
-        elif threshold_mutated_without_rule_change:
+        elif threshold_mutated_without_rule_change and accepted_mutation_reason is None:
             probability_state = "BLOCKED"
             k_stable = False
             flags = (THRESHOLD_MUTATION_ERROR,)
@@ -106,6 +121,10 @@ def write_hot_probability_inputs(
             threshold_assignments[state.contract.contract_id] = _ThresholdAssignment(
                 threshold=state.threshold,
                 rule_hash=state.contract.rule_hash,
+                source_key=state.threshold_source_key,
+                timestamp=_threshold_timestamp(state),
+                reason_for_change=threshold_diagnostics.reason_for_change,
+                from_previous_snapshot=False,
             )
         runtime_input = ProbabilityRuntimeInput(
             probability_input=probability_input,
@@ -431,6 +450,7 @@ def _threshold_diagnostics(
     *,
     state: DecisionState,
     previous_assignment: _ThresholdAssignment | None,
+    accepted_mutation_reason: str | None = None,
 ) -> ThresholdDiagnostics:
     reason = "initial_assignment"
     previous_threshold = None
@@ -440,6 +460,8 @@ def _threshold_diagnostics(
             reason = "rule_hash_changed"
         elif previous_assignment.threshold == state.threshold:
             reason = "unchanged"
+        elif accepted_mutation_reason is not None:
+            reason = accepted_mutation_reason
         else:
             reason = "threshold_changed_without_rule_hash_change"
     return ThresholdDiagnostics(
@@ -459,6 +481,44 @@ def _threshold_diagnostics(
         new_K=state.threshold,
         reason_for_change=reason,
     )
+
+
+def _accepted_threshold_mutation_reason(
+    *,
+    state: DecisionState,
+    previous_assignment: _ThresholdAssignment | None,
+) -> str | None:
+    if previous_assignment is None:
+        return None
+    if not previous_assignment.from_previous_snapshot:
+        return None
+    if state.contract.threshold_type != "start_price":
+        return None
+    if previous_assignment.rule_hash != state.contract.rule_hash:
+        return None
+    if previous_assignment.source_key != state.threshold_source_key:
+        return None
+    if previous_assignment.reason_for_change not in {
+        "initial_assignment",
+        "unchanged",
+        EARLY_START_PRICE_REFINEMENT_REASON,
+    }:
+        return None
+    current_timestamp = _threshold_timestamp(state)
+    if current_timestamp is None or previous_assignment.timestamp is None:
+        return None
+    grace_end = state.contract.start_ts + timedelta(
+        seconds=START_PRICE_REFINEMENT_GRACE_SECONDS
+    )
+    if previous_assignment.timestamp > grace_end or current_timestamp > grace_end:
+        return None
+    if state.threshold_event_ts is not None and state.threshold_event_ts > state.contract.start_ts:
+        return None
+    return EARLY_START_PRICE_REFINEMENT_REASON
+
+
+def _threshold_timestamp(state: DecisionState) -> datetime | None:
+    return state.threshold_observed_ts or state.threshold_event_ts or state.asof_ts
 
 
 def _threshold_diagnostics_to_json_dict(
@@ -506,11 +566,21 @@ def _previous_threshold_assignments(out_path: Path) -> dict[str, _ThresholdAssig
             contract_id = _required_str(diagnostics, "contract_id")
             threshold = _assignment_threshold_from_diagnostics(diagnostics)
             rule_hash = _required_str(diagnostics, "rule_hash")
+            source_key = _optional_str(diagnostics.get("K_source"), "K_source")
+            timestamp = _optional_datetime(diagnostics.get("timestamp"), "timestamp")
+            reason_for_change = _optional_str(
+                diagnostics.get("reason_for_change"),
+                "reason_for_change",
+            )
         except ValueError:
             continue
         assignments[contract_id] = _ThresholdAssignment(
             threshold=threshold,
             rule_hash=rule_hash,
+            source_key=source_key,
+            timestamp=timestamp,
+            reason_for_change=reason_for_change,
+            from_previous_snapshot=True,
         )
     return assignments
 

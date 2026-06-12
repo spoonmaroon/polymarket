@@ -373,11 +373,23 @@ def test_hot_probability_inputs_latches_original_threshold_within_batch(
     assert second_bad["threshold_diagnostics"]["new_K"] == 103_951.0
 
 
-def test_hot_probability_inputs_accepts_repeated_threshold_mutation_across_writes(
+def test_hot_probability_inputs_blocks_late_threshold_mutation_across_writes_once(
     tmp_path: Path,
 ) -> None:
     out_path = tmp_path / "inputs.json"
-    mutated = replace(_state("UP"), state_id="state-UP-next", threshold=103_951.0)
+    late_ts = datetime(2026, 5, 31, 20, 1, tzinfo=timezone.utc)
+    mutated = replace(
+        _state("UP"),
+        state_id="state-UP-next",
+        asof_ts=late_ts,
+        threshold=103_951.0,
+        threshold_observed_ts=late_ts,
+        settlement_event_ts=late_ts,
+        settlement_observed_ts=late_ts,
+        book_event_ts=late_ts,
+        book_observed_ts=late_ts,
+        seconds_left=240.0,
+    )
 
     write_hot_probability_inputs(
         out_path=out_path,
@@ -413,6 +425,50 @@ def test_hot_probability_inputs_accepts_repeated_threshold_mutation_across_write
     assert row["threshold_diagnostics"]["previous_K"] == 103_951.0
     assert row["threshold_diagnostics"]["new_K"] == 103_951.0
     assert row["threshold_diagnostics"]["reason_for_change"] == "unchanged"
+
+
+def test_hot_probability_inputs_accepts_early_start_price_refinement_across_writes(
+    tmp_path: Path,
+) -> None:
+    out_path = tmp_path / "inputs.json"
+    start_ts = datetime(2026, 5, 31, 20, 0, tzinfo=timezone.utc)
+    refined_ts = start_ts + timedelta(seconds=8)
+    refined = replace(
+        _state("UP"),
+        state_id="state-UP-refined",
+        asof_ts=refined_ts,
+        threshold=103_951.0,
+        threshold_event_ts=start_ts,
+        threshold_observed_ts=refined_ts,
+        settlement_event_ts=refined_ts,
+        settlement_observed_ts=refined_ts,
+        book_event_ts=refined_ts,
+        book_observed_ts=refined_ts,
+        seconds_left=292.0,
+    )
+
+    write_hot_probability_inputs(
+        out_path=out_path,
+        states=(_state("UP"),),
+        generated_at=datetime.now(timezone.utc),
+    )
+    write_hot_probability_inputs(
+        out_path=out_path,
+        states=(refined,),
+        generated_at=datetime.now(timezone.utc),
+    )
+
+    raw = json.loads(out_path.read_text())
+    row = raw["inputs"][0]
+
+    assert row["probability_state"] == "READY"
+    assert row["flags"] == ["OK"]
+    assert row["k_stable"] is True
+    assert row["threshold_diagnostics"]["previous_K"] == 103_950.0
+    assert row["threshold_diagnostics"]["new_K"] == 103_951.0
+    assert row["threshold_diagnostics"]["reason_for_change"] == (
+        "early_start_price_refinement"
+    )
 
 
 def test_hot_probability_inputs_allows_threshold_change_when_rule_hash_changes(
