@@ -99,6 +99,56 @@ def test_outcome_sidecar_continues_after_transient_duckdb_lock(
     assert sleeps == [30.0]
 
 
+def test_outcome_sidecar_retries_when_schema_apply_hits_duckdb_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    apply_calls = 0
+    refresh_calls = 0
+    sleeps: list[float] = []
+    outcome_status_path = tmp_path / "live" / "outcomes.json"
+
+    def fake_apply_schema(*args: Any, **kwargs: Any) -> None:
+        nonlocal apply_calls
+        apply_calls += 1
+        if apply_calls == 1:
+            raise duckdb.IOException("Could not set lock on file")
+
+    def fake_refresh(*args: Any, **kwargs: Any) -> int:
+        nonlocal refresh_calls
+        refresh_calls += 1
+        return 0
+
+    monkeypatch.setattr(
+        "polymarket_engine.validation.outcome_sidecar.DuckDbIngestStore.apply_schema",
+        fake_apply_schema,
+    )
+    monkeypatch.setattr(
+        "polymarket_engine.validation.outcome_sidecar.refresh_market_outcomes",
+        fake_refresh,
+    )
+    monkeypatch.setattr(
+        "polymarket_engine.validation.outcome_sidecar.time.sleep",
+        sleeps.append,
+    )
+
+    run_outcome_refresh_loop(
+        duckdb_path=tmp_path / "db.duckdb",
+        outcome_status_path=outcome_status_path,
+        interval_seconds=30.0,
+        max_cycles=2,
+    )
+
+    payload = json.loads(outcome_status_path.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == "polymarket-outcome-runtime-v1"
+    assert payload["ok"] is False
+    assert payload["state"] == "LOCKED"
+    assert "Could not set lock on file" in payload["error"]
+    assert apply_calls == 2
+    assert refresh_calls == 1
+    assert sleeps == [30.0]
+
+
 def test_outcome_sidecar_writes_locked_status_after_transient_duckdb_lock(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

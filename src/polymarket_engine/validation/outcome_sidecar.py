@@ -39,24 +39,18 @@ def run_outcome_refresh_loop(
 ) -> None:
     _validate_loop_cadence(interval_seconds=interval_seconds, max_cycles=max_cycles)
     with DuckDbIngestStore(duckdb_path, persistent_connection=False) as store:
-        store.apply_schema()
+        schema_applied = False
         cycles = 0
         while max_cycles is None or cycles < max_cycles:
             try:
+                if not schema_applied:
+                    store.apply_schema()
+                    schema_applied = True
                 refresh_market_outcomes(store=store, out_path=outcome_status_path)
             except duckdb.Error as exc:
                 if not _is_transient_duckdb_lock_error(exc):
                     raise
-                print(
-                    f"outcome refresh skipped: DuckDB lock unavailable: {exc}",
-                    file=sys.stderr,
-                    flush=True,
-                )
-                write_locked_outcome_status(
-                    out_path=outcome_status_path,
-                    rows=_existing_outcome_status_rows(outcome_status_path),
-                    error=f"DuckDB lock unavailable: {exc}",
-                )
+                _record_locked_outcome_refresh(out_path=outcome_status_path, exc=exc)
             cycles += 1
             if max_cycles is not None and cycles >= max_cycles:
                 return
@@ -94,6 +88,19 @@ def _validate_loop_cadence(
 def _is_transient_duckdb_lock_error(exc: duckdb.Error) -> bool:
     message = str(exc).lower()
     return "conflicting lock" in message or "could not set lock" in message
+
+
+def _record_locked_outcome_refresh(*, out_path: Path, exc: duckdb.Error) -> None:
+    print(
+        f"outcome refresh skipped: DuckDB lock unavailable: {exc}",
+        file=sys.stderr,
+        flush=True,
+    )
+    write_locked_outcome_status(
+        out_path=out_path,
+        rows=_existing_outcome_status_rows(out_path),
+        error=f"DuckDB lock unavailable: {exc}",
+    )
 
 
 def _existing_outcome_status_rows(out_path: Path) -> list[object]:
