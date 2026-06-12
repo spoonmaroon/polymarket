@@ -47,6 +47,26 @@ def test_offload_allowed_when_ready_and_fresh() -> None:
     assert decision.recommended_max_total_paths == 80_000
 
 
+def test_offload_default_volatility_freshness_matches_live_cadence() -> None:
+    decision = evaluate_offload_readiness(
+        base_inputs(volatility_age_ms=11_500, sigma_tau_age_ms=11_500),
+        OffloadGateConfig(),
+    )
+    assert decision.offload_allowed is True
+    assert "volatility_stale" not in decision.reason_codes
+    assert "sigma_stale" not in decision.reason_codes
+
+
+def test_offload_blocks_volatility_after_live_cadence_budget() -> None:
+    decision = evaluate_offload_readiness(
+        base_inputs(volatility_age_ms=12_001, sigma_tau_age_ms=12_001),
+        OffloadGateConfig(),
+    )
+    assert decision.offload_allowed is False
+    assert "volatility_stale" in decision.reason_codes
+    assert "sigma_stale" in decision.reason_codes
+
+
 def test_offload_allows_connected_websocket_status() -> None:
     decision = evaluate_offload_readiness(
         base_inputs(websocket_status="CONNECTED"),

@@ -585,9 +585,14 @@ itself.
 
 Volatility currently updates on the live artifact cadence. Judge it by
 `volatility.json` freshness, API age fields, and offload block reasons before
-making the volatility path faster. If the file is fresh but the API reports
+making the volatility path faster. Treat volatility/sigma ages below roughly
+10-12 seconds as healthy for MC offload. If `sigma_stale` starts blocking MC
+inside that budget, align the offload threshold with the observed cadence rather
+than increasing normalizer frequency. If the file is fresh but the API reports
 stale volatility, debug API parsing or worker status first; if the file itself
-is old, debug Spoon generation or the Spoon-to-THEPC sync loop.
+is old, debug Spoon generation or the Spoon-to-THEPC sync loop. Faster
+Coinbase/Binance micro-vol can be added as a separate diagnostic, but it must
+not replace `polymarket_rtds_chainlink` as the `sigma_tau` input.
 
 ## Runtime keeper
 

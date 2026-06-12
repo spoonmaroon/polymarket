@@ -2246,82 +2246,6 @@ git add scripts/benchmark_monte_carlo_backends.sh docs/reports/monte-carlo-backe
 git commit -m "Benchmark Monte Carlo backends on THEPC"
 ```
 
-## Task 14: Final Verification And Deploy Readiness
-
-**Files:**
-
-- Modify only if verification exposes a real defect.
-
-- [ ] **Step 1: Run Python checks**
-
-Run:
-
-```bash
-uv run ruff check .
-uv run mypy src tests
-uv run pytest -q
-```
-
-Expected:
-
-```text
-All checks pass
-```
-
-- [ ] **Step 2: Run Rust checks on Mac**
-
-Run:
-
-```bash
-cd rust
-cargo fmt --check
-cargo clippy --workspace --exclude polymarket-probability-cuda -- -D warnings
-cargo test --workspace --exclude polymarket-probability-cuda
-```
-
-Expected:
-
-```text
-All non-CUDA Rust checks pass
-```
-
-- [ ] **Step 3: Run GPU checks on THEPC**
-
-Run:
-
-```bash
-ssh ender@100.72.104.49 'wsl.exe -d Ubuntu -- bash -lc "cd ~/polymarket/rust && cargo test -p polymarket-probability-cuda --release -- --ignored --nocapture"'
-```
-
-Expected:
-
-```text
-All CUDA tests pass
-```
-
-- [ ] **Step 4: Confirm runtime does not compute MC from TUI repaint**
-
-Run:
-
-```bash
-rg -n "run_native_or_python|run_seeded_monte_carlo|CudaBackend|CpuRayonBackend" rust/crates/polymarket-cockpit-tui src/polymarket_engine/runtime_api.py
-```
-
-Expected:
-
-```text
-No matches inside rust/crates/polymarket-cockpit-tui
-Matches are limited to runtime probability/cache code
-```
-
-- [ ] **Step 5: Commit final docs if changed**
-
-```bash
-git status --short
-git add docs/GPU_MONTE_CARLO.md docs/reports/monte-carlo-backend-benchmark-2026-06-05.md
-git commit -m "Document Monte Carlo backend verification"
-```
-
 ## Risk Register
 
 - CUDA toolkit on WSL Ubuntu 26.04 may need the NVIDIA WSL repository rather than the generic Ubuntu repository. The install script uses the WSL-specific keyring.
@@ -2346,7 +2270,6 @@ git commit -m "Document Monte Carlo backend verification"
 11. Task 11: TUI summary.
 12. Task 12: browser research visualization.
 13. Task 13: benchmark.
-14. Task 14: final verification.
 
 ## Self-Review
 

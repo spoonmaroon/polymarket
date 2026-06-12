@@ -35,9 +35,9 @@ class OffloadGateConfig:
     max_price_age_ms: int = 1_000
     max_orderbook_age_ms: int = 1_000
     max_probability_input_age_ms: int = 1_000
-    max_volatility_age_ms: int = 5_000
+    max_volatility_age_ms: int = 12_000
     max_target_status_age_ms: int = 1_000
-    max_sigma_tau_age_ms: int = 5_000
+    max_sigma_tau_age_ms: int = 12_000
     cpu_soft_max_percent: float = 80.0
     memory_soft_max_mb: int = 2_048
     queue_soft_max: int = 100
