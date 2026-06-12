@@ -366,6 +366,148 @@ def test_worker_runs_mc_for_fresh_input_when_sibling_source_is_stale(
     assert persisted_offload["blocked_input_count"] == 1
 
 
+def test_worker_allows_mc_for_probability_input_lag_within_live_cadence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime.now(UTC)
+    asof_ts = now - timedelta(seconds=16)
+    probability_status_path = tmp_path / "probabilities.json"
+    probability_inputs_path = tmp_path / "probability_inputs.json"
+    probability_event_path = tmp_path / "probability-events.jsonl"
+    offload_status_path = tmp_path / "offload_status.json"
+    _write_ready_recovery_status(probability_status_path.with_name("recovery_status.json"))
+    probability_inputs_path.write_text(
+        json.dumps(
+            {
+                "schema_version": PROBABILITY_INPUTS_SCHEMA_VERSION,
+                "generated_at": now.isoformat(),
+                "rows": [
+                    _runtime_input_snapshot_row(
+                        asof_ts=asof_ts,
+                        state_id="state-btc-lagged",
+                        asset="BTC",
+                        side="UP",
+                    )
+                ],
+                "skipped": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_ensemble(
+        probability_input: ProbabilityInput,
+        *,
+        path_count: int,
+        steps: int,
+        seed: int,
+        history_fragments: object | None,
+    ) -> ProbabilityOutput:
+        return ProbabilityOutput(
+            state_id=probability_input.state_id,
+            asof_ts=probability_input.asof_ts,
+            p_finish=0.62,
+            p_no_touch=0.58,
+            z_path=probability_input.z_path,
+            model_version="ensemble-v1",
+            seed=seed,
+            diagnostics={
+                "path_count": path_count,
+                "simulation_preview": {
+                    "sampled_paths": [
+                        {
+                            "index": 0,
+                            "terminal_win": True,
+                            "no_touch_win": True,
+                            "points": [
+                                probability_input.settlement_price,
+                                probability_input.threshold,
+                            ],
+                        }
+                    ],
+                    "start_price": probability_input.settlement_price,
+                    "threshold": probability_input.threshold,
+                    "steps": steps,
+                    "terminal_win_count": 1,
+                },
+            },
+        )
+
+    monkeypatch.setattr(
+        "polymarket_engine.probability.gpu_worker.run_four_generator_ensemble",
+        fake_ensemble,
+    )
+
+    payload = run_cuda_probability_worker_cycle(
+        duckdb_path=tmp_path / "unused.duckdb",
+        probability_status_path=probability_status_path,
+        offload_status_path=offload_status_path,
+        probability_inputs_path=probability_inputs_path,
+        probability_event_path=probability_event_path,
+        budget=ProbabilityWorkerBudget(max_total_paths=80_000),
+    )
+
+    assert payload["state"] == "OK"
+    assert payload["rows"][0]["probability_kind"] == "MC"
+    assert payload["offload"]["offload_allowed"] is True
+    assert payload["offload"]["blocked_input_count"] == 0
+
+
+def test_worker_blocks_probability_input_lag_beyond_live_cadence_budget(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime.now(UTC)
+    asof_ts = now - timedelta(seconds=26)
+    probability_status_path = tmp_path / "probabilities.json"
+    probability_inputs_path = tmp_path / "probability_inputs.json"
+    probability_event_path = tmp_path / "probability-events.jsonl"
+    offload_status_path = tmp_path / "offload_status.json"
+    _write_ready_recovery_status(probability_status_path.with_name("recovery_status.json"))
+    probability_inputs_path.write_text(
+        json.dumps(
+            {
+                "schema_version": PROBABILITY_INPUTS_SCHEMA_VERSION,
+                "generated_at": now.isoformat(),
+                "rows": [
+                    _runtime_input_snapshot_row(
+                        asof_ts=asof_ts,
+                        state_id="state-btc-too-lagged",
+                        asset="BTC",
+                        side="UP",
+                    )
+                ],
+                "skipped": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fail_if_mc_runs(*_: object, **__: object) -> ProbabilityOutput:
+        raise AssertionError("MC must not run for stale probability input")
+
+    monkeypatch.setattr(
+        "polymarket_engine.probability.gpu_worker.run_four_generator_ensemble",
+        fail_if_mc_runs,
+    )
+
+    payload = run_cuda_probability_worker_cycle(
+        duckdb_path=tmp_path / "unused.duckdb",
+        probability_status_path=probability_status_path,
+        offload_status_path=offload_status_path,
+        probability_inputs_path=probability_inputs_path,
+        probability_event_path=probability_event_path,
+        budget=ProbabilityWorkerBudget(max_total_paths=80_000),
+    )
+
+    assert payload["state"] == "OFFLOAD_BLOCKED"
+    assert payload["rows"][0]["probability_kind"] == "NOWCAST"
+    assert payload["offload"]["offload_allowed"] is True
+    assert payload["offload"]["blocked_input_count"] == 1
+    assert "probability_inputs_stale" in payload["offload"]["reason_codes"]
+
+
 def test_worker_blocks_expired_probability_input_even_when_snapshot_is_fresh(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

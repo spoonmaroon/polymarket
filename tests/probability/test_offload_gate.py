@@ -67,6 +67,24 @@ def test_offload_blocks_volatility_after_live_cadence_budget() -> None:
     assert "sigma_stale" in decision.reason_codes
 
 
+def test_offload_default_probability_input_freshness_matches_live_cadence() -> None:
+    decision = evaluate_offload_readiness(
+        base_inputs(probability_input_age_ms=24_000),
+        OffloadGateConfig(),
+    )
+    assert decision.offload_allowed is True
+    assert "probability_inputs_stale" not in decision.reason_codes
+
+
+def test_offload_blocks_probability_inputs_after_live_cadence_budget() -> None:
+    decision = evaluate_offload_readiness(
+        base_inputs(probability_input_age_ms=25_001),
+        OffloadGateConfig(),
+    )
+    assert decision.offload_allowed is False
+    assert "probability_inputs_stale" in decision.reason_codes
+
+
 def test_offload_allows_connected_websocket_status() -> None:
     decision = evaluate_offload_readiness(
         base_inputs(websocket_status="CONNECTED"),

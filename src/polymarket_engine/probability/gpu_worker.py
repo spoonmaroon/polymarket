@@ -32,6 +32,7 @@ from polymarket_engine.probability.grid_cache import grid_runtime_row
 from polymarket_engine.probability.hot_inputs import HOT_PROBABILITY_INPUTS_SCHEMA_VERSION
 from polymarket_engine.probability.latency import ProbabilityLatencyTrace
 from polymarket_engine.probability.offload_gate import OffloadDecision
+from polymarket_engine.probability.offload_gate import DEFAULT_MAX_PROBABILITY_INPUT_AGE_MS
 from polymarket_engine.probability.offload_gate import OffloadGateConfig
 from polymarket_engine.probability.offload_gate import OffloadGateInputs
 from polymarket_engine.probability.offload_gate import evaluate_offload_readiness
@@ -72,7 +73,7 @@ DEFAULT_SUSTAINED_BREACH_CYCLES = 3
 DEFAULT_FRAGMENT_MAX_ROWS = 250_000
 DEFAULT_MIN_FRAGMENT_COUNT = 2
 DEFAULT_CPU_THREADS = 1
-DEFAULT_MAX_INPUT_STATE_LAG_MS = 10_000
+DEFAULT_MAX_INPUT_STATE_LAG_MS = DEFAULT_MAX_PROBABILITY_INPUT_AGE_MS
 DEFAULT_MIN_SECONDS_LEFT_FOR_MC = 20.0
 _RECOVERY_STATUS_GATE_CONFIG = OffloadGateConfig(
     warmup_min_seconds=0,

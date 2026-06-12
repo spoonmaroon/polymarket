@@ -9,6 +9,8 @@ from polymarket_engine.ops.recovery_manager import RuntimePhase
 
 WorkerMode = Literal["disabled", "nowcast_only", "min_mc", "normal_mc", "gpu_mc"]
 
+DEFAULT_MAX_PROBABILITY_INPUT_AGE_MS = 25_000
+
 _NOWCAST_SAFE_PHASES = {RuntimePhase.WARMING, RuntimePhase.RECOVERING}
 _HARD_OR_DATA_INTEGRITY_BLOCKERS = {
     "sigma_invalid",
@@ -34,7 +36,7 @@ class OffloadGateConfig:
     required_healthy_cycles: int = 3
     max_price_age_ms: int = 1_000
     max_orderbook_age_ms: int = 1_000
-    max_probability_input_age_ms: int = 1_000
+    max_probability_input_age_ms: int = DEFAULT_MAX_PROBABILITY_INPUT_AGE_MS
     max_volatility_age_ms: int = 12_000
     max_target_status_age_ms: int = 1_000
     max_sigma_tau_age_ms: int = 12_000
