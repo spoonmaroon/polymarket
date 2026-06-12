@@ -516,13 +516,6 @@ def _previous_threshold_assignments(out_path: Path) -> dict[str, _ThresholdAssig
 
 
 def _assignment_threshold_from_diagnostics(diagnostics: dict[str, Any]) -> float:
-    reason = _optional_str(diagnostics.get("reason_for_change"), "reason_for_change")
-    previous_threshold = _optional_float(diagnostics.get("previous_K"), "previous_K")
-    if (
-        reason == "threshold_changed_without_rule_hash_change"
-        and previous_threshold is not None
-    ):
-        return previous_threshold
     return _required_float(diagnostics, "new_K")
 
 

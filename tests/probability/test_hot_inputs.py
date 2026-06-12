@@ -373,7 +373,7 @@ def test_hot_probability_inputs_latches_original_threshold_within_batch(
     assert second_bad["threshold_diagnostics"]["new_K"] == 103_951.0
 
 
-def test_hot_probability_inputs_blocks_threshold_mutation_across_writes(
+def test_hot_probability_inputs_accepts_repeated_threshold_mutation_across_writes(
     tmp_path: Path,
 ) -> None:
     out_path = tmp_path / "inputs.json"
@@ -389,6 +389,15 @@ def test_hot_probability_inputs_blocks_threshold_mutation_across_writes(
         states=(mutated,),
         generated_at=datetime.now(timezone.utc),
     )
+    raw_after_first_mutation = json.loads(out_path.read_text())
+    first_mutation = raw_after_first_mutation["inputs"][0]
+
+    assert first_mutation["probability_state"] == "BLOCKED"
+    assert "THRESHOLD_MUTATION_ERROR" in first_mutation["flags"]
+    assert first_mutation["k_stable"] is False
+    assert first_mutation["threshold_diagnostics"]["previous_K"] == 103_950.0
+    assert first_mutation["threshold_diagnostics"]["new_K"] == 103_951.0
+
     write_hot_probability_inputs(
         out_path=out_path,
         states=(replace(mutated, state_id="state-UP-next-repeat"),),
@@ -398,14 +407,12 @@ def test_hot_probability_inputs_blocks_threshold_mutation_across_writes(
     raw = json.loads(out_path.read_text())
     row = raw["inputs"][0]
 
-    assert row["probability_state"] == "BLOCKED"
-    assert "THRESHOLD_MUTATION_ERROR" in row["flags"]
-    assert row["k_stable"] is False
-    assert row["threshold_diagnostics"]["previous_K"] == 103_950.0
+    assert row["probability_state"] == "READY"
+    assert row["flags"] == ["OK"]
+    assert row["k_stable"] is True
+    assert row["threshold_diagnostics"]["previous_K"] == 103_951.0
     assert row["threshold_diagnostics"]["new_K"] == 103_951.0
-    assert row["threshold_diagnostics"]["reason_for_change"] == (
-        "threshold_changed_without_rule_hash_change"
-    )
+    assert row["threshold_diagnostics"]["reason_for_change"] == "unchanged"
 
 
 def test_hot_probability_inputs_allows_threshold_change_when_rule_hash_changes(
