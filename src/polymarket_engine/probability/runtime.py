@@ -51,6 +51,7 @@ class ProbabilityRuntimeCache:
         allow_compute: bool = False,
         probability_inputs_path: Path | None = None,
         probability_fragments_path: Path | None = None,
+        use_prior_fragments: bool = False,
     ) -> dict[str, Any]:
         now_monotonic = time.monotonic()
         cache_key = _probability_cache_key(
@@ -59,6 +60,7 @@ class ProbabilityRuntimeCache:
             allow_compute=allow_compute,
             probability_inputs_path=probability_inputs_path,
             probability_fragments_path=probability_fragments_path,
+            use_prior_fragments=use_prior_fragments,
         )
         if (
             self._cached_payload is not None
@@ -77,6 +79,8 @@ class ProbabilityRuntimeCache:
             payload_kwargs["probability_inputs_path"] = probability_inputs_path
         if probability_fragments_path is not None:
             payload_kwargs["probability_fragments_path"] = probability_fragments_path
+        if use_prior_fragments:
+            payload_kwargs["use_prior_fragments"] = use_prior_fragments
         payload = build_probability_payload(**payload_kwargs)
         self._cached_payload = dict(payload)
         self._cached_key = cache_key
@@ -91,6 +95,7 @@ def build_probability_payload(
     allow_compute: bool = False,
     probability_inputs_path: Path | None = None,
     probability_fragments_path: Path | None = None,
+    use_prior_fragments: bool = False,
 ) -> dict[str, Any]:
     generated_at = datetime.now(timezone.utc)
     hot_input_error: str | None = None
@@ -112,6 +117,7 @@ def build_probability_payload(
             hot_rows, hot_errors = _compute_rows_without_persistence(
                 inputs=hot_payload.inputs,
                 probability_fragments_path=probability_fragments_path,
+                use_prior_fragments=use_prior_fragments,
             )
             hot_rows = normalize_binary_probability_pairs(hot_rows)
             return {
@@ -137,7 +143,11 @@ def build_probability_payload(
         )
 
     try:
-        persisted_rows = latest_probability_output_rows(duckdb_path=duckdb_path, limit=limit)
+        persisted_rows = latest_probability_output_rows(
+            duckdb_path=duckdb_path,
+            limit=limit,
+            use_prior_fragments=use_prior_fragments,
+        )
         if persisted_rows:
             persisted_rows = normalize_binary_probability_pairs(persisted_rows)
             return _with_hot_input_warning(
@@ -191,6 +201,7 @@ def build_probability_payload(
         store=store,
         inputs=inputs,
         probability_fragments_path=probability_fragments_path,
+        use_prior_fragments=use_prior_fragments,
     )
     rows = normalize_binary_probability_pairs(rows)
 
@@ -217,13 +228,19 @@ def _probability_cache_key(
     allow_compute: bool,
     probability_inputs_path: Path | None,
     probability_fragments_path: Path | None,
+    use_prior_fragments: bool,
 ) -> tuple[Any, ...]:
     return (
         str(duckdb_path),
         limit,
         allow_compute,
+        use_prior_fragments,
         _hot_inputs_cache_fingerprint(probability_inputs_path),
-        _hot_inputs_cache_fingerprint(probability_fragments_path),
+        (
+            _hot_inputs_cache_fingerprint(probability_fragments_path)
+            if use_prior_fragments
+            else None
+        ),
     )
 
 
@@ -365,6 +382,7 @@ def latest_probability_output_rows(
     limit: int,
     max_state_age_seconds: float | None = None,
     active_only: bool = False,
+    use_prior_fragments: bool = False,
 ) -> list[dict[str, Any]]:
     if limit <= 0:
         raise ValueError("limit must be positive")
@@ -374,6 +392,7 @@ def latest_probability_output_rows(
             limit=limit,
             max_state_age_seconds=max_state_age_seconds,
             active_only=active_only,
+            use_prior_fragments=use_prior_fragments,
         )
 
 
@@ -383,6 +402,7 @@ def latest_probability_output_rows_from_connection(
     limit: int,
     max_state_age_seconds: float | None = None,
     active_only: bool = False,
+    use_prior_fragments: bool = False,
 ) -> list[dict[str, Any]]:
     if limit <= 0:
         raise ValueError("limit must be positive")
@@ -395,7 +415,14 @@ def latest_probability_output_rows_from_connection(
     )
     rows = conn.execute(
         _latest_probability_output_rows_sql(include_decisions=has_decision_table),
-        [cutoff, cutoff, active_now, active_now, limit],
+        [
+            "true" if use_prior_fragments else "false",
+            cutoff,
+            cutoff,
+            active_now,
+            active_now,
+            limit,
+        ],
     ).fetchall()
     return normalize_binary_probability_pairs([_persisted_runtime_row(row) for row in rows])
 
@@ -473,6 +500,48 @@ def _latest_probability_output_rows_sql(*, include_decisions: bool) -> str:
             from features.probability_outputs as outputs
             join features.asof_state_inputs as state using (state_id)
             join core.contracts as contracts using (contract_id)
+            where (
+                case
+                    when lower(coalesce(
+                        json_extract_string(
+                            outputs.output_json,
+                            '$.diagnostics.prior_fragment_enabled'
+                        ),
+                        ''
+                    )) = 'true'
+                        then 'true'
+                    when lower(coalesce(
+                        json_extract_string(
+                            outputs.output_json,
+                            '$.diagnostics.prior_fragment_enabled'
+                        ),
+                        ''
+                    )) = 'false'
+                        then 'false'
+                    when coalesce(
+                        try_cast(
+                            json_extract_string(
+                                outputs.output_json,
+                                '$.diagnostics.prior_fragment_count'
+                            )
+                            as bigint
+                        ),
+                        0
+                    ) > 0
+                        then 'true'
+                    when coalesce(
+                        json_array_length(
+                            json_extract(
+                                outputs.output_json,
+                                '$.diagnostics.prior_fragment_ids'
+                            )
+                        ),
+                        0
+                    ) > 0
+                        then 'true'
+                    else 'false'
+                end
+            ) = ?
         ) as outputs
         {decision_join}
         where row_number = 1
@@ -526,11 +595,14 @@ def _compute_rows_without_persistence(
     *,
     inputs: tuple[ProbabilityRuntimeInput, ...],
     probability_fragments_path: Path | None = None,
+    use_prior_fragments: bool = False,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     rows: list[dict[str, Any]] = []
     errors: list[str] = []
-    prior_fragments, prior_fragment_error = _load_probability_fragments(
-        path=probability_fragments_path,
+    prior_fragments, prior_fragment_error = (
+        _load_probability_fragments(path=probability_fragments_path)
+        if use_prior_fragments
+        else ((), None)
     )
     for runtime_input in inputs:
         if _runtime_input_blocked(runtime_input):
@@ -544,6 +616,7 @@ def _compute_rows_without_persistence(
                 fragments=prior_fragments,
                 probability_input=probability_input,
                 fragment_error=prior_fragment_error,
+                enabled=use_prior_fragments,
             )
             output = run_four_generator_ensemble(
                 probability_input,
@@ -559,6 +632,7 @@ def _compute_rows_without_persistence(
                 output,
                 fragment_selection=fragment_selection,
                 fragment_error=prior_fragment_error,
+                prior_fragments_enabled=use_prior_fragments,
             )
             output_id = _output_id(probability_input, output)
         except Exception as exc:
@@ -573,12 +647,15 @@ def _compute_and_persist_rows(
     store: DuckDbIngestStore,
     inputs: tuple[ProbabilityRuntimeInput, ...],
     probability_fragments_path: Path | None = None,
+    use_prior_fragments: bool = False,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     rows: list[dict[str, Any]] = []
     errors: list[str] = []
     output_rows: list[tuple[str, ProbabilityInput, ProbabilityOutput]] = []
-    prior_fragments, prior_fragment_error = _load_probability_fragments(
-        path=probability_fragments_path,
+    prior_fragments, prior_fragment_error = (
+        _load_probability_fragments(path=probability_fragments_path)
+        if use_prior_fragments
+        else ((), None)
     )
     for runtime_input in inputs:
         if _runtime_input_blocked(runtime_input):
@@ -592,6 +669,7 @@ def _compute_and_persist_rows(
                 fragments=prior_fragments,
                 probability_input=probability_input,
                 fragment_error=prior_fragment_error,
+                enabled=use_prior_fragments,
             )
             output = run_four_generator_ensemble(
                 probability_input,
@@ -607,6 +685,7 @@ def _compute_and_persist_rows(
                 output,
                 fragment_selection=fragment_selection,
                 fragment_error=prior_fragment_error,
+                prior_fragments_enabled=use_prior_fragments,
             )
             output_id = _output_id(probability_input, output)
         except Exception as exc:
@@ -657,7 +736,14 @@ def _select_prior_fragments(
     fragments: tuple[GeneratorFragment, ...],
     probability_input: ProbabilityInput,
     fragment_error: str | None,
+    enabled: bool,
 ) -> FragmentSelection:
+    if not enabled:
+        return FragmentSelection(
+            fragments=(),
+            sparse=False,
+            reason="disabled_uncalibrated_live_prior",
+        )
     if fragment_error is not None:
         return FragmentSelection(fragments=(), sparse=True, reason="unavailable")
     return select_fragments_for_input(
@@ -673,10 +759,12 @@ def _output_with_prior_diagnostics(
     *,
     fragment_selection: FragmentSelection,
     fragment_error: str | None,
+    prior_fragments_enabled: bool,
 ) -> ProbabilityOutput:
     diagnostics = dict(output.diagnostics)
     diagnostics.update(
         {
+            "prior_fragment_enabled": prior_fragments_enabled,
             "prior_fragment_count": len(fragment_selection.fragments),
             "prior_fragment_reason": fragment_selection.reason,
             "prior_fragment_sparse": fragment_selection.sparse,
@@ -929,6 +1017,7 @@ def _merge_grid_diagnostics(
         "uncertainty_buffer",
         "path_diagnosis",
         "sparse_scope",
+        "prior_fragment_enabled",
         "prior_fragment_count",
         "prior_fragment_reason",
         "prior_fragment_sparse",
@@ -996,6 +1085,12 @@ def _steps_for_input(probability_input: ProbabilityInput) -> int:
 
 
 def _output_id(probability_input: ProbabilityInput, output: ProbabilityOutput) -> str:
+    raw_prior_fragment_ids = output.diagnostics.get("prior_fragment_ids")
+    prior_fragment_ids = (
+        ",".join(str(value) for value in raw_prior_fragment_ids)
+        if isinstance(raw_prior_fragment_ids, list)
+        else ""
+    )
     digest = hashlib.sha256(
         "|".join(
             (
@@ -1005,6 +1100,9 @@ def _output_id(probability_input: ProbabilityInput, output: ProbabilityOutput) -
                 str(output.seed),
                 str(output.diagnostics.get("path_count")),
                 str(output.diagnostics.get("steps")),
+                str(output.diagnostics.get("prior_fragment_enabled", False)),
+                str(output.diagnostics.get("prior_fragment_reason") or ""),
+                prior_fragment_ids,
             )
         ).encode()
     ).hexdigest()

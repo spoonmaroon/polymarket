@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,6 +21,7 @@ from polymarket_engine.probability.runtime import (
 )
 from polymarket_engine.probability.runtime_inputs import ProbabilityRuntimeInput
 from polymarket_engine.probability.schema import ProbabilityInput, ProbabilityOutput
+from polymarket_engine.storage.duckdb_store import DuckDbIngestStore
 
 
 def test_compute_and_persist_rows_batches_valid_probability_outputs(
@@ -264,7 +266,116 @@ def test_compute_and_persist_rows_does_not_persist_blocked_inputs() -> None:
     assert rows[0]["model_version"] is None
 
 
-def test_hot_input_fallback_uses_probability_fragments_prior(
+def test_hot_input_fallback_does_not_use_probability_fragments_without_opt_in(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hot_inputs_path = tmp_path / "live" / "probability_inputs.json"
+    probability_fragments_path = tmp_path / "live" / "probability_fragments.json"
+    decision_state = _decision_state()
+    write_hot_probability_inputs(
+        out_path=hot_inputs_path,
+        states=(decision_state,),
+        generated_at=datetime.now(timezone.utc),
+    )
+    prior_one = (70_000.0, 70_020.0, 70_060.0)
+    prior_two = (70_000.0, 70_040.0, 70_090.0)
+    fragments = (
+        GeneratorFragment(
+            fragment_id="btc-prior-one",
+            asset="BTC",
+            asof_ts=decision_state.asof_ts,
+            prices=prior_one,
+            horizon_seconds=300,
+            z_path_bucket="near",
+            quality_bucket="OK",
+        ),
+        GeneratorFragment(
+            fragment_id="btc-prior-two",
+            asset="BTC",
+            asof_ts=decision_state.asof_ts,
+            prices=prior_two,
+            horizon_seconds=300,
+            z_path_bucket="near",
+            quality_bucket="OK",
+        ),
+    )
+    write_probability_fragments(
+        out_path=probability_fragments_path,
+        generated_at=datetime.now(timezone.utc),
+        fragments=fragments,
+    )
+    load_calls: list[Path | None] = []
+    seen_history: list[tuple[tuple[float, ...], ...] | None] = []
+
+    def fake_load_probability_fragments(
+        *,
+        path: Path | None,
+    ) -> tuple[tuple[GeneratorFragment, ...], str | None]:
+        load_calls.append(path)
+        return fragments, None
+
+    def fake_ensemble(
+        probability_input: ProbabilityInput,
+        *,
+        path_count: int,
+        steps: int,
+        seed: int,
+        history_fragments: tuple[tuple[float, ...], ...] | None = None,
+    ) -> ProbabilityOutput:
+        seen_history.append(history_fragments)
+        return ProbabilityOutput(
+            state_id=probability_input.state_id,
+            asof_ts=probability_input.asof_ts,
+            p_finish=0.58,
+            p_no_touch=0.81,
+            z_path=probability_input.z_path,
+            model_version="ensemble-v1",
+            seed=seed,
+            diagnostics={
+                "backend": "ensemble",
+                "generator_version": "four-generator-ensemble-v1",
+                "path_count": path_count,
+                "steps": steps,
+                "effective_weights": {"empirical_conditional": 0.4},
+                "generator_summary": {},
+                "generator_runs": [],
+                "effective_generator_values": {},
+                "u_gen": 0.03,
+                "mc_dispersion": 0.08,
+                "uncertainty_buffer": 0.055,
+                "path_diagnosis": "OK",
+                "sparse_scope": False,
+            },
+        )
+
+    monkeypatch.setattr(
+        "polymarket_engine.probability.runtime._load_probability_fragments",
+        fake_load_probability_fragments,
+    )
+    monkeypatch.setattr(
+        "polymarket_engine.probability.runtime.run_four_generator_ensemble",
+        fake_ensemble,
+    )
+
+    payload = build_probability_payload(
+        duckdb_path=tmp_path / "missing.duckdb",
+        limit=4,
+        probability_inputs_path=hot_inputs_path,
+        probability_fragments_path=probability_fragments_path,
+    )
+
+    assert load_calls == []
+    assert seen_history == [None]
+    row = payload["rows"][0]
+    assert row["prior_fragment_enabled"] is False
+    assert row["prior_fragment_count"] == 0
+    assert row["prior_fragment_reason"] == "disabled_uncalibrated_live_prior"
+    assert row["prior_fragment_sparse"] is False
+    assert row["prior_fragment_ids"] == []
+
+
+def test_hot_input_fallback_uses_probability_fragments_prior_when_enabled(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -358,14 +469,277 @@ def test_hot_input_fallback_uses_probability_fragments_prior(
         limit=4,
         probability_inputs_path=hot_inputs_path,
         probability_fragments_path=probability_fragments_path,
+        use_prior_fragments=True,
     )
 
     assert seen_history == [(prior_one, prior_two)]
     row = payload["rows"][0]
+    assert row["prior_fragment_enabled"] is True
     assert row["prior_fragment_count"] == 2
     assert row["prior_fragment_reason"] == "exact"
     assert row["prior_fragment_sparse"] is False
     assert row["prior_fragment_ids"] == ["btc-prior-one", "btc-prior-two"]
+
+
+def test_prior_fragment_mode_changes_probability_output_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hot_inputs_path = tmp_path / "live" / "probability_inputs.json"
+    probability_fragments_path = tmp_path / "live" / "probability_fragments.json"
+    decision_state = _decision_state()
+    write_hot_probability_inputs(
+        out_path=hot_inputs_path,
+        states=(decision_state,),
+        generated_at=datetime.now(timezone.utc),
+    )
+    write_probability_fragments(
+        out_path=probability_fragments_path,
+        generated_at=datetime.now(timezone.utc),
+        fragments=(
+            GeneratorFragment(
+                fragment_id="btc-prior-one",
+                asset="BTC",
+                asof_ts=decision_state.asof_ts,
+                prices=(70_000.0, 70_020.0, 70_060.0),
+                horizon_seconds=300,
+                z_path_bucket="near",
+                quality_bucket="OK",
+            ),
+            GeneratorFragment(
+                fragment_id="btc-prior-two",
+                asset="BTC",
+                asof_ts=decision_state.asof_ts,
+                prices=(70_000.0, 70_040.0, 70_090.0),
+                horizon_seconds=300,
+                z_path_bucket="near",
+                quality_bucket="OK",
+            ),
+        ),
+    )
+
+    def fake_ensemble(
+        probability_input: ProbabilityInput,
+        *,
+        path_count: int,
+        steps: int,
+        seed: int,
+        history_fragments: tuple[tuple[float, ...], ...] | None = None,
+    ) -> ProbabilityOutput:
+        del history_fragments
+        return ProbabilityOutput(
+            state_id=probability_input.state_id,
+            asof_ts=probability_input.asof_ts,
+            p_finish=0.58,
+            p_no_touch=0.81,
+            z_path=probability_input.z_path,
+            model_version="ensemble-v1",
+            seed=seed,
+            diagnostics={
+                "backend": "ensemble",
+                "generator_version": "four-generator-ensemble-v1",
+                "path_count": path_count,
+                "steps": steps,
+                "effective_weights": {"empirical_conditional": 0.4},
+                "generator_summary": {},
+                "generator_runs": [],
+                "effective_generator_values": {},
+                "u_gen": 0.03,
+                "mc_dispersion": 0.08,
+                "uncertainty_buffer": 0.055,
+                "path_diagnosis": "OK",
+                "sparse_scope": False,
+            },
+        )
+
+    monkeypatch.setattr(
+        "polymarket_engine.probability.runtime.run_four_generator_ensemble",
+        fake_ensemble,
+    )
+
+    default_payload = build_probability_payload(
+        duckdb_path=tmp_path / "missing.duckdb",
+        limit=4,
+        probability_inputs_path=hot_inputs_path,
+        probability_fragments_path=probability_fragments_path,
+    )
+    enabled_payload = build_probability_payload(
+        duckdb_path=tmp_path / "missing.duckdb",
+        limit=4,
+        probability_inputs_path=hot_inputs_path,
+        probability_fragments_path=probability_fragments_path,
+        use_prior_fragments=True,
+    )
+
+    default_row = default_payload["rows"][0]
+    enabled_row = enabled_payload["rows"][0]
+    assert default_row["prior_fragment_enabled"] is False
+    assert enabled_row["prior_fragment_enabled"] is True
+    assert enabled_row["prior_fragment_ids"] == ["btc-prior-one", "btc-prior-two"]
+    assert default_row["output_id"] != enabled_row["output_id"]
+
+
+def test_persisted_probability_rows_are_filtered_by_prior_fragment_mode(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "polymarket.duckdb"
+    state = _decision_state()
+    probability_input = ProbabilityInput.from_decision_state(state)
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    store.upsert_contract_spec(state.contract)
+    store.upsert_asof_state_input(state)
+    default_output = ProbabilityOutput(
+        state_id=probability_input.state_id,
+        asof_ts=probability_input.asof_ts,
+        p_finish=0.51,
+        p_no_touch=0.49,
+        z_path=probability_input.z_path,
+        model_version="ensemble-v1",
+        seed=123,
+        diagnostics={
+            "backend": "ensemble",
+            "generator_version": "four-generator-ensemble-v1",
+            "path_count": 1024,
+            "steps": 120,
+            "prior_fragment_enabled": False,
+            "prior_fragment_count": 0,
+            "prior_fragment_reason": "disabled_uncalibrated_live_prior",
+            "prior_fragment_sparse": False,
+            "prior_fragment_ids": [],
+        },
+    )
+    prior_output = ProbabilityOutput(
+        state_id=probability_input.state_id,
+        asof_ts=probability_input.asof_ts,
+        p_finish=0.91,
+        p_no_touch=0.87,
+        z_path=probability_input.z_path,
+        model_version="ensemble-v1",
+        seed=123,
+        diagnostics={
+            "backend": "ensemble",
+            "generator_version": "four-generator-ensemble-v1",
+            "path_count": 1024,
+            "steps": 120,
+            "prior_fragment_enabled": True,
+            "prior_fragment_count": 2,
+            "prior_fragment_reason": "exact",
+            "prior_fragment_sparse": False,
+            "prior_fragment_ids": ["btc-prior-one", "btc-prior-two"],
+        },
+    )
+    store.insert_probability_output(
+        output_id="prob-default-fragment-mode",
+        probability_input=probability_input,
+        output=default_output,
+    )
+    time.sleep(0.001)
+    store.insert_probability_output(
+        output_id="prob-enabled-fragment-mode",
+        probability_input=probability_input,
+        output=prior_output,
+    )
+
+    default_payload = build_probability_payload(
+        duckdb_path=db_path,
+        limit=4,
+    )
+    enabled_payload = build_probability_payload(
+        duckdb_path=db_path,
+        limit=4,
+        use_prior_fragments=True,
+    )
+
+    default_row = default_payload["rows"][0]
+    enabled_row = enabled_payload["rows"][0]
+    assert default_row["output_id"] == "prob-default-fragment-mode"
+    assert default_row["p_finish"] == 0.51
+    assert default_row["prior_fragment_enabled"] is False
+    assert enabled_row["output_id"] == "prob-enabled-fragment-mode"
+    assert enabled_row["p_finish"] == 0.91
+    assert enabled_row["prior_fragment_enabled"] is True
+    assert enabled_row["prior_fragment_ids"] == ["btc-prior-one", "btc-prior-two"]
+
+
+def test_legacy_persisted_prior_rows_are_not_default_off_rows(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "polymarket.duckdb"
+    state = _decision_state()
+    probability_input = ProbabilityInput.from_decision_state(state)
+    store = DuckDbIngestStore(db_path)
+    store.apply_schema()
+    store.upsert_contract_spec(state.contract)
+    store.upsert_asof_state_input(state)
+    default_output = ProbabilityOutput(
+        state_id=probability_input.state_id,
+        asof_ts=probability_input.asof_ts,
+        p_finish=0.51,
+        p_no_touch=0.49,
+        z_path=probability_input.z_path,
+        model_version="ensemble-v1",
+        seed=123,
+        diagnostics={
+            "backend": "ensemble",
+            "generator_version": "four-generator-ensemble-v1",
+            "path_count": 1024,
+            "steps": 120,
+            "prior_fragment_enabled": False,
+            "prior_fragment_count": 0,
+            "prior_fragment_reason": "disabled_uncalibrated_live_prior",
+            "prior_fragment_sparse": False,
+            "prior_fragment_ids": [],
+        },
+    )
+    legacy_prior_output = ProbabilityOutput(
+        state_id=probability_input.state_id,
+        asof_ts=probability_input.asof_ts,
+        p_finish=0.91,
+        p_no_touch=0.87,
+        z_path=probability_input.z_path,
+        model_version="ensemble-v1",
+        seed=123,
+        diagnostics={
+            "backend": "ensemble",
+            "generator_version": "four-generator-ensemble-v1",
+            "path_count": 1024,
+            "steps": 120,
+            "prior_fragment_count": 2,
+            "prior_fragment_reason": "exact",
+            "prior_fragment_sparse": False,
+            "prior_fragment_ids": ["legacy-prior-one", "legacy-prior-two"],
+        },
+    )
+    store.insert_probability_output(
+        output_id="prob-default-fragment-mode",
+        probability_input=probability_input,
+        output=default_output,
+    )
+    time.sleep(0.001)
+    store.insert_probability_output(
+        output_id="prob-legacy-prior-fragment-mode",
+        probability_input=probability_input,
+        output=legacy_prior_output,
+    )
+
+    default_payload = build_probability_payload(
+        duckdb_path=db_path,
+        limit=4,
+    )
+    enabled_payload = build_probability_payload(
+        duckdb_path=db_path,
+        limit=4,
+        use_prior_fragments=True,
+    )
+
+    default_row = default_payload["rows"][0]
+    enabled_row = enabled_payload["rows"][0]
+    assert default_row["output_id"] == "prob-default-fragment-mode"
+    assert default_row["prior_fragment_enabled"] is False
+    assert enabled_row["output_id"] == "prob-legacy-prior-fragment-mode"
+    assert enabled_row["prior_fragment_count"] == 2
+    assert enabled_row["prior_fragment_ids"] == ["legacy-prior-one", "legacy-prior-two"]
 
 
 def test_probability_runtime_cache_keys_hot_inputs_by_limit(tmp_path: Path) -> None:

@@ -315,8 +315,22 @@ def test_parse_run_cuda_probability_worker_defaults() -> None:
     assert args.min_total_paths == 20_000
     assert args.sustained_breach_cycles == 3
     assert args.fragment_max_rows == 250_000
+    assert args.use_prior_fragments is False
     assert args.cpu_threads == 1
     assert args.once is False
+
+
+def test_parse_run_cuda_probability_worker_use_prior_fragments_arg() -> None:
+    args = parse_args(
+        [
+            "run-cuda-probability-worker",
+            "--duckdb-path",
+            "data/db/polymarket.duckdb",
+            "--use-prior-fragments",
+        ]
+    )
+
+    assert args.use_prior_fragments is True
 
 
 def test_parse_run_cuda_probability_worker_probability_fragments_path_arg() -> None:

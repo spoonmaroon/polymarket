@@ -155,6 +155,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     cuda_probability_worker.add_argument("--min-total-paths", type=int, default=20_000)
     cuda_probability_worker.add_argument("--sustained-breach-cycles", type=int, default=3)
     cuda_probability_worker.add_argument("--fragment-max-rows", type=int, default=250_000)
+    cuda_probability_worker.add_argument(
+        "--use-prior-fragments",
+        action="store_true",
+        help="Opt into uncalibrated live probability fragment priors for research runs.",
+    )
     cuda_probability_worker.add_argument("--cpu-threads", type=int, default=1)
     cuda_probability_worker.add_argument(
         "--once",
@@ -427,6 +432,7 @@ def _run_cuda_probability_worker(args: argparse.Namespace) -> int:
         min_total_paths=args.min_total_paths,
         sustained_breach_cycles=args.sustained_breach_cycles,
         fragment_max_rows=args.fragment_max_rows,
+        use_prior_fragments=args.use_prior_fragments,
         cpu_threads=args.cpu_threads,
     )
     if args.once:

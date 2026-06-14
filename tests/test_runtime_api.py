@@ -103,7 +103,7 @@ def test_create_app_from_env_uses_runtime_paths(
     assert response.json()["status_path"] == str(status_path)
 
 
-def test_create_app_from_env_uses_probability_inputs_path_for_runtime_probabilities(
+def test_create_app_from_env_uses_probability_inputs_path_without_prior_fragments(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -158,9 +158,76 @@ def test_create_app_from_env_uses_probability_inputs_path_for_runtime_probabilit
     assert payload["ok"] is True
     assert payload["state"] == "OK"
     assert payload["errors"] == []
-    assert payload["rows"][0]["contract"] == "BTC 5m UP"
-    assert payload["rows"][0]["prior_fragment_count"] == 2
-    assert payload["rows"][0]["prior_fragment_reason"] == "exact"
+    row = payload["rows"][0]
+    assert row["contract"] == "BTC 5m UP"
+    assert row["prior_fragment_enabled"] is False
+    assert row["prior_fragment_count"] == 0
+    assert row["prior_fragment_reason"] == "disabled_uncalibrated_live_prior"
+    assert row["prior_fragment_sparse"] is False
+    assert row["prior_fragment_ids"] == []
+
+
+def test_create_app_from_env_uses_prior_fragments_when_enabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    status_path = tmp_path / "live" / "status.json"
+    status_path.parent.mkdir()
+    _write_status(status_path)
+    probability_inputs_path = tmp_path / "live" / "probability_inputs.json"
+    probability_fragments_path = tmp_path / "live" / "probability_fragments.json"
+    state = _decision_state()
+    write_hot_probability_inputs(
+        out_path=probability_inputs_path,
+        states=(state,),
+        generated_at=datetime.now(UTC),
+    )
+    write_probability_fragments(
+        out_path=probability_fragments_path,
+        fragments=(
+            GeneratorFragment(
+                fragment_id="btc-prior-one",
+                asset="BTC",
+                asof_ts=state.asof_ts,
+                prices=(70_000.0, 70_050.0, 70_100.0),
+                horizon_seconds=300,
+                z_path_bucket="near",
+                quality_bucket="OK",
+            ),
+            GeneratorFragment(
+                fragment_id="btc-prior-two",
+                asset="BTC",
+                asof_ts=state.asof_ts,
+                prices=(70_000.0, 70_020.0, 70_080.0),
+                horizon_seconds=300,
+                z_path_bucket="near",
+                quality_bucket="OK",
+            ),
+        ),
+        generated_at=datetime.now(UTC),
+    )
+    monkeypatch.setenv("POLYMARKET_STATUS_PATH", str(status_path))
+    monkeypatch.setenv("POLYMARKET_DUCKDB_PATH", str(tmp_path / "missing.duckdb"))
+    monkeypatch.setenv("POLYMARKET_ENABLE_RUNTIME_PROBABILITIES", "1")
+    monkeypatch.setenv("POLYMARKET_ENABLE_LIVE_PRIOR_FRAGMENTS", "1")
+    monkeypatch.setenv("POLYMARKET_PROBABILITY_INPUTS_PATH", str(probability_inputs_path))
+    monkeypatch.setenv(
+        "POLYMARKET_PROBABILITY_FRAGMENTS_PATH",
+        str(probability_fragments_path),
+    )
+
+    response = TestClient(create_app_from_env()).get("/api/runtime/probabilities?limit=4")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    row = payload["rows"][0]
+    assert row["contract"] == "BTC 5m UP"
+    assert row["prior_fragment_enabled"] is True
+    assert row["prior_fragment_count"] == 2
+    assert row["prior_fragment_reason"] == "exact"
+    assert row["prior_fragment_sparse"] is False
+    assert row["prior_fragment_ids"] == ["btc-prior-one", "btc-prior-two"]
 
 
 def test_runtime_router_defaults_to_live_probability_inputs_path(
@@ -1832,6 +1899,75 @@ def test_runtime_probabilities_uses_last_good_rows_when_status_rows_empty(
     assert payload["last_good_rows"] == [
         {"contract": "BTC 5m UP", "output_id": "retained-up"},
         {"contract": "BTC 5m DOWN", "output_id": "retained-down"},
+    ]
+
+
+def test_runtime_probabilities_filters_status_rows_by_prior_fragment_mode(
+    tmp_path: Path,
+) -> None:
+    probability_status_path = tmp_path / "live" / "probabilities.json"
+    probability_status_path.parent.mkdir()
+    probability_status_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "polymarket-probability-runtime-v1",
+                "ok": True,
+                "state": "OK",
+                "generated_at": datetime.now(UTC).isoformat(),
+                "cached": False,
+                "model_version": "fixture-mc-v1",
+                "rows": [
+                    {
+                        "contract": "BTC 5m UP",
+                        "output_id": "default-up",
+                        "prior_fragment_enabled": False,
+                        "prior_fragment_count": 0,
+                        "prior_fragment_ids": [],
+                    },
+                    {
+                        "contract": "BTC 5m DOWN",
+                        "output_id": "prior-down",
+                        "prior_fragment_enabled": True,
+                        "prior_fragment_count": 2,
+                        "prior_fragment_ids": ["prior-one", "prior-two"],
+                    },
+                ],
+                "last_good_rows": [
+                    {
+                        "contract": "ETH 5m UP",
+                        "output_id": "retained-default-up",
+                        "prior_fragment_enabled": False,
+                        "prior_fragment_count": 0,
+                        "prior_fragment_ids": [],
+                    },
+                    {
+                        "contract": "ETH 5m DOWN",
+                        "output_id": "retained-prior-down",
+                        "prior_fragment_enabled": True,
+                        "prior_fragment_count": 2,
+                        "prior_fragment_ids": ["prior-one", "prior-two"],
+                    },
+                ],
+                "skipped": 0,
+                "errors": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    app = create_app(
+        status_path=tmp_path / "missing-status.json",
+        duckdb_path=tmp_path / "missing.duckdb",
+        probability_status_path=probability_status_path,
+        enable_runtime_probabilities=True,
+    )
+
+    response = TestClient(app).get("/api/runtime/probabilities?limit=4")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert [row["output_id"] for row in payload["rows"]] == ["default-up"]
+    assert [row["output_id"] for row in payload["last_good_rows"]] == [
+        "retained-default-up"
     ]
 
 

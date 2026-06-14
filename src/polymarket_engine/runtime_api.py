@@ -55,6 +55,7 @@ def build_runtime_router(
     enable_container_status: bool = False,
     enable_runtime_probabilities: bool = False,
     allow_probability_compute_fallback: bool = False,
+    use_prior_fragments: bool = False,
 ) -> APIRouter:
     router = APIRouter(prefix="/api/runtime")
     probability_cache = ProbabilityRuntimeCache()
@@ -235,6 +236,7 @@ def build_runtime_router(
                 return _probability_status_payload(
                     probability_status_path=probability_status_path,
                     limit=limit,
+                    use_prior_fragments=use_prior_fragments,
                 )
             return _probabilities_disabled_payload()
         hot_or_fallback_payload: dict[str, Any] | None = None
@@ -242,6 +244,7 @@ def build_runtime_router(
             status_payload = _probability_status_payload(
                 probability_status_path=probability_status_path,
                 limit=limit,
+                use_prior_fragments=use_prior_fragments,
             )
             rows = status_payload.get("rows")
             if isinstance(rows, list) and rows:
@@ -254,6 +257,7 @@ def build_runtime_router(
                     allow_compute=allow_probability_compute_fallback,
                     probability_inputs_path=probability_inputs_path,
                     probability_fragments_path=probability_fragments_path,
+                    use_prior_fragments=use_prior_fragments,
                 )
                 hot_rows = hot_or_fallback_payload.get("rows")
                 if (
@@ -278,6 +282,7 @@ def build_runtime_router(
             return _probability_status_payload(
                 probability_status_path=probability_status_path,
                 limit=limit,
+                use_prior_fragments=use_prior_fragments,
             )
         if hot_or_fallback_payload is not None:
             return hot_or_fallback_payload
@@ -288,6 +293,7 @@ def build_runtime_router(
                 allow_compute=allow_probability_compute_fallback,
                 probability_inputs_path=probability_inputs_path,
                 probability_fragments_path=probability_fragments_path,
+                use_prior_fragments=use_prior_fragments,
             )
         except ValueError as exc:
             return {
@@ -397,6 +403,18 @@ def runtime_probability_compute_fallback_enabled_from_env() -> bool:
     return os.getenv("POLYMARKET_ALLOW_RUNTIME_PROBABILITY_COMPUTE") == "1"
 
 
+def live_prior_fragments_enabled_from_env() -> bool:
+    return os.getenv("POLYMARKET_ENABLE_LIVE_PRIOR_FRAGMENTS") in {
+        "1",
+        "true",
+        "TRUE",
+        "yes",
+        "YES",
+        "on",
+        "ON",
+    }
+
+
 def _probabilities_disabled_payload() -> dict[str, Any]:
     return {
         "schema_version": "polymarket-probability-runtime-v1",
@@ -416,6 +434,7 @@ def _probability_status_payload(
     *,
     probability_status_path: Path,
     limit: int,
+    use_prior_fragments: bool = False,
 ) -> dict[str, Any]:
     status_payload, read_error = _read_json_or_error(probability_status_path)
     if status_payload is None:
@@ -443,10 +462,21 @@ def _probability_status_payload(
             "skipped": 0,
             "errors": ["probability status shape invalid: rows must be a list"],
         }
-    display_rows = list(rows)
+    display_rows = _filter_probability_display_rows_by_prior_mode(
+        rows,
+        use_prior_fragments=use_prior_fragments,
+    )
     last_good_rows = status_payload.get("last_good_rows")
-    if not display_rows and isinstance(last_good_rows, list):
-        display_rows = [row for row in last_good_rows if isinstance(row, dict)]
+    filtered_last_good_rows = (
+        _filter_probability_display_rows_by_prior_mode(
+            last_good_rows,
+            use_prior_fragments=use_prior_fragments,
+        )
+        if isinstance(last_good_rows, list)
+        else None
+    )
+    if not display_rows and filtered_last_good_rows is not None:
+        display_rows = filtered_last_good_rows
     else:
         display_rows = _fill_missing_probability_display_rows_from_nowcasts(
             display_rows,
@@ -454,8 +484,59 @@ def _probability_status_payload(
         )
     limited = dict(status_payload)
     limited["rows"] = display_rows[:limit]
+    if filtered_last_good_rows is not None:
+        limited["last_good_rows"] = filtered_last_good_rows
     limited["cached"] = False
     return limited
+
+
+def _filter_probability_display_rows_by_prior_mode(
+    rows: object,
+    *,
+    use_prior_fragments: bool,
+) -> list[dict[str, Any]]:
+    if not isinstance(rows, list):
+        return []
+    return [
+        row
+        for row in rows
+        if isinstance(row, dict)
+        and _probability_display_row_matches_prior_mode(
+            row,
+            use_prior_fragments=use_prior_fragments,
+        )
+    ]
+
+
+def _probability_display_row_matches_prior_mode(
+    row: dict[str, Any],
+    *,
+    use_prior_fragments: bool,
+) -> bool:
+    if str(row.get("probability_kind") or "").upper() == "NOWCAST":
+        return True
+    return _probability_display_row_uses_prior_fragments(row) == use_prior_fragments
+
+
+def _probability_display_row_uses_prior_fragments(row: dict[str, Any]) -> bool:
+    enabled = row.get("prior_fragment_enabled")
+    if isinstance(enabled, bool):
+        return enabled
+    if isinstance(enabled, str):
+        normalized = enabled.strip().lower()
+        if normalized in {"true", "1", "yes", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "off"}:
+            return False
+    count = row.get("prior_fragment_count")
+    if not isinstance(count, bool):
+        try:
+            if count is not None and int(count) > 0:
+                return True
+        except (TypeError, ValueError):
+            pass
+    ids = row.get("prior_fragment_ids")
+    return isinstance(ids, list) and bool(ids)
 
 
 def _fill_missing_probability_display_rows_from_nowcasts(

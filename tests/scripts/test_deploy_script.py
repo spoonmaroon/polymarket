@@ -63,6 +63,7 @@ def _probability_row(
     generated_at: datetime = _NOW,
     probability_kind: str = "MC",
     preview: bool = True,
+    prior_fragment_enabled: bool = True,
 ) -> dict[str, object]:
     row: dict[str, object] = {
         "asset": asset,
@@ -71,8 +72,13 @@ def _probability_row(
         "valid_until": (_NOW + timedelta(seconds=60)).isoformat(),
         "model_version": "ensemble-v1" if probability_kind == "MC" else "fast-nowcast-v1",
         "probability_kind": probability_kind,
-        "prior_fragment_generators": list(_REQUIRED_GENERATORS),
+        "prior_fragment_enabled": prior_fragment_enabled,
     }
+    if prior_fragment_enabled:
+        row["prior_fragment_generators"] = list(_REQUIRED_GENERATORS)
+    else:
+        row["effective_weights"] = {generator: 0.25 for generator in _REQUIRED_GENERATORS}
+        row["generator_count"] = len(_REQUIRED_GENERATORS)
     if preview:
         row["simulation_preview"] = {"sampled_paths": [{"points": [1.0, 2.0]}]}
     return row
@@ -657,6 +663,64 @@ def test_compose_and_env_support_prebuilt_image_overrides() -> None:
     assert "POLYMARKET_COLLECTOR_IMAGE=polymarket-rust-collector:latest" in env_example
     assert "POLYMARKET_NORMALIZER_IMAGE=polymarket-normalizer:latest" in env_example
     assert "POLYMARKET_CUDA_PROBABILITY_IMAGE=polymarket-cuda-probability:latest" in env_example
+
+
+def test_gpu_probability_prior_fragments_default_to_disabled() -> None:
+    env_example = (ROOT / "deploy" / "collector" / ".env.example").read_text(
+        encoding="utf-8"
+    )
+    compose = (ROOT / "deploy" / "collector" / "docker-compose.yml").read_text(
+        encoding="utf-8"
+    )
+    entrypoint = (ROOT / "deploy" / "gpu" / "gpu-probability-entrypoint.sh").read_text(
+        encoding="utf-8"
+    )
+    deploy_pc = (ROOT / "scripts" / "deploy_pc.sh").read_text(encoding="utf-8")
+
+    assert "POLYMARKET_ENABLE_LIVE_PRIOR_FRAGMENTS=0" in env_example
+    assert (
+        "POLYMARKET_ENABLE_LIVE_PRIOR_FRAGMENTS: "
+        "${POLYMARKET_ENABLE_LIVE_PRIOR_FRAGMENTS:-0}"
+    ) in compose
+    api_section = compose.split("  api:", 1)[1].split("  gpu-probability-worker:", 1)[0]
+    worker_section = compose.split("  gpu-probability-worker:", 1)[1]
+    assert (
+        "POLYMARKET_ENABLE_LIVE_PRIOR_FRAGMENTS: "
+        "${POLYMARKET_ENABLE_LIVE_PRIOR_FRAGMENTS:-0}"
+    ) in api_section
+    assert (
+        "POLYMARKET_ENABLE_LIVE_PRIOR_FRAGMENTS: "
+        "${POLYMARKET_ENABLE_LIVE_PRIOR_FRAGMENTS:-0}"
+    ) in worker_section
+    assert (
+        'ENABLE_LIVE_PRIOR_FRAGMENTS="${POLYMARKET_ENABLE_LIVE_PRIOR_FRAGMENTS:-0}"'
+        in entrypoint
+    )
+    assert "--use-prior-fragments" in entrypoint
+    assert (
+        'PC_ENABLE_LIVE_PRIOR_FRAGMENTS="${PC_ENABLE_LIVE_PRIOR_FRAGMENTS:-0}"'
+        in deploy_pc
+    )
+    assert "set_env POLYMARKET_ENABLE_LIVE_PRIOR_FRAGMENTS" in deploy_pc
+
+
+def test_pc_probability_smoke_accepts_default_off_ensemble_rows() -> None:
+    probability_smoke_passed = _probability_smoke_passed()
+    rows = [
+        _probability_row(asset, side, prior_fragment_enabled=False)
+        for asset in ("BTC", "ETH")
+        for side in ("UP", "DOWN")
+    ]
+    payload = _probability_payload(
+        rows,
+        offload={
+            "offload_allowed": True,
+            "mc_eligible_input_count": 4,
+            "blocked_inputs": [],
+        },
+    )
+
+    assert probability_smoke_passed(payload, _NOW) is True
 
 
 def test_spoon_and_thepc_compose_overlays_render() -> None:

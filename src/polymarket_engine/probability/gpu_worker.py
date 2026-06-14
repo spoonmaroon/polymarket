@@ -102,6 +102,7 @@ class ProbabilityWorkerBudget:
     min_total_paths: int = DEFAULT_MIN_TOTAL_PATHS
     sustained_breach_cycles: int = DEFAULT_SUSTAINED_BREACH_CYCLES
     fragment_max_rows: int = DEFAULT_FRAGMENT_MAX_ROWS
+    use_prior_fragments: bool = False
     cpu_threads: int = DEFAULT_CPU_THREADS
 
     def __post_init__(self) -> None:
@@ -839,10 +840,13 @@ def run_cuda_probability_worker_cycle(
         _write_status(probability_status_path, payload)
         return payload
 
-    prior_fragments, prior_fragment_error = _load_probability_fragments(
-        path=probability_fragments_path,
-        max_age_seconds=max_input_snapshot_age_seconds,
-    )
+    prior_fragments: tuple[GeneratorFragment, ...] = ()
+    prior_fragment_error: str | None = None
+    if budget.use_prior_fragments:
+        prior_fragments, prior_fragment_error = _load_probability_fragments(
+            path=probability_fragments_path,
+            max_age_seconds=max_input_snapshot_age_seconds,
+        )
 
     for group in _batch_runtime_inputs(mc_inputs):
         representative = group[0].probability_input
@@ -880,6 +884,7 @@ def run_cuda_probability_worker_cycle(
                     probability_input=runtime_input.probability_input,
                     max_fragment_count=min(budget.fragment_max_rows, path_count),
                     fragment_error=prior_fragment_error,
+                    enabled=budget.use_prior_fragments,
                 )
                 output = run_four_generator_ensemble(
                     runtime_input.probability_input,
@@ -896,6 +901,7 @@ def run_cuda_probability_worker_cycle(
                         output,
                         fragment_selection=fragment_selection,
                         fragment_error=prior_fragment_error,
+                        prior_fragments_enabled=budget.use_prior_fragments,
                     )
                 )
             mc_finished_ts = datetime.now(timezone.utc)
@@ -1020,7 +1026,14 @@ def _select_prior_fragments(
     probability_input: ProbabilityInput,
     max_fragment_count: int,
     fragment_error: str | None,
+    enabled: bool,
 ) -> FragmentSelection:
+    if not enabled:
+        return FragmentSelection(
+            fragments=(),
+            sparse=False,
+            reason="disabled_uncalibrated_live_prior",
+        )
     if fragment_error is not None:
         return FragmentSelection(fragments=(), sparse=True, reason="unavailable")
     return select_fragments_for_input(
@@ -1036,10 +1049,12 @@ def _output_with_prior_diagnostics(
     *,
     fragment_selection: FragmentSelection,
     fragment_error: str | None,
+    prior_fragments_enabled: bool,
 ) -> ProbabilityOutput:
     diagnostics = dict(output.diagnostics)
     diagnostics.update(
         {
+            "prior_fragment_enabled": prior_fragments_enabled,
             "prior_fragment_count": len(fragment_selection.fragments),
             "prior_fragment_reason": fragment_selection.reason,
             "prior_fragment_sparse": fragment_selection.sparse,
@@ -1448,6 +1463,9 @@ def _mc_row_from_output(
             "book_age_ms": probability_input.book_age_ms,
             "flags": list(runtime_input.flags) if runtime_input.flags else ["OK"],
             "probability_state": runtime_input.probability_state,
+            "prior_fragment_enabled": bool(
+                diagnostics.get("prior_fragment_enabled", False)
+            ),
             "k_stable": runtime_input.k_stable,
             "sigma_valid": runtime_input.sigma_valid,
             "sigma_age_ms": runtime_input.sigma_age_ms,
@@ -1789,6 +1807,7 @@ def _event_payload_from_row(
         "uncertainty_buffer",
         "path_diagnosis",
         "sparse_scope",
+        "prior_fragment_enabled",
         "prior_fragment_count",
         "prior_fragment_reason",
         "prior_fragment_sparse",

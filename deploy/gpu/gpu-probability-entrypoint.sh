@@ -21,9 +21,10 @@ MAX_TOTAL_PATHS="${POLYMARKET_PROBABILITY_MAX_TOTAL_PATHS:-320000}"
 MIN_TOTAL_PATHS="${POLYMARKET_PROBABILITY_MIN_TOTAL_PATHS:-80000}"
 SUSTAINED_BREACH_CYCLES="${POLYMARKET_PROBABILITY_SUSTAINED_BREACH_CYCLES:-3}"
 FRAGMENT_MAX_ROWS="${POLYMARKET_ENSEMBLE_FRAGMENT_MAX_ROWS:-250000}"
+ENABLE_LIVE_PRIOR_FRAGMENTS="${POLYMARKET_ENABLE_LIVE_PRIOR_FRAGMENTS:-0}"
 CPU_THREADS="${POLYMARKET_ENSEMBLE_CPU_THREADS:-1}"
 
-exec polymarket-engine run-cuda-probability-worker \
+set -- polymarket-engine run-cuda-probability-worker \
   --duckdb-path "$DB_PATH" \
   --probability-status-path "$PROBABILITY_STATUS_PATH" \
   --recovery-status-path "$RECOVERY_STATUS_PATH" \
@@ -45,3 +46,11 @@ exec polymarket-engine run-cuda-probability-worker \
   --sustained-breach-cycles "$SUSTAINED_BREACH_CYCLES" \
   --fragment-max-rows "$FRAGMENT_MAX_ROWS" \
   --cpu-threads "$CPU_THREADS"
+
+case "$ENABLE_LIVE_PRIOR_FRAGMENTS" in
+  1|true|TRUE|yes|YES|on|ON)
+    set -- "$@" --use-prior-fragments
+    ;;
+esac
+
+exec "$@"

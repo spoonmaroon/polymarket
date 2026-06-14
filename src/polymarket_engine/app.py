@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from polymarket_engine.runtime_api import (
     build_runtime_router,
     container_status_enabled_from_env,
+    live_prior_fragments_enabled_from_env,
     runtime_probability_compute_fallback_enabled_from_env,
     runtime_probabilities_enabled_from_env,
 )
@@ -33,6 +34,7 @@ def create_app(
     enable_container_status: bool | None = None,
     enable_runtime_probabilities: bool | None = None,
     allow_runtime_probability_compute: bool | None = None,
+    use_prior_fragments: bool | None = None,
     ui_dist_path: Optional[Path] = None,
 ) -> FastAPI:
     probability_status_path = probability_status_path or status_path.with_name(
@@ -86,6 +88,9 @@ def create_app(
             allow_probability_compute_fallback=runtime_probability_compute_fallback_enabled_from_env()
             if allow_runtime_probability_compute is None
             else allow_runtime_probability_compute,
+            use_prior_fragments=live_prior_fragments_enabled_from_env()
+            if use_prior_fragments is None
+            else use_prior_fragments,
         )
     )
     resolved_ui_dist_path = _resolve_ui_dist_path(ui_dist_path)

@@ -1589,7 +1589,7 @@ def test_worker_writes_ensemble_v1_rows_and_events(
     assert mc_event["terminal_probability_source"] == "core_generators_ex_stress_overlay"
 
 
-def test_worker_passes_asof_safe_fragments_into_ensemble(
+def test_worker_does_not_feed_prior_fragments_without_opt_in(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1597,6 +1597,110 @@ def test_worker_passes_asof_safe_fragments_into_ensemble(
     probability_status_path = tmp_path / "probabilities.json"
     probability_inputs_path = tmp_path / "probability_inputs.json"
     probability_fragments_path = tmp_path / "probability_fragments.json"
+    probability_event_path = tmp_path / "probability-events.jsonl"
+    _write_ready_recovery_status(probability_status_path.with_name("recovery_status.json"))
+    probability_inputs_path.write_text(
+        json.dumps(
+            {
+                "schema_version": PROBABILITY_INPUTS_SCHEMA_VERSION,
+                "generated_at": asof_ts.isoformat(),
+                "rows": [
+                    _runtime_input_snapshot_row(
+                        asof_ts=asof_ts,
+                        state_id="state-btc-up",
+                        asset="BTC",
+                        side="UP",
+                        seconds_left=240.0,
+                    )
+                ],
+                "skipped": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fail_load_probability_fragments(**_: object) -> None:
+        raise AssertionError("_load_probability_fragments should not be called")
+
+    monkeypatch.setattr(
+        "polymarket_engine.probability.gpu_worker._load_probability_fragments",
+        fail_load_probability_fragments,
+    )
+    seen_history: list[tuple[tuple[float, ...], ...] | None] = []
+
+    def fake_ensemble_output(
+        input_row: ProbabilityInput,
+        *,
+        path_count: int,
+        steps: int,
+        seed: int,
+        history_fragments: tuple[tuple[float, ...], ...] | None = None,
+    ) -> ProbabilityOutput:
+        seen_history.append(history_fragments)
+        return ProbabilityOutput(
+            state_id=input_row.state_id,
+            asof_ts=input_row.asof_ts,
+            p_finish=0.56,
+            p_no_touch=0.51,
+            z_path=input_row.z_path,
+            model_version="ensemble-v1",
+            seed=seed,
+            diagnostics={
+                "model": "ensemble-v1",
+                "generator_version": "four-generator-ensemble-v1",
+                "path_count": path_count,
+                "steps": steps,
+                "effective_weights": {},
+                "generator_summary": {},
+                "generator_runs": [],
+                "effective_generator_values": {},
+                "u_gen": 0.01,
+                "mc_dispersion": 0.02,
+                "uncertainty_buffer": 0.02,
+                "path_diagnosis": "CLEAN",
+                "sparse_scope": False,
+            },
+        )
+
+    monkeypatch.setattr(
+        "polymarket_engine.probability.gpu_worker.run_four_generator_ensemble",
+        fake_ensemble_output,
+    )
+
+    payload = run_cuda_probability_worker_cycle(
+        duckdb_path=tmp_path / "unused.duckdb",
+        probability_status_path=probability_status_path,
+        probability_inputs_path=probability_inputs_path,
+        probability_fragments_path=probability_fragments_path,
+        probability_event_path=probability_event_path,
+        budget=ProbabilityWorkerBudget(max_total_paths=30_000),
+    )
+
+    assert seen_history == [None]
+    row = payload["rows"][0]
+    assert row["prior_fragment_enabled"] is False
+    assert row["prior_fragment_count"] == 0
+    assert row["prior_fragment_reason"] == "disabled_uncalibrated_live_prior"
+    assert row["prior_fragment_sparse"] is False
+    assert row["prior_fragment_ids"] == []
+    assert row["path_diagnosis"] == "CLEAN"
+    events = [
+        json.loads(line)
+        for line in probability_event_path.read_text(encoding="utf-8").splitlines()
+    ]
+    mc_event = next(event for event in events if event["probability_kind"] == "MC")
+    assert mc_event["prior_fragment_enabled"] is False
+
+
+def test_worker_passes_asof_safe_fragments_into_ensemble_when_enabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asof_ts = datetime.now(UTC)
+    probability_status_path = tmp_path / "probabilities.json"
+    probability_inputs_path = tmp_path / "probability_inputs.json"
+    probability_fragments_path = tmp_path / "probability_fragments.json"
+    probability_event_path = tmp_path / "probability-events.jsonl"
     _write_ready_recovery_status(probability_status_path.with_name("recovery_status.json"))
     probability_input = ProbabilityInput(
         state_id="state-btc-up",
@@ -1717,13 +1821,20 @@ def test_worker_passes_asof_safe_fragments_into_ensemble(
         probability_status_path=probability_status_path,
         probability_inputs_path=probability_inputs_path,
         probability_fragments_path=probability_fragments_path,
-        probability_event_path=tmp_path / "probability-events.jsonl",
-        budget=ProbabilityWorkerBudget(max_total_paths=30_000),
+        probability_event_path=probability_event_path,
+        budget=ProbabilityWorkerBudget(max_total_paths=30_000, use_prior_fragments=True),
     )
 
     assert seen_history == [(prior_one, prior_two)]
     row = payload["rows"][0]
+    assert row["prior_fragment_enabled"] is True
     assert row["prior_fragment_count"] == 2
     assert row["prior_fragment_reason"] == "exact"
     assert row["prior_fragment_sparse"] is False
     assert row["prior_fragment_ids"] == ["btc-prior-one", "btc-prior-two"]
+    events = [
+        json.loads(line)
+        for line in probability_event_path.read_text(encoding="utf-8").splitlines()
+    ]
+    mc_event = next(event for event in events if event["probability_kind"] == "MC")
+    assert mc_event["prior_fragment_enabled"] is True

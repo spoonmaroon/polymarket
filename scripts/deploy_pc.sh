@@ -21,6 +21,7 @@ PC_PROBABILITY_CPU_SOFT_MAX_PERCENT="${PC_PROBABILITY_CPU_SOFT_MAX_PERCENT:-20.0
 PC_PROBABILITY_MAX_CYCLE_RUNTIME_MS="${PC_PROBABILITY_MAX_CYCLE_RUNTIME_MS:-10000}"
 PC_PROBABILITY_MAX_TOTAL_PATHS="${PC_PROBABILITY_MAX_TOTAL_PATHS:-80000}"
 PC_PROBABILITY_MIN_TOTAL_PATHS="${PC_PROBABILITY_MIN_TOTAL_PATHS:-20000}"
+PC_ENABLE_LIVE_PRIOR_FRAGMENTS="${PC_ENABLE_LIVE_PRIOR_FRAGMENTS:-0}"
 PC_GPU_WORKER_MEM_LIMIT="${PC_GPU_WORKER_MEM_LIMIT:-1536m}"
 PC_API_PORT="${PC_API_PORT:-8000}"
 PC_DEPLOY_MODE="${PC_DEPLOY_MODE:-remote-build}"
@@ -167,6 +168,7 @@ PC_PROBABILITY_CPU_SOFT_MAX_PERCENT=$(shell_quote "$PC_PROBABILITY_CPU_SOFT_MAX_
 PC_PROBABILITY_MAX_CYCLE_RUNTIME_MS=$(shell_quote "$PC_PROBABILITY_MAX_CYCLE_RUNTIME_MS")
 PC_PROBABILITY_MAX_TOTAL_PATHS=$(shell_quote "$PC_PROBABILITY_MAX_TOTAL_PATHS")
 PC_PROBABILITY_MIN_TOTAL_PATHS=$(shell_quote "$PC_PROBABILITY_MIN_TOTAL_PATHS")
+PC_ENABLE_LIVE_PRIOR_FRAGMENTS=$(shell_quote "$PC_ENABLE_LIVE_PRIOR_FRAGMENTS")
 PC_GPU_WORKER_MEM_LIMIT=$(shell_quote "$PC_GPU_WORKER_MEM_LIMIT")
 PC_API_PORT=$(shell_quote "$PC_API_PORT")
 PC_DEPLOY_MODE=$(shell_quote "$PC_DEPLOY_MODE")
@@ -247,6 +249,7 @@ set_env POLYMARKET_PROBABILITY_CPU_SOFT_MAX_PERCENT "\$PC_PROBABILITY_CPU_SOFT_M
 set_env POLYMARKET_PROBABILITY_MAX_CYCLE_RUNTIME_MS "\$PC_PROBABILITY_MAX_CYCLE_RUNTIME_MS" deploy/collector/.env
 set_env POLYMARKET_PROBABILITY_MAX_TOTAL_PATHS "\$PC_PROBABILITY_MAX_TOTAL_PATHS" deploy/collector/.env
 set_env POLYMARKET_PROBABILITY_MIN_TOTAL_PATHS "\$PC_PROBABILITY_MIN_TOTAL_PATHS" deploy/collector/.env
+set_env POLYMARKET_ENABLE_LIVE_PRIOR_FRAGMENTS "\$PC_ENABLE_LIVE_PRIOR_FRAGMENTS" deploy/collector/.env
 set_env POLYMARKET_GPU_WORKER_MEM_LIMIT "\$PC_GPU_WORKER_MEM_LIMIT" deploy/collector/.env
 set_env POLYMARKET_API_PORT "\$PC_API_PORT" deploy/collector/.env
 set_env POLYMARKET_ENABLE_RUNTIME_PROBABILITIES 1 deploy/collector/.env
@@ -614,6 +617,24 @@ def contract_pairs(rows: object) -> set[tuple[str, str]]:
 
 
 def row_has_required_generators(row: dict[str, object]) -> bool:
+    if row.get("prior_fragment_enabled") is False:
+        generator_count = row.get("generator_count")
+        if isinstance(generator_count, int) and generator_count >= len(required_generators):
+            return True
+        effective_weights = row.get("effective_weights")
+        if isinstance(effective_weights, dict) and required_generators.issubset(
+            {str(generator) for generator in effective_weights}
+        ):
+            return True
+        generator_runs = row.get("generator_runs")
+        if isinstance(generator_runs, list):
+            run_generators = {
+                str(run.get("generator_id"))
+                for run in generator_runs
+                if isinstance(run, dict) and run.get("generator_id") is not None
+            }
+            return required_generators.issubset(run_generators)
+        return False
     generators = row.get("prior_fragment_generators")
     if not isinstance(generators, list):
         return False
