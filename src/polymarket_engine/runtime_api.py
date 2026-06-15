@@ -259,6 +259,12 @@ def build_runtime_router(
                     probability_fragments_path=probability_fragments_path,
                     use_prior_fragments=use_prior_fragments,
                 )
+                hot_or_fallback_payload = _probability_display_payload(
+                    hot_or_fallback_payload,
+                    limit=limit,
+                    use_prior_fragments=use_prior_fragments,
+                    now=datetime.now(timezone.utc),
+                )
                 hot_rows = hot_or_fallback_payload.get("rows")
                 if (
                     hot_or_fallback_payload.get("source") == "hot_inputs"
@@ -287,13 +293,18 @@ def build_runtime_router(
         if hot_or_fallback_payload is not None:
             return hot_or_fallback_payload
         try:
-            return probability_cache.payload(
-                duckdb_path=duckdb_path,
+            return _probability_display_payload(
+                probability_cache.payload(
+                    duckdb_path=duckdb_path,
+                    limit=limit,
+                    allow_compute=allow_probability_compute_fallback,
+                    probability_inputs_path=probability_inputs_path,
+                    probability_fragments_path=probability_fragments_path,
+                    use_prior_fragments=use_prior_fragments,
+                ),
                 limit=limit,
-                allow_compute=allow_probability_compute_fallback,
-                probability_inputs_path=probability_inputs_path,
-                probability_fragments_path=probability_fragments_path,
                 use_prior_fragments=use_prior_fragments,
+                now=datetime.now(timezone.utc),
             )
         except ValueError as exc:
             return {
@@ -495,6 +506,28 @@ def _probability_status_payload(
     if filtered_last_good_rows is not None:
         limited["last_good_rows"] = filtered_last_good_rows
     limited["cached"] = False
+    return limited
+
+
+def _probability_display_payload(
+    payload: dict[str, Any],
+    *,
+    limit: int,
+    use_prior_fragments: bool,
+    now: datetime,
+) -> dict[str, Any]:
+    rows = payload.get("rows")
+    if not isinstance(rows, list):
+        return payload
+    display_rows = _filter_unexpired_probability_display_rows(
+        _filter_probability_display_rows_by_prior_mode(
+            rows,
+            use_prior_fragments=use_prior_fragments,
+        ),
+        now=now,
+    )
+    limited = dict(payload)
+    limited["rows"] = display_rows[:limit]
     return limited
 
 

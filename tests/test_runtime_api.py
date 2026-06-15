@@ -112,11 +112,16 @@ def test_create_app_from_env_uses_probability_inputs_path_without_prior_fragment
     _write_status(status_path)
     probability_inputs_path = tmp_path / "live" / "probability_inputs.json"
     probability_fragments_path = tmp_path / "live" / "probability_fragments.json"
-    state = _decision_state()
+    now = datetime.now(UTC)
+    state = _decision_state_with_window(
+        start_ts=now - timedelta(seconds=60),
+        expiry_ts=now + timedelta(minutes=4),
+        asof_ts=now,
+    )
     write_hot_probability_inputs(
         out_path=probability_inputs_path,
         states=(state,),
-        generated_at=datetime.now(UTC),
+        generated_at=now,
     )
     write_probability_fragments(
         out_path=probability_fragments_path,
@@ -176,11 +181,16 @@ def test_create_app_from_env_uses_prior_fragments_when_enabled(
     _write_status(status_path)
     probability_inputs_path = tmp_path / "live" / "probability_inputs.json"
     probability_fragments_path = tmp_path / "live" / "probability_fragments.json"
-    state = _decision_state()
+    now = datetime.now(UTC)
+    state = _decision_state_with_window(
+        start_ts=now - timedelta(seconds=60),
+        expiry_ts=now + timedelta(minutes=4),
+        asof_ts=now,
+    )
     write_hot_probability_inputs(
         out_path=probability_inputs_path,
         states=(state,),
-        generated_at=datetime.now(UTC),
+        generated_at=now,
     )
     write_probability_fragments(
         out_path=probability_fragments_path,
@@ -236,10 +246,17 @@ def test_runtime_router_defaults_to_live_probability_inputs_path(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     probability_inputs_path = tmp_path / "data" / "live" / "probability_inputs.json"
+    now = datetime.now(UTC)
     write_hot_probability_inputs(
         out_path=probability_inputs_path,
-        states=(_decision_state(),),
-        generated_at=datetime.now(UTC),
+        states=(
+            _decision_state_with_window(
+                start_ts=now - timedelta(seconds=60),
+                expiry_ts=now + timedelta(minutes=4),
+                asof_ts=now,
+            ),
+        ),
+        generated_at=now,
     )
     app = FastAPI()
     app.include_router(
@@ -1594,7 +1611,12 @@ def test_runtime_probabilities_disabled_by_default_returns_empty_envelope(
     db_path = tmp_path / "polymarket.duckdb"
     store = DuckDbIngestStore(db_path)
     store.apply_schema()
-    state = _decision_state()
+    now = datetime.now(UTC)
+    state = _decision_state_with_window(
+        start_ts=now - timedelta(seconds=60),
+        expiry_ts=now + timedelta(minutes=4),
+        asof_ts=now,
+    )
     store.upsert_contract_spec(state.contract)
     store.upsert_asof_state_input(state)
 
@@ -1627,7 +1649,12 @@ def test_runtime_probabilities_skips_compute_when_fallback_disabled(
     db_path = tmp_path / "polymarket.duckdb"
     store = DuckDbIngestStore(db_path)
     store.apply_schema()
-    state = _decision_state()
+    now = datetime.now(UTC)
+    state = _decision_state_with_window(
+        start_ts=now - timedelta(seconds=60),
+        expiry_ts=now + timedelta(minutes=4),
+        asof_ts=now,
+    )
     store.upsert_contract_spec(state.contract)
     store.upsert_asof_state_input(state)
 
@@ -1662,7 +1689,12 @@ def test_runtime_probabilities_runs_cached_read_only_mc_when_compute_fallback_al
     db_path = tmp_path / "polymarket.duckdb"
     store = DuckDbIngestStore(db_path)
     store.apply_schema()
-    state = _decision_state()
+    now = datetime.now(UTC)
+    state = _decision_state_with_window(
+        start_ts=now - timedelta(seconds=60),
+        expiry_ts=now + timedelta(minutes=4),
+        asof_ts=now,
+    )
     store.upsert_contract_spec(state.contract)
     store.upsert_asof_state_input(state)
     app = create_app(
@@ -2142,10 +2174,17 @@ def test_runtime_probabilities_uses_hot_inputs_when_rows_exist_and_no_status_fil
     tmp_path: Path,
 ) -> None:
     probability_inputs_path = tmp_path / "live" / "probability_inputs.json"
+    now = datetime.now(UTC)
     write_hot_probability_inputs(
         out_path=probability_inputs_path,
-        states=(_decision_state(),),
-        generated_at=datetime.now(UTC),
+        states=(
+            _decision_state_with_window(
+                start_ts=now - timedelta(seconds=60),
+                expiry_ts=now + timedelta(minutes=4),
+                asof_ts=now,
+            ),
+        ),
+        generated_at=now,
     )
     app = create_app(
         status_path=tmp_path / "missing-status.json",
@@ -2167,6 +2206,57 @@ def test_runtime_probabilities_uses_hot_inputs_when_rows_exist_and_no_status_fil
     assert row["generator_version"] == "four-generator-ensemble-v1"
     assert row["generator_summary"]
     assert row["effective_weights"]
+
+
+def test_runtime_probabilities_filters_expired_hot_input_fallback_when_status_rows_empty(
+    tmp_path: Path,
+) -> None:
+    probability_status_path = tmp_path / "live" / "probabilities.json"
+    probability_inputs_path = tmp_path / "live" / "probability_inputs.json"
+    probability_status_path.parent.mkdir()
+    now = datetime.now(UTC)
+    probability_status_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "polymarket-probability-runtime-v1",
+                "ok": True,
+                "state": "OK",
+                "generated_at": now.isoformat(),
+                "cached": False,
+                "model_version": None,
+                "rows": [],
+                "skipped": 0,
+                "errors": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    write_hot_probability_inputs(
+        out_path=probability_inputs_path,
+        states=(
+            _decision_state_with_window(
+                start_ts=now - timedelta(minutes=5),
+                expiry_ts=now - timedelta(seconds=1),
+                asof_ts=now - timedelta(seconds=2),
+                state_id="state-expired-btc-up",
+            ),
+        ),
+        generated_at=now,
+    )
+    app = create_app(
+        status_path=tmp_path / "missing-status.json",
+        duckdb_path=tmp_path / "missing.duckdb",
+        probability_status_path=probability_status_path,
+        probability_inputs_path=probability_inputs_path,
+        enable_runtime_probabilities=True,
+    )
+
+    response = TestClient(app).get("/api/runtime/probabilities?limit=4")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["state"] == "OK"
+    assert payload["rows"] == []
 
 
 def test_probability_events_stream_reads_newest_drain_when_jsonl_missing(
@@ -2290,7 +2380,12 @@ def test_runtime_probabilities_prefers_persisted_outputs_without_recomputing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     db_path = tmp_path / "polymarket.duckdb"
-    state = _decision_state()
+    now = datetime.now(UTC)
+    state = _decision_state_with_window(
+        start_ts=now - timedelta(seconds=60),
+        expiry_ts=now + timedelta(minutes=4),
+        asof_ts=now,
+    )
     probability_input = ProbabilityInput.from_decision_state(state)
     output = ProbabilityOutput(
         state_id=probability_input.state_id,
@@ -2353,7 +2448,12 @@ def test_runtime_probabilities_reads_persisted_outputs_without_decision_table(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     db_path = tmp_path / "polymarket.duckdb"
-    state = _decision_state()
+    now = datetime.now(UTC)
+    state = _decision_state_with_window(
+        start_ts=now - timedelta(seconds=60),
+        expiry_ts=now + timedelta(minutes=4),
+        asof_ts=now,
+    )
     probability_input = ProbabilityInput.from_decision_state(state)
     output = ProbabilityOutput(
         state_id=probability_input.state_id,
@@ -2429,7 +2529,12 @@ def test_runtime_probabilities_include_optional_ensemble_decision_fields(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     db_path = tmp_path / "polymarket.duckdb"
-    state = _decision_state()
+    now = datetime.now(UTC)
+    state = _decision_state_with_window(
+        start_ts=now - timedelta(seconds=60),
+        expiry_ts=now + timedelta(minutes=4),
+        asof_ts=now,
+    )
     probability_input = ProbabilityInput.from_decision_state(state)
     output = ProbabilityOutput(
         state_id=probability_input.state_id,
@@ -2450,7 +2555,7 @@ def test_runtime_probabilities_include_optional_ensemble_decision_fields(
         probability_input=probability_input,
         output=output,
     )
-    older_decision_ts = probability_input.asof_ts.replace(minute=2)
+    older_decision_ts = probability_input.asof_ts - timedelta(minutes=1)
     store.insert_ensemble_decisions(
         (
             {
@@ -2584,6 +2689,38 @@ def _decision_state(
         sigma_tau=0.01,
         volatility_regime="normal",
         data_quality_flags=data_quality_flags,
+    )
+
+
+def _decision_state_with_window(
+    *,
+    start_ts: datetime,
+    expiry_ts: datetime,
+    asof_ts: datetime,
+    state_id: str = "state-btc-up",
+) -> DecisionState:
+    state = _decision_state()
+    slug = f"btc-updown-5m-{int(start_ts.timestamp())}"
+    contract = replace(
+        state.contract,
+        contract_id=f"{slug}:UP",
+        market_id=slug,
+        slug=slug,
+        start_ts=start_ts,
+        expiry_ts=expiry_ts,
+    )
+    return replace(
+        state,
+        state_id=state_id,
+        asof_ts=asof_ts,
+        contract=contract,
+        seconds_left=(expiry_ts - asof_ts).total_seconds(),
+        threshold_event_ts=start_ts,
+        threshold_observed_ts=start_ts,
+        settlement_event_ts=asof_ts,
+        settlement_observed_ts=asof_ts,
+        book_event_ts=asof_ts,
+        book_observed_ts=asof_ts,
     )
 
 
