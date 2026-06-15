@@ -22,6 +22,12 @@ def test_runtime_monitor_filters_expired_or_invalid_probability_rows() -> None:
     assert "expiryMs > nowMs" in source
 
 
+def test_runtime_monitor_polls_fast_enough_for_rollover_recovery() -> None:
+    source = (ROOT / "ui/src/App.tsx").read_text(encoding="utf-8")
+
+    assert "const POLL_INTERVAL_MS = 1000;" in source
+
+
 def test_runtime_monitor_shows_prior_derived_sensitivity_grid() -> None:
     source = (ROOT / "ui/src/App.tsx").read_text(encoding="utf-8")
     lowered = source.lower()
