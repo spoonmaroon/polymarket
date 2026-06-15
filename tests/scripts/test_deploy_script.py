@@ -621,8 +621,8 @@ def test_compose_and_env_support_prebuilt_image_overrides() -> None:
     assert "POLYMARKET_PROBABILITY_CPU_SOFT_MAX_PERCENT=20.0" in env_example
     assert "POLYMARKET_PROBABILITY_MAX_RSS_MB=512" in env_example
     assert "POLYMARKET_PROBABILITY_MAX_CYCLE_RUNTIME_MS=10000" in env_example
-    assert "POLYMARKET_PROBABILITY_MAX_TOTAL_PATHS=40000" in env_example
-    assert "POLYMARKET_PROBABILITY_MIN_TOTAL_PATHS=4000" in env_example
+    assert "POLYMARKET_PROBABILITY_MAX_TOTAL_PATHS=10000" in env_example
+    assert "POLYMARKET_PROBABILITY_MIN_TOTAL_PATHS=2000" in env_example
     assert "POLYMARKET_PROBABILITY_SUSTAINED_BREACH_CYCLES=3" in env_example
     assert "POLYMARKET_CUDA_PROBABILITY_MAX_INPUT_SNAPSHOT_AGE_SECONDS=30.0" in env_example
     assert (
@@ -929,8 +929,8 @@ def test_pc_deploy_script_runs_prebuilt_deploy_gate_with_pc_cadence() -> None:
         'PC_PROBABILITY_MAX_CYCLE_RUNTIME_MS="${PC_PROBABILITY_MAX_CYCLE_RUNTIME_MS:-10000}"'
         in script
     )
-    assert 'PC_PROBABILITY_MAX_TOTAL_PATHS="${PC_PROBABILITY_MAX_TOTAL_PATHS:-40000}"' in script
-    assert 'PC_PROBABILITY_MIN_TOTAL_PATHS="${PC_PROBABILITY_MIN_TOTAL_PATHS:-4000}"' in script
+    assert 'PC_PROBABILITY_MAX_TOTAL_PATHS="${PC_PROBABILITY_MAX_TOTAL_PATHS:-10000}"' in script
+    assert 'PC_PROBABILITY_MIN_TOTAL_PATHS="${PC_PROBABILITY_MIN_TOTAL_PATHS:-2000}"' in script
     assert 'PC_GPU_WORKER_MEM_LIMIT="${PC_GPU_WORKER_MEM_LIMIT:-1536m}"' in script
     assert 'PC_DEPLOY_ROLE=$(shell_quote "$PC_DEPLOY_ROLE")' in script
     assert (

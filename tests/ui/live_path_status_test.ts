@@ -103,6 +103,25 @@ assert.deepEqual(
   },
 );
 
+assert.deepEqual(
+  livePathStatus({
+    probabilityState: "OFFLOAD_BLOCKED",
+    rows: [{ contract_id: "btc-up", probability_kind: "NOWCAST" }],
+    offload: {
+      offload_allowed: true,
+      reason_codes: ["runtime_not_ready", "sigma_invalid"],
+      mc_eligible_input_count: 0,
+      blocked_input_count: 4,
+    },
+  }),
+  {
+    state: "NOWCAST_ONLY",
+    label: "Nowcast only",
+    detail: "runtime_not_ready, sigma_invalid",
+    reasons: ["runtime_not_ready", "sigma_invalid"],
+  },
+);
+
 assert.equal(
   livePathStatus({
     rows: [{ contract_id: "btc-up", probability_kind: "NOWCAST" }],

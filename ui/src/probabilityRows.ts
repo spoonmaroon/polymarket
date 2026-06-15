@@ -410,10 +410,15 @@ export function livePathStatus(input: LivePathStatusInput): LivePathStatus {
       reasons,
     };
   }
+  const hasTransientNowcastBlock =
+    nowcastRows.length > 0 &&
+    input.offload?.offload_allowed !== false &&
+    isTransientNowcastBlock(reasons);
   if (
-    input.offload?.offload_allowed === false ||
-    input.probabilityState === "OFFLOAD_BLOCKED" ||
-    (hasBlockedInputs && !hasEligibleInputs)
+    !hasTransientNowcastBlock &&
+    (input.offload?.offload_allowed === false ||
+      input.probabilityState === "OFFLOAD_BLOCKED" ||
+      (hasBlockedInputs && !hasEligibleInputs))
   ) {
     return {
       state: "PATHS_BLOCKED",
@@ -426,7 +431,12 @@ export function livePathStatus(input: LivePathStatusInput): LivePathStatus {
     return {
       state: "NOWCAST_ONLY",
       label: "Nowcast only",
-      detail: hasEligibleInputs ? "MC preview pending" : "no sampled paths yet",
+      detail:
+        reasons.length > 0
+          ? reasons.join(", ")
+          : hasEligibleInputs
+            ? "MC preview pending"
+            : "no sampled paths yet",
       reasons,
     };
   }
@@ -568,6 +578,18 @@ function mergeCurrentProbabilityRowsWithPreviousPreview<Row extends ProbabilityV
       simulation_preview: previous.simulation_preview,
     };
   });
+}
+
+function isTransientNowcastBlock(reasons: string[]) {
+  if (reasons.length === 0) {
+    return false;
+  }
+  const transientReasons = new Set([
+    "runtime_not_ready",
+    "sigma_invalid",
+    "warming",
+  ]);
+  return reasons.every((reason) => transientReasons.has(reason));
 }
 
 function isOlderProbabilityRow(candidate: ProbabilityValueRow, existing: ProbabilityValueRow) {

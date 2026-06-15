@@ -469,8 +469,8 @@ THEPC probability CPU control is a soft CPU target, not a hard Docker CPU cap.
 The default is `POLYMARKET_PROBABILITY_CPU_TARGET_PERCENT=15.0` with
 `POLYMARKET_PROBABILITY_CPU_SOFT_MAX_PERCENT=20.0`. The worker measures
 per-cycle process CPU and adapts its next total path budget between
-`POLYMARKET_PROBABILITY_MIN_TOTAL_PATHS=4000` and
-`POLYMARKET_PROBABILITY_MAX_TOTAL_PATHS=40000`. This favors faster rollover
+`POLYMARKET_PROBABILITY_MIN_TOTAL_PATHS=2000` and
+`POLYMARKET_PROBABILITY_MAX_TOTAL_PATHS=10000`. This favors faster rollover
 recovery over heavy per-cycle precision while the browser/TUI can show fresh
 NOWCAST rows between MC refreshes.
 
