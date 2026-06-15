@@ -436,13 +436,14 @@ def _probability_status_payload(
     limit: int,
     use_prior_fragments: bool = False,
 ) -> dict[str, Any]:
+    now = datetime.now(timezone.utc)
     status_payload, read_error = _read_json_or_error(probability_status_path)
     if status_payload is None:
         return {
             "ok": False,
             "state": read_error["state"],
             "error": read_error["error"],
-            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "generated_at": now.isoformat(),
             "cached": False,
             "model_version": None,
             "rows": [],
@@ -455,27 +456,33 @@ def _probability_status_payload(
             "ok": False,
             "state": "INVALID",
             "error": "probability status shape invalid: rows must be a list",
-            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "generated_at": now.isoformat(),
             "cached": False,
             "model_version": None,
             "rows": [],
             "skipped": 0,
             "errors": ["probability status shape invalid: rows must be a list"],
         }
-    display_rows = _filter_probability_display_rows_by_prior_mode(
-        rows,
-        use_prior_fragments=use_prior_fragments,
+    display_rows = _filter_unexpired_probability_display_rows(
+        _filter_probability_display_rows_by_prior_mode(
+            rows,
+            use_prior_fragments=use_prior_fragments,
+        ),
+        now=now,
     )
     last_good_rows = status_payload.get("last_good_rows")
     filtered_last_good_rows = (
-        _filter_probability_display_rows_by_prior_mode(
-            last_good_rows,
-            use_prior_fragments=use_prior_fragments,
+        _filter_unexpired_probability_display_rows(
+            _filter_probability_display_rows_by_prior_mode(
+                last_good_rows,
+                use_prior_fragments=use_prior_fragments,
+            ),
+            now=now,
         )
         if isinstance(last_good_rows, list)
         else None
     )
-    if not display_rows and filtered_last_good_rows is not None:
+    if not display_rows and filtered_last_good_rows:
         display_rows = filtered_last_good_rows
     else:
         display_rows = _fill_missing_probability_display_rows_from_nowcasts(
@@ -488,6 +495,27 @@ def _probability_status_payload(
         limited["last_good_rows"] = filtered_last_good_rows
     limited["cached"] = False
     return limited
+
+
+def _filter_unexpired_probability_display_rows(
+    rows: list[dict[str, Any]],
+    *,
+    now: datetime,
+) -> list[dict[str, Any]]:
+    return [row for row in rows if not _probability_display_row_expired(row, now=now)]
+
+
+def _probability_display_row_expired(row: dict[str, Any], *, now: datetime) -> bool:
+    expiry_ts = row.get("expiry_ts")
+    if expiry_ts in (None, ""):
+        return False
+    try:
+        expiry = _parse_timestamp(expiry_ts)
+    except (TypeError, ValueError):
+        return False
+    if expiry is None:
+        return False
+    return expiry <= now
 
 
 def _filter_probability_display_rows_by_prior_mode(

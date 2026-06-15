@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import UTC, datetime, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, NoReturn
 import json
@@ -1900,6 +1900,67 @@ def test_runtime_probabilities_uses_last_good_rows_when_status_rows_empty(
         {"contract": "BTC 5m UP", "output_id": "retained-up"},
         {"contract": "BTC 5m DOWN", "output_id": "retained-down"},
     ]
+
+
+def test_runtime_probabilities_does_not_promote_expired_last_good_rows_over_nowcast(
+    tmp_path: Path,
+) -> None:
+    probability_status_path = tmp_path / "live" / "probabilities.json"
+    probability_status_path.parent.mkdir()
+    now = datetime.now(UTC)
+    probability_status_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "polymarket-probability-runtime-v1",
+                "ok": True,
+                "state": "NOWCAST",
+                "generated_at": now.isoformat(),
+                "cached": False,
+                "model_version": None,
+                "rows": [],
+                "nowcast_rows": [
+                    {
+                        "contract": "BTC 5m UP",
+                        "contract_id": "btc-new:UP",
+                        "state_id": "btc-new-up-state",
+                        "asset": "BTC",
+                        "side": "UP",
+                        "expiry_ts": (now + timedelta(minutes=5)).isoformat(),
+                        "probability_kind": "NOWCAST",
+                    }
+                ],
+                "last_good_rows": [
+                    {
+                        "contract": "BTC 5m UP",
+                        "contract_id": "btc-old:UP",
+                        "state_id": "btc-old-up-state",
+                        "asset": "BTC",
+                        "side": "UP",
+                        "expiry_ts": (now - timedelta(seconds=1)).isoformat(),
+                        "probability_kind": "MC",
+                        "output_id": "expired-old-mc",
+                    }
+                ],
+                "skipped": 0,
+                "errors": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    app = create_app(
+        status_path=tmp_path / "missing-status.json",
+        duckdb_path=tmp_path / "missing.duckdb",
+        probability_status_path=probability_status_path,
+        enable_runtime_probabilities=True,
+    )
+
+    response = TestClient(app).get("/api/runtime/probabilities?limit=4")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert [row["contract_id"] for row in payload["rows"]] == ["btc-new:UP"]
+    assert payload["rows"][0]["probability_kind"] == "NOWCAST"
+    assert payload.get("last_good_rows") == []
 
 
 def test_runtime_probabilities_filters_status_rows_by_prior_fragment_mode(

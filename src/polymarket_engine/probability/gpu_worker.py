@@ -651,7 +651,7 @@ def run_cuda_probability_worker_cycle(
             errors=[input_error],
             rows_seen=0,
             rows_written=0,
-            last_good_rows=previous_rows,
+            last_good_rows=None,
             budget=_budget_diagnostics(
                 budget=budget,
                 cycle_started_monotonic=cycle_started_monotonic,

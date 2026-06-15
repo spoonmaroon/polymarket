@@ -1427,6 +1427,48 @@ def test_worker_serves_retained_mc_rows_when_input_snapshot_is_stale(
     assert "probability input snapshot stale" in payload["input_error"]
 
 
+def test_worker_does_not_publish_expired_previous_rows_when_inputs_unavailable(
+    tmp_path: Path,
+) -> None:
+    now = datetime.now(UTC)
+    probability_status_path = tmp_path / "probabilities.json"
+    probability_inputs_path = tmp_path / "probability_inputs.json"
+    expired_row = {
+        "contract": "BTC 5m UP",
+        "contract_id": "btc-expired:UP",
+        "expiry_ts": (now - timedelta(seconds=1)).isoformat(),
+        "model_version": "cuda-monte-carlo-v1",
+        "output_id": "expired-output",
+        "p_finish": 0.61,
+        "probability_kind": "MC",
+        "state_id": "state-expired-btc-up",
+        "valid_until": (now + timedelta(seconds=30)).isoformat(),
+    }
+    probability_status_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "polymarket-probability-runtime-v1",
+                "rows": [expired_row],
+                "last_good_rows": [expired_row],
+            }
+        ),
+        encoding="utf-8",
+    )
+    probability_inputs_path.write_text("{not json", encoding="utf-8")
+
+    payload = run_cuda_probability_worker_cycle(
+        duckdb_path=tmp_path / "unused.duckdb",
+        probability_status_path=probability_status_path,
+        probability_inputs_path=probability_inputs_path,
+    )
+
+    assert payload["ok"] is False
+    assert payload["rows"] == []
+    assert payload.get("last_good_rows") in (None, [])
+    written = json.loads(probability_status_path.read_text(encoding="utf-8"))
+    assert written.get("last_good_rows") in (None, [])
+
+
 def test_worker_writes_ensemble_v1_rows_and_events(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
