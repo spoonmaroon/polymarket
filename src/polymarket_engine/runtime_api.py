@@ -488,6 +488,7 @@ def _probability_status_payload(
         display_rows = _fill_missing_probability_display_rows_from_nowcasts(
             display_rows,
             status_payload.get("nowcast_rows"),
+            now=now,
         )
     limited = dict(status_payload)
     limited["rows"] = display_rows[:limit]
@@ -570,6 +571,8 @@ def _probability_display_row_uses_prior_fragments(row: dict[str, Any]) -> bool:
 def _fill_missing_probability_display_rows_from_nowcasts(
     display_rows: list[Any],
     nowcast_rows: object,
+    *,
+    now: datetime,
 ) -> list[Any]:
     if not isinstance(nowcast_rows, list):
         return display_rows
@@ -583,6 +586,8 @@ def _fill_missing_probability_display_rows_from_nowcasts(
     merged = list(display_rows)
     for row in nowcast_rows:
         if not isinstance(row, dict):
+            continue
+        if _probability_display_row_expired(row, now=now):
             continue
         key = _probability_display_row_key(row)
         if key is None or key in seen_keys:
