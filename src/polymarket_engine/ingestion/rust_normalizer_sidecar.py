@@ -40,6 +40,8 @@ IDLE_NORMALIZED_HEALTH_WRITE_INTERVAL_SECONDS = 5.0
 PROBABILITY_OUTPUT_LIMIT = 8
 PROBABILITY_MAX_STATE_AGE_SECONDS = 600.0
 DEFAULT_FRAGMENT_MAX_ROWS = 250_000
+ROLLOVER_STATE_BUILD_DEFER_SECONDS = 8.0
+ROLLOVER_STATE_BUILD_SETTLE_SECONDS = 0.25
 OUTCOME_OUTPUT_LIMIT = 5000
 OUTCOME_OUTPUT_LIMIT_ENV = "POLYMARKET_OUTCOME_OUTPUT_LIMIT"
 OUTCOME_REFRESH_INTERVAL_SECONDS = 30.0
@@ -248,6 +250,11 @@ def _run_rust_normalizer_cycle_with_store(
         )
     if status_payload is None and status_signature is not None:
         status_payload = status_signature.payload
+    status_payload, status_mtime_ns = _refresh_status_for_rollover_state_build(
+        status_path=status_path,
+        status_payload=status_payload,
+        status_mtime_ns=status_mtime_ns,
+    )
     state_decision = _state_build_decision_with_mtime_fallback(
         previous_signature=previous_status_signature,
         previous_mtime_ns=previous_status_mtime_ns,
@@ -696,6 +703,11 @@ def _run_changed_rust_normalizer_cycle_with_store(
         )
     if status_payload is None and status_signature is not None:
         status_payload = status_signature.payload
+    status_payload, status_mtime_ns = _refresh_status_for_rollover_state_build(
+        status_path=status_path,
+        status_payload=status_payload,
+        status_mtime_ns=status_mtime_ns,
+    )
     state_decision = _state_build_decision_with_mtime_fallback(
         previous_signature=previous_status_signature,
         previous_mtime_ns=previous_status_mtime_ns,
@@ -830,6 +842,11 @@ def _run_idle_rust_normalizer_cycle_with_store(
         )
     if status_payload is None and status_signature is not None:
         status_payload = status_signature.payload
+    status_payload, status_mtime_ns = _refresh_status_for_rollover_state_build(
+        status_path=status_path,
+        status_payload=status_payload,
+        status_mtime_ns=status_mtime_ns,
+    )
     state_decision = _state_build_decision_with_mtime_fallback(
         previous_signature=previous_status_signature,
         previous_mtime_ns=previous_status_mtime_ns,
@@ -1316,6 +1333,66 @@ def _state_build_decision(
         reason="status_inputs_unchanged",
         signature=signature,
     )
+
+
+def _refresh_status_for_rollover_state_build(
+    *,
+    status_path: Path,
+    status_payload: dict[str, Any] | None,
+    status_mtime_ns: int | None,
+) -> tuple[dict[str, Any] | None, int | None]:
+    wait_seconds = _rollover_state_build_defer_seconds(status_payload)
+    if wait_seconds is None:
+        return status_payload, status_mtime_ns
+    time.sleep(wait_seconds)
+    refreshed = _status_state_signature(status_path)
+    if refreshed is None:
+        return status_payload, status_mtime_ns
+    return refreshed.payload, refreshed.mtime_ns
+
+
+def _rollover_state_build_defer_seconds(
+    status_payload: dict[str, Any] | None,
+) -> float | None:
+    if not isinstance(status_payload, dict):
+        return None
+    generated_at = _parse_status_timestamp(status_payload.get("generated_at"))
+    if generated_at is None or not _has_status_windows(status_payload, "next"):
+        return None
+    seconds_left: list[float] = []
+    for window in _status_windows(status_payload, "current"):
+        expiry_ts = window.get("expiry_ts")
+        if not isinstance(expiry_ts, datetime):
+            continue
+        remaining = (expiry_ts - generated_at).total_seconds()
+        if 0.0 < remaining <= ROLLOVER_STATE_BUILD_DEFER_SECONDS:
+            seconds_left.append(remaining)
+    if not seconds_left:
+        return None
+    return min(seconds_left) + ROLLOVER_STATE_BUILD_SETTLE_SECONDS
+
+
+def _has_status_windows(payload: dict[str, Any], group: str) -> bool:
+    return bool(_status_windows(payload, group))
+
+
+def _status_windows(payload: dict[str, Any], group: str) -> tuple[dict[str, Any], ...]:
+    raw_contracts = payload.get(group, ())
+    if not isinstance(raw_contracts, list):
+        return ()
+    windows: list[dict[str, Any]] = []
+    for raw_contract in raw_contracts:
+        if not isinstance(raw_contract, dict):
+            continue
+        window = raw_contract.get("window")
+        if not isinstance(window, dict):
+            continue
+        start_ts = _parse_status_timestamp(window.get("start_ts"))
+        expiry_ts = _parse_status_timestamp(window.get("end_ts"))
+        if start_ts is None or expiry_ts is None:
+            continue
+        windows.append({"start_ts": start_ts, "expiry_ts": expiry_ts})
+    return tuple(windows)
 
 
 def _state_build_decision_with_mtime_fallback(

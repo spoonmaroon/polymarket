@@ -2165,6 +2165,78 @@ def test_sidecar_loop_rebuilds_state_when_next_window_becomes_active(
     assert _log_values(lines[1])["state_build_reason"] == "status_inputs_changed"
 
 
+def test_idle_state_build_defers_across_rollover_before_building_inputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "state.duckdb"
+    status_path = tmp_path / "live" / "status.json"
+    health_path = tmp_path / "live" / "normalized_health.json"
+    start_ts = datetime(2026, 6, 2, 6, 0, tzinfo=timezone.utc)
+    next_start_ts = start_ts + timedelta(minutes=5)
+    before_rollover = next_start_ts - timedelta(seconds=3)
+    after_rollover = next_start_ts + timedelta(milliseconds=250)
+    _write_status(status_path, start_ts=start_ts, asof_ts=before_rollover)
+    payload = json.loads(status_path.read_text(encoding="utf-8"))
+    payload["next"] = [
+        {
+            "window": {
+                "asset": "BTC",
+                "interval": "5m",
+                "start_ts": next_start_ts.isoformat(),
+                "end_ts": (next_start_ts + timedelta(minutes=5)).isoformat(),
+            },
+            "up": {"asset": "BTC", "side": "Up", "token_id": "next-up-token"},
+            "down": {
+                "asset": "BTC",
+                "side": "Down",
+                "token_id": "next-down-token",
+            },
+        }
+    ]
+    status_path.write_text(json.dumps(payload), encoding="utf-8")
+    captured_generated_at: list[str] = []
+    sleeps: list[float] = []
+
+    def capture_build(*args: Any, **kwargs: Any) -> Any:
+        captured = json.loads(status_path.read_text(encoding="utf-8"))
+        captured_generated_at.append(str(captured["generated_at"]))
+        return SimpleNamespace(contracts_upserted=0, states_written=0, unavailable=())
+
+    def cross_rollover(seconds: float) -> None:
+        sleeps.append(seconds)
+        updated = json.loads(status_path.read_text(encoding="utf-8"))
+        updated["generated_at"] = after_rollover.isoformat()
+        status_path.write_text(json.dumps(updated), encoding="utf-8")
+
+    monkeypatch.setattr(
+        "polymarket_engine.ingestion.rust_normalizer_sidecar."
+        "build_current_decision_state_snapshots",
+        capture_build,
+    )
+    monkeypatch.setattr(
+        "polymarket_engine.ingestion.rust_normalizer_sidecar.time.sleep",
+        cross_rollover,
+    )
+
+    with DuckDbIngestStore(db_path, persistent_connection=False) as store:
+        store.apply_schema()
+        result = rust_normalizer_sidecar._run_idle_rust_normalizer_cycle_with_store(
+            raw_signature=(),
+            store=store,
+            status_path=status_path,
+            normalized_health_path=health_path,
+            include_next=True,
+            reprocess_all=False,
+            refresh_outcomes=False,
+            write_health=False,
+        )
+
+    assert sleeps == [pytest.approx(3.25)]
+    assert captured_generated_at == [after_rollover.isoformat()]
+    assert result.state_build_reason == "status_inputs_changed"
+
+
 def test_sidecar_loop_rebuilds_state_when_status_inputs_change_without_raw_rows(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
