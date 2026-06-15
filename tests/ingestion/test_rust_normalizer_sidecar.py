@@ -2090,6 +2090,81 @@ def test_sidecar_loop_skips_state_build_when_only_generated_at_changes(
     assert build_calls == 1
 
 
+def test_sidecar_loop_rebuilds_state_when_next_window_becomes_active(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    raw_root = tmp_path / "raw"
+    db_path = tmp_path / "state.duckdb"
+    status_path = tmp_path / "live" / "status.json"
+    health_path = tmp_path / "live" / "normalized_health.json"
+    start_ts = datetime(2026, 6, 2, 6, 0, tzinfo=timezone.utc)
+    next_start_ts = start_ts + timedelta(minutes=5)
+    asof_ts = next_start_ts - timedelta(seconds=1)
+    _write_raw_tree(raw_root=raw_root, start_ts=start_ts, asof_ts=asof_ts)
+    _write_status(status_path, start_ts=start_ts, asof_ts=asof_ts)
+    payload = json.loads(status_path.read_text(encoding="utf-8"))
+    payload["next"] = [
+        {
+            "window": {
+                "asset": "BTC",
+                "interval": "5m",
+                "start_ts": next_start_ts.isoformat(),
+                "end_ts": (next_start_ts + timedelta(minutes=5)).isoformat(),
+            },
+            "up": {"asset": "BTC", "side": "Up", "token_id": "next-up-token"},
+            "down": {
+                "asset": "BTC",
+                "side": "Down",
+                "token_id": "next-down-token",
+            },
+        }
+    ]
+    status_path.write_text(json.dumps(payload), encoding="utf-8")
+    build_calls = 0
+
+    def counting_build(*args: Any, **kwargs: Any) -> Any:
+        nonlocal build_calls
+        build_calls += 1
+        return SimpleNamespace(contracts_upserted=0, states_written=0, unavailable=())
+
+    def cross_next_start(_: float) -> None:
+        payload = json.loads(status_path.read_text(encoding="utf-8"))
+        payload["generated_at"] = next_start_ts.isoformat()
+        status_path.write_text(json.dumps(payload), encoding="utf-8")
+        next_mtime = time.time() + 1
+        os.utime(status_path, (next_mtime, next_mtime))
+
+    monkeypatch.setattr(
+        "polymarket_engine.ingestion.rust_normalizer_sidecar."
+        "build_current_decision_state_snapshots",
+        counting_build,
+    )
+    monkeypatch.setattr(
+        "polymarket_engine.ingestion.rust_normalizer_sidecar.time.sleep",
+        cross_next_start,
+    )
+
+    run_rust_normalizer_loop(
+        raw_root=raw_root,
+        db_path=db_path,
+        status_path=status_path,
+        normalized_health_path=health_path,
+        interval_seconds=0.0,
+        include_next=True,
+        max_cycles=2,
+    )
+
+    lines = [
+        line
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith("normalizer_cycle ")
+    ]
+    assert build_calls == 2
+    assert _log_values(lines[1])["state_build_reason"] == "status_inputs_changed"
+
+
 def test_sidecar_loop_rebuilds_state_when_status_inputs_change_without_raw_rows(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

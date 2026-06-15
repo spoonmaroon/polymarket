@@ -67,6 +67,7 @@ def hot_state_signature(payload: dict[str, Any]) -> str:
     semantic = {
         "current": payload.get("current", []),
         "next": payload.get("next", []),
+        "window_phases": _status_window_phases(payload),
         "orderbooks": payload.get("orderbooks", []),
         "chainlink_prices": payload.get("chainlink_prices", []),
         "prices": payload.get("prices", []),
@@ -76,6 +77,44 @@ def hot_state_signature(payload: dict[str, Any]) -> str:
     }
     encoded = json.dumps(semantic, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _status_window_phases(payload: dict[str, Any]) -> tuple[dict[str, str], ...]:
+    generated_at = _parse_ts_or_none(payload.get("generated_at"))
+    if generated_at is None:
+        return ()
+    phases: list[dict[str, str]] = []
+    for group in ("current", "next"):
+        rows = payload.get(group, [])
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            window = row.get("window")
+            if not isinstance(window, dict):
+                continue
+            start_ts = _parse_ts_or_none(window.get("start_ts"))
+            end_ts = _parse_ts_or_none(window.get("end_ts"))
+            if start_ts is None or end_ts is None:
+                continue
+            if generated_at < start_ts:
+                phase = "prestart"
+            elif generated_at >= end_ts:
+                phase = "expired"
+            else:
+                phase = "active"
+            phases.append(
+                {
+                    "group": group,
+                    "asset": str(window.get("asset", "")),
+                    "interval": str(window.get("interval", "")),
+                    "start_ts": start_ts.isoformat(),
+                    "end_ts": end_ts.isoformat(),
+                    "phase": phase,
+                }
+            )
+    return tuple(phases)
 
 
 def _stable_websocket_status(value: object) -> object:
@@ -533,6 +572,13 @@ def _rule_text(*, asset: Asset, interval: str, slug: str) -> str:
 
 def _rule_hash(*, asset: Asset, interval: str, slug: str) -> str:
     return hashlib.sha256(_rule_text(asset=asset, interval=interval, slug=slug).encode()).hexdigest()
+
+
+def _parse_ts_or_none(value: object) -> datetime | None:
+    try:
+        return _parse_ts(value)
+    except (TypeError, ValueError):
+        return None
 
 
 class _CachedStateReadStore:

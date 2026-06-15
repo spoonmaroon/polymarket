@@ -34,6 +34,23 @@ def test_status_state_signature_ignores_generated_at_only() -> None:
     assert hot_state_signature(first) == hot_state_signature(second)
 
 
+def test_status_state_signature_changes_when_next_window_becomes_active() -> None:
+    start_ts = datetime(2026, 6, 6, 12, 0, tzinfo=timezone.utc)
+    next_start_ts = start_ts + timedelta(minutes=5)
+    before = _status_payload(
+        start_ts=start_ts,
+        asof_ts=next_start_ts - timedelta(seconds=1),
+        include_hot_fields=True,
+    )
+    at_start = json.loads(json.dumps(before))
+    at_start["generated_at"] = next_start_ts.isoformat()
+    after_start = json.loads(json.dumps(at_start))
+    after_start["generated_at"] = (next_start_ts + timedelta(seconds=1)).isoformat()
+
+    assert hot_state_signature(before) != hot_state_signature(at_start)
+    assert hot_state_signature(at_start) == hot_state_signature(after_start)
+
+
 def test_status_state_signature_ignores_websocket_age_churn() -> None:
     first = _status_payload(
         asof_ts=datetime(2026, 6, 6, 12, 0, tzinfo=timezone.utc),
