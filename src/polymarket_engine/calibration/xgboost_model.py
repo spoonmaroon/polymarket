@@ -6,6 +6,7 @@ from typing import Any
 
 
 _MODEL_VERSION = "MC_Calibrator_GBDT_v1"
+_RESEARCH_GROUP_COMMAND = "`uv sync --group research`"
 
 
 @dataclass(frozen=True)
@@ -69,8 +70,16 @@ def _xgboost() -> Any:
     try:
         import xgboost as xgb
     except ModuleNotFoundError as exc:
+        if exc.name != "xgboost":
+            raise
         raise RuntimeError(
-            "xgboost is required for MC_Calibrator_GBDT_v1; run "
-            "`uv sync --group research`"
+            f"xgboost is required for {_MODEL_VERSION}; run {_RESEARCH_GROUP_COMMAND}"
+        ) from exc
+    except Exception as exc:
+        raise RuntimeError(
+            f"xgboost failed to import for {_MODEL_VERSION}. Run {_RESEARCH_GROUP_COMMAND} "
+            "and ensure the required native libraries are installed and loadable "
+            "(for example libomp and libxgboost). "
+            f"Original import error: {exc}"
         ) from exc
     return xgb
