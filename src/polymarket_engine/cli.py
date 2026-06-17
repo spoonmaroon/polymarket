@@ -258,6 +258,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     calibration_report.add_argument("--out", type=Path, required=True)
 
+    train_calibrator = subparsers.add_parser("train-calibrator")
+    train_calibrator.add_argument("--input", type=Path, required=True)
+    train_calibrator.add_argument(
+        "--model-type",
+        choices=("logreg", "xgboost"),
+        required=True,
+    )
+    train_calibrator.add_argument("--model-out", type=Path, required=True)
+    train_calibrator.add_argument("--predictions-out", type=Path, required=True)
+
     run_backtest = subparsers.add_parser("run-backtest")
     run_backtest.add_argument("--input", type=Path, required=True)
     run_backtest.add_argument("--out", type=Path, required=True)
@@ -346,6 +356,8 @@ async def run_collect_command(argv: list[str] | None = None) -> int:
         return _run_backfill_outcomes(args)
     if args.command == "calibration-report":
         return _run_calibration_report(args)
+    if args.command == "train-calibrator":
+        return _run_train_calibrator(args)
     if args.command == "run-backtest":
         return _run_backtest(args)
     if args.command == "export-calibration-dataset":
@@ -651,6 +663,22 @@ def _run_calibration_report(args: argparse.Namespace) -> int:
         encoding="utf-8",
     )
     print(json.dumps(payload, allow_nan=False, sort_keys=True, separators=(",", ":")))
+    return 0
+
+
+def _run_train_calibrator(args: argparse.Namespace) -> int:
+    from polymarket_engine.calibration.train import TrainCalibratorConfig
+    from polymarket_engine.calibration.train import train_calibrator
+
+    result = train_calibrator(
+        TrainCalibratorConfig(
+            input_path=args.input,
+            model_path=args.model_out,
+            predictions_path=args.predictions_out,
+            model_type=args.model_type,
+        )
+    )
+    print(json.dumps(result.to_json_dict(), sort_keys=True, separators=(",", ":")))
     return 0
 
 

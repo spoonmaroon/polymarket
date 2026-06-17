@@ -246,6 +246,28 @@ def test_parse_export_calibration_dataset_args() -> None:
     assert args.include_unlabeled is False
 
 
+def test_parse_train_calibrator_args() -> None:
+    args = parse_args(
+        [
+            "train-calibrator",
+            "--input",
+            "data/research/calibration/asof_decision_states.jsonl",
+            "--model-type",
+            "logreg",
+            "--model-out",
+            "data/research/models/logreg.json",
+            "--predictions-out",
+            "data/research/calibration/logreg_predictions.jsonl",
+        ]
+    )
+
+    assert args.command == "train-calibrator"
+    assert args.input == Path("data/research/calibration/asof_decision_states.jsonl")
+    assert args.model_type == "logreg"
+    assert args.model_out == Path("data/research/models/logreg.json")
+    assert args.predictions_out == Path("data/research/calibration/logreg_predictions.jsonl")
+
+
 def test_parse_run_outcome_refresh_sidecar_args() -> None:
     args = parse_args(
         [
