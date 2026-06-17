@@ -1,0 +1,102 @@
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass
+from collections.abc import Sequence
+
+
+_MODEL_VERSION = "MC_Calibrator_LogReg_v1"
+
+
+@dataclass(frozen=True)
+class LogisticCalibrator:
+    model_version: str
+    feature_names: tuple[str, ...]
+    intercept: float
+    coefficients: tuple[float, ...]
+
+    def predict_proba(self, matrix: Sequence[Sequence[float]]) -> list[float]:
+        outputs: list[float] = []
+        coefficient_count = len(self.coefficients)
+        for row in matrix:
+            values = tuple(float(value) for value in row)
+            if len(values) != coefficient_count:
+                raise ValueError("feature length does not match model")
+            logit = self.intercept + sum(
+                weight * value for weight, value in zip(self.coefficients, values, strict=True)
+            )
+            outputs.append(_sigmoid(logit))
+        return outputs
+
+    def to_json_dict(self) -> dict[str, object]:
+        return {
+            "model_version": self.model_version,
+            "feature_names": list(self.feature_names),
+            "intercept": self.intercept,
+            "coefficients": list(self.coefficients),
+        }
+
+    @classmethod
+    def from_json_dict(cls, payload: dict[str, object]) -> LogisticCalibrator:
+        return cls(
+            model_version=str(payload["model_version"]),
+            feature_names=tuple(str(name) for name in payload["feature_names"]),  # type: ignore[index]
+            intercept=float(payload["intercept"]),
+            coefficients=tuple(float(value) for value in payload["coefficients"]),  # type: ignore[index]
+        )
+
+
+def fit_logistic_calibrator(
+    matrix: Sequence[Sequence[float]],
+    labels: Sequence[int],
+    *,
+    feature_names: Sequence[str],
+    learning_rate: float,
+    iterations: int,
+    l2: float,
+) -> LogisticCalibrator:
+    if not matrix:
+        raise ValueError("matrix must be non-empty")
+    if len(matrix) != len(labels):
+        raise ValueError("labels length must match matrix rows")
+    if not feature_names:
+        raise ValueError("feature_names must be non-empty")
+
+    rows = [tuple(float(value) for value in row) for row in matrix]
+    y = [float(label) for label in labels]
+    feature_count = len(feature_names)
+    for row in rows:
+        if len(row) != feature_count:
+            raise ValueError("feature_names length must match matrix columns")
+
+    coefficients = [0.0] * feature_count
+    intercept = 0.0
+
+    for _ in range(iterations):
+        gradients = [0.0] * feature_count
+        intercept_gradient = 0.0
+        for row, label in zip(rows, y, strict=True):
+            logit = intercept + sum(weight * value for weight, value in zip(coefficients, row, strict=True))
+            probability = _sigmoid(logit)
+            error = probability - label
+            intercept_gradient += error
+            for index, value in enumerate(row):
+                gradients[index] += error * value
+
+        row_count = float(len(rows))
+        intercept -= learning_rate * (intercept_gradient / row_count)
+        for index in range(feature_count):
+            gradient = gradients[index] / row_count + l2 * coefficients[index]
+            coefficients[index] -= learning_rate * gradient
+
+    return LogisticCalibrator(
+        model_version=_MODEL_VERSION,
+        feature_names=tuple(feature_names),
+        intercept=intercept,
+        coefficients=tuple(coefficients),
+    )
+
+
+def _sigmoid(value: float) -> float:
+    clipped = max(-30.0, min(30.0, value))
+    return 1.0 / (1.0 + math.exp(-clipped))
