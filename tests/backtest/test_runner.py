@@ -18,6 +18,7 @@ def _record(state_id: str, probability: float, label: int) -> dict[str, object]:
         "p_finish_mc": probability,
         "target_size_ask_vwap": 0.64,
         "target_size_bid_vwap": 0.62,
+        "visible_depth": 1200.0,
         "best_ask": 0.64,
         "best_bid": 0.62,
         "quote_age_ms": 250.0,
@@ -73,3 +74,44 @@ def test_run_backtest_writes_report_and_trade_rows(tmp_path: Path) -> None:
         "probability_field": "p_finish_mc",
     }
     assert [trade["state_id"] for trade in payload["trades"]] == ["state-1", "state-2"]
+
+
+def test_run_backtest_skips_rows_without_executable_target_size_fill(tmp_path: Path) -> None:
+    input_path = tmp_path / "dataset.jsonl"
+    out_path = tmp_path / "backtest.json"
+    input_path.write_text(
+        json.dumps(
+            _record(
+                "state-1",
+                0.72,
+                1,
+            )
+            | {
+                "target_size_ask_vwap": None,
+                "target_size_bid_vwap": None,
+                "visible_depth": 0.0,
+                "best_ask": 0.64,
+                "best_bid": 0.62,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = run_backtest(
+        BacktestRunConfig(
+            input_path=input_path,
+            out_path=out_path,
+            probability_field="p_finish_mc",
+            stake_usd=100.0,
+            min_edge=0.02,
+            max_quote_age_ms=1000,
+            fee_rate=0.0,
+        )
+    )
+
+    payload = json.loads(out_path.read_text(encoding="utf-8"))
+    assert report.trade_count == 0
+    assert payload["trade_count"] == 0
+    assert payload["skipped_count"] == 1
+    assert payload["trades"] == []

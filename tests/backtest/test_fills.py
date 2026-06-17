@@ -15,6 +15,7 @@ def _row(**overrides: object) -> dict[str, object]:
         "p_finish_mc": 0.72,
         "target_size_ask_vwap": 0.64,
         "target_size_bid_vwap": 0.62,
+        "visible_depth": 1200.0,
         "best_ask": 0.63,
         "best_bid": 0.61,
         "quote_age_ms": 250.0,
@@ -104,3 +105,48 @@ def test_simulate_hold_to_expiry_trade_loss_loses_stake() -> None:
 
     assert trade is not None
     assert trade.pnl == -100.0
+
+
+def test_simulate_hold_to_expiry_trade_requires_target_size_ask_vwap() -> None:
+    trade = simulate_hold_to_expiry_trade(
+        _row(target_size_ask_vwap=None, best_ask=0.63),
+        BacktestFillConfig(
+            stake_usd=100.0,
+            min_edge=0.02,
+            max_quote_age_ms=1000,
+            fee_rate=0.0,
+        ),
+        probability_field="p_finish_mc",
+    )
+
+    assert trade is None
+
+
+def test_simulate_hold_to_expiry_trade_requires_target_size_bid_vwap() -> None:
+    trade = simulate_hold_to_expiry_trade(
+        _row(target_size_bid_vwap=None, best_bid=0.61),
+        BacktestFillConfig(
+            stake_usd=100.0,
+            min_edge=0.02,
+            max_quote_age_ms=1000,
+            fee_rate=0.0,
+        ),
+        probability_field="p_finish_mc",
+    )
+
+    assert trade is None
+
+
+def test_simulate_hold_to_expiry_trade_requires_positive_visible_depth() -> None:
+    trade = simulate_hold_to_expiry_trade(
+        _row(visible_depth=0.0),
+        BacktestFillConfig(
+            stake_usd=100.0,
+            min_edge=0.02,
+            max_quote_age_ms=1000,
+            fee_rate=0.0,
+        ),
+        probability_field="p_finish_mc",
+    )
+
+    assert trade is None

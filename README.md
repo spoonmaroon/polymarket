@@ -112,6 +112,11 @@ The backtest and ML calibration workflow is offline-only. It reads replay-safe
 as-of rows from DuckDB, joins final outcomes only as labels, and writes research
 artifacts under `data/research/`.
 
+The example below is an in-sample smoke that proves the offline commands work
+end to end on one exported dataset. It is not model-quality evidence. Any
+calibration or PnL claim should use walk-forward or other out-of-sample splits
+from `src/polymarket_engine/calibration/splits.py`.
+
 Example:
 
 ```bash

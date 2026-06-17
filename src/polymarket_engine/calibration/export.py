@@ -64,6 +64,46 @@ def _candidate_rows(
         params.append(config.end_ts)
     where_sql = " where " + " and ".join(filters) if filters else ""
     query = f"""
+        with latest_probability_outputs as (
+            select *
+            from (
+                select
+                    output_id,
+                    state_id,
+                    asof_ts,
+                    model_version,
+                    p_finish,
+                    p_no_touch,
+                    z_path,
+                    output_json,
+                    created_at,
+                    row_number() over (
+                        partition by state_id
+                        order by asof_ts desc, created_at desc, output_id desc
+                    ) as row_number
+                from features.probability_outputs
+            )
+            where row_number = 1
+        ),
+        latest_ensemble_decisions as (
+            select *
+            from (
+                select
+                    decision_id,
+                    state_id,
+                    asof_ts,
+                    decision_hint,
+                    skip_reasons_json,
+                    execution_summary_json,
+                    created_at,
+                    row_number() over (
+                        partition by state_id
+                        order by asof_ts desc, created_at desc, decision_id desc
+                    ) as row_number
+                from features.ensemble_decisions
+            )
+            where row_number = 1
+        )
         select
             s.state_id,
             s.contract_id,
@@ -92,12 +132,13 @@ def _candidate_rows(
             s.spread,
             s.quote_age_ms,
             s.data_quality_flags_json,
-            e.p_finish,
-            e.p_no_touch,
-            e.z_path,
+            p.model_version as probability_model_version,
+            p.p_finish,
+            p.p_no_touch,
+            p.z_path,
+            p.output_json,
             e.decision_hint,
             e.skip_reasons_json,
-            e.generator_summary_json,
             e.execution_summary_json,
             h.official_winner,
             h.computed_winner,
@@ -105,7 +146,8 @@ def _candidate_rows(
             h.official_resolution_status
         from features.asof_state_inputs as s
         join core.contracts as c on c.contract_id = s.contract_id
-        left join features.ensemble_decisions as e on e.state_id = s.state_id
+        left join latest_probability_outputs as p on p.state_id = s.state_id
+        left join latest_ensemble_decisions as e on e.state_id = s.state_id
         left join validation.market_outcome_history as h on h.market_id = c.market_id
         {where_sql}
         order by s.asof_ts asc, s.state_id asc
@@ -134,13 +176,18 @@ def _row_from_payload(
     spread = _float(payload.get("spread"), max(0.0, best_ask - best_bid))
     midpoint = (best_bid + best_ask) / 2.0 if best_bid or best_ask else 0.0
     execution = _json_object(payload.get("execution_summary_json"))
-    generator = _json_object(payload.get("generator_summary_json"))
+    probability_output = _json_object(payload.get("output_json"))
+    diagnostics = _json_object(probability_output.get("diagnostics"))
     threshold = _float(payload.get("threshold"), 0.0)
     current_price = _float(payload.get("settlement_price"), 0.0)
     side = str(payload["side"])
     distance = current_price - threshold
     if side == "DOWN":
         distance *= -1.0
+    mc_generator_dispersion = _float(
+        diagnostics.get("mc_dispersion"),
+        _float(diagnostics.get("p_hat_std"), 0.0),
+    )
     return CalibrationDecisionRow(
         state_id=str(payload["state_id"]),
         contract_id=str(payload["contract_id"]),
@@ -168,13 +215,13 @@ def _row_from_payload(
         volatility_regime=str(payload.get("volatility_regime") or "unknown"),
         p_finish_mc=_float(payload.get("p_finish"), 0.0),
         p_no_touch_mc=_float(payload.get("p_no_touch"), 0.0),
-        mc_generator_dispersion=_float(generator.get("mc_dispersion"), 0.0),
+        mc_generator_dispersion=mc_generator_dispersion,
         spread=spread,
         best_bid=best_bid,
         best_ask=best_ask,
         midpoint=midpoint,
-        target_size_ask_vwap=_float(execution.get("entry_vwap"), best_ask),
-        target_size_bid_vwap=_float(execution.get("exit_vwap"), best_bid),
+        target_size_ask_vwap=_optional_float(execution.get("entry_vwap")),
+        target_size_bid_vwap=_optional_float(execution.get("exit_vwap")),
         visible_depth=_float(execution.get("visible_depth"), 0.0),
         orderbook_imbalance=_float(execution.get("orderbook_imbalance"), 0.0),
         quote_age_ms=_float(payload.get("quote_age_ms"), 0.0),
@@ -184,7 +231,7 @@ def _row_from_payload(
         near_threshold_congestion=_near_threshold_congestion(conn, payload, asof_ts, threshold),
         recent_wick_size=_recent_wick_size(conn, payload, asof_ts, current_price),
         event_window_flag="final_60s" if (expiry_ts - asof_ts).total_seconds() <= 60 else "regular",
-        probability_model_version="ensemble-mc-v1",
+        probability_model_version=str(payload.get("probability_model_version") or ""),
         feature_version=FEATURE_VERSION,
         runtime_phase="READY",
         offload_allowed=True,
@@ -300,6 +347,12 @@ def _z_path(current_price: float, threshold: float, sigma: object, side: str) ->
 
 
 def _json_object(value: object) -> dict[str, object]:
+    if isinstance(value, dict):
+        return {
+            str(key): item
+            for key, item in value.items()
+            if isinstance(key, str)
+        }
     if not isinstance(value, str) or not value:
         return {}
     try:

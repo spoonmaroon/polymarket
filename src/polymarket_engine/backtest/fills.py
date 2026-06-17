@@ -66,14 +66,12 @@ def simulate_hold_to_expiry_trade(
     if quote_age_ms < 0 or quote_age_ms > config.max_quote_age_ms:
         return None
     probability = _probability(row.get(probability_field), probability_field)
-    entry_price = _probability(
-        row.get("target_size_ask_vwap") or row.get("best_ask"),
-        "target_size_ask_vwap",
-    )
-    exit_bid = _probability(
-        row.get("target_size_bid_vwap") or row.get("best_bid"),
-        "target_size_bid_vwap",
-    )
+    if not _has_positive_visible_depth(row.get("visible_depth")):
+        return None
+    entry_price = _optional_probability(row.get("target_size_ask_vwap"), "target_size_ask_vwap")
+    exit_bid = _optional_probability(row.get("target_size_bid_vwap"), "target_size_bid_vwap")
+    if entry_price is None or exit_bid is None:
+        return None
     final_label = _label(row.get("final_label"))
     edge_at_entry = probability - entry_price - config.fee_rate
     if edge_at_entry < config.min_edge:
@@ -118,6 +116,20 @@ def _probability(value: object, field: str) -> float:
     if number <= 0.0 or number > 1.0:
         raise ValueError(f"{field} must be in (0, 1]")
     return number
+
+
+def _optional_probability(value: object, field: str) -> float | None:
+    try:
+        return _probability(value, field)
+    except ValueError:
+        return None
+
+
+def _has_positive_visible_depth(value: object) -> bool:
+    try:
+        return _float(value) > 0.0
+    except ValueError:
+        return False
 
 
 def _float(value: object) -> float:

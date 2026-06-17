@@ -80,6 +80,18 @@ def _seed_export_db(path: Path) -> None:
         )
         conn.execute(
             """
+            insert into features.probability_outputs (
+              output_id, state_id, asof_ts, model_version, p_finish, p_no_touch,
+              z_path, seed, input_json, output_json, created_at
+            ) values (
+              'output-1','state-1',?,'mc-v1',0.71,0.64,0.42,42,'{}',
+              '{"diagnostics":{"mc_dispersion":0.04,"generator_summary":{"path_count":2048}}}',?
+            )
+            """,
+            [ASOF, ASOF],
+        )
+        conn.execute(
+            """
             insert into features.ensemble_decisions (
               decision_id, state_id, contract_id, asof_ts, execution_mode, decision_hint,
               p_finish, p_no_touch, z_path, edge_after_costs, required_edge,
@@ -184,6 +196,36 @@ def test_export_skips_unlabeled_rows_by_default(tmp_path: Path) -> None:
 
     assert result.rows_written == 0
     assert out_path.read_text(encoding="utf-8") == ""
+
+
+def test_export_uses_probability_outputs_when_ensemble_decision_is_missing(tmp_path: Path) -> None:
+    db_path = tmp_path / "poly.duckdb"
+    out_path = tmp_path / "calibration.jsonl"
+    _seed_export_db(db_path)
+    with duckdb.connect(str(db_path)) as conn:
+        conn.execute("delete from features.ensemble_decisions")
+
+    result = export_calibration_dataset(
+        CalibrationExportConfig(
+            duckdb_path=db_path,
+            out_path=out_path,
+            start_ts=None,
+            end_ts=None,
+            include_unlabeled=False,
+            limit=100,
+        )
+    )
+
+    assert result.rows_written == 1
+    payload = json.loads(out_path.read_text(encoding="utf-8"))
+    assert payload["p_finish_mc"] == 0.71
+    assert payload["p_no_touch_mc"] == 0.64
+    assert payload["z_path"] == 0.42
+    assert payload["mc_generator_dispersion"] == 0.04
+    assert payload["probability_model_version"] == "mc-v1"
+    assert payload["target_size_ask_vwap"] is None
+    assert payload["target_size_bid_vwap"] is None
+    assert payload["visible_depth"] == 0.0
 
 
 def test_export_includes_unlabeled_rows_without_forcing_zero_end_price(tmp_path: Path) -> None:

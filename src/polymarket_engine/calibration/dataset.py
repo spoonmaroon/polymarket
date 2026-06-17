@@ -42,8 +42,8 @@ class CalibrationDecisionRow:
     best_bid: float
     best_ask: float
     midpoint: float
-    target_size_ask_vwap: float
-    target_size_bid_vwap: float
+    target_size_ask_vwap: float | None
+    target_size_bid_vwap: float | None
     visible_depth: float
     orderbook_imbalance: float
     quote_age_ms: float
