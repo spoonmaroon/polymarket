@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -253,3 +254,44 @@ def test_export_scopes_tick_history_features_to_settlement_source_key(tmp_path: 
     assert payload["threshold_cross_count"] == 3
     assert payload["near_threshold_congestion"] == 1
     assert payload["recent_wick_size"] == (65123.45 - 64990.0) / 65123.45
+
+
+def test_export_excludes_late_observed_ticks_from_replay_features(tmp_path: Path) -> None:
+    db_path = tmp_path / "poly.duckdb"
+    out_path = tmp_path / "calibration.jsonl"
+    _seed_export_db(db_path)
+    with duckdb.connect(str(db_path)) as conn:
+        conn.execute("delete from core.price_ticks")
+        timely_ticks = (
+            (-20, 64980.0),
+            (-10, 64970.0),
+            (-1, 64960.0),
+        )
+        for offset, price in timely_ticks:
+            ts = ASOF + timedelta(seconds=offset)
+            conn.execute(
+                "insert into core.price_ticks values ('polymarket_rtds_chainlink','BTC/USD',?,?,?,null,null,null,null)",
+                [ts, ts, price],
+            )
+        late_event_ts = ASOF - timedelta(seconds=50)
+        conn.execute(
+            "insert into core.price_ticks values ('polymarket_rtds_chainlink','BTC/USD',?,?,?,null,null,null,null)",
+            [late_event_ts, ASOF + timedelta(seconds=5), 65000.0],
+        )
+
+    result = export_calibration_dataset(
+        CalibrationExportConfig(
+            duckdb_path=db_path,
+            out_path=out_path,
+            start_ts=ASOF - timedelta(minutes=5),
+            end_ts=ASOF + timedelta(minutes=1),
+            include_unlabeled=False,
+            limit=100,
+        )
+    )
+
+    assert result.rows_written == 1
+    payload = json.loads(out_path.read_text(encoding="utf-8"))
+    assert payload["threshold_cross_count"] == 0
+    assert payload["near_threshold_congestion"] == 0
+    assert math.isclose(payload["recent_wick_size"], (64980.0 - 64960.0) / 65123.45)

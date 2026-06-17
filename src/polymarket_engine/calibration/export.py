@@ -209,7 +209,7 @@ def _threshold_cross_count(
                 case when price >= ? then 1 else -1 end as side,
                 lag(case when price >= ? then 1 else -1 end) over (order by event_ts, observed_ts) as prev_side
             from core.price_ticks
-            where source_key = ? and symbol = ? and event_ts >= ? and event_ts <= ?
+            where source_key = ? and symbol = ? and event_ts >= ? and event_ts <= ? and observed_ts <= ?
         )
         select count(*) from signed where prev_side is not null and prev_side != side
         """,
@@ -219,6 +219,7 @@ def _threshold_cross_count(
             payload["settlement_source_key"],
             f"{payload['asset']}/USD",
             start_ts,
+            asof_ts,
             asof_ts,
         ],
     ).fetchone()
@@ -236,12 +237,13 @@ def _near_threshold_congestion(
         """
         select count(*)
         from core.price_ticks
-        where source_key = ? and symbol = ? and event_ts >= ? and event_ts <= ? and abs(price - ?) <= ?
+        where source_key = ? and symbol = ? and event_ts >= ? and event_ts <= ? and observed_ts <= ? and abs(price - ?) <= ?
         """,
         [
             payload["settlement_source_key"],
             f"{payload['asset']}/USD",
             asof_ts - timedelta(seconds=60),
+            asof_ts,
             asof_ts,
             threshold,
             tolerance,
@@ -262,12 +264,13 @@ def _recent_wick_size(
         """
         select min(price), max(price)
         from core.price_ticks
-        where source_key = ? and symbol = ? and event_ts >= ? and event_ts <= ?
+        where source_key = ? and symbol = ? and event_ts >= ? and event_ts <= ? and observed_ts <= ?
         """,
         [
             payload["settlement_source_key"],
             f"{payload['asset']}/USD",
             asof_ts - timedelta(seconds=60),
+            asof_ts,
             asof_ts,
         ],
     ).fetchone()
