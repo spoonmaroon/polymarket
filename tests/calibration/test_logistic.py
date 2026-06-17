@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from polymarket_engine.calibration.logistic import LogisticCalibrator
 from polymarket_engine.calibration.logistic import fit_logistic_calibrator
 
@@ -35,3 +37,15 @@ def test_logistic_calibrator_round_trips_json() -> None:
 
     assert restored == model
     assert restored.predict_proba([[0.0]]) == model.predict_proba([[0.0]])
+
+
+def test_logistic_calibrator_rejects_mismatched_json_lengths() -> None:
+    payload = {
+        "model_version": "MC_Calibrator_LogReg_v1",
+        "feature_names": ["signal", "bias"],
+        "intercept": 0.0,
+        "coefficients": [0.5],
+    }
+
+    with pytest.raises(ValueError, match="feature_names length must match coefficients length"):
+        LogisticCalibrator.from_json_dict(payload)

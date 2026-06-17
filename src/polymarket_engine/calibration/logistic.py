@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 
 _MODEL_VERSION = "MC_Calibrator_LogReg_v1"
@@ -15,12 +15,16 @@ class LogisticCalibrator:
     intercept: float
     coefficients: tuple[float, ...]
 
+    def __post_init__(self) -> None:
+        if len(self.feature_names) != len(self.coefficients):
+            raise ValueError("feature_names length must match coefficients length")
+
     def predict_proba(self, matrix: Sequence[Sequence[float]]) -> list[float]:
         outputs: list[float] = []
-        coefficient_count = len(self.coefficients)
+        feature_count = len(self.feature_names)
         for row in matrix:
             values = tuple(float(value) for value in row)
-            if len(values) != coefficient_count:
+            if len(values) != feature_count:
                 raise ValueError("feature length does not match model")
             logit = self.intercept + sum(
                 weight * value for weight, value in zip(self.coefficients, values, strict=True)
