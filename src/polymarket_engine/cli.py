@@ -9,6 +9,8 @@ import subprocess as subprocess
 import sys
 from collections.abc import Callable
 from contextlib import suppress
+from datetime import datetime
+from datetime import timezone
 from pathlib import Path
 from typing import Protocol
 
@@ -256,6 +258,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     calibration_report.add_argument("--out", type=Path, required=True)
 
+    export_calibration = subparsers.add_parser("export-calibration-dataset")
+    export_calibration.add_argument("--duckdb-path", type=Path, required=True)
+    export_calibration.add_argument(
+        "--out",
+        type=Path,
+        default=Path("data/research/calibration/asof_decision_states.jsonl"),
+    )
+    export_calibration.add_argument("--start-ts", default=None)
+    export_calibration.add_argument("--end-ts", default=None)
+    export_calibration.add_argument("--include-unlabeled", action="store_true")
+    export_calibration.add_argument("--limit", type=int, default=10_000)
+
     runtime_keeper = subparsers.add_parser("runtime-keeper")
     runtime_keeper.add_argument("--repo", type=Path, default=Path("/home/ender/polymarket"))
     runtime_keeper.add_argument("--data-dir", type=Path, default=Path("/home/ender/polymarket-data"))
@@ -323,6 +337,8 @@ async def run_collect_command(argv: list[str] | None = None) -> int:
         return _run_backfill_outcomes(args)
     if args.command == "calibration-report":
         return _run_calibration_report(args)
+    if args.command == "export-calibration-dataset":
+        return _run_export_calibration_dataset(args)
     if args.command == "runtime-keeper":
         return _run_runtime_keeper(args)
     if args.command == "sync-cluster-artifacts":
@@ -627,6 +643,24 @@ def _run_calibration_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_export_calibration_dataset(args: argparse.Namespace) -> int:
+    from polymarket_engine.calibration.export import CalibrationExportConfig
+    from polymarket_engine.calibration.export import export_calibration_dataset
+
+    result = export_calibration_dataset(
+        CalibrationExportConfig(
+            duckdb_path=args.duckdb_path,
+            out_path=args.out,
+            start_ts=_parse_optional_cli_datetime(args.start_ts),
+            end_ts=_parse_optional_cli_datetime(args.end_ts),
+            include_unlabeled=args.include_unlabeled,
+            limit=args.limit,
+        )
+    )
+    print(json.dumps(result.to_json_dict(), sort_keys=True, separators=(",", ":")))
+    return 0
+
+
 def _run_runtime_keeper(args: argparse.Namespace) -> int:
     from polymarket_engine.ops.recovery_manager import RecoveryConfig
     from polymarket_engine.ops.runtime_keeper import DEFAULT_OPTIONAL_CONTAINERS
@@ -708,6 +742,15 @@ def _isoformat_optional(value: object) -> str | None:
     if hasattr(value, "isoformat"):
         return str(value.isoformat())
     return str(value)
+
+
+def _parse_optional_cli_datetime(value: str | None) -> datetime | None:
+    if value is None:
+        return None
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _install_shutdown_signal_handlers(

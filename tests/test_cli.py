@@ -220,6 +220,32 @@ def test_parse_run_rust_normalizer_sidecar_enable_outcome_refresh_arg() -> None:
     assert args.enable_outcome_refresh is True
 
 
+def test_parse_export_calibration_dataset_args() -> None:
+    args = parse_args(
+        [
+            "export-calibration-dataset",
+            "--duckdb-path",
+            "data/db/polymarket.duckdb",
+            "--out",
+            "data/research/calibration/asof_decision_states.jsonl",
+            "--start-ts",
+            "2026-06-10T00:00:00+00:00",
+            "--end-ts",
+            "2026-06-11T00:00:00+00:00",
+            "--limit",
+            "500",
+        ]
+    )
+
+    assert args.command == "export-calibration-dataset"
+    assert args.duckdb_path == Path("data/db/polymarket.duckdb")
+    assert args.out == Path("data/research/calibration/asof_decision_states.jsonl")
+    assert args.start_ts == "2026-06-10T00:00:00+00:00"
+    assert args.end_ts == "2026-06-11T00:00:00+00:00"
+    assert args.limit == 500
+    assert args.include_unlabeled is False
+
+
 def test_parse_run_outcome_refresh_sidecar_args() -> None:
     args = parse_args(
         [
