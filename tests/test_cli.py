@@ -516,6 +516,25 @@ def test_parse_calibration_report_args() -> None:
     assert args.out == Path("reports/calibration.json")
 
 
+def test_parse_calibration_report_probability_field_arg() -> None:
+    args = parse_args(
+        [
+            "calibration-report",
+            "--input",
+            "data/research/calibration/logreg_predictions.jsonl",
+            "--out",
+            "data/research/calibration/logreg_report.json",
+            "--probability-field",
+            "p_finish_final",
+        ]
+    )
+
+    assert args.command == "calibration-report"
+    assert args.input == Path("data/research/calibration/logreg_predictions.jsonl")
+    assert args.out == Path("data/research/calibration/logreg_report.json")
+    assert args.probability_field == "p_finish_final"
+
+
 def test_parse_run_backtest_args() -> None:
     args = parse_args(
         [

@@ -257,6 +257,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=Path("data/research/calibration/asof_decision_states.jsonl"),
     )
     calibration_report.add_argument("--out", type=Path, required=True)
+    calibration_report.add_argument("--probability-field", default="p_finish_mc")
 
     train_calibrator = subparsers.add_parser("train-calibrator")
     train_calibrator.add_argument("--input", type=Path, required=True)
@@ -655,7 +656,7 @@ def _run_calibration_report(args: argparse.Namespace) -> int:
         )
         return 1
 
-    report = build_calibration_report(rows)
+    report = build_calibration_report(rows, probability_field=args.probability_field)
     payload = report.to_json_dict()
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(
