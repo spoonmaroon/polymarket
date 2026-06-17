@@ -62,4 +62,14 @@ def test_run_backtest_writes_report_and_trade_rows(tmp_path: Path) -> None:
     assert payload["skipped_count"] == 1
     assert payload["win_rate"] == 0.5
     assert round(payload["total_pnl"], 6) == -43.75
+    assert payload["provenance"] == {
+        "fee_rate": 0.0,
+        "fill_config": {
+            "fee_rate": 0.0,
+            "max_quote_age_ms": 1000,
+            "min_edge": 0.02,
+            "stake_usd": 100.0,
+        },
+        "probability_field": "p_finish_mc",
+    }
     assert [trade["state_id"] for trade in payload["trades"]] == ["state-1", "state-2"]

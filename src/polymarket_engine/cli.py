@@ -658,17 +658,31 @@ def _run_backtest(args: argparse.Namespace) -> int:
     from polymarket_engine.backtest.runner import BacktestRunConfig
     from polymarket_engine.backtest.runner import run_backtest
 
-    report = run_backtest(
-        BacktestRunConfig(
-            input_path=args.input,
-            out_path=args.out,
-            probability_field=args.probability_field,
-            stake_usd=args.stake_usd,
-            min_edge=args.min_edge,
-            max_quote_age_ms=args.max_quote_age_ms,
-            fee_rate=args.fee_rate,
+    try:
+        report = run_backtest(
+            BacktestRunConfig(
+                input_path=args.input,
+                out_path=args.out,
+                probability_field=args.probability_field,
+                stake_usd=args.stake_usd,
+                min_edge=args.min_edge,
+                max_quote_age_ms=args.max_quote_age_ms,
+                fee_rate=args.fee_rate,
+            )
         )
-    )
+    except ValueError as exc:
+        payload: dict[str, object] = {"ok": False, "error": str(exc)}
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_text(
+            json.dumps(payload, allow_nan=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        print(
+            json.dumps(payload, allow_nan=False, sort_keys=True, separators=(",", ":")),
+            file=sys.stderr,
+        )
+        return 1
+
     print(json.dumps(report.to_json_dict(), sort_keys=True, separators=(",", ":")))
     return 0
 

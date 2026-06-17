@@ -520,6 +520,7 @@ def test_parse_run_backtest_args() -> None:
     assert args.stake_usd == 100.0
     assert args.min_edge == 0.02
     assert args.max_quote_age_ms == 1000
+    assert args.fee_rate == 0.0
 
 
 def test_parse_runtime_keeper_args() -> None:
@@ -1357,7 +1358,50 @@ async def test_run_backtest_command_writes_output_json(
     assert file_payload["skipped_count"] == 1
     assert file_payload["win_rate"] == 0.5
     assert round(file_payload["total_pnl"], 6) == -43.75
+    assert file_payload["provenance"] == {
+        "fee_rate": 0.0,
+        "fill_config": {
+            "fee_rate": 0.0,
+            "max_quote_age_ms": 1000,
+            "min_edge": 0.02,
+            "stake_usd": 100.0,
+        },
+        "probability_field": "p_finish_mc",
+    }
     assert [trade["state_id"] for trade in file_payload["trades"]] == ["state-1", "state-2"]
+
+
+@pytest.mark.anyio
+async def test_run_backtest_command_handles_malformed_jsonl(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    input_path = tmp_path / "data" / "research" / "calibration" / "bad.jsonl"
+    input_path.parent.mkdir(parents=True, exist_ok=True)
+    input_path.write_text("[1, 2, 3]\n", encoding="utf-8")
+    out_path = tmp_path / "reports" / "backtest-error.json"
+
+    result = await cli.run_collect_command(
+        [
+            "run-backtest",
+            "--input",
+            str(input_path),
+            "--out",
+            str(out_path),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    file_payload = json.loads(out_path.read_text(encoding="utf-8"))
+    assert result == 1
+    assert captured.out == ""
+    assert "Traceback" not in captured.err
+    stderr_payload = json.loads(captured.err)
+    assert stderr_payload == file_payload
+    assert file_payload == {
+        "error": "invalid calibration JSONL at line 1: row must be an object",
+        "ok": False,
+    }
 
 
 @pytest.mark.anyio

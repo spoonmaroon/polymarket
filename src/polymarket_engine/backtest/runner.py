@@ -7,6 +7,7 @@ from pathlib import Path
 from polymarket_engine.backtest.fills import BacktestFillConfig
 from polymarket_engine.backtest.fills import simulate_hold_to_expiry_trade
 from polymarket_engine.backtest.report import BacktestReport
+from polymarket_engine.backtest.report import BacktestReportProvenance
 from polymarket_engine.backtest.report import build_backtest_report
 from polymarket_engine.calibration.reports import load_calibration_jsonl
 
@@ -42,7 +43,17 @@ def run_backtest(config: BacktestRunConfig) -> BacktestReport:
         )
         is not None
     )
-    report = build_backtest_report(input_row_count=len(rows), trades=trades)
+    report = build_backtest_report(
+        input_row_count=len(rows),
+        provenance=BacktestReportProvenance(
+            probability_field=config.probability_field,
+            stake_usd=config.stake_usd,
+            min_edge=config.min_edge,
+            max_quote_age_ms=config.max_quote_age_ms,
+            fee_rate=config.fee_rate,
+        ),
+        trades=trades,
+    )
     config.out_path.parent.mkdir(parents=True, exist_ok=True)
     config.out_path.write_text(
         json.dumps(report.to_json_dict(), allow_nan=False, indent=2, sort_keys=True) + "\n",
