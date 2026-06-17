@@ -63,7 +63,7 @@ def simulate_hold_to_expiry_trade(
     if row.get("skip_or_block_reason") is not None:
         return None
     quote_age_ms = _float(row.get("quote_age_ms"))
-    if quote_age_ms > config.max_quote_age_ms:
+    if quote_age_ms < 0 or quote_age_ms > config.max_quote_age_ms:
         return None
     probability = _probability(row.get(probability_field), probability_field)
     entry_price = _probability(

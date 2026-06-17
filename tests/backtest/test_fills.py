@@ -60,6 +60,21 @@ def test_simulate_hold_to_expiry_trade_blocks_stale_quotes() -> None:
     assert trade is None
 
 
+def test_simulate_hold_to_expiry_trade_blocks_negative_quote_age() -> None:
+    trade = simulate_hold_to_expiry_trade(
+        _row(quote_age_ms=-1.0),
+        BacktestFillConfig(
+            stake_usd=100.0,
+            min_edge=0.02,
+            max_quote_age_ms=1000,
+            fee_rate=0.0,
+        ),
+        probability_field="p_finish_mc",
+    )
+
+    assert trade is None
+
+
 def test_simulate_hold_to_expiry_trade_requires_positive_edge() -> None:
     trade = simulate_hold_to_expiry_trade(
         _row(p_finish_mc=0.65),
