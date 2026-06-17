@@ -126,6 +126,19 @@ def test_build_calibration_report_computes_core_metrics() -> None:
     assert report.min_bucket_sample_count == 1
 
 
+def test_build_calibration_report_accepts_calibrated_probability_field() -> None:
+    rows = [
+        _row(state_id="state-1", p_finish_mc=0.55, p_finish_final=0.80, final_label=1),
+        _row(state_id="state-2", p_finish_mc=0.55, p_finish_final=0.20, final_label=0),
+    ]
+
+    report = build_calibration_report(rows, probability_field="p_finish_final")
+
+    assert report.evaluated_row_count == 2
+    assert report.brier_score is not None
+    assert round(report.brier_score, 4) == 0.04
+
+
 def test_build_calibration_report_exposes_ece_buckets() -> None:
     report = build_calibration_report(_fixed_rows(), ece_bucket_count=4)
     assert report.expected_calibration_error is not None

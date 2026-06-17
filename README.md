@@ -106,6 +106,63 @@ uv run polymarket-engine write-normalized-health \
   --out data/live/normalized_health.json
 ```
 
+## Offline Backtest And Calibration
+
+The backtest and ML calibration workflow is offline-only. It reads replay-safe
+as-of rows from DuckDB, joins final outcomes only as labels, and writes research
+artifacts under `data/research/`.
+
+The example below is an in-sample smoke that proves the offline commands work
+end to end on one exported dataset. It is not model-quality evidence. Any
+calibration or PnL claim should use walk-forward or other out-of-sample splits
+from `src/polymarket_engine/calibration/splits.py`.
+
+Example:
+
+```bash
+uv run polymarket-engine export-calibration-dataset \
+  --duckdb-path data/db/polymarket.duckdb \
+  --out data/research/calibration/asof_decision_states.jsonl \
+  --limit 10000
+
+uv run polymarket-engine calibration-report \
+  --input data/research/calibration/asof_decision_states.jsonl \
+  --out data/research/calibration/raw_mc_report.json \
+  --probability-field p_finish_mc
+
+uv run polymarket-engine run-backtest \
+  --input data/research/calibration/asof_decision_states.jsonl \
+  --out data/research/backtests/raw_mc.json \
+  --probability-field p_finish_mc \
+  --stake-usd 100 \
+  --min-edge 0.02
+
+uv run polymarket-engine train-calibrator \
+  --input data/research/calibration/asof_decision_states.jsonl \
+  --model-type logreg \
+  --model-out data/research/models/logreg.json \
+  --predictions-out data/research/calibration/logreg_predictions.jsonl
+
+uv run polymarket-engine calibration-report \
+  --input data/research/calibration/logreg_predictions.jsonl \
+  --out data/research/calibration/logreg_report.json \
+  --probability-field p_finish_final
+```
+
+Run XGBoost only after syncing research dependencies:
+
+```bash
+uv sync --group dev --group research
+uv run polymarket-engine train-calibrator \
+  --input data/research/calibration/asof_decision_states.jsonl \
+  --model-type xgboost \
+  --model-out data/research/models/xgboost.json \
+  --predictions-out data/research/calibration/xgboost_predictions.jsonl
+```
+
+This workflow does not place trades. It is for replay, calibration, and
+offline execution simulation.
+
 ## Read First
 
 - [PLAN.md](docs/PLAN.md) - complete merged architecture, research, build,

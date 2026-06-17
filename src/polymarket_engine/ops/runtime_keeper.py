@@ -589,6 +589,10 @@ def _has_warm_probability_rows(
 
 
 def _positive_intish(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is not None and not isinstance(value, (str, int, float)):
+        return False
     try:
         return int(value or 0) > 0
     except (TypeError, ValueError):

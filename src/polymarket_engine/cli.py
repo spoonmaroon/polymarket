@@ -9,6 +9,8 @@ import subprocess as subprocess
 import sys
 from collections.abc import Callable
 from contextlib import suppress
+from datetime import datetime
+from datetime import timezone
 from pathlib import Path
 from typing import Protocol
 
@@ -255,6 +257,38 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=Path("data/research/calibration/asof_decision_states.jsonl"),
     )
     calibration_report.add_argument("--out", type=Path, required=True)
+    calibration_report.add_argument("--probability-field", default="p_finish_mc")
+
+    train_calibrator = subparsers.add_parser("train-calibrator")
+    train_calibrator.add_argument("--input", type=Path, required=True)
+    train_calibrator.add_argument(
+        "--model-type",
+        choices=("logreg", "xgboost"),
+        required=True,
+    )
+    train_calibrator.add_argument("--model-out", type=Path, required=True)
+    train_calibrator.add_argument("--predictions-out", type=Path, required=True)
+
+    run_backtest = subparsers.add_parser("run-backtest")
+    run_backtest.add_argument("--input", type=Path, required=True)
+    run_backtest.add_argument("--out", type=Path, required=True)
+    run_backtest.add_argument("--probability-field", default="p_finish_mc")
+    run_backtest.add_argument("--stake-usd", type=float, default=100.0)
+    run_backtest.add_argument("--min-edge", type=float, default=0.02)
+    run_backtest.add_argument("--max-quote-age-ms", type=int, default=1000)
+    run_backtest.add_argument("--fee-rate", type=float, default=0.0)
+
+    export_calibration = subparsers.add_parser("export-calibration-dataset")
+    export_calibration.add_argument("--duckdb-path", type=Path, required=True)
+    export_calibration.add_argument(
+        "--out",
+        type=Path,
+        default=Path("data/research/calibration/asof_decision_states.jsonl"),
+    )
+    export_calibration.add_argument("--start-ts", default=None)
+    export_calibration.add_argument("--end-ts", default=None)
+    export_calibration.add_argument("--include-unlabeled", action="store_true")
+    export_calibration.add_argument("--limit", type=int, default=10_000)
 
     runtime_keeper = subparsers.add_parser("runtime-keeper")
     runtime_keeper.add_argument("--repo", type=Path, default=Path("/home/ender/polymarket"))
@@ -323,6 +357,12 @@ async def run_collect_command(argv: list[str] | None = None) -> int:
         return _run_backfill_outcomes(args)
     if args.command == "calibration-report":
         return _run_calibration_report(args)
+    if args.command == "train-calibrator":
+        return _run_train_calibrator(args)
+    if args.command == "run-backtest":
+        return _run_backtest(args)
+    if args.command == "export-calibration-dataset":
+        return _run_export_calibration_dataset(args)
     if args.command == "runtime-keeper":
         return _run_runtime_keeper(args)
     if args.command == "sync-cluster-artifacts":
@@ -616,7 +656,7 @@ def _run_calibration_report(args: argparse.Namespace) -> int:
         )
         return 1
 
-    report = build_calibration_report(rows)
+    report = build_calibration_report(rows, probability_field=args.probability_field)
     payload = report.to_json_dict()
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(
@@ -624,6 +664,73 @@ def _run_calibration_report(args: argparse.Namespace) -> int:
         encoding="utf-8",
     )
     print(json.dumps(payload, allow_nan=False, sort_keys=True, separators=(",", ":")))
+    return 0
+
+
+def _run_train_calibrator(args: argparse.Namespace) -> int:
+    from polymarket_engine.calibration.train import TrainCalibratorConfig
+    from polymarket_engine.calibration.train import train_calibrator
+
+    result = train_calibrator(
+        TrainCalibratorConfig(
+            input_path=args.input,
+            model_path=args.model_out,
+            predictions_path=args.predictions_out,
+            model_type=args.model_type,
+        )
+    )
+    print(json.dumps(result.to_json_dict(), sort_keys=True, separators=(",", ":")))
+    return 0
+
+
+def _run_backtest(args: argparse.Namespace) -> int:
+    from polymarket_engine.backtest.runner import BacktestRunConfig
+    from polymarket_engine.backtest.runner import run_backtest
+
+    try:
+        report = run_backtest(
+            BacktestRunConfig(
+                input_path=args.input,
+                out_path=args.out,
+                probability_field=args.probability_field,
+                stake_usd=args.stake_usd,
+                min_edge=args.min_edge,
+                max_quote_age_ms=args.max_quote_age_ms,
+                fee_rate=args.fee_rate,
+            )
+        )
+    except ValueError as exc:
+        payload: dict[str, object] = {"ok": False, "error": str(exc)}
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_text(
+            json.dumps(payload, allow_nan=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        print(
+            json.dumps(payload, allow_nan=False, sort_keys=True, separators=(",", ":")),
+            file=sys.stderr,
+        )
+        return 1
+
+    print(json.dumps(report.to_json_dict(), sort_keys=True, separators=(",", ":")))
+    return 0
+
+
+def _run_export_calibration_dataset(args: argparse.Namespace) -> int:
+    from polymarket_engine.calibration.export import CalibrationExportConfig
+    from polymarket_engine.calibration.export import export_calibration_dataset
+
+    result = export_calibration_dataset(
+        CalibrationExportConfig(
+            duckdb_path=args.duckdb_path,
+            out_path=args.out,
+            start_ts=_parse_optional_cli_datetime(args.start_ts),
+            end_ts=_parse_optional_cli_datetime(args.end_ts),
+            include_unlabeled=args.include_unlabeled,
+            limit=args.limit,
+        )
+    )
+    print(json.dumps(result.to_json_dict(), sort_keys=True, separators=(",", ":")))
     return 0
 
 
@@ -708,6 +815,15 @@ def _isoformat_optional(value: object) -> str | None:
     if hasattr(value, "isoformat"):
         return str(value.isoformat())
     return str(value)
+
+
+def _parse_optional_cli_datetime(value: str | None) -> datetime | None:
+    if value is None:
+        return None
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _install_shutdown_signal_handlers(

@@ -220,6 +220,54 @@ def test_parse_run_rust_normalizer_sidecar_enable_outcome_refresh_arg() -> None:
     assert args.enable_outcome_refresh is True
 
 
+def test_parse_export_calibration_dataset_args() -> None:
+    args = parse_args(
+        [
+            "export-calibration-dataset",
+            "--duckdb-path",
+            "data/db/polymarket.duckdb",
+            "--out",
+            "data/research/calibration/asof_decision_states.jsonl",
+            "--start-ts",
+            "2026-06-10T00:00:00+00:00",
+            "--end-ts",
+            "2026-06-11T00:00:00+00:00",
+            "--limit",
+            "500",
+        ]
+    )
+
+    assert args.command == "export-calibration-dataset"
+    assert args.duckdb_path == Path("data/db/polymarket.duckdb")
+    assert args.out == Path("data/research/calibration/asof_decision_states.jsonl")
+    assert args.start_ts == "2026-06-10T00:00:00+00:00"
+    assert args.end_ts == "2026-06-11T00:00:00+00:00"
+    assert args.limit == 500
+    assert args.include_unlabeled is False
+
+
+def test_parse_train_calibrator_args() -> None:
+    args = parse_args(
+        [
+            "train-calibrator",
+            "--input",
+            "data/research/calibration/asof_decision_states.jsonl",
+            "--model-type",
+            "logreg",
+            "--model-out",
+            "data/research/models/logreg.json",
+            "--predictions-out",
+            "data/research/calibration/logreg_predictions.jsonl",
+        ]
+    )
+
+    assert args.command == "train-calibrator"
+    assert args.input == Path("data/research/calibration/asof_decision_states.jsonl")
+    assert args.model_type == "logreg"
+    assert args.model_out == Path("data/research/models/logreg.json")
+    assert args.predictions_out == Path("data/research/calibration/logreg_predictions.jsonl")
+
+
 def test_parse_run_outcome_refresh_sidecar_args() -> None:
     args = parse_args(
         [
@@ -466,6 +514,54 @@ def test_parse_calibration_report_args() -> None:
     assert args.command == "calibration-report"
     assert args.input == Path("data/research/calibration/asof_decision_states.jsonl")
     assert args.out == Path("reports/calibration.json")
+
+
+def test_parse_calibration_report_probability_field_arg() -> None:
+    args = parse_args(
+        [
+            "calibration-report",
+            "--input",
+            "data/research/calibration/logreg_predictions.jsonl",
+            "--out",
+            "data/research/calibration/logreg_report.json",
+            "--probability-field",
+            "p_finish_final",
+        ]
+    )
+
+    assert args.command == "calibration-report"
+    assert args.input == Path("data/research/calibration/logreg_predictions.jsonl")
+    assert args.out == Path("data/research/calibration/logreg_report.json")
+    assert args.probability_field == "p_finish_final"
+
+
+def test_parse_run_backtest_args() -> None:
+    args = parse_args(
+        [
+            "run-backtest",
+            "--input",
+            "data/research/calibration/asof_decision_states.jsonl",
+            "--out",
+            "data/research/backtests/raw_mc.json",
+            "--probability-field",
+            "p_finish_mc",
+            "--stake-usd",
+            "100",
+            "--min-edge",
+            "0.02",
+            "--max-quote-age-ms",
+            "1000",
+        ]
+    )
+
+    assert args.command == "run-backtest"
+    assert args.input == Path("data/research/calibration/asof_decision_states.jsonl")
+    assert args.out == Path("data/research/backtests/raw_mc.json")
+    assert args.probability_field == "p_finish_mc"
+    assert args.stake_usd == 100.0
+    assert args.min_edge == 0.02
+    assert args.max_quote_age_ms == 1000
+    assert args.fee_rate == 0.0
 
 
 def test_parse_runtime_keeper_args() -> None:
@@ -1192,6 +1288,67 @@ async def test_run_calibration_report_command_writes_output_json(
 
 
 @pytest.mark.anyio
+async def test_run_calibration_report_command_honors_probability_field(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    input_path = tmp_path / "data" / "research" / "calibration" / "predictions.jsonl"
+    default_out_path = tmp_path / "reports" / "calibration-default.json"
+    final_out_path = tmp_path / "reports" / "calibration-final.json"
+    _write_jsonl(
+        input_path,
+        [
+            _calibration_row(
+                state_id="state-1",
+                p_finish_mc=0.9,
+                p_finish_final=0.2,
+                final_label=1,
+            ),
+            _calibration_row(
+                state_id="state-2",
+                p_finish_mc=0.1,
+                p_finish_final=0.8,
+                final_label=0,
+            ),
+        ],
+    )
+
+    default_result = await cli.run_collect_command(
+        [
+            "calibration-report",
+            "--input",
+            str(input_path),
+            "--out",
+            str(default_out_path),
+        ]
+    )
+    default_stdout = json.loads(capsys.readouterr().out)
+    default_payload = json.loads(default_out_path.read_text(encoding="utf-8"))
+
+    final_result = await cli.run_collect_command(
+        [
+            "calibration-report",
+            "--input",
+            str(input_path),
+            "--out",
+            str(final_out_path),
+            "--probability-field",
+            "p_finish_final",
+        ]
+    )
+    final_stdout = json.loads(capsys.readouterr().out)
+    final_payload = json.loads(final_out_path.read_text(encoding="utf-8"))
+
+    assert default_result == 0
+    assert final_result == 0
+    assert default_stdout == default_payload
+    assert final_stdout == final_payload
+    assert round(default_payload["brier_score"], 4) == 0.01
+    assert round(final_payload["brier_score"], 4) == 0.64
+    assert default_payload["brier_score"] != final_payload["brier_score"]
+
+
+@pytest.mark.anyio
 async def test_run_calibration_report_command_handles_malformed_jsonl(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -1204,6 +1361,134 @@ async def test_run_calibration_report_command_handles_malformed_jsonl(
     result = await cli.run_collect_command(
         [
             "calibration-report",
+            "--input",
+            str(input_path),
+            "--out",
+            str(out_path),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    file_payload = json.loads(out_path.read_text(encoding="utf-8"))
+    assert result == 1
+    assert captured.out == ""
+    assert "Traceback" not in captured.err
+    stderr_payload = json.loads(captured.err)
+    assert stderr_payload == file_payload
+    assert file_payload == {
+        "error": "invalid calibration JSONL at line 1: row must be an object",
+        "ok": False,
+    }
+
+
+@pytest.mark.anyio
+async def test_run_backtest_command_writes_output_json(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    input_path = tmp_path / "data" / "research" / "calibration" / "asof_decision_states.jsonl"
+    input_path.parent.mkdir(parents=True, exist_ok=True)
+    input_path.write_text(
+        "\n".join(
+            json.dumps(row)
+            for row in [
+                {
+                    **_calibration_row(
+                        state_id="state-1",
+                        p_finish_mc=0.72,
+                        final_label=1,
+                    ),
+                    "target_size_ask_vwap": 0.64,
+                    "target_size_bid_vwap": 0.62,
+                    "visible_depth": 1200.0,
+                    "best_ask": 0.64,
+                    "best_bid": 0.62,
+                },
+                {
+                    **_calibration_row(
+                        state_id="state-2",
+                        p_finish_mc=0.73,
+                        final_label=0,
+                    ),
+                    "target_size_ask_vwap": 0.64,
+                    "target_size_bid_vwap": 0.62,
+                    "visible_depth": 1200.0,
+                    "best_ask": 0.64,
+                    "best_bid": 0.62,
+                },
+                {
+                    **_calibration_row(
+                        state_id="state-3",
+                        p_finish_mc=0.60,
+                        final_label=1,
+                    ),
+                    "target_size_ask_vwap": 0.64,
+                    "target_size_bid_vwap": 0.62,
+                    "visible_depth": 1200.0,
+                    "best_ask": 0.64,
+                    "best_bid": 0.62,
+                },
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    out_path = tmp_path / "reports" / "backtest.json"
+
+    result = await cli.run_collect_command(
+        [
+            "run-backtest",
+            "--input",
+            str(input_path),
+            "--out",
+            str(out_path),
+            "--probability-field",
+            "p_finish_mc",
+            "--stake-usd",
+            "100",
+            "--min-edge",
+            "0.02",
+            "--max-quote-age-ms",
+            "1000",
+        ]
+    )
+
+    assert result == 0
+    stdout_payload = json.loads(capsys.readouterr().out)
+    file_payload = json.loads(out_path.read_text(encoding="utf-8"))
+    assert stdout_payload == file_payload
+    assert file_payload["schema_version"] == "polymarket-backtest-report-v1"
+    assert file_payload["input_row_count"] == 3
+    assert file_payload["trade_count"] == 2
+    assert file_payload["skipped_count"] == 1
+    assert file_payload["win_rate"] == 0.5
+    assert round(file_payload["total_pnl"], 6) == -43.75
+    assert file_payload["provenance"] == {
+        "fee_rate": 0.0,
+        "fill_config": {
+            "fee_rate": 0.0,
+            "max_quote_age_ms": 1000,
+            "min_edge": 0.02,
+            "stake_usd": 100.0,
+        },
+        "probability_field": "p_finish_mc",
+    }
+    assert [trade["state_id"] for trade in file_payload["trades"]] == ["state-1", "state-2"]
+
+
+@pytest.mark.anyio
+async def test_run_backtest_command_handles_malformed_jsonl(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    input_path = tmp_path / "data" / "research" / "calibration" / "bad.jsonl"
+    input_path.parent.mkdir(parents=True, exist_ok=True)
+    input_path.write_text("[1, 2, 3]\n", encoding="utf-8")
+    out_path = tmp_path / "reports" / "backtest-error.json"
+
+    result = await cli.run_collect_command(
+        [
+            "run-backtest",
             "--input",
             str(input_path),
             "--out",
@@ -1454,9 +1739,10 @@ def _calibration_row(
     *,
     state_id: str,
     p_finish_mc: float,
+    p_finish_final: float | None = None,
     final_label: int,
 ) -> dict[str, object]:
-    return {
+    row: dict[str, object] = {
         "state_id": state_id,
         "contract_id": "condition-1",
         "market_slug": "btc-updown-5m-1781102700",
@@ -1487,3 +1773,6 @@ def _calibration_row(
         "resolved_outcome": "UP",
         "settlement_price_at_expiry": 65080.0,
     }
+    if p_finish_final is not None:
+        row["p_finish_final"] = p_finish_final
+    return row
