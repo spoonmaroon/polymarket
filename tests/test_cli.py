@@ -1288,6 +1288,67 @@ async def test_run_calibration_report_command_writes_output_json(
 
 
 @pytest.mark.anyio
+async def test_run_calibration_report_command_honors_probability_field(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    input_path = tmp_path / "data" / "research" / "calibration" / "predictions.jsonl"
+    default_out_path = tmp_path / "reports" / "calibration-default.json"
+    final_out_path = tmp_path / "reports" / "calibration-final.json"
+    _write_jsonl(
+        input_path,
+        [
+            _calibration_row(
+                state_id="state-1",
+                p_finish_mc=0.9,
+                p_finish_final=0.2,
+                final_label=1,
+            ),
+            _calibration_row(
+                state_id="state-2",
+                p_finish_mc=0.1,
+                p_finish_final=0.8,
+                final_label=0,
+            ),
+        ],
+    )
+
+    default_result = await cli.run_collect_command(
+        [
+            "calibration-report",
+            "--input",
+            str(input_path),
+            "--out",
+            str(default_out_path),
+        ]
+    )
+    default_stdout = json.loads(capsys.readouterr().out)
+    default_payload = json.loads(default_out_path.read_text(encoding="utf-8"))
+
+    final_result = await cli.run_collect_command(
+        [
+            "calibration-report",
+            "--input",
+            str(input_path),
+            "--out",
+            str(final_out_path),
+            "--probability-field",
+            "p_finish_final",
+        ]
+    )
+    final_stdout = json.loads(capsys.readouterr().out)
+    final_payload = json.loads(final_out_path.read_text(encoding="utf-8"))
+
+    assert default_result == 0
+    assert final_result == 0
+    assert default_stdout == default_payload
+    assert final_stdout == final_payload
+    assert round(default_payload["brier_score"], 4) == 0.01
+    assert round(final_payload["brier_score"], 4) == 0.64
+    assert default_payload["brier_score"] != final_payload["brier_score"]
+
+
+@pytest.mark.anyio
 async def test_run_calibration_report_command_handles_malformed_jsonl(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -1675,9 +1736,10 @@ def _calibration_row(
     *,
     state_id: str,
     p_finish_mc: float,
+    p_finish_final: float | None = None,
     final_label: int,
 ) -> dict[str, object]:
-    return {
+    row: dict[str, object] = {
         "state_id": state_id,
         "contract_id": "condition-1",
         "market_slug": "btc-updown-5m-1781102700",
@@ -1708,3 +1770,6 @@ def _calibration_row(
         "resolved_outcome": "UP",
         "settlement_price_at_expiry": 65080.0,
     }
+    if p_finish_final is not None:
+        row["p_finish_final"] = p_finish_final
+    return row
