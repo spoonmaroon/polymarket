@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+import importlib
 from typing import Any
 
 
@@ -68,7 +69,7 @@ def fit_xgboost_calibrator(
 
 def _xgboost() -> Any:
     try:
-        import xgboost as xgb
+        xgb = _import_xgboost_module()
     except ModuleNotFoundError as exc:
         if exc.name != "xgboost":
             raise
@@ -83,3 +84,7 @@ def _xgboost() -> Any:
             f"Original import error: {exc}"
         ) from exc
     return xgb
+
+
+def _import_xgboost_module() -> Any:
+    return importlib.import_module("xgboost")

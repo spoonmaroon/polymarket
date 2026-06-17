@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import builtins
-
 import pytest
 
 from polymarket_engine.calibration import xgboost_model
@@ -11,20 +9,10 @@ from polymarket_engine.calibration.xgboost_model import fit_xgboost_calibrator
 def test_xgboost_import_failure_raises_research_dependency_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    original_import = builtins.__import__
+    def fake_import_xgboost_module() -> object:
+        raise ImportError("dlopen(libxgboost.dylib): Library not loaded: libomp.dylib")
 
-    def fake_import(
-        name: str,
-        globals: dict[str, object] | None = None,
-        locals: dict[str, object] | None = None,
-        fromlist: tuple[str, ...] = (),
-        level: int = 0,
-    ) -> object:
-        if name == "xgboost":
-            raise ImportError("dlopen(libxgboost.dylib): Library not loaded: libomp.dylib")
-        return original_import(name, globals, locals, fromlist, level)
-
-    monkeypatch.setattr(builtins, "__import__", fake_import)
+    monkeypatch.setattr(xgboost_model, "_import_xgboost_module", fake_import_xgboost_module)
 
     with pytest.raises(RuntimeError, match="native libraries") as excinfo:
         xgboost_model._xgboost()
