@@ -494,6 +494,34 @@ def test_parse_calibration_report_args() -> None:
     assert args.out == Path("reports/calibration.json")
 
 
+def test_parse_run_backtest_args() -> None:
+    args = parse_args(
+        [
+            "run-backtest",
+            "--input",
+            "data/research/calibration/asof_decision_states.jsonl",
+            "--out",
+            "data/research/backtests/raw_mc.json",
+            "--probability-field",
+            "p_finish_mc",
+            "--stake-usd",
+            "100",
+            "--min-edge",
+            "0.02",
+            "--max-quote-age-ms",
+            "1000",
+        ]
+    )
+
+    assert args.command == "run-backtest"
+    assert args.input == Path("data/research/calibration/asof_decision_states.jsonl")
+    assert args.out == Path("data/research/backtests/raw_mc.json")
+    assert args.probability_field == "p_finish_mc"
+    assert args.stake_usd == 100.0
+    assert args.min_edge == 0.02
+    assert args.max_quote_age_ms == 1000
+
+
 def test_parse_runtime_keeper_args() -> None:
     args = parse_args(
         [
@@ -1248,6 +1276,88 @@ async def test_run_calibration_report_command_handles_malformed_jsonl(
         "error": "invalid calibration JSONL at line 1: row must be an object",
         "ok": False,
     }
+
+
+@pytest.mark.anyio
+async def test_run_backtest_command_writes_output_json(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    input_path = tmp_path / "data" / "research" / "calibration" / "asof_decision_states.jsonl"
+    input_path.parent.mkdir(parents=True, exist_ok=True)
+    input_path.write_text(
+        "\n".join(
+            json.dumps(row)
+            for row in [
+                {
+                    **_calibration_row(
+                        state_id="state-1",
+                        p_finish_mc=0.72,
+                        final_label=1,
+                    ),
+                    "target_size_ask_vwap": 0.64,
+                    "target_size_bid_vwap": 0.62,
+                    "best_ask": 0.64,
+                    "best_bid": 0.62,
+                },
+                {
+                    **_calibration_row(
+                        state_id="state-2",
+                        p_finish_mc=0.73,
+                        final_label=0,
+                    ),
+                    "target_size_ask_vwap": 0.64,
+                    "target_size_bid_vwap": 0.62,
+                    "best_ask": 0.64,
+                    "best_bid": 0.62,
+                },
+                {
+                    **_calibration_row(
+                        state_id="state-3",
+                        p_finish_mc=0.60,
+                        final_label=1,
+                    ),
+                    "target_size_ask_vwap": 0.64,
+                    "target_size_bid_vwap": 0.62,
+                    "best_ask": 0.64,
+                    "best_bid": 0.62,
+                },
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    out_path = tmp_path / "reports" / "backtest.json"
+
+    result = await cli.run_collect_command(
+        [
+            "run-backtest",
+            "--input",
+            str(input_path),
+            "--out",
+            str(out_path),
+            "--probability-field",
+            "p_finish_mc",
+            "--stake-usd",
+            "100",
+            "--min-edge",
+            "0.02",
+            "--max-quote-age-ms",
+            "1000",
+        ]
+    )
+
+    assert result == 0
+    stdout_payload = json.loads(capsys.readouterr().out)
+    file_payload = json.loads(out_path.read_text(encoding="utf-8"))
+    assert stdout_payload == file_payload
+    assert file_payload["schema_version"] == "polymarket-backtest-report-v1"
+    assert file_payload["input_row_count"] == 3
+    assert file_payload["trade_count"] == 2
+    assert file_payload["skipped_count"] == 1
+    assert file_payload["win_rate"] == 0.5
+    assert round(file_payload["total_pnl"], 6) == -43.75
+    assert [trade["state_id"] for trade in file_payload["trades"]] == ["state-1", "state-2"]
 
 
 @pytest.mark.anyio

@@ -258,6 +258,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     calibration_report.add_argument("--out", type=Path, required=True)
 
+    run_backtest = subparsers.add_parser("run-backtest")
+    run_backtest.add_argument("--input", type=Path, required=True)
+    run_backtest.add_argument("--out", type=Path, required=True)
+    run_backtest.add_argument("--probability-field", default="p_finish_mc")
+    run_backtest.add_argument("--stake-usd", type=float, default=100.0)
+    run_backtest.add_argument("--min-edge", type=float, default=0.02)
+    run_backtest.add_argument("--max-quote-age-ms", type=int, default=1000)
+    run_backtest.add_argument("--fee-rate", type=float, default=0.0)
+
     export_calibration = subparsers.add_parser("export-calibration-dataset")
     export_calibration.add_argument("--duckdb-path", type=Path, required=True)
     export_calibration.add_argument(
@@ -337,6 +346,8 @@ async def run_collect_command(argv: list[str] | None = None) -> int:
         return _run_backfill_outcomes(args)
     if args.command == "calibration-report":
         return _run_calibration_report(args)
+    if args.command == "run-backtest":
+        return _run_backtest(args)
     if args.command == "export-calibration-dataset":
         return _run_export_calibration_dataset(args)
     if args.command == "runtime-keeper":
@@ -640,6 +651,25 @@ def _run_calibration_report(args: argparse.Namespace) -> int:
         encoding="utf-8",
     )
     print(json.dumps(payload, allow_nan=False, sort_keys=True, separators=(",", ":")))
+    return 0
+
+
+def _run_backtest(args: argparse.Namespace) -> int:
+    from polymarket_engine.backtest.runner import BacktestRunConfig
+    from polymarket_engine.backtest.runner import run_backtest
+
+    report = run_backtest(
+        BacktestRunConfig(
+            input_path=args.input,
+            out_path=args.out,
+            probability_field=args.probability_field,
+            stake_usd=args.stake_usd,
+            min_edge=args.min_edge,
+            max_quote_age_ms=args.max_quote_age_ms,
+            fee_rate=args.fee_rate,
+        )
+    )
+    print(json.dumps(report.to_json_dict(), sort_keys=True, separators=(",", ":")))
     return 0
 
 
