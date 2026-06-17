@@ -183,3 +183,73 @@ def test_export_skips_unlabeled_rows_by_default(tmp_path: Path) -> None:
 
     assert result.rows_written == 0
     assert out_path.read_text(encoding="utf-8") == ""
+
+
+def test_export_includes_unlabeled_rows_without_forcing_zero_end_price(tmp_path: Path) -> None:
+    db_path = tmp_path / "poly.duckdb"
+    out_path = tmp_path / "calibration.jsonl"
+    _seed_export_db(db_path)
+    with duckdb.connect(str(db_path)) as conn:
+        conn.execute(
+            """
+            update validation.market_outcome_history
+            set official_winner = null,
+                computed_winner = null,
+                end_price = null,
+                official_resolution_status = 'pending'
+            """
+        )
+
+    result = export_calibration_dataset(
+        CalibrationExportConfig(
+            duckdb_path=db_path,
+            out_path=out_path,
+            start_ts=None,
+            end_ts=None,
+            include_unlabeled=True,
+            limit=100,
+        )
+    )
+
+    assert result.rows_written == 1
+    payload = json.loads(out_path.read_text(encoding="utf-8"))
+    assert payload["final_label"] is None
+    assert payload["resolved_outcome"] is None
+    assert payload["settlement_price_at_expiry"] is None
+
+
+def test_export_scopes_tick_history_features_to_settlement_source_key(tmp_path: Path) -> None:
+    db_path = tmp_path / "poly.duckdb"
+    out_path = tmp_path / "calibration.jsonl"
+    _seed_export_db(db_path)
+    with duckdb.connect(str(db_path)) as conn:
+        unrelated_ticks = (
+            (-45, 64999.5),
+            (-30, 65000.1),
+            (-15, 64999.9),
+            (-8, 65000.2),
+            (-3, 64999.8),
+        )
+        for offset, price in unrelated_ticks:
+            ts = ASOF + timedelta(seconds=offset)
+            conn.execute(
+                "insert into core.price_ticks values ('unrelated_btc_feed','BTC/USD',?,?,?,null,null,null,null)",
+                [ts, ts, price],
+            )
+
+    result = export_calibration_dataset(
+        CalibrationExportConfig(
+            duckdb_path=db_path,
+            out_path=out_path,
+            start_ts=ASOF - timedelta(minutes=5),
+            end_ts=ASOF + timedelta(minutes=1),
+            include_unlabeled=False,
+            limit=100,
+        )
+    )
+
+    assert result.rows_written == 1
+    payload = json.loads(out_path.read_text(encoding="utf-8"))
+    assert payload["threshold_cross_count"] == 3
+    assert payload["near_threshold_congestion"] == 1
+    assert payload["recent_wick_size"] == (65123.45 - 64990.0) / 65123.45

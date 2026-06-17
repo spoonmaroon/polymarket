@@ -77,6 +77,7 @@ def _candidate_rows(
             s.seconds_left,
             s.threshold,
             s.threshold_source_key,
+            s.settlement_source_key,
             c.rule_hash,
             s.settlement_price,
             s.source_disagreement_bps,
@@ -190,7 +191,7 @@ def _row_from_payload(
         skip_or_block_reason=_block_reason(payload),
         final_label=label,
         resolved_outcome=winner if winner in {"UP", "DOWN"} else None,
-        settlement_price_at_expiry=_float(payload.get("end_price"), None),
+        settlement_price_at_expiry=_optional_float(payload.get("end_price")),
     )
 
 
@@ -208,11 +209,18 @@ def _threshold_cross_count(
                 case when price >= ? then 1 else -1 end as side,
                 lag(case when price >= ? then 1 else -1 end) over (order by event_ts, observed_ts) as prev_side
             from core.price_ticks
-            where symbol = ? and event_ts >= ? and event_ts <= ?
+            where source_key = ? and symbol = ? and event_ts >= ? and event_ts <= ?
         )
         select count(*) from signed where prev_side is not null and prev_side != side
         """,
-        [threshold, threshold, f"{payload['asset']}/USD", start_ts, asof_ts],
+        [
+            threshold,
+            threshold,
+            payload["settlement_source_key"],
+            f"{payload['asset']}/USD",
+            start_ts,
+            asof_ts,
+        ],
     ).fetchone()
     return int(row[0] if row else 0)
 
@@ -228,9 +236,16 @@ def _near_threshold_congestion(
         """
         select count(*)
         from core.price_ticks
-        where symbol = ? and event_ts >= ? and event_ts <= ? and abs(price - ?) <= ?
+        where source_key = ? and symbol = ? and event_ts >= ? and event_ts <= ? and abs(price - ?) <= ?
         """,
-        [f"{payload['asset']}/USD", asof_ts - timedelta(seconds=60), asof_ts, threshold, tolerance],
+        [
+            payload["settlement_source_key"],
+            f"{payload['asset']}/USD",
+            asof_ts - timedelta(seconds=60),
+            asof_ts,
+            threshold,
+            tolerance,
+        ],
     ).fetchone()
     return int(row[0] if row else 0)
 
@@ -247,9 +262,14 @@ def _recent_wick_size(
         """
         select min(price), max(price)
         from core.price_ticks
-        where symbol = ? and event_ts >= ? and event_ts <= ?
+        where source_key = ? and symbol = ? and event_ts >= ? and event_ts <= ?
         """,
-        [f"{payload['asset']}/USD", asof_ts - timedelta(seconds=60), asof_ts],
+        [
+            payload["settlement_source_key"],
+            f"{payload['asset']}/USD",
+            asof_ts - timedelta(seconds=60),
+            asof_ts,
+        ],
     ).fetchone()
     if not row or row[0] is None or row[1] is None:
         return 0.0
@@ -304,6 +324,16 @@ def _float(value: object, default: float | None) -> float:
     except (TypeError, ValueError):
         result = float(default or 0.0)
     return result if math.isfinite(result) else float(default or 0.0)
+
+
+def _optional_float(value: object) -> float | None:
+    if value is None:
+        return None
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    return result if math.isfinite(result) else None
 
 
 def _parse_ts(value: object) -> datetime:
