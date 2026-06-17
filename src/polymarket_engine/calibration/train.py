@@ -38,9 +38,11 @@ class TrainCalibratorResult:
 def train_calibrator(config: TrainCalibratorConfig) -> TrainCalibratorResult:
     rows = list(load_calibration_jsonl(config.input_path))
     matrix, labels = feature_matrix(rows, feature_names=DEFAULT_FEATURE_NAMES)
+    probabilities: list[float]
+    model_payload: dict[str, object]
 
     if config.model_type == "logreg":
-        model = fit_logistic_calibrator(
+        logistic_model = fit_logistic_calibrator(
             matrix,
             labels,
             feature_names=DEFAULT_FEATURE_NAMES,
@@ -48,10 +50,10 @@ def train_calibrator(config: TrainCalibratorConfig) -> TrainCalibratorResult:
             iterations=500,
             l2=0.001,
         )
-        probabilities = model.predict_proba(matrix)
-        model_payload = model.to_json_dict()
+        probabilities = logistic_model.predict_proba(matrix)
+        model_payload = logistic_model.to_json_dict()
     elif config.model_type == "xgboost":
-        model = fit_xgboost_calibrator(
+        xgboost_model = fit_xgboost_calibrator(
             matrix,
             labels,
             feature_names=DEFAULT_FEATURE_NAMES,
@@ -59,13 +61,13 @@ def train_calibrator(config: TrainCalibratorConfig) -> TrainCalibratorResult:
             eta=0.1,
             rounds=50,
         )
-        probabilities = model.predict_proba(matrix)
+        probabilities = xgboost_model.predict_proba(matrix)
         booster_path = config.model_path.with_suffix(".xgboost.json")
         booster_path.parent.mkdir(parents=True, exist_ok=True)
-        model.save_model(str(booster_path))
+        xgboost_model.save_model(str(booster_path))
         model_payload = {
-            "model_version": model.model_version,
-            "feature_names": list(model.feature_names),
+            "model_version": xgboost_model.model_version,
+            "feature_names": list(xgboost_model.feature_names),
             "booster_path": str(booster_path),
         }
     else:

@@ -3,6 +3,10 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import TypeAlias
+
+
+_FloatLike: TypeAlias = str | int | float
 
 
 _MODEL_VERSION = "MC_Calibrator_LogReg_v1"
@@ -44,9 +48,9 @@ class LogisticCalibrator:
     def from_json_dict(cls, payload: dict[str, object]) -> LogisticCalibrator:
         return cls(
             model_version=str(payload["model_version"]),
-            feature_names=tuple(str(name) for name in payload["feature_names"]),  # type: ignore[index]
-            intercept=float(payload["intercept"]),
-            coefficients=tuple(float(value) for value in payload["coefficients"]),  # type: ignore[index]
+            feature_names=tuple(str(name) for name in _string_sequence(payload.get("feature_names"))),
+            intercept=_float(payload.get("intercept")),
+            coefficients=tuple(_float(value) for value in _numeric_sequence(payload.get("coefficients"))),
         )
 
 
@@ -104,3 +108,26 @@ def fit_logistic_calibrator(
 def _sigmoid(value: float) -> float:
     clipped = max(-30.0, min(30.0, value))
     return 1.0 / (1.0 + math.exp(-clipped))
+
+
+def _string_sequence(value: object) -> Sequence[object]:
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return value
+    raise ValueError("feature_names must be a sequence")
+
+
+def _numeric_sequence(value: object) -> Sequence[_FloatLike]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        raise ValueError("coefficients must be a sequence")
+    numeric_values: list[_FloatLike] = []
+    for item in value:
+        if isinstance(item, bool) or not isinstance(item, (str, int, float)):
+            raise ValueError("coefficients must be numeric")
+        numeric_values.append(item)
+    return numeric_values
+
+
+def _float(value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        raise ValueError("value must be numeric")
+    return float(value)

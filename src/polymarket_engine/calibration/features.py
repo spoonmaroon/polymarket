@@ -100,6 +100,8 @@ def _probability(value: object) -> float:
 def _float(value: object) -> float:
     if isinstance(value, bool):
         return float(value)
+    if not isinstance(value, (str, int, float)):
+        return 0.0
     try:
         number = float(value)
     except (TypeError, ValueError):

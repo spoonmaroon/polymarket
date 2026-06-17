@@ -123,6 +123,8 @@ def _probability(value: object, field: str) -> float:
 def _float(value: object) -> float:
     if isinstance(value, bool):
         raise ValueError("boolean values are not numeric")
+    if not isinstance(value, (str, int, float)):
+        raise ValueError("numeric field is required")
     try:
         number = float(value)
     except (TypeError, ValueError) as exc:

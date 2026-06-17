@@ -322,15 +322,23 @@ def _json_list(value: object) -> list[object]:
 def _float(value: object, default: float | None) -> float:
     if value is None and default is None:
         return 0.0
+    fallback = default if default is not None else 0.0
+    if value is None:
+        return fallback if math.isfinite(fallback) else 0.0
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        return fallback if math.isfinite(fallback) else 0.0
+    numeric_value: str | int | float = value
     try:
-        result = float(value)
+        result = float(numeric_value)
     except (TypeError, ValueError):
-        result = float(default or 0.0)
-    return result if math.isfinite(result) else float(default or 0.0)
+        result = fallback
+    return result if math.isfinite(result) else (fallback if math.isfinite(fallback) else 0.0)
 
 
 def _optional_float(value: object) -> float | None:
     if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
         return None
     try:
         result = float(value)
