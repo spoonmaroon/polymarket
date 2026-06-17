@@ -84,6 +84,10 @@ def _candidate_rows(
                 from features.probability_outputs
             )
             where row_number = 1
+              and p_finish is not null
+              and p_no_touch is not null
+              and z_path is not null
+              and nullif(trim(model_version), '') is not null
         ),
         latest_ensemble_decisions as (
             select *
@@ -146,7 +150,7 @@ def _candidate_rows(
             h.official_resolution_status
         from features.asof_state_inputs as s
         join core.contracts as c on c.contract_id = s.contract_id
-        left join latest_probability_outputs as p on p.state_id = s.state_id
+        join latest_probability_outputs as p on p.state_id = s.state_id
         left join latest_ensemble_decisions as e on e.state_id = s.state_id
         left join validation.market_outcome_history as h on h.market_id = c.market_id
         {where_sql}
@@ -167,6 +171,8 @@ def _row_from_payload(
     asof_ts = _parse_ts(payload["asof_ts"])
     expiry_ts = _parse_ts(payload["expiry_ts"])
     start_ts = _parse_ts(payload["start_ts"])
+    if not _has_required_probability_output(payload):
+        return None
     winner = payload.get("official_winner") or payload.get("computed_winner")
     if winner not in {"UP", "DOWN"} and not include_unlabeled:
         return None
@@ -240,6 +246,14 @@ def _row_from_payload(
         resolved_outcome=winner if winner in {"UP", "DOWN"} else None,
         settlement_price_at_expiry=_optional_float(payload.get("end_price")),
     )
+
+
+def _has_required_probability_output(payload: dict[str, Any]) -> bool:
+    model_version = payload.get("probability_model_version")
+    if not isinstance(model_version, str) or not model_version.strip():
+        return False
+    required_fields = ("p_finish", "p_no_touch", "z_path")
+    return all(payload.get(field) is not None for field in required_fields)
 
 
 def _threshold_cross_count(

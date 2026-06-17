@@ -228,6 +228,31 @@ def test_export_uses_probability_outputs_when_ensemble_decision_is_missing(tmp_p
     assert payload["visible_depth"] == 0.0
 
 
+def test_export_skips_rows_without_probability_outputs_even_when_unlabeled_included(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "poly.duckdb"
+    out_path = tmp_path / "calibration.jsonl"
+    _seed_export_db(db_path)
+    with duckdb.connect(str(db_path)) as conn:
+        conn.execute("delete from features.probability_outputs")
+        conn.execute("delete from validation.market_outcome_history")
+
+    result = export_calibration_dataset(
+        CalibrationExportConfig(
+            duckdb_path=db_path,
+            out_path=out_path,
+            start_ts=None,
+            end_ts=None,
+            include_unlabeled=True,
+            limit=100,
+        )
+    )
+
+    assert result.rows_written == 0
+    assert out_path.read_text(encoding="utf-8") == ""
+
+
 def test_export_includes_unlabeled_rows_without_forcing_zero_end_price(tmp_path: Path) -> None:
     db_path = tmp_path / "poly.duckdb"
     out_path = tmp_path / "calibration.jsonl"
