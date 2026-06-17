@@ -23,22 +23,40 @@ EXPECTED_JSON_FIELDS = (
     "expiry_ts",
     "tte_seconds",
     "k",
+    "k_source",
+    "rule_hash",
     "current_price",
     "distance_to_threshold",
     "z_path",
     "sigma_tau",
+    "sigma_valid",
+    "sigma_age_ms",
+    "short_realized_vol",
+    "medium_realized_vol",
+    "long_realized_vol",
+    "volatility_regime",
     "p_finish_mc",
     "p_no_touch_mc",
+    "mc_generator_dispersion",
     "spread",
     "best_bid",
     "best_ask",
     "midpoint",
+    "target_size_ask_vwap",
+    "target_size_bid_vwap",
     "visible_depth",
     "orderbook_imbalance",
     "quote_age_ms",
     "source_age_ms",
-    "volatility_regime",
+    "source_disagreement",
+    "threshold_cross_count",
+    "near_threshold_congestion",
+    "recent_wick_size",
+    "event_window_flag",
     "probability_model_version",
+    "feature_version",
+    "runtime_phase",
+    "offload_allowed",
     "skip_or_block_reason",
     "final_label",
     "resolved_outcome",
@@ -99,22 +117,40 @@ def _make_row(**overrides: Any) -> CalibrationRow:
         "expiry_ts": EXPIRY_TS,
         "tte_seconds": 300,
         "k": 65000.0,
+        "k_source": "polymarket_rtds_chainlink",
+        "rule_hash": "rule-hash-1",
         "current_price": 65123.45,
         "distance_to_threshold": 123.45,
         "z_path": 0.42,
         "sigma_tau": 0.015,
+        "sigma_valid": True,
+        "sigma_age_ms": 900.0,
+        "short_realized_vol": 0.01,
+        "medium_realized_vol": 0.012,
+        "long_realized_vol": 0.014,
+        "volatility_regime": "normal",
         "p_finish_mc": 0.71,
         "p_no_touch_mc": 0.64,
+        "mc_generator_dispersion": 0.04,
         "spread": 0.03,
         "best_bid": 0.68,
         "best_ask": 0.71,
         "midpoint": 0.695,
+        "target_size_ask_vwap": 0.715,
+        "target_size_bid_vwap": 0.675,
         "visible_depth": 1234.5,
         "orderbook_imbalance": -0.12,
         "quote_age_ms": 250.0,
         "source_age_ms": 1000.0,
-        "volatility_regime": "normal",
+        "source_disagreement": 1.4,
+        "threshold_cross_count": 2,
+        "near_threshold_congestion": 7,
+        "recent_wick_size": 0.0008,
+        "event_window_flag": "regular",
         "probability_model_version": "mc-v1",
+        "feature_version": "calibration-features-v2",
+        "runtime_phase": "READY",
+        "offload_allowed": True,
         "skip_or_block_reason": None,
     }
     values.update(overrides)
@@ -136,22 +172,40 @@ def test_decision_row_serializes_replay_safe_shape_with_unresolved_labels() -> N
     assert payload["expiry_ts"] == "2026-06-10T12:05:00+00:00"
     assert payload["tte_seconds"] == 300
     assert payload["k"] == 65000.0
+    assert payload["k_source"] == "polymarket_rtds_chainlink"
+    assert payload["rule_hash"] == "rule-hash-1"
     assert payload["current_price"] == 65123.45
     assert payload["distance_to_threshold"] == 123.45
     assert payload["z_path"] == 0.42
     assert payload["sigma_tau"] == 0.015
+    assert payload["sigma_valid"] is True
+    assert payload["sigma_age_ms"] == 900.0
+    assert payload["short_realized_vol"] == 0.01
+    assert payload["medium_realized_vol"] == 0.012
+    assert payload["long_realized_vol"] == 0.014
+    assert payload["mc_generator_dispersion"] == 0.04
     assert payload["p_finish_mc"] == 0.71
     assert payload["p_no_touch_mc"] == 0.64
     assert payload["spread"] == 0.03
     assert payload["best_bid"] == 0.68
     assert payload["best_ask"] == 0.71
     assert payload["midpoint"] == 0.695
+    assert payload["target_size_ask_vwap"] == 0.715
+    assert payload["target_size_bid_vwap"] == 0.675
     assert payload["visible_depth"] == 1234.5
     assert payload["orderbook_imbalance"] == -0.12
     assert payload["quote_age_ms"] == 250.0
     assert payload["source_age_ms"] == 1000.0
+    assert payload["source_disagreement"] == 1.4
+    assert payload["threshold_cross_count"] == 2
+    assert payload["near_threshold_congestion"] == 7
+    assert payload["recent_wick_size"] == 0.0008
+    assert payload["event_window_flag"] == "regular"
     assert payload["volatility_regime"] == "normal"
     assert payload["probability_model_version"] == "mc-v1"
+    assert payload["feature_version"] == "calibration-features-v2"
+    assert payload["runtime_phase"] == "READY"
+    assert payload["offload_allowed"] is True
     assert payload["skip_or_block_reason"] is None
     assert payload["final_label"] is None
     assert payload["resolved_outcome"] is None
