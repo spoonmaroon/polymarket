@@ -1,4 +1,6 @@
 services:
+  outcome-refresh:
+    profiles: ["disabled-on-spoon"]
   gpu-probability-worker:
     profiles: ["disabled-on-spoon"]
   api:
