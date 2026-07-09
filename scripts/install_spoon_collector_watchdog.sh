@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO="${POLYMARKET_REPO:-/home/spoon/polymarket-main}"
+REPO="${POLYMARKET_REPO:-/home/spoon/polymarket}"
 DATA_DIR="${POLYMARKET_DATA_DIR:-/home/spoon/polymarket-data}"
 BIN_DIR="${POLYMARKET_BIN_DIR:-/home/spoon/bin}"
 SERVICE_DIR="${POLYMARKET_SYSTEMD_USER_DIR:-/home/spoon/.config/systemd/user}"

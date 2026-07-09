@@ -1,0 +1,232 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1200" viewBox="0 0 1800 1200">
+  <defs>
+    <style>
+      .bg { fill: #0b0d10; }
+      .panel { fill: #12161c; stroke: #333b46; stroke-width: 2; }
+      .rail { fill: #050607; stroke: #555d66; stroke-width: 2; }
+      .uLine { stroke: #2b3139; stroke-width: 1; }
+      .label { fill: #f4f7fb; font-family: Inter, Arial, sans-serif; font-size: 24px; font-weight: 700; }
+      .sub { fill: #b8c0cc; font-family: Inter, Arial, sans-serif; font-size: 16px; }
+      .tiny { fill: #dbe2ec; font-family: Inter, Arial, sans-serif; font-size: 13px; }
+      .uNum { fill: #9aa4b2; font-family: Inter, Arial, sans-serif; font-size: 12px; }
+      .boxText { fill: #f8fbff; font-family: Inter, Arial, sans-serif; font-size: 16px; font-weight: 700; }
+      .boxSmall { fill: #d7dee8; font-family: Inter, Arial, sans-serif; font-size: 12px; }
+      .patch { fill: #f4f7fb; stroke: #d9e1eb; }
+      .switch { fill: #eef3f9; stroke: #cbd6e2; }
+      .shelf { fill: #202733; stroke: #4c5666; }
+      .vent { fill: #151a22; stroke: #2e3744; }
+      .pc { fill: #0d0f12; stroke: #424b57; }
+      .nas { fill: #10141a; stroke: #59616c; }
+      .ups { fill: #08090b; stroke: #505865; }
+      .pdu { fill: #1a1d23; stroke: #4a5360; }
+      .future { fill: #151a20; stroke: #3f7b61; stroke-dasharray: 8 6; }
+      .warn { fill: #ffd166; font-family: Inter, Arial, sans-serif; font-size: 15px; font-weight: 700; }
+      .good { fill: #83f7c4; font-family: Inter, Arial, sans-serif; font-size: 15px; font-weight: 700; }
+      .cable { fill: none; stroke: #f8f9ff; stroke-width: 4; stroke-linecap: round; opacity: .92; }
+      .cable2 { fill: none; stroke: #c98bff; stroke-width: 3; stroke-linecap: round; opacity: .78; }
+      .glow { fill: #a46cff; opacity: .16; }
+    </style>
+    <linearGradient id="purpleGlow" x1="0" x2="1">
+      <stop offset="0" stop-color="#6de5ff" stop-opacity=".18"/>
+      <stop offset=".5" stop-color="#c98bff" stop-opacity=".25"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity=".12"/>
+    </linearGradient>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1800" height="1200"/>
+  <text class="label" x="90" y="76" font-size="34">Homelab Rack Visual: 15U Tight Fit vs 18U Better Fit</text>
+  <text class="sub" x="90" y="108">Current parts: UniFi patch panel + Pro Max 16, HP ProDesk/small router shelf, Sliger CX4170a, Sliger CX4712, CyberPower-style UPS, rear PDU, white/rainbow short patch cables.</text>
+
+  <!-- 15U rack -->
+  <g transform="translate(110,150)">
+    <text class="label" x="0" y="0">15U layout: works, but cramped</text>
+    <text class="sub" x="0" y="28">Best if you skip QNAP for now or use a small 1U UPS. PDU should mount rear/side if possible.</text>
+    <rect class="panel" x="0" y="58" width="650" height="970" rx="14"/>
+    <rect class="rail" x="38" y="90" width="28" height="840" rx="3"/>
+    <rect class="rail" x="584" y="90" width="28" height="840" rx="3"/>
+    <rect x="82" y="90" width="486" height="840" fill="#0e1117" stroke="#252d38"/>
+    <rect class="glow" x="82" y="90" width="486" height="840"/>
+
+    <!-- U grid 15 * 56 = 840 -->
+    <g>
+      <line class="uLine" x1="82" y1="90" x2="568" y2="90"/>
+      <line class="uLine" x1="82" y1="146" x2="568" y2="146"/>
+      <line class="uLine" x1="82" y1="202" x2="568" y2="202"/>
+      <line class="uLine" x1="82" y1="258" x2="568" y2="258"/>
+      <line class="uLine" x1="82" y1="314" x2="568" y2="314"/>
+      <line class="uLine" x1="82" y1="370" x2="568" y2="370"/>
+      <line class="uLine" x1="82" y1="426" x2="568" y2="426"/>
+      <line class="uLine" x1="82" y1="482" x2="568" y2="482"/>
+      <line class="uLine" x1="82" y1="538" x2="568" y2="538"/>
+      <line class="uLine" x1="82" y1="594" x2="568" y2="594"/>
+      <line class="uLine" x1="82" y1="650" x2="568" y2="650"/>
+      <line class="uLine" x1="82" y1="706" x2="568" y2="706"/>
+      <line class="uLine" x1="82" y1="762" x2="568" y2="762"/>
+      <line class="uLine" x1="82" y1="818" x2="568" y2="818"/>
+      <line class="uLine" x1="82" y1="874" x2="568" y2="874"/>
+      <line class="uLine" x1="82" y1="930" x2="568" y2="930"/>
+    </g>
+    <g>
+      <text class="uNum" x="15" y="126">U15</text><text class="uNum" x="618" y="126">U15</text>
+      <text class="uNum" x="15" y="182">U14</text><text class="uNum" x="618" y="182">U14</text>
+      <text class="uNum" x="15" y="238">U13</text><text class="uNum" x="618" y="238">U13</text>
+      <text class="uNum" x="15" y="294">U12</text><text class="uNum" x="618" y="294">U12</text>
+      <text class="uNum" x="15" y="350">U11</text><text class="uNum" x="618" y="350">U11</text>
+      <text class="uNum" x="15" y="406">U10</text><text class="uNum" x="618" y="406">U10</text>
+      <text class="uNum" x="21" y="462">U9</text><text class="uNum" x="624" y="462">U9</text>
+      <text class="uNum" x="21" y="518">U8</text><text class="uNum" x="624" y="518">U8</text>
+      <text class="uNum" x="21" y="574">U7</text><text class="uNum" x="624" y="574">U7</text>
+      <text class="uNum" x="21" y="630">U6</text><text class="uNum" x="624" y="630">U6</text>
+      <text class="uNum" x="21" y="686">U5</text><text class="uNum" x="624" y="686">U5</text>
+      <text class="uNum" x="21" y="742">U4</text><text class="uNum" x="624" y="742">U4</text>
+      <text class="uNum" x="21" y="798">U3</text><text class="uNum" x="624" y="798">U3</text>
+      <text class="uNum" x="21" y="854">U2</text><text class="uNum" x="624" y="854">U2</text>
+      <text class="uNum" x="21" y="910">U1</text><text class="uNum" x="624" y="910">U1</text>
+    </g>
+
+    <rect class="patch" x="102" y="96" width="446" height="44" rx="5"/>
+    <text class="boxText" x="124" y="124" fill="#111">24-port keystone patch panel</text>
+    <g stroke="#8d98a6" stroke-width="2" fill="#111827">
+      <rect x="382" y="108" width="14" height="12"/><rect x="402" y="108" width="14" height="12"/><rect x="422" y="108" width="14" height="12"/><rect x="442" y="108" width="14" height="12"/><rect x="462" y="108" width="14" height="12"/><rect x="482" y="108" width="14" height="12"/>
+    </g>
+    <rect class="switch" x="102" y="152" width="446" height="44" rx="5"/>
+    <text class="boxText" x="124" y="180" fill="#111">UniFi Switch Pro Max 16</text>
+    <g stroke="#66809c" stroke-width="2" fill="#17212d">
+      <rect x="394" y="164" width="16" height="13"/><rect x="416" y="164" width="16" height="13"/><rect x="438" y="164" width="16" height="13"/><rect x="460" y="164" width="16" height="13"/><rect x="482" y="164" width="16" height="13"/>
+    </g>
+    <path class="cable" d="M386 140 C386 151 397 151 397 152"/>
+    <path class="cable2" d="M407 140 C407 151 419 151 419 152"/>
+    <path class="cable" d="M428 140 C428 151 441 151 441 152"/>
+    <path class="cable2" d="M449 140 C449 151 463 151 463 152"/>
+    <path class="cable" d="M470 140 C470 151 485 151 485 152"/>
+
+    <rect class="shelf" x="102" y="208" width="446" height="44" rx="5"/>
+    <text class="boxText" x="124" y="236">1U shelf: router/gateway + HP ProDesk</text>
+    <rect class="future" x="102" y="264" width="446" height="44" rx="5"/>
+    <text class="boxText" x="124" y="292">U12: QNAP TS-433eU OR vent/blank</text>
+
+    <rect class="pc" x="102" y="320" width="446" height="212" rx="6"/>
+    <text class="boxText" x="124" y="358">Sliger CX4170a / PC 1</text>
+    <text class="boxSmall" x="124" y="382">Ryzen 7700X + RTX 5060 Ti</text>
+    <circle cx="508" cy="356" r="10" fill="#d9e1ec"/>
+    <rect x="132" y="408" width="350" height="72" fill="#050607" stroke="#202833"/>
+    <g fill="#222b35">
+      <circle cx="150" cy="424" r="4"/><circle cx="166" cy="424" r="4"/><circle cx="182" cy="424" r="4"/><circle cx="198" cy="424" r="4"/>
+      <circle cx="150" cy="442" r="4"/><circle cx="166" cy="442" r="4"/><circle cx="182" cy="442" r="4"/><circle cx="198" cy="442" r="4"/>
+      <circle cx="150" cy="460" r="4"/><circle cx="166" cy="460" r="4"/><circle cx="182" cy="460" r="4"/><circle cx="198" cy="460" r="4"/>
+    </g>
+
+    <rect class="vent" x="102" y="544" width="446" height="44" rx="5"/>
+    <text class="boxText" x="124" y="572">1U vent / cable clearance</text>
+
+    <rect class="nas" x="102" y="600" width="446" height="212" rx="6"/>
+    <text class="boxText" x="124" y="638">Sliger CX4712 / PC 2 Unraid</text>
+    <text class="boxSmall" x="124" y="662">i7-12700F + RTX 3060 Ti + 10x hot-swap bay face</text>
+    <g fill="#050607" stroke="#303a47">
+      <rect x="122" y="694" width="75" height="36"/><rect x="205" y="694" width="75" height="36"/><rect x="288" y="694" width="75" height="36"/><rect x="371" y="694" width="75" height="36"/><rect x="454" y="694" width="75" height="36"/>
+      <rect x="122" y="738" width="75" height="36"/><rect x="205" y="738" width="75" height="36"/><rect x="288" y="738" width="75" height="36"/><rect x="371" y="738" width="75" height="36"/><rect x="454" y="738" width="75" height="36"/>
+    </g>
+
+    <rect class="ups" x="102" y="824" width="446" height="44" rx="5"/>
+    <text class="boxText" x="124" y="852">1U UPS only, or make this first row of 2U CP1500</text>
+    <rect class="pdu" x="102" y="880" width="446" height="44" rx="5"/>
+    <text class="boxText" x="124" y="908">1U PDU if front-mounted; better mounted rear/side</text>
+
+    <text class="warn" x="0" y="970">Reality check: 15U fits on paper, but it leaves almost no future space and less airflow/cable room.</text>
+  </g>
+
+  <!-- 18U rack -->
+  <g transform="translate(985,150)">
+    <text class="label" x="0" y="0">18U layout: recommended</text>
+    <text class="sub" x="0" y="28">Same footprint style, but cleaner wiring, 2U UPS, optional QNAP, and actual service room.</text>
+    <rect class="panel" x="0" y="58" width="650" height="970" rx="14"/>
+    <rect class="rail" x="38" y="90" width="28" height="900" rx="3"/>
+    <rect class="rail" x="584" y="90" width="28" height="900" rx="3"/>
+    <rect x="82" y="90" width="486" height="900" fill="#0e1117" stroke="#252d38"/>
+    <rect class="glow" x="82" y="90" width="486" height="900"/>
+
+    <!-- U grid 18 * 50 = 900 -->
+    <g>
+      <line class="uLine" x1="82" y1="90" x2="568" y2="90"/><line class="uLine" x1="82" y1="140" x2="568" y2="140"/>
+      <line class="uLine" x1="82" y1="190" x2="568" y2="190"/><line class="uLine" x1="82" y1="240" x2="568" y2="240"/>
+      <line class="uLine" x1="82" y1="290" x2="568" y2="290"/><line class="uLine" x1="82" y1="340" x2="568" y2="340"/>
+      <line class="uLine" x1="82" y1="390" x2="568" y2="390"/><line class="uLine" x1="82" y1="440" x2="568" y2="440"/>
+      <line class="uLine" x1="82" y1="490" x2="568" y2="490"/><line class="uLine" x1="82" y1="540" x2="568" y2="540"/>
+      <line class="uLine" x1="82" y1="590" x2="568" y2="590"/><line class="uLine" x1="82" y1="640" x2="568" y2="640"/>
+      <line class="uLine" x1="82" y1="690" x2="568" y2="690"/><line class="uLine" x1="82" y1="740" x2="568" y2="740"/>
+      <line class="uLine" x1="82" y1="790" x2="568" y2="790"/><line class="uLine" x1="82" y1="840" x2="568" y2="840"/>
+      <line class="uLine" x1="82" y1="890" x2="568" y2="890"/><line class="uLine" x1="82" y1="940" x2="568" y2="940"/>
+      <line class="uLine" x1="82" y1="990" x2="568" y2="990"/>
+    </g>
+    <g>
+      <text class="uNum" x="15" y="122">U18</text><text class="uNum" x="618" y="122">U18</text>
+      <text class="uNum" x="15" y="172">U17</text><text class="uNum" x="618" y="172">U17</text>
+      <text class="uNum" x="15" y="222">U16</text><text class="uNum" x="618" y="222">U16</text>
+      <text class="uNum" x="15" y="272">U15</text><text class="uNum" x="618" y="272">U15</text>
+      <text class="uNum" x="15" y="322">U14</text><text class="uNum" x="618" y="322">U14</text>
+      <text class="uNum" x="15" y="372">U13</text><text class="uNum" x="618" y="372">U13</text>
+      <text class="uNum" x="15" y="422">U12</text><text class="uNum" x="618" y="422">U12</text>
+      <text class="uNum" x="15" y="472">U11</text><text class="uNum" x="618" y="472">U11</text>
+      <text class="uNum" x="15" y="522">U10</text><text class="uNum" x="618" y="522">U10</text>
+      <text class="uNum" x="21" y="572">U9</text><text class="uNum" x="624" y="572">U9</text>
+      <text class="uNum" x="21" y="622">U8</text><text class="uNum" x="624" y="622">U8</text>
+      <text class="uNum" x="21" y="672">U7</text><text class="uNum" x="624" y="672">U7</text>
+      <text class="uNum" x="21" y="722">U6</text><text class="uNum" x="624" y="722">U6</text>
+      <text class="uNum" x="21" y="772">U5</text><text class="uNum" x="624" y="772">U5</text>
+      <text class="uNum" x="21" y="822">U4</text><text class="uNum" x="624" y="822">U4</text>
+      <text class="uNum" x="21" y="872">U3</text><text class="uNum" x="624" y="872">U3</text>
+      <text class="uNum" x="21" y="922">U2</text><text class="uNum" x="624" y="922">U2</text>
+      <text class="uNum" x="21" y="972">U1</text><text class="uNum" x="624" y="972">U1</text>
+    </g>
+
+    <rect class="patch" x="102" y="96" width="446" height="38" rx="5"/>
+    <text class="boxText" x="124" y="121" fill="#111">24-port keystone patch panel</text>
+    <rect class="switch" x="102" y="146" width="446" height="38" rx="5"/>
+    <text class="boxText" x="124" y="171" fill="#111">UniFi Switch Pro Max 16</text>
+    <path class="cable" d="M376 134 C376 146 392 146 392 146"/>
+    <path class="cable2" d="M402 134 C402 146 420 146 420 146"/>
+    <path class="cable" d="M428 134 C428 146 448 146 448 146"/>
+    <path class="cable2" d="M454 134 C454 146 476 146 476 146"/>
+    <path class="cable" d="M480 134 C480 146 504 146 504 146"/>
+
+    <rect class="vent" x="102" y="196" width="446" height="38" rx="5"/>
+    <text class="boxText" x="124" y="221">1U cable manager / vent</text>
+    <rect class="shelf" x="102" y="246" width="446" height="38" rx="5"/>
+    <text class="boxText" x="124" y="271">1U shelf: router/gateway + HP ProDesk</text>
+    <rect class="nas" x="102" y="296" width="446" height="38" rx="5"/>
+    <text class="boxText" x="124" y="321">Optional QNAP TS-433eU / future NAS</text>
+    <rect class="future" x="102" y="346" width="446" height="38" rx="5"/>
+    <text class="boxText" x="124" y="371">1U blank / future / airflow</text>
+
+    <rect class="pc" x="102" y="396" width="446" height="188" rx="6"/>
+    <text class="boxText" x="124" y="432">Sliger CX4170a / PC 1</text>
+    <text class="boxSmall" x="124" y="456">Ryzen 7700X + RTX 5060 Ti</text>
+    <circle cx="508" cy="432" r="9" fill="#d9e1ec"/>
+    <rect x="132" y="482" width="350" height="64" fill="#050607" stroke="#202833"/>
+    <g fill="#222b35">
+      <circle cx="152" cy="498" r="4"/><circle cx="168" cy="498" r="4"/><circle cx="184" cy="498" r="4"/><circle cx="200" cy="498" r="4"/>
+      <circle cx="152" cy="516" r="4"/><circle cx="168" cy="516" r="4"/><circle cx="184" cy="516" r="4"/><circle cx="200" cy="516" r="4"/>
+    </g>
+
+    <rect class="vent" x="102" y="596" width="446" height="38" rx="5"/>
+    <text class="boxText" x="124" y="621">1U vent / cable clearance</text>
+    <rect class="nas" x="102" y="646" width="446" height="188" rx="6"/>
+    <text class="boxText" x="124" y="682">Sliger CX4712 / PC 2 Unraid</text>
+    <text class="boxSmall" x="124" y="706">i7-12700F + RTX 3060 Ti + storage bays</text>
+    <g fill="#050607" stroke="#303a47">
+      <rect x="122" y="734" width="75" height="31"/><rect x="205" y="734" width="75" height="31"/><rect x="288" y="734" width="75" height="31"/><rect x="371" y="734" width="75" height="31"/><rect x="454" y="734" width="75" height="31"/>
+      <rect x="122" y="772" width="75" height="31"/><rect x="205" y="772" width="75" height="31"/><rect x="288" y="772" width="75" height="31"/><rect x="371" y="772" width="75" height="31"/><rect x="454" y="772" width="75" height="31"/>
+    </g>
+    <rect class="ups" x="102" y="846" width="446" height="88" rx="5"/>
+    <text class="boxText" x="124" y="888">CyberPower CP1500PFCRM2U-style 2U UPS</text>
+    <text class="boxSmall" x="124" y="912">2U gives safer shutdown margin than a 1U 300W UPS</text>
+    <rect class="pdu" x="102" y="946" width="446" height="38" rx="5"/>
+    <text class="boxText" x="124" y="971">U1 blank/front PDU; rear PDU preferred</text>
+
+    <text class="good" x="0" y="1038">Recommendation: buy the 18U rack. It is cleaner, easier to wire, and leaves room for the QNAP/future drives.</text>
+  </g>
+
+  <g transform="translate(90,1120)">
+    <text class="tiny" x="0" y="0">Notes: the PDU can be mounted on the rear vertical rail or back side instead of consuming a front U. For heavy 4U PCs, use proper rails/sliding shelves, not Rackstuds. Patch panel and switch can use Rackstuds/cage nuts.</text>
+  </g>
+</svg>

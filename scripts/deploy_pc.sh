@@ -24,6 +24,7 @@ PC_PROBABILITY_MIN_TOTAL_PATHS="${PC_PROBABILITY_MIN_TOTAL_PATHS:-2000}"
 PC_ENABLE_LIVE_PRIOR_FRAGMENTS="${PC_ENABLE_LIVE_PRIOR_FRAGMENTS:-0}"
 PC_GPU_WORKER_MEM_LIMIT="${PC_GPU_WORKER_MEM_LIMIT:-1536m}"
 PC_API_PORT="${PC_API_PORT:-8000}"
+PC_MAX_NORMALIZED_HEALTH_AGE_MS="${PC_MAX_NORMALIZED_HEALTH_AGE_MS:-90000}"
 PC_DEPLOY_MODE="${PC_DEPLOY_MODE:-remote-build}"
 PC_DEPLOY_BUILD_IMAGES="${PC_DEPLOY_BUILD_IMAGES:-1}"
 PC_REMOTE_BUILD_SAVE_TARS="${PC_REMOTE_BUILD_SAVE_TARS:-0}"
@@ -498,7 +499,7 @@ case "\$PC_DEPLOY_ROLE" in
         --raw-root "\$PC_DATA_DIR/raw" \\
         --max-raw-event-age-ms 30000 \\
         --normalized-health-path "\$PC_DATA_DIR/live/normalized_health.json" \\
-        --max-normalized-health-age-ms 30000 \\
+        --max-normalized-health-age-ms "$PC_MAX_NORMALIZED_HEALTH_AGE_MS" \\
         --expected-prewarm-windows 2; then
         collector_status_ok=1
         break

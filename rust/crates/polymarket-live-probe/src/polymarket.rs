@@ -16,7 +16,7 @@ use polymarket_runtime_types::{
 };
 use std::collections::BTreeMap;
 
-pub const CLOB_HOST: &str = "https://clob-v2.polymarket.com";
+pub const CLOB_HOST: &str = "https://clob.polymarket.com";
 pub const GAMMA_HOST: &str = "https://gamma-api.polymarket.com";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -366,6 +366,11 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::thread;
+
+    #[test]
+    fn clob_host_uses_current_public_api_hostname() {
+        assert_eq!(CLOB_HOST, "https://clob.polymarket.com");
+    }
 
     #[test]
     fn current_window_slugs_use_polymarket_epoch_pattern() {

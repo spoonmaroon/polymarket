@@ -14,6 +14,7 @@ LOCK_DIR="/tmp/polymarket-deploy.lock.d"
 LOG_FILE="$REPO/logs/deploy.log"
 DEPLOYED_MARKER="$HOME/.polymarket/last-deployed-sha"
 DEPLOY_SMOKE_ATTEMPTS="${DEPLOY_SMOKE_ATTEMPTS:-90}"
+MAX_NORMALIZED_HEALTH_AGE_MS="${POLYMARKET_MAX_NORMALIZED_HEALTH_AGE_MS:-90000}"
 NORMALIZER_SIDECAR_COMMAND="run-rust-normalizer-sidecar"
 USE_PREBUILT="${POLYMARKET_DEPLOY_USE_PREBUILT:-0}"
 ALLOW_SPOON_BUILD="${POLYMARKET_DEPLOY_ALLOW_SPOON_BUILD:-0}"
@@ -203,7 +204,7 @@ if [ "$USE_PREBUILT" != "1" ] && [ "$LOCAL" = "$REMOTE" ] && [ "$DEPLOYED_SHA" =
     --raw-root "$DATA_DIR/raw" \
     --max-raw-event-age-ms 30000 \
     --normalized-health-path "$DATA_DIR/live/normalized_health.json" \
-    --max-normalized-health-age-ms 30000 \
+    --max-normalized-health-age-ms "$MAX_NORMALIZED_HEALTH_AGE_MS" \
     --expected-prewarm-windows "$COLLECTOR_PREWARM_WINDOWS" >> "$LOG_FILE" 2>&1; then
     exit 0
   fi
@@ -282,7 +283,7 @@ for _ in $(seq 1 "$DEPLOY_SMOKE_ATTEMPTS"); do
     --raw-root "$DATA_DIR/raw" \
     --max-raw-event-age-ms 30000 \
     --normalized-health-path "$DATA_DIR/live/normalized_health.json" \
-    --max-normalized-health-age-ms 30000 \
+    --max-normalized-health-age-ms "$MAX_NORMALIZED_HEALTH_AGE_MS" \
     --expected-prewarm-windows "$COLLECTOR_PREWARM_WINDOWS" >> "$LOG_FILE" 2>&1; then
     echo "$REMOTE" > "$DEPLOYED_MARKER"
     LOG "deploy OK $REMOTE"

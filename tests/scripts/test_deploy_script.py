@@ -580,7 +580,7 @@ def test_spoon_collector_watchdog_restarts_unhealthy_collector_only() -> None:
         encoding="utf-8"
     )
 
-    assert 'REPO="${POLYMARKET_REPO:-/home/spoon/polymarket-main}"' in script
+    assert 'REPO="${POLYMARKET_REPO:-/home/spoon/polymarket}"' in script
     assert "polymarket-spoon-collector-watchdog.service" in script
     assert "docker inspect" in script
     assert "polymarket-rust-collector-collector-1" in script

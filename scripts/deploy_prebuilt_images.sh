@@ -9,6 +9,7 @@ REMOTE_HOST="${REMOTE_HOST:-spoon}"
 REMOTE_REPO="${REMOTE_REPO:-/home/spoon/polymarket}"
 REMOTE_DIST_DIR="${REMOTE_DIST_DIR:-/home/spoon/polymarket-image-artifacts}"
 POLYMARKET_DATA_DIR="${POLYMARKET_DATA_DIR:-/home/spoon/polymarket-data}"
+POLYMARKET_MAX_NORMALIZED_HEALTH_AGE_MS="${POLYMARKET_MAX_NORMALIZED_HEALTH_AGE_MS:-90000}"
 
 if ! git -C "$ROOT" diff --quiet; then
   echo "working tree has unstaged changes; commit or stash before deploying images" >&2
@@ -63,6 +64,6 @@ scp "$COLLECTOR_TAR" "$NORMALIZER_TAR" "$CUDA_PROBABILITY_TAR" "$REMOTE_HOST:$RE
 
 ssh "$REMOTE_HOST" "docker load -i '$REMOTE_COLLECTOR_TAR' && docker load -i '$REMOTE_NORMALIZER_TAR' && docker load -i '$REMOTE_CUDA_PROBABILITY_TAR'"
 
-ssh "$REMOTE_HOST" "cd '$REMOTE_REPO' && POLYMARKET_DEPLOY_USE_PREBUILT=1 POLYMARKET_DEPLOY_REF='$FULL_SHA' POLYMARKET_EXPECTED_DEPLOY_SHA='$FULL_SHA' POLYMARKET_COLLECTOR_IMAGE='$COLLECTOR_IMAGE' POLYMARKET_NORMALIZER_IMAGE='$NORMALIZER_IMAGE' POLYMARKET_CUDA_PROBABILITY_IMAGE='$CUDA_PROBABILITY_IMAGE' POLYMARKET_DATA_DIR='$POLYMARKET_DATA_DIR' DEPLOY_FORCE=1 ./scripts/deploy.sh"
+ssh "$REMOTE_HOST" "cd '$REMOTE_REPO' && POLYMARKET_DEPLOY_USE_PREBUILT=1 POLYMARKET_DEPLOY_REF='$FULL_SHA' POLYMARKET_EXPECTED_DEPLOY_SHA='$FULL_SHA' POLYMARKET_COLLECTOR_IMAGE='$COLLECTOR_IMAGE' POLYMARKET_NORMALIZER_IMAGE='$NORMALIZER_IMAGE' POLYMARKET_CUDA_PROBABILITY_IMAGE='$CUDA_PROBABILITY_IMAGE' POLYMARKET_DATA_DIR='$POLYMARKET_DATA_DIR' POLYMARKET_MAX_NORMALIZED_HEALTH_AGE_MS='$POLYMARKET_MAX_NORMALIZED_HEALTH_AGE_MS' DEPLOY_FORCE=1 ./scripts/deploy.sh"
 
-ssh "$REMOTE_HOST" "cd '$REMOTE_REPO' && python3 scripts/check_collector_status.py --status-path '$POLYMARKET_DATA_DIR/live/status.json' --max-status-age-seconds 30 --max-price-age-ms 30000 --max-orderbook-age-ms 30000 --max-websocket-event-age-ms 30000 --raw-root '$POLYMARKET_DATA_DIR/raw' --max-raw-event-age-ms 30000 --normalized-health-path '$POLYMARKET_DATA_DIR/live/normalized_health.json' --max-normalized-health-age-ms 30000 --expected-prewarm-windows 2"
+ssh "$REMOTE_HOST" "cd '$REMOTE_REPO' && python3 scripts/check_collector_status.py --status-path '$POLYMARKET_DATA_DIR/live/status.json' --max-status-age-seconds 30 --max-price-age-ms 30000 --max-orderbook-age-ms 30000 --max-websocket-event-age-ms 30000 --raw-root '$POLYMARKET_DATA_DIR/raw' --max-raw-event-age-ms 30000 --normalized-health-path '$POLYMARKET_DATA_DIR/live/normalized_health.json' --max-normalized-health-age-ms '$POLYMARKET_MAX_NORMALIZED_HEALTH_AGE_MS' --expected-prewarm-windows 2"

@@ -53,7 +53,7 @@ services:
           "--normalized-health-path",
           "/var/lib/polymarket/live/normalized_health.json",
           "--max-normalized-health-age-ms",
-          "30000",
+          "${POLYMARKET_MAX_NORMALIZED_HEALTH_AGE_MS:-90000}",
           "--expected-prewarm-windows",
           "${POLYMARKET_PREWARM_WINDOWS:-2}",
         ]
