@@ -6,21 +6,20 @@ Python collection. The active read-only runtime is the Rust SDK state manager.
 It is intentionally scoped to BTC/ETH 5m current and next windows
 until the warm-state path and durable persistence are stable.
 
-Current live runtime note, 2026-06-12: spoon is the live collector and canonical
-artifact source. THEPC is the API and GPU probability-worker host. THEPC reads
-synced live artifacts from `/home/ender/polymarket-data/live` and writes CUDA
-probability outputs there for the browser/TUI API surface. The known operator
-API host is configurable; THEPC is reachable as user `ender` at
-`100.72.104.49`, but this runbook section should not be read as an instruction
-to SSH, deploy, restart, or manage the PC unless that is the active task.
+Current live runtime note, 2026-07-09: spoon is the live collector and canonical
+artifact source. server2 is the active API and GPU probability-worker host.
+server2 reads synced live artifacts from `/home/enoch/polymarket-data/live` and
+writes CUDA probability outputs there for the browser/TUI API surface. THEPC is
+legacy only for this lane; do not SSH, deploy, restart, or manage the PC unless
+that is explicitly the rollback task.
 
 Persistent data lives outside the repo at `/home/spoon/polymarket-data`.
 The Rust collector writes raw WebSocket journals and state snapshots under
 `/home/spoon/polymarket-data/raw`; DuckDB replay/research tables live under
 `/home/spoon/polymarket-data/db` and are populated separately by the raw Rust
 event normalizer.
-THEPC's mirrored live inputs and probability outputs live under
-`/home/ender/polymarket-data/live`.
+server2's mirrored live inputs and probability outputs live under
+`/home/enoch/polymarket-data/live`.
 
 ## Time Policy
 
@@ -43,7 +42,7 @@ python3 scripts/check_collector_status.py --status-path /home/spoon/polymarket-d
 
 Set `POLYMARKET_PREWARM_WINDOWS=2` or rely on the compose default so spoon warms
 BTC/ETH current and next 5m windows.
-On THEPC, the current normalizer cadence is
+On the active GPU/API runtime, the current normalizer cadence target is
 `POLYMARKET_NORMALIZER_INTERVAL_SECONDS=0.1`. The older spoon sidecar used
 `POLYMARKET_NORMALIZER_INTERVAL_SECONDS=0.25` as a home-server CPU compromise.
 If CPU pressure is too high on a smaller host, revisit
@@ -89,9 +88,8 @@ THEPC was the previous API/GPU runtime host. Keep `scripts/deploy_pc.sh` and the
 THEPC runtime keeper scripts for historical recovery, but do not run them as the
 active probability writer while server2 owns CUDA probabilities.
 
-`./scripts/deploy_pc.sh` is the only supported CUDA runtime deployment path
-(legacy); the generic spoon deploy path does not start gpu-probability-worker by
-default.
+`./scripts/deploy_pc.sh` is a legacy CUDA runtime deployment path only; the
+generic spoon deploy path does not start gpu-probability-worker by default.
 
 The PC WSL runtime may still need occasional outcome recovery or rollback work.
 
@@ -587,7 +585,7 @@ making the volatility path faster. Treat volatility/sigma ages below roughly
 inside that budget, align the offload threshold with the observed cadence rather
 than increasing normalizer frequency. If the file is fresh but the API reports
 stale volatility, debug API parsing or worker status first; if the file itself
-is old, debug Spoon generation or the Spoon-to-THEPC sync loop. Faster
+is old, debug Spoon generation or the Spoon-to-server2 sync loop. Faster
 Coinbase/Binance micro-vol can be added as a separate diagnostic, but it must
 not replace `polymarket_rtds_chainlink` as the `sigma_tau` input.
 

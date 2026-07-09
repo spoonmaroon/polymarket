@@ -95,7 +95,9 @@ def test_spoon_docs_record_vps_cadence_revisit() -> None:
     text = (ROOT / "docs" / "SPOON_DEPLOYMENT.md").read_text(encoding="utf-8")
 
     assert "THEPC" in text
-    assert "current normalizer cadence" in text
+    assert "active GPU/API runtime" in text
+    assert "current normalizer cadence target" in text
+    assert "On THEPC, the current normalizer cadence" not in text
     assert "POLYMARKET_NORMALIZER_INTERVAL_SECONDS=1.0" in text
     assert "POLYMARKET_NORMALIZER_INTERVAL_SECONDS=0.25" in text
     assert "home-server CPU compromise" in text
@@ -136,7 +138,8 @@ def test_spoon_docs_mark_thepc_deploy_as_cuda_runtime_path() -> None:
     text = (ROOT / "docs" / "SPOON_DEPLOYMENT.md").read_text(encoding="utf-8")
 
     assert "./scripts/deploy_pc.sh" in text
-    assert "only supported CUDA runtime deployment path" in text
+    assert "legacy CUDA runtime deployment path only" in text
+    assert "the only supported CUDA runtime deployment path" not in text
     assert "generic spoon deploy path does not start gpu-probability-worker" in text
 
 
@@ -148,6 +151,8 @@ def test_spoon_docs_mark_server2_as_active_cuda_runtime_path() -> None:
     assert "/home/enoch/polymarket-data/live" in text
     assert "generic spoon deploy path does not start gpu-probability-worker" in text
     assert "Legacy THEPC WSL" in text
+    assert "THEPC is the API and GPU probability-worker host" not in text
+    assert "Spoon-to-THEPC sync loop" not in text
 
 
 def test_spoon_docs_pin_safe_hot_replay_gate_command() -> None:
