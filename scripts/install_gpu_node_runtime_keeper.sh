@@ -16,13 +16,13 @@ python3 -m pip install --user --break-system-packages -e "$REPO"
 cat > "$LOOP_SCRIPT" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
-export PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+export PATH="\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:\$PATH"
 cd "$REPO"
-ENGINE_BIN="${POLYMARKET_ENGINE_BIN:-$HOME/.local/bin/polymarket-engine}"
-if [ ! -x "$ENGINE_BIN" ]; then
+ENGINE_BIN="\${POLYMARKET_ENGINE_BIN:-\$HOME/.local/bin/polymarket-engine}"
+if [ ! -x "\$ENGINE_BIN" ]; then
   ENGINE_BIN="polymarket-engine"
 fi
-exec "$ENGINE_BIN" runtime-keeper \
+exec "\$ENGINE_BIN" runtime-keeper \
   --repo "$REPO" \
   --data-dir "$DATA_DIR" \
   --api-base-url "http://127.0.0.1:8000" \
@@ -58,7 +58,7 @@ if command -v loginctl >/dev/null 2>&1; then
   fi
 fi
 
-if command -v systemctl >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1; then
+if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
   systemctl --user daemon-reload
   systemctl --user enable --now polymarket-runtime-keeper.service
 else
