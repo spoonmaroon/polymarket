@@ -111,6 +111,15 @@ set_env() {
   mv "\$tmp" "\$file"
 }
 
+case "$GPU_NODE_DEPLOY_ROLE" in
+  server2-gpu-api)
+    ;;
+  *)
+    echo "unsupported GPU_NODE_DEPLOY_ROLE: $GPU_NODE_DEPLOY_ROLE" >&2
+    exit 2
+    ;;
+esac
+
 mkdir -p "$GPU_NODE_DATA_DIR/raw" "$GPU_NODE_DATA_DIR/db" "$GPU_NODE_DATA_DIR/live" "$GPU_NODE_DATA_DIR/live/bug-reports" "$GPU_NODE_DATA_DIR/logs" "$GPU_NODE_DIST_DIR" "$GPU_NODE_BIN_DIR"
 touch "$GPU_NODE_DATA_DIR/raw/.polymarket_archive_root"
 
@@ -161,48 +170,40 @@ TARGET_PLATFORM="$TARGET_PLATFORM" POLYMARKET_BUILD_SAVE_TARS="$GPU_NODE_REMOTE_
 
 POLYMARKET_DATA_DIR="$GPU_NODE_DATA_DIR" POLYMARKET_BIN_DIR="$GPU_NODE_BIN_DIR" ./scripts/install_gpu_node_spoon_artifact_sync.sh
 
-case "$GPU_NODE_DEPLOY_ROLE" in
-  server2-gpu-api)
-    if OLD_WRITER_STATUS="$(
-      ssh "$GPU_NODE_OLD_WRITER_HOST" bash -lc "set -euo pipefail; docker info >/dev/null; docker inspect -f '{{.State.Status}}' polymarket-rust-collector-gpu-probability-worker-1 2>/dev/null || printf absent"
-    )"; then
-      :
-    else
-      echo "unable to verify old GPU probability writer state on $GPU_NODE_OLD_WRITER_HOST" >&2
-      exit 1
-    fi
+if OLD_WRITER_STATUS="$(
+  ssh "$GPU_NODE_OLD_WRITER_HOST" bash -lc "set -euo pipefail; docker info >/dev/null; docker inspect -f '{{.State.Status}}' polymarket-rust-collector-gpu-probability-worker-1 2>/dev/null || printf absent"
+)"; then
+  :
+else
+  echo "unable to verify old GPU probability writer state on $GPU_NODE_OLD_WRITER_HOST" >&2
+  exit 1
+fi
 
-    case "$OLD_WRITER_STATUS" in
-      running|restarting|paused|created)
-        echo "old GPU probability writer is still active on $GPU_NODE_OLD_WRITER_HOST (state: $OLD_WRITER_STATUS)" >&2
-        exit 1
-        ;;
-      exited|"")
-        ;;
-      *)
-        echo "unable to verify old GPU probability writer state on $GPU_NODE_OLD_WRITER_HOST (unexpected state: $OLD_WRITER_STATUS)" >&2
-        exit 1
-        ;;
-    esac
-
-    POLYMARKET_REPO="$GPU_NODE_REPO" POLYMARKET_DATA_DIR="$GPU_NODE_DATA_DIR" POLYMARKET_BIN_DIR="$GPU_NODE_BIN_DIR" POLYMARKET_API_BASE_URL="http://127.0.0.1:$GPU_NODE_API_PORT" ./scripts/install_gpu_node_runtime_keeper.sh
-
-    docker compose --env-file deploy/collector/.env \
-      -f deploy/collector/docker-compose.yml \
-      -f deploy/collector/docker-compose.thepc-gpu-api.yml \
-      stop collector normalizer outcome-refresh >/dev/null 2>&1 || true
-
-    docker compose --env-file deploy/collector/.env \
-      -f deploy/collector/docker-compose.yml \
-      -f deploy/collector/docker-compose.thepc-gpu-api.yml \
-      up -d --no-build api gpu-probability-worker
+case "$OLD_WRITER_STATUS" in
+  running|restarting|paused|created)
+    echo "old GPU probability writer is still active on $GPU_NODE_OLD_WRITER_HOST (state: $OLD_WRITER_STATUS)" >&2
+    exit 1
+    ;;
+  exited|"")
     ;;
   *)
-    echo "unsupported GPU_NODE_DEPLOY_ROLE: $GPU_NODE_DEPLOY_ROLE" >&2
-    exit 2
+    echo "unable to verify old GPU probability writer state on $GPU_NODE_OLD_WRITER_HOST (unexpected state: $OLD_WRITER_STATUS)" >&2
+    exit 1
     ;;
 esac
+
+POLYMARKET_REPO="$GPU_NODE_REPO" POLYMARKET_DATA_DIR="$GPU_NODE_DATA_DIR" POLYMARKET_BIN_DIR="$GPU_NODE_BIN_DIR" POLYMARKET_API_BASE_URL="http://127.0.0.1:$GPU_NODE_API_PORT" ./scripts/install_gpu_node_runtime_keeper.sh
+
+docker compose --env-file deploy/collector/.env \
+  -f deploy/collector/docker-compose.yml \
+  -f deploy/collector/docker-compose.thepc-gpu-api.yml \
+  stop collector normalizer outcome-refresh >/dev/null 2>&1 || true
+
+docker compose --env-file deploy/collector/.env \
+  -f deploy/collector/docker-compose.yml \
+  -f deploy/collector/docker-compose.thepc-gpu-api.yml \
+  up -d --no-build api gpu-probability-worker
 EOF
 
 ssh "$GPU_NODE_HOST" "curl -fsS http://127.0.0.1:$GPU_NODE_API_PORT/health >/dev/null"
-ssh "$GPU_NODE_HOST" "cd $GPU_NODE_REPO && docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml -f deploy/collector/docker-compose.thepc-gpu-api.yml ps"
+ssh "$GPU_NODE_HOST" "cd \"$GPU_NODE_REPO\" && docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml -f deploy/collector/docker-compose.thepc-gpu-api.yml ps"
