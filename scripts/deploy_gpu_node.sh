@@ -69,7 +69,7 @@ if OLD_RUNTIME_STATUS="$(
 set -euo pipefail
 docker info >/dev/null
 for container in polymarket-rust-collector-gpu-probability-worker-1 polymarket-rust-collector-api-1; do
-  status="$(docker inspect -f '"'"'{{.State.Status}}'"'"' "$container" 2>/dev/null || printf absent)"
+  status="$(docker inspect -f '{{.State.Status}}' "$container" 2>/dev/null || printf absent)"
   case "$status" in
     running|restarting|paused|created)
       printf "%s:%s\n" "$container" "$status"

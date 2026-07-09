@@ -719,7 +719,7 @@ def test_gpu_node_deploy_script_targets_server2_native_linux_runtime() -> None:
         'for container in polymarket-rust-collector-gpu-probability-worker-1 '
         'polymarket-rust-collector-api-1; do'
     ) in script
-    assert '  status="$(docker inspect -f ' in script
+    assert '  status="$(docker inspect -f \'{{.State.Status}}\'' in script
     assert '  case "$status" in' in script
     assert 'if OLD_RUNTIME_STATUS="$(' in script
     assert 'if [ -n "$OLD_RUNTIME_STATUS" ]; then' in script
