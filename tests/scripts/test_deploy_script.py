@@ -1509,6 +1509,9 @@ def test_prepare_server2_cuda_host_is_dry_run_first_and_requires_destroy_confirm
     assert 'mv /etc/modprobe.d/vfio-passthrough.conf "$BACKUP_DIR/vfio-passthrough.conf.backup"' in script
     assert "update-initramfs -u" in script
     assert "ubuntu-drivers install" in script
+    assert "https://nvidia.github.io/libnvidia-container/gpgkey" in script
+    assert "nvidia-container-toolkit-keyring.gpg" in script
+    assert "stable/deb/nvidia-container-toolkit.list" in script
     assert "nvidia-container-toolkit" in script
     assert "NEEDS_REBOOT=1" in script
     assert "reboot" not in script
