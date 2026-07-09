@@ -689,6 +689,29 @@ def test_thepc_artifact_sync_installer_delegates_to_generic_gpu_node_installer()
     assert 'exec "$SCRIPT_DIR/install_gpu_node_spoon_artifact_sync.sh"' in script
 
 
+def test_gpu_node_deploy_script_targets_server2_native_linux_runtime() -> None:
+    script = (ROOT / "scripts" / "deploy_gpu_node.sh").read_text(encoding="utf-8")
+
+    assert 'GPU_NODE_HOST="${GPU_NODE_HOST:-server2}"' in script
+    assert 'GPU_NODE_REPO="${GPU_NODE_REPO:-/home/enoch/polymarket}"' in script
+    assert 'GPU_NODE_DATA_DIR="${GPU_NODE_DATA_DIR:-/home/enoch/polymarket-data}"' in script
+    assert 'GPU_NODE_BIN_DIR="${GPU_NODE_BIN_DIR:-/home/enoch/bin}"' in script
+    assert 'GPU_NODE_DEPLOY_ROLE="${GPU_NODE_DEPLOY_ROLE:-server2-gpu-api}"' in script
+    assert 'GPU_NODE_REMOTE_BUILD_SAVE_TARS="${GPU_NODE_REMOTE_BUILD_SAVE_TARS:-0}"' in script
+    assert "server2 native Linux will fetch GitHub main and build images locally" in script
+    assert "wsl.exe" not in script
+    assert "powershell.exe" not in script
+    assert 'git clone "$GPU_NODE_GIT_REMOTE" "$GPU_NODE_REPO"' in script
+    assert 'set_env POLYMARKET_DATA_DIR "$GPU_NODE_DATA_DIR" deploy/collector/.env' in script
+    assert 'set_env POLYMARKET_CUDA_PROBABILITY_IMAGE "$CUDA_PROBABILITY_IMAGE" deploy/collector/.env' in script
+    assert "./scripts/install_gpu_node_spoon_artifact_sync.sh" in script
+    assert "./scripts/install_gpu_node_runtime_keeper.sh" in script
+    assert "stop collector normalizer outcome-refresh" in script
+    assert "up -d --no-build api gpu-probability-worker" in script
+    assert "docker compose --env-file deploy/collector/.env" in script
+    assert "-f deploy/collector/docker-compose.thepc-gpu-api.yml" in script
+
+
 def test_spoon_collector_watchdog_restarts_unhealthy_collector_only() -> None:
     script = (ROOT / "scripts" / "install_spoon_collector_watchdog.sh").read_text(
         encoding="utf-8"
