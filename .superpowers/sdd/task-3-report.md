@@ -163,3 +163,48 @@ Result:
 - The guard now checks container state with `docker inspect -f '{{.State.Status}}' ... 2>/dev/null || true`.
 - Active states `running`, `restarting`, `paused`, and `created` block the deploy.
 - Missing, empty, and `exited` states are allowed, and SSH or unexpected statuses fail closed.
+
+## Task 3 Final Review Fix: Guard Order, Fail-Closed Probe, and API URL Forwarding
+
+## RED
+
+Command:
+
+```bash
+cd /Users/goon/polymarket-server2-cuda-sdd
+uv run pytest tests/scripts/test_deploy_script.py -k 'gpu_node_deploy_script_targets_server2_native_linux_runtime or gpu_node_deploy_script_guards_old_writer_before_startup or gpu_node_deploy_script_forwards_env_to_helper_scripts'
+uv run pytest tests/scripts/test_runtime_keeper_scripts.py -k 'gpu_node_runtime_keeper_installer_is_native_linux_without_wsl'
+bash -n scripts/deploy_gpu_node.sh scripts/install_gpu_node_runtime_keeper.sh
+```
+
+Result:
+
+```text
+3 failed, 50 deselected
+1 failed, 4 deselected
+scripts/deploy_gpu_node.sh: syntax error near unexpected token `)'
+```
+
+## GREEN
+
+Commands:
+
+```bash
+cd /Users/goon/polymarket-server2-cuda-sdd
+uv run pytest tests/scripts/test_deploy_script.py
+uv run pytest tests/scripts/test_runtime_keeper_scripts.py
+bash -n scripts/deploy_gpu_node.sh scripts/install_gpu_node_runtime_keeper.sh
+```
+
+Result:
+
+```text
+53 passed in 0.72s
+5 passed in 0.37s
+```
+
+## Notes
+
+- The old-writer guard now runs before `install_gpu_node_runtime_keeper.sh` and before `up -d --no-build api gpu-probability-worker`.
+- The remote probe first checks `docker info` and then falls back to `absent` only when `docker inspect` cannot find the container.
+- `POLYMARKET_API_BASE_URL` now defaults to `http://127.0.0.1:8000` in the keeper installer and is forwarded from `deploy_gpu_node.sh` as `http://127.0.0.1:$GPU_NODE_API_PORT`.

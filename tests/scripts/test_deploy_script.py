@@ -714,7 +714,12 @@ def test_gpu_node_deploy_script_targets_server2_native_linux_runtime() -> None:
     assert "./scripts/install_gpu_node_runtime_keeper.sh" in script
     assert 'ssh "$GPU_NODE_OLD_WRITER_HOST"' in script
     assert 'polymarket-rust-collector-gpu-probability-worker-1' in script
-    assert "docker inspect -f '{{.State.Status}}' polymarket-rust-collector-gpu-probability-worker-1 2>/dev/null || true" in script
+    assert "docker info >/dev/null" in script
+    assert (
+        "docker inspect -f '{{.State.Status}}' "
+        "polymarket-rust-collector-gpu-probability-worker-1 2>/dev/null || printf absent"
+        in script
+    )
     assert 'OLD_WRITER_STATUS' in script
     assert 'running|restarting|paused|created' in script
     assert 'exited' in script
@@ -729,8 +734,10 @@ def test_gpu_node_deploy_script_guards_old_writer_before_startup() -> None:
     script = (ROOT / "scripts" / "deploy_gpu_node.sh").read_text(encoding="utf-8")
 
     guard_index = script.index('ssh "$GPU_NODE_OLD_WRITER_HOST"')
+    install_index = script.index("./scripts/install_gpu_node_runtime_keeper.sh")
     startup_index = script.index("up -d --no-build api gpu-probability-worker")
 
+    assert guard_index < install_index
     assert guard_index < startup_index
     assert 'GPU_NODE_SKIP_OLD_WRITER_CHECK' not in script
     assert "polymarket-rust-collector-gpu-probability-worker-1" in script
@@ -772,7 +779,9 @@ def test_gpu_node_deploy_script_forwards_env_to_helper_scripts() -> None:
     ) in script
     assert (
         'POLYMARKET_REPO="$GPU_NODE_REPO" POLYMARKET_DATA_DIR="$GPU_NODE_DATA_DIR" '
-        'POLYMARKET_BIN_DIR="$GPU_NODE_BIN_DIR" ./scripts/install_gpu_node_runtime_keeper.sh'
+        'POLYMARKET_BIN_DIR="$GPU_NODE_BIN_DIR" '
+        'POLYMARKET_API_BASE_URL="http://127.0.0.1:$GPU_NODE_API_PORT" '
+        './scripts/install_gpu_node_runtime_keeper.sh'
     ) in script
 
 
