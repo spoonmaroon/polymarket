@@ -4,6 +4,7 @@ import subprocess
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any, cast
 
 import pytest
@@ -17,6 +18,45 @@ _REQUIRED_GENERATORS = [
     "filtered_historical",
     "stress_overlay",
 ]
+
+
+def _run_ssh_alias_rewrite(
+    initial_config: str,
+    *,
+    hostname: str,
+    user: str,
+    alias: str,
+) -> str:
+    script = (ROOT / "scripts" / "install_gpu_node_spoon_artifact_sync.sh").read_text(
+        encoding="utf-8"
+    )
+    start_token = (
+        "python3 - \"$HOME/.ssh/config\" \"$SPOON_HOSTNAME\" \"$SPOON_USER\""
+        " \"$SPOON_ALIAS\" <<'PY'\n"
+    )
+    start = script.index(start_token) + len(start_token)
+    remainder = script[start:]
+    end = remainder.index("\nPY\n")
+    python_code = remainder[:end]
+
+    with TemporaryDirectory() as workspace:
+        path = Path(workspace) / "config"
+        path.write_text(initial_config, encoding="utf-8")
+        proc = subprocess.run(
+            [
+                "python3",
+                "-",
+                str(path),
+                hostname,
+                user,
+                alias,
+            ],
+            input=python_code,
+            text=True,
+            capture_output=True,
+        )
+        assert proc.returncode == 0, proc.stderr
+        return path.read_text(encoding="utf-8")
 
 
 def _pc_deploy_smoke_namespace() -> dict[str, Any]:
@@ -563,6 +603,34 @@ def test_thepc_spoon_artifact_sync_installer_is_role_safe() -> None:
     assert 'export POLYMARKET_DATA_DIR="${POLYMARKET_DATA_DIR:-$HOME/polymarket-data}"' in script
     assert 'export POLYMARKET_BIN_DIR="${POLYMARKET_BIN_DIR:-$HOME/bin}"' in script
     assert 'exec "$SCRIPT_DIR/install_gpu_node_spoon_artifact_sync.sh"' in script
+
+
+def test_gpu_node_spoon_artifact_sync_preserves_match_blocks_after_managed_host() -> None:
+    rewritten = _run_ssh_alias_rewrite(
+        """# preexisting global options
+Match all
+  ForwardAgent yes
+Host spoon
+  HostName old.spoon.internal
+  User olduser
+  IdentityFile ~/.ssh/old-key
+Match host *.example.com
+  PasswordAuthentication no
+Host workstation
+  HostName 192.168.1.10
+  User dev
+""",
+        hostname="198.51.100.77",
+        user="spoonuser",
+        alias="spoon",
+    )
+
+    assert "Match host *.example.com" in rewritten
+    assert "# preexisting global options" in rewritten
+    assert "Host workstation" in rewritten
+    assert "Host spoon" in rewritten
+    assert "User spoonuser" in rewritten
+    assert rewritten.index("Match host *.example.com") < rewritten.index("Host spoon")
 
 
 def test_gpu_node_spoon_artifact_sync_installer_is_native_linux_and_role_safe() -> None:

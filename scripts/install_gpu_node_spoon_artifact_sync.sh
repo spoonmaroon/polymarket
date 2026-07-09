@@ -41,7 +41,7 @@ for line in lines:
     if line.strip().lower() == f"host {alias}".lower():
         skip = True
         continue
-    if skip and line.startswith("Host "):
+    if skip and (line.startswith("Host ") or line.startswith("Match ")):
         skip = False
     if not skip:
         out.append(line)
