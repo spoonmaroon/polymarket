@@ -49,25 +49,25 @@ export DOCKER_BUILDKIT=1
 
 mkdir -p "$DIST_DIR"
 
-docker buildx build \
-  --platform "$TARGET_PLATFORM" \
-  --load \
+if docker buildx version >/dev/null 2>&1; then
+  DOCKER_BUILD=(docker buildx build --platform "$TARGET_PLATFORM" --load)
+else
+  DOCKER_BUILD=(docker build --platform "$TARGET_PLATFORM")
+fi
+
+"${DOCKER_BUILD[@]}" \
   -f "$ROOT/deploy/collector/Dockerfile" \
   -t "$COLLECTOR_SHA_TAG" \
   -t "$COLLECTOR_LATEST_TAG" \
   "$ROOT"
 
-docker buildx build \
-  --platform "$TARGET_PLATFORM" \
-  --load \
+"${DOCKER_BUILD[@]}" \
   -f "$ROOT/deploy/normalizer/Dockerfile" \
   -t "$NORMALIZER_SHA_TAG" \
   -t "$NORMALIZER_LATEST_TAG" \
   "$ROOT"
 
-docker buildx build \
-  --platform "$TARGET_PLATFORM" \
-  --load \
+"${DOCKER_BUILD[@]}" \
   -f "$ROOT/deploy/gpu/Dockerfile" \
   -t "$CUDA_PROBABILITY_SHA_TAG" \
   -t "$CUDA_PROBABILITY_LATEST_TAG" \
