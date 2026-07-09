@@ -215,7 +215,34 @@ docker compose --env-file deploy/collector/.env \
   -f deploy/collector/docker-compose.yml \
   -f deploy/collector/docker-compose.thepc-gpu-api.yml \
   up -d --no-build api gpu-probability-worker
+
+python3 - "\$GPU_NODE_DATA_DIR/live/cluster_status.server2.json" "\$GPU_NODE_API_PORT" "\$FULL_SHA" <<'PY'
+from __future__ import annotations
+
+import json
+import os
+import socket
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+status_path = Path(sys.argv[1])
+tmp_path = status_path.with_name(f".{status_path.name}.tmp")
+payload = {
+    "api_base_url": f"http://127.0.0.1:{sys.argv[2]}",
+    "deploy_ref": sys.argv[3],
+    "generated_at": datetime.now(timezone.utc).isoformat(),
+    "host": socket.gethostname(),
+    "node": "server2",
+    "ok": True,
+    "role": "gpu_api",
+    "schema_version": "polymarket-cluster-status-v1",
+    "services": ["api", "gpu-probability-worker"],
+}
+tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+os.replace(tmp_path, status_path)
+PY
 EOF
 
-ssh "$GPU_NODE_HOST" "curl -fsS http://127.0.0.1:$GPU_NODE_API_PORT/health >/dev/null"
+ssh "$GPU_NODE_HOST" "for attempt in \$(seq 1 30); do if curl -fsS http://127.0.0.1:$GPU_NODE_API_PORT/health >/dev/null; then exit 0; fi; sleep 2; done; echo 'gpu node API did not become healthy after deploy' >&2; exit 1"
 ssh "$GPU_NODE_HOST" "cd \"$GPU_NODE_REPO\" && docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml -f deploy/collector/docker-compose.thepc-gpu-api.yml ps"

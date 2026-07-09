@@ -851,7 +851,7 @@ def test_gpu_node_deploy_script_smoke_checks_gpu_probability_worker_running() ->
     script = (ROOT / "scripts" / "deploy_gpu_node.sh").read_text(encoding="utf-8")
 
     smoke_start_index = script.index(
-        'ssh "$GPU_NODE_HOST" "curl -fsS http://127.0.0.1:$GPU_NODE_API_PORT/health >/dev/null"'
+        'for attempt in \\$(seq 1 30); do'
     )
     worker_smoke_index = script.index(
         'ssh "$GPU_NODE_HOST" "cd \\\"$GPU_NODE_REPO\\\" && docker compose '
@@ -860,11 +860,30 @@ def test_gpu_node_deploy_script_smoke_checks_gpu_probability_worker_running() ->
     )
 
     assert worker_smoke_index > smoke_start_index
+    assert "curl -fsS http://127.0.0.1:$GPU_NODE_API_PORT/health >/dev/null" in script
+    assert "sleep 2" in script
+    assert "gpu node API did not become healthy after deploy" in script
     assert 'if ! ssh "$GPU_NODE_HOST"' not in script
     assert "gpu-probability-worker did not remain running after startup" not in script
     assert "ps --services --filter" not in script
     assert "status=running" not in script
     assert "grep -q '^gpu-probability-worker$'" not in script
+
+
+def test_gpu_node_deploy_script_writes_server2_cluster_status_artifact() -> None:
+    script = (ROOT / "scripts" / "deploy_gpu_node.sh").read_text(encoding="utf-8")
+
+    startup_index = script.index("up -d --no-build api gpu-probability-worker")
+    status_index = script.index("cluster_status.server2.json")
+    health_index = script.index('for attempt in \\$(seq 1 30); do')
+
+    assert startup_index < status_index < health_index
+    assert "polymarket-cluster-status-v1" in script
+    assert '"role": "gpu_api"' in script
+    assert '"node": "server2"' in script
+    assert '"deploy_ref": sys.argv[3]' in script
+    assert "os.replace(tmp_path, status_path)" in script
+
 
 def test_spoon_collector_watchdog_restarts_unhealthy_collector_only() -> None:
     script = (ROOT / "scripts" / "install_spoon_collector_watchdog.sh").read_text(
