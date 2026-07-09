@@ -5,8 +5,8 @@
       "host": "spoon",
       "role": "cpu_authority"
     },
-    "thepc": {
-      "host": "thepc-lan",
+    "server2": {
+      "host": "server2",
       "role": "gpu_api"
     }
   },
@@ -15,69 +15,69 @@
       "owner": "spoon",
       "canonical_path": "/home/spoon/polymarket-data/live/status.json",
       "mirrors": {
-        "thepc": "/home/ender/polymarket-data/live/status.json"
+        "server2": "/home/enoch/polymarket-data/live/status.json"
       }
     },
     "normalized_health.json": {
       "owner": "spoon",
       "canonical_path": "/home/spoon/polymarket-data/live/normalized_health.json",
       "mirrors": {
-        "thepc": "/home/ender/polymarket-data/live/normalized_health.json"
+        "server2": "/home/enoch/polymarket-data/live/normalized_health.json"
       }
     },
     "probability_inputs.json": {
       "owner": "spoon",
       "canonical_path": "/home/spoon/polymarket-data/live/probability_inputs.json",
       "mirrors": {
-        "thepc": "/home/ender/polymarket-data/live/probability_inputs.json"
+        "server2": "/home/enoch/polymarket-data/live/probability_inputs.json"
       }
     },
     "probability_fragments.json": {
       "owner": "spoon",
       "canonical_path": "/home/spoon/polymarket-data/live/probability_fragments.json",
       "mirrors": {
-        "thepc": "/home/ender/polymarket-data/live/probability_fragments.json"
+        "server2": "/home/enoch/polymarket-data/live/probability_fragments.json"
       }
     },
     "outcomes.json": {
       "owner": "spoon",
       "canonical_path": "/home/spoon/polymarket-data/live/outcomes.json",
       "mirrors": {
-        "thepc": "/home/ender/polymarket-data/live/outcomes.json"
+        "server2": "/home/enoch/polymarket-data/live/outcomes.json"
       }
     },
     "volatility.json": {
       "owner": "spoon",
       "canonical_path": "/home/spoon/polymarket-data/live/volatility.json",
       "mirrors": {
-        "thepc": "/home/ender/polymarket-data/live/volatility.json"
+        "server2": "/home/enoch/polymarket-data/live/volatility.json"
       }
     },
     "probabilities.json": {
-      "owner": "thepc",
-      "canonical_path": "/home/ender/polymarket-data/live/probabilities.json",
+      "owner": "server2",
+      "canonical_path": "/home/enoch/polymarket-data/live/probabilities.json",
       "mirrors": {
-        "spoon": "/home/spoon/polymarket-data/live/probabilities.thepc.json"
+        "spoon": "/home/spoon/polymarket-data/live/probabilities.server2.json"
       }
     },
     "probability-events.jsonl": {
-      "owner": "thepc",
-      "canonical_path": "/home/ender/polymarket-data/live/probability-events.jsonl",
+      "owner": "server2",
+      "canonical_path": "/home/enoch/polymarket-data/live/probability-events.jsonl",
       "mirrors": {
-        "spoon": "/home/spoon/polymarket-data/live/probability-events.thepc.jsonl"
+        "spoon": "/home/spoon/polymarket-data/live/probability-events.server2.jsonl"
       }
     },
-    "cluster_status.thepc.json": {
-      "owner": "thepc",
-      "canonical_path": "/home/ender/polymarket-data/live/cluster_status.thepc.json",
+    "cluster_status.server2.json": {
+      "owner": "server2",
+      "canonical_path": "/home/enoch/polymarket-data/live/cluster_status.server2.json",
       "mirrors": {
-        "spoon": "/home/spoon/polymarket-data/live/cluster_status.thepc.json"
+        "spoon": "/home/spoon/polymarket-data/live/cluster_status.server2.json"
       }
     }
   },
   "mirror": {
     "source_node": "spoon",
-    "target_node": "thepc",
+    "target_node": "server2",
     "max_age_seconds": 5.0
   }
 }

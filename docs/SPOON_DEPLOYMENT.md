@@ -57,44 +57,43 @@ freshness, and status latency stay healthy.
 Normal live deploys should load prebuilt images on the runtime host and restart
 them without compiling Rust on the host.
 
-### THEPC Deploy
+### server2 GPU Deploy
 
-THEPC is the active API/GPU runtime host, not the collector authority. It reads
-Spoon-owned live artifacts from `/home/ender/polymarket-data/live`, runs the
+server2 is the active API/GPU runtime host, not the collector authority. It reads
+Spoon-owned live artifacts from `/home/enoch/polymarket-data/live`, runs the
 FastAPI API and `gpu-probability-worker`, and serves the browser/TUI API
-surface. Do not use blind auto-pull for this lane. THEPC deploys are
-GitHub-pull based. The Mac pushes `main`; THEPC WSL fetches
-`git@github.com:AnimeWeeb9000/polymarket.git`, checks out the exact pushed SHA,
-then builds and restarts from that checkout. Do not deploy local-only commits.
-The same deploy also installs the matching
-`polymarket-cockpit-tui` binary to `/home/ender/bin/polymarket-cockpit-tui`, so
-the Windows desktop shortcut opens the TUI for the deployed commit.
-`./scripts/deploy_pc.sh` is the only supported CUDA runtime deployment path; the
-generic spoon deploy path does not start gpu-probability-worker by default.
-Docker Desktop on Windows may not show the WSL Docker containers for this lane;
-verify from Ubuntu WSL with `docker compose`, not from the Windows Desktop UI
-alone.
+surface. Do not use blind auto-pull for this lane. The Mac pushes `main`;
+server2 fetches `git@github.com:AnimeWeeb9000/polymarket.git`, checks out the
+exact pushed SHA, then builds and restarts from that checkout. Do not deploy
+local-only commits. `./scripts/deploy_gpu_node.sh` is the supported native Linux
+CUDA runtime deployment path; the generic spoon deploy path does not start
+gpu-probability-worker by default.
 
 ```bash
 cd /Users/goon/polymarket
-./scripts/deploy_pc.sh
+./scripts/deploy_gpu_node.sh
 ```
 
 Defaults:
 
-- `PC_HOST=ender@100.72.104.49`
-- `PC_WSL_DISTRO=Ubuntu`
-- `PC_REPO=/home/ender/polymarket`
-- `PC_GIT_REMOTE=git@github.com:AnimeWeeb9000/polymarket.git`
-- `PC_DATA_DIR=/home/ender/polymarket-data`
-- `PC_BIN_DIR=/home/ender/bin`
-- `PC_NORMALIZER_INTERVAL_SECONDS=0.1`
+- `GPU_NODE_HOST=server2`
+- `GPU_NODE_REPO=/home/enoch/polymarket`
+- `GPU_NODE_GIT_REMOTE=git@github.com:AnimeWeeb9000/polymarket.git`
+- `GPU_NODE_DATA_DIR=/home/enoch/polymarket-data`
+- `GPU_NODE_BIN_DIR=/home/enoch/bin`
+- `GPU_NODE_DEPLOY_ROLE=server2-gpu-api`
 
-Set `PC_DEPLOY_BUILD_IMAGES=0` only when matching
-`dist/docker/polymarket-rust-collector-<sha>.tar` and
-`dist/docker/polymarket-normalizer-<sha>.tar` plus
-`dist/docker/polymarket-cockpit-tui-<sha>` already exist for the checked-out
-commit.
+### Legacy THEPC WSL
+
+THEPC was the previous API/GPU runtime host. Keep `scripts/deploy_pc.sh` and the
+THEPC runtime keeper scripts for historical recovery, but do not run them as the
+active probability writer while server2 owns CUDA probabilities.
+
+`./scripts/deploy_pc.sh` is the only supported CUDA runtime deployment path
+(legacy); the generic spoon deploy path does not start gpu-probability-worker by
+default.
+
+The PC WSL runtime may still need occasional outcome recovery or rollback work.
 
 ### Spoon DuckDB Viewer
 

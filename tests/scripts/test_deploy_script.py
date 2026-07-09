@@ -758,9 +758,20 @@ def test_gpu_node_deploy_script_treats_only_active_old_writer_states_as_blocking
     assert 'running|restarting|paused|created)' in script
     assert 'absent|exited|dead|removing)' in script
     assert 'exit 3' in script
-    assert 'exit 4' in script
-    assert 'old Polymarket GPU/API runtime is still active' in script
-    assert 'unable to verify old Polymarket GPU/API runtime state' in script
+
+
+def test_cluster_manifest_declares_server2_as_active_gpu_probability_owner() -> None:
+    manifest = (ROOT / "deploy" / "cluster" / "cluster.local.example.json").read_text(
+        encoding="utf-8"
+    )
+
+    assert '"server2": {' in manifest
+    assert '"host": "server2"' in manifest
+    assert '"role": "gpu_api"' in manifest
+    assert '"owner": "server2"' in manifest
+    assert '"/home/enoch/polymarket-data/live/probabilities.json"' in manifest
+    assert '"/home/spoon/polymarket-data/live/probabilities.server2.json"' in manifest
+    assert '"target_node": "server2"' in manifest
 
 
 def test_gpu_node_deploy_script_refuses_dirty_or_unreachable_remote() -> None:

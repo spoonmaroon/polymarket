@@ -140,6 +140,16 @@ def test_spoon_docs_mark_thepc_deploy_as_cuda_runtime_path() -> None:
     assert "generic spoon deploy path does not start gpu-probability-worker" in text
 
 
+def test_spoon_docs_mark_server2_as_active_cuda_runtime_path() -> None:
+    text = (ROOT / "docs" / "SPOON_DEPLOYMENT.md").read_text(encoding="utf-8")
+
+    assert "server2 is the active API/GPU runtime host" in text
+    assert "./scripts/deploy_gpu_node.sh" in text
+    assert "/home/enoch/polymarket-data/live" in text
+    assert "generic spoon deploy path does not start gpu-probability-worker" in text
+    assert "Legacy THEPC WSL" in text
+
+
 def test_spoon_docs_pin_safe_hot_replay_gate_command() -> None:
     deployment = (ROOT / "docs" / "SPOON_DEPLOYMENT.md").read_text(encoding="utf-8")
     part_two = (ROOT / "docs" / "PART_TWO_LIVE_COLLECTORS.md").read_text(
