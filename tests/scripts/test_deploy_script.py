@@ -630,7 +630,32 @@ Host workstation
     assert "Host workstation" in rewritten
     assert "Host spoon" in rewritten
     assert "User spoonuser" in rewritten
-    assert rewritten.index("Match host *.example.com") < rewritten.index("Host spoon")
+    assert rewritten.index("Host spoon") < rewritten.index("Match host *.example.com")
+
+
+def test_gpu_node_spoon_artifact_sync_preserves_include_after_managed_host() -> None:
+    rewritten = _run_ssh_alias_rewrite(
+        """# preexisting global options
+Match all
+  ForwardAgent yes
+Host spoon
+  HostName old.spoon.internal
+  User olduser
+  IdentityFile ~/.ssh/old-key
+Include ~/.ssh/conf.d/*
+Host workstation
+  HostName 192.168.1.10
+  User dev
+""",
+        hostname="198.51.100.77",
+        user="spoonuser",
+        alias="spoon",
+    )
+
+    assert "Include ~/.ssh/conf.d/*" in rewritten
+    assert "Host spoon" in rewritten
+    assert "User spoonuser" in rewritten
+    assert rewritten.index("Host spoon") < rewritten.index("Include ~/.ssh/conf.d/*")
 
 
 def test_gpu_node_spoon_artifact_sync_installer_is_native_linux_and_role_safe() -> None:
