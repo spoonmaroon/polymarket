@@ -1,3 +1,6 @@
+import os
+import subprocess
+import tempfile
 from pathlib import Path
 
 
@@ -68,7 +71,7 @@ def test_gpu_node_runtime_keeper_installer_is_native_linux_without_wsl() -> None
     assert 'REPO="${POLYMARKET_REPO:-/home/enoch/polymarket}"' in script
     assert 'DATA_DIR="${POLYMARKET_DATA_DIR:-/home/enoch/polymarket-data}"' in script
     assert 'BIN_DIR="${POLYMARKET_BIN_DIR:-/home/enoch/bin}"' in script
-    assert 'exec "$ENGINE_BIN" runtime-keeper' in script
+    assert 'exec "\\$ENGINE_BIN" runtime-keeper' in script
     assert '--compose-file "$REPO/deploy/collector/docker-compose.yml"' in script
     assert '--compose-file "$REPO/deploy/collector/docker-compose.thepc-gpu-api.yml"' in script
     assert '--required-service "api"' in script
@@ -78,6 +81,7 @@ def test_gpu_node_runtime_keeper_installer_is_native_linux_without_wsl() -> None
     assert '$USER' in script
     assert "command -v loginctl" in script
     assert "polymarket-runtime-keeper.service" in script
+    assert "systemctl --user show-environment" in script
     assert "systemctl --user enable --now polymarket-runtime-keeper.service" in script
     assert "nohup \"$LOOP_SCRIPT\"" in script
     assert ">> \"$DATA_DIR/logs/runtime-keeper.log\"" in script
@@ -85,3 +89,54 @@ def test_gpu_node_runtime_keeper_installer_is_native_linux_without_wsl() -> None
     assert "wsl.exe" not in script
     assert "powershell.exe" not in script
     assert "Register-ScheduledTask" not in script
+
+
+def test_gpu_node_runtime_keeper_installer_generates_literal_loop_script() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp = Path(tmpdir)
+        bin_dir = tmp / "bin"
+        data_dir = tmp / "data"
+        config_home = tmp / "config"
+        fake_home = tmp / "fake-home"
+        stub_dir = tmp / "stubs"
+        stub_dir.mkdir()
+        for name in ("python3", "loginctl", "systemctl"):
+            stub = stub_dir / name
+            stub.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+            stub.chmod(0o755)
+
+        env = os.environ.copy()
+        env.update(
+            {
+                "PATH": f"{stub_dir}:{env['PATH']}",
+                "HOME": str(fake_home),
+                "ENGINE_BIN": "sentinel-engine",
+                "POLYMARKET_REPO": str(REPO),
+                "POLYMARKET_BIN_DIR": str(bin_dir),
+                "POLYMARKET_DATA_DIR": str(data_dir),
+                "XDG_CONFIG_HOME": str(config_home),
+            }
+        )
+
+        result = subprocess.run(
+            ["/usr/bin/env", "bash", str(REPO / "scripts" / "install_gpu_node_runtime_keeper.sh")],
+            check=False,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 0, result.stderr
+
+        loop_script = (bin_dir / "polymarket-runtime-keeper-loop.sh").read_text(
+            encoding="utf-8"
+        )
+
+        assert (
+            'ENGINE_BIN="${POLYMARKET_ENGINE_BIN:-$HOME/.local/bin/polymarket-engine}"'
+            in loop_script
+        )
+        assert 'if [ ! -x "$ENGINE_BIN" ]; then' in loop_script
+        assert 'exec "$ENGINE_BIN" runtime-keeper' in loop_script
+        assert "sentinel-engine" not in loop_script
+        assert str(fake_home) not in loop_script
