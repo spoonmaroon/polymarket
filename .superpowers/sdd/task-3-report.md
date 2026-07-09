@@ -90,3 +90,35 @@ Result:
 - `scripts/deploy_gpu_node.sh` now checks `git ls-remote` before clone/checkout and refuses dirty tracked, staged, or untracked repo state.
 - Helper scripts now receive the advertised `TARGET_PLATFORM`, `POLYMARKET_DATA_DIR`, `POLYMARKET_BIN_DIR`, and `POLYMARKET_REPO` values.
 - `GPU_NODE_DEPLOY_ROLE` now gates startup with an explicit `server2-gpu-api` case and exits `2` for unsupported roles.
+
+## Task 3 Re-Review Fix: Branch Head Match and Singleton Writer Guard
+
+## RED
+
+Before the patch, the new regression assertions would have failed because `scripts/deploy_gpu_node.sh` still:
+
+- hard-rejected `GPU_NODE_BRANCH` values other than `main`
+- fetched and compared `origin/main` instead of the selected branch head
+- started `api gpu-probability-worker` without checking that the old desktop GPU writer was absent
+
+## GREEN
+
+Commands:
+
+```bash
+cd /Users/goon/polymarket-server2-cuda-sdd
+uv run pytest -q tests/scripts/test_deploy_script.py -k 'gpu_node_deploy_script_targets_server2_native_linux_runtime or gpu_node_deploy_script_guards_old_writer_before_startup'
+bash -n scripts/deploy_gpu_node.sh
+```
+
+Result:
+
+```text
+2 passed, 50 deselected in 0.08s
+```
+
+## Notes
+
+- `GPU_NODE_BRANCH` is now honored as the deployed remote branch, with a strict `origin/$GPU_NODE_BRANCH` head match against `DEPLOY_REF`.
+- `GPU_NODE_OLD_WRITER_HOST` defaults to `spoon@100.100.109.27`, and the deploy path fails closed unless the old GPU probability writer is verified absent or the check is explicitly skipped.
+- The old-writer guard sits before `up -d --no-build api gpu-probability-worker`, which keeps the singleton-writer constraint in the startup path itself.
