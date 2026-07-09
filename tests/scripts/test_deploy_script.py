@@ -719,10 +719,10 @@ def test_gpu_node_deploy_script_targets_server2_native_linux_runtime() -> None:
         'for container in polymarket-rust-collector-gpu-probability-worker-1 '
         'polymarket-rust-collector-api-1; do'
     ) in script
-    assert '  status=\\"\\$(docker inspect -f \'{{.State.Status}}\' \\"\\$container\\" 2>/dev/null || printf absent)\\"' in script
-    assert '  case \\"\\$status\\" in' in script
-    assert 'if OLD_RUNTIME_STATUS="\\$(' in script
-    assert 'if [ -n "\\$OLD_RUNTIME_STATUS" ]; then' in script
+    assert '  status="$(docker inspect -f ' in script
+    assert '  case "$status" in' in script
+    assert 'if OLD_RUNTIME_STATUS="$(' in script
+    assert 'if [ -n "$OLD_RUNTIME_STATUS" ]; then' in script
     assert 'running|restarting|paused|created' in script
     assert 'absent|exited|dead|removing' in script
     assert 'exited' in script
@@ -737,11 +737,13 @@ def test_gpu_node_deploy_script_guards_old_writer_before_startup() -> None:
     script = (ROOT / "scripts" / "deploy_gpu_node.sh").read_text(encoding="utf-8")
 
     guard_index = script.index('ssh "$GPU_NODE_OLD_WRITER_HOST"')
+    remote_deploy_index = script.index('ssh "$GPU_NODE_HOST" "bash -s"')
     api_check_index = script.index('polymarket-rust-collector-api-1')
     sync_index = script.index("./scripts/install_gpu_node_spoon_artifact_sync.sh")
     install_index = script.index("./scripts/install_gpu_node_runtime_keeper.sh")
     startup_index = script.index("up -d --no-build api gpu-probability-worker")
 
+    assert guard_index < remote_deploy_index
     assert guard_index < sync_index
     assert guard_index < install_index
     assert guard_index < startup_index
@@ -755,7 +757,7 @@ def test_gpu_node_deploy_script_guards_old_writer_before_startup() -> None:
 def test_gpu_node_deploy_script_treats_only_active_old_writer_states_as_blocking() -> None:
     script = (ROOT / "scripts" / "deploy_gpu_node.sh").read_text(encoding="utf-8")
 
-    assert '  case \\"\\$status\\" in' in script
+    assert '  case "$status" in' in script
     assert 'running|restarting|paused|created)' in script
     assert 'absent|exited|dead|removing)' in script
     assert 'exit 3' in script

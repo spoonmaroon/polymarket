@@ -64,6 +64,37 @@ shell_quote() {
   printf "%q" "$1"
 }
 
+if OLD_RUNTIME_STATUS="$(
+  ssh "$GPU_NODE_OLD_WRITER_HOST" bash -lc '
+set -euo pipefail
+docker info >/dev/null
+for container in polymarket-rust-collector-gpu-probability-worker-1 polymarket-rust-collector-api-1; do
+  status="$(docker inspect -f '"'"'{{.State.Status}}'"'"' "$container" 2>/dev/null || printf absent)"
+  case "$status" in
+    running|restarting|paused|created)
+      printf "%s:%s\n" "$container" "$status"
+      exit 3
+      ;;
+    absent|exited|dead|removing)
+      ;;
+    *)
+      printf "%s:%s\n" "$container" "$status"
+      exit 4
+      ;;
+  esac
+done
+'
+)"; then
+  :
+else
+  if [ -n "$OLD_RUNTIME_STATUS" ]; then
+    echo "old Polymarket GPU/API runtime is still active on $GPU_NODE_OLD_WRITER_HOST ($OLD_RUNTIME_STATUS)" >&2
+  else
+    echo "unable to verify old Polymarket GPU/API runtime state on $GPU_NODE_OLD_WRITER_HOST" >&2
+  fi
+  exit 1
+fi
+
 ssh "$GPU_NODE_HOST" "bash -s" <<EOF
 set -euo pipefail
 
@@ -166,34 +197,6 @@ set_env POLYMARKET_GPU_WORKER_MEM_LIMIT "$GPU_NODE_GPU_WORKER_MEM_LIMIT" deploy/
 set_env POLYMARKET_ENABLE_LIVE_PRIOR_FRAGMENTS "$GPU_NODE_ENABLE_LIVE_PRIOR_FRAGMENTS" deploy/collector/.env
 set_env POLYMARKET_API_PORT "$GPU_NODE_API_PORT" deploy/collector/.env
 
-if OLD_RUNTIME_STATUS="\$(
-  ssh "$GPU_NODE_OLD_WRITER_HOST" bash -lc "set -euo pipefail
-docker info >/dev/null
-for container in polymarket-rust-collector-gpu-probability-worker-1 polymarket-rust-collector-api-1; do
-  status=\"\$(docker inspect -f '{{.State.Status}}' \"\$container\" 2>/dev/null || printf absent)\"
-  case \"\$status\" in
-    running|restarting|paused|created)
-      printf '%s:%s\n' \"\$container\" \"\$status\"
-      exit 3
-      ;;
-    absent|exited|dead|removing)
-      ;;
-    *)
-      printf '%s:%s\n' \"\$container\" \"\$status\"
-      exit 4
-      ;;
-  esac
-done"
-)"; then
-  :
-else
-  if [ -n "\$OLD_RUNTIME_STATUS" ]; then
-    echo "old Polymarket GPU/API runtime is still active on \$GPU_NODE_OLD_WRITER_HOST (\$OLD_RUNTIME_STATUS)" >&2
-  else
-    echo "unable to verify old Polymarket GPU/API runtime state on \$GPU_NODE_OLD_WRITER_HOST" >&2
-  fi
-  exit 1
-fi
 TARGET_PLATFORM="$TARGET_PLATFORM" POLYMARKET_BUILD_SAVE_TARS="$GPU_NODE_REMOTE_BUILD_SAVE_TARS" POLYMARKET_DEPLOY_REF="$FULL_SHA" ./scripts/build_images_pc.sh
 
 POLYMARKET_DATA_DIR="$GPU_NODE_DATA_DIR" POLYMARKET_BIN_DIR="$GPU_NODE_BIN_DIR" ./scripts/install_gpu_node_spoon_artifact_sync.sh
