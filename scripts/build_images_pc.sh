@@ -45,13 +45,13 @@ CUDA_PROBABILITY_TAR="$DIST_DIR/${CUDA_PROBABILITY_IMAGE}-${SHORT_SHA}.tar"
 TUI_BIN="$DIST_DIR/polymarket-cockpit-tui-${SHORT_SHA}"
 MANIFEST="$DIST_DIR/manifest-${SHORT_SHA}.txt"
 
-export DOCKER_BUILDKIT=1
-
 mkdir -p "$DIST_DIR"
 
 if docker buildx version >/dev/null 2>&1; then
+  export DOCKER_BUILDKIT=1
   DOCKER_BUILD=(docker buildx build --platform "$TARGET_PLATFORM" --load)
 else
+  export DOCKER_BUILDKIT=0
   DOCKER_BUILD=(docker build --platform "$TARGET_PLATFORM")
 fi
 

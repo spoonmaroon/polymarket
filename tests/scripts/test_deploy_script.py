@@ -1052,6 +1052,8 @@ def test_pc_image_build_script_exports_docker_tarballs_and_manifest() -> None:
     assert "polymarket-normalizer:${SHORT_SHA}" in script
     assert "polymarket-cuda-probability:${SHORT_SHA}" in script
     assert "docker buildx version" in script
+    assert "export DOCKER_BUILDKIT=1" in script
+    assert "export DOCKER_BUILDKIT=0" in script
     assert 'DOCKER_BUILD=(docker buildx build --platform "$TARGET_PLATFORM" --load)' in script
     assert 'DOCKER_BUILD=(docker build --platform "$TARGET_PLATFORM")' in script
     assert '"${DOCKER_BUILD[@]}"' in script
