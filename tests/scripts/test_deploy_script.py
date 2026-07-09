@@ -711,7 +711,7 @@ def test_gpu_node_deploy_script_targets_server2_native_linux_runtime() -> None:
     assert 'set_env POLYMARKET_CUDA_PROBABILITY_IMAGE "$CUDA_PROBABILITY_IMAGE" deploy/collector/.env' in script
     assert "./scripts/install_gpu_node_spoon_artifact_sync.sh" in script
     assert "./scripts/install_gpu_node_runtime_keeper.sh" in script
-    assert 'ssh "$GPU_NODE_OLD_WRITER_HOST" \'bash -s\' <<\'OLD_WRITER_EOF\'' in script
+    assert 'ssh "$GPU_NODE_OLD_WRITER_HOST" \'bash -s\' >"$OLD_RUNTIME_STATUS_FILE" <<\'OLD_WRITER_EOF\'' in script
     assert 'polymarket-rust-collector-gpu-probability-worker-1' in script
     assert 'polymarket-rust-collector-api-1' in script
     assert "docker info >/dev/null" in script
@@ -721,7 +721,9 @@ def test_gpu_node_deploy_script_targets_server2_native_linux_runtime() -> None:
     ) in script
     assert '  status="$(docker inspect -f \'{{.State.Status}}\'' in script
     assert '  case "$status" in' in script
-    assert 'if OLD_RUNTIME_STATUS="$(' in script
+    assert 'OLD_RUNTIME_STATUS_FILE="$(mktemp)"' in script
+    assert '>"$OLD_RUNTIME_STATUS_FILE" <<\'OLD_WRITER_EOF\'' in script
+    assert 'OLD_RUNTIME_STATUS="$(cat "$OLD_RUNTIME_STATUS_FILE")"' in script
     assert 'if [ -n "$OLD_RUNTIME_STATUS" ]; then' in script
     assert 'running|restarting|paused|created' in script
     assert 'absent|exited|dead|removing' in script
