@@ -117,7 +117,25 @@ set_env() {
 mkdir -p "$GPU_NODE_DATA_DIR/raw" "$GPU_NODE_DATA_DIR/db" "$GPU_NODE_DATA_DIR/live" "$GPU_NODE_DATA_DIR/live/bug-reports" "$GPU_NODE_DATA_DIR/logs" "$GPU_NODE_DIST_DIR" "$GPU_NODE_BIN_DIR"
 touch "$GPU_NODE_DATA_DIR/raw/.polymarket_archive_root"
 
-if [ ! -d "$GPU_NODE_REPO/.git" ]; then
+if ! git ls-remote "$GPU_NODE_GIT_REMOTE" HEAD >/dev/null 2>&1; then
+  echo "remote repo is unreachable: $GPU_NODE_GIT_REMOTE" >&2
+  exit 1
+fi
+
+if [ -d "$GPU_NODE_REPO/.git" ]; then
+  if ! git -C "$GPU_NODE_REPO" diff --quiet; then
+    echo "remote repo has unstaged changes; clean the worktree before deploying to server2" >&2
+    exit 1
+  fi
+  if ! git -C "$GPU_NODE_REPO" diff --cached --quiet; then
+    echo "remote repo has staged changes; clean the index before deploying to server2" >&2
+    exit 1
+  fi
+  if [ -n "$(git -C "$GPU_NODE_REPO" ls-files --others --exclude-standard)" ]; then
+    echo "remote repo has untracked files; clean them before deploying to server2" >&2
+    exit 1
+  fi
+else
   git clone "$GPU_NODE_GIT_REMOTE" "$GPU_NODE_REPO"
 fi
 
@@ -142,20 +160,28 @@ set_env POLYMARKET_GPU_WORKER_MEM_LIMIT "$GPU_NODE_GPU_WORKER_MEM_LIMIT" deploy/
 set_env POLYMARKET_ENABLE_LIVE_PRIOR_FRAGMENTS "$GPU_NODE_ENABLE_LIVE_PRIOR_FRAGMENTS" deploy/collector/.env
 set_env POLYMARKET_API_PORT "$GPU_NODE_API_PORT" deploy/collector/.env
 
-POLYMARKET_BUILD_SAVE_TARS="$GPU_NODE_REMOTE_BUILD_SAVE_TARS" POLYMARKET_DEPLOY_REF="$FULL_SHA" ./scripts/build_images_pc.sh
+TARGET_PLATFORM="$TARGET_PLATFORM" POLYMARKET_BUILD_SAVE_TARS="$GPU_NODE_REMOTE_BUILD_SAVE_TARS" POLYMARKET_DEPLOY_REF="$FULL_SHA" ./scripts/build_images_pc.sh
 
-./scripts/install_gpu_node_spoon_artifact_sync.sh
-./scripts/install_gpu_node_runtime_keeper.sh
+POLYMARKET_DATA_DIR="$GPU_NODE_DATA_DIR" POLYMARKET_BIN_DIR="$GPU_NODE_BIN_DIR" ./scripts/install_gpu_node_spoon_artifact_sync.sh
+POLYMARKET_REPO="$GPU_NODE_REPO" POLYMARKET_DATA_DIR="$GPU_NODE_DATA_DIR" POLYMARKET_BIN_DIR="$GPU_NODE_BIN_DIR" ./scripts/install_gpu_node_runtime_keeper.sh
 
-docker compose --env-file deploy/collector/.env \
-  -f deploy/collector/docker-compose.yml \
-  -f deploy/collector/docker-compose.thepc-gpu-api.yml \
-  stop collector normalizer outcome-refresh >/dev/null 2>&1 || true
+case "$GPU_NODE_DEPLOY_ROLE" in
+  server2-gpu-api)
+    docker compose --env-file deploy/collector/.env \
+      -f deploy/collector/docker-compose.yml \
+      -f deploy/collector/docker-compose.thepc-gpu-api.yml \
+      stop collector normalizer outcome-refresh >/dev/null 2>&1 || true
 
-docker compose --env-file deploy/collector/.env \
-  -f deploy/collector/docker-compose.yml \
-  -f deploy/collector/docker-compose.thepc-gpu-api.yml \
-  up -d --no-build api gpu-probability-worker
+    docker compose --env-file deploy/collector/.env \
+      -f deploy/collector/docker-compose.yml \
+      -f deploy/collector/docker-compose.thepc-gpu-api.yml \
+      up -d --no-build api gpu-probability-worker
+    ;;
+  *)
+    echo "unsupported GPU_NODE_DEPLOY_ROLE: $GPU_NODE_DEPLOY_ROLE" >&2
+    exit 2
+    ;;
+esac
 EOF
 
 ssh "$GPU_NODE_HOST" "curl -fsS http://127.0.0.1:$GPU_NODE_API_PORT/health >/dev/null"
