@@ -714,8 +714,11 @@ def test_gpu_node_deploy_script_targets_server2_native_linux_runtime() -> None:
     assert "./scripts/install_gpu_node_runtime_keeper.sh" in script
     assert 'ssh "$GPU_NODE_OLD_WRITER_HOST"' in script
     assert 'polymarket-rust-collector-gpu-probability-worker-1' in script
-    assert 'GPU_NODE_SKIP_OLD_WRITER_CHECK' in script
-    assert 'docker inspect polymarket-rust-collector-gpu-probability-worker-1' in script
+    assert "docker inspect -f '{{.State.Status}}' polymarket-rust-collector-gpu-probability-worker-1 2>/dev/null || true" in script
+    assert 'OLD_WRITER_STATUS' in script
+    assert 'running|restarting|paused|created' in script
+    assert 'exited' in script
+    assert 'GPU_NODE_SKIP_OLD_WRITER_CHECK' not in script
     assert "stop collector normalizer outcome-refresh" in script
     assert "up -d --no-build api gpu-probability-worker" in script
     assert "docker compose --env-file deploy/collector/.env" in script
@@ -729,8 +732,18 @@ def test_gpu_node_deploy_script_guards_old_writer_before_startup() -> None:
     startup_index = script.index("up -d --no-build api gpu-probability-worker")
 
     assert guard_index < startup_index
-    assert "GPU_NODE_SKIP_OLD_WRITER_CHECK" in script
+    assert 'GPU_NODE_SKIP_OLD_WRITER_CHECK' not in script
     assert "polymarket-rust-collector-gpu-probability-worker-1" in script
+
+
+def test_gpu_node_deploy_script_treats_only_active_old_writer_states_as_blocking() -> None:
+    script = (ROOT / "scripts" / "deploy_gpu_node.sh").read_text(encoding="utf-8")
+
+    assert 'case "$OLD_WRITER_STATUS" in' in script
+    assert 'running|restarting|paused|created)' in script
+    assert 'old GPU probability writer is still active' in script
+    assert 'exited|"")' in script
+    assert 'unexpected state: $OLD_WRITER_STATUS' in script
 
 
 def test_gpu_node_deploy_script_refuses_dirty_or_unreachable_remote() -> None:
