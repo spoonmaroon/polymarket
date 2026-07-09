@@ -164,17 +164,23 @@ POLYMARKET_REPO="$GPU_NODE_REPO" POLYMARKET_DATA_DIR="$GPU_NODE_DATA_DIR" POLYMA
 
 case "$GPU_NODE_DEPLOY_ROLE" in
   server2-gpu-api)
-    if [ "${GPU_NODE_SKIP_OLD_WRITER_CHECK:-0}" != "1" ]; then
-      if ! OLD_WRITER_STATE="$(ssh "$GPU_NODE_OLD_WRITER_HOST" 'if docker inspect polymarket-rust-collector-gpu-probability-worker-1 >/dev/null 2>&1; then printf present; else rc=$?; if [ "$rc" -eq 1 ]; then printf absent; else exit "$rc"; fi; fi')"; then
-        echo "unable to verify old GPU probability writer is stopped on $GPU_NODE_OLD_WRITER_HOST" >&2
-        exit 1
-      fi
-
-      if [ "$OLD_WRITER_STATE" = "present" ]; then
-        echo "old GPU probability writer is still present on $GPU_NODE_OLD_WRITER_HOST" >&2
-        exit 1
-      fi
+    if ! OLD_WRITER_STATUS="$(ssh "$GPU_NODE_OLD_WRITER_HOST" "docker inspect -f '{{.State.Status}}' polymarket-rust-collector-gpu-probability-worker-1 2>/dev/null || true")"; then
+      echo "unable to verify old GPU probability writer state on $GPU_NODE_OLD_WRITER_HOST" >&2
+      exit 1
     fi
+
+    case "$OLD_WRITER_STATUS" in
+      running|restarting|paused|created)
+        echo "old GPU probability writer is still active on $GPU_NODE_OLD_WRITER_HOST (state: $OLD_WRITER_STATUS)" >&2
+        exit 1
+        ;;
+      exited|"")
+        ;;
+      *)
+        echo "unable to verify old GPU probability writer state on $GPU_NODE_OLD_WRITER_HOST (unexpected state: $OLD_WRITER_STATUS)" >&2
+        exit 1
+        ;;
+    esac
 
     docker compose --env-file deploy/collector/.env \
       -f deploy/collector/docker-compose.yml \

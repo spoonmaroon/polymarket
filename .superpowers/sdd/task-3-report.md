@@ -122,3 +122,44 @@ Result:
 - `GPU_NODE_BRANCH` is now honored as the deployed remote branch, with a strict `origin/$GPU_NODE_BRANCH` head match against `DEPLOY_REF`.
 - `GPU_NODE_OLD_WRITER_HOST` defaults to `spoon@100.100.109.27`, and the deploy path fails closed unless the old GPU probability writer is verified absent or the check is explicitly skipped.
 - The old-writer guard sits before `up -d --no-build api gpu-probability-worker`, which keeps the singleton-writer constraint in the startup path itself.
+
+## Task 3 Final Review Fix: Old Writer State Semantics
+
+## RED
+
+Command:
+
+```bash
+cd /Users/goon/polymarket-server2-cuda-sdd
+uv run pytest -q tests/scripts/test_deploy_script.py -k 'gpu_node_deploy_script_targets_server2_native_linux_runtime or gpu_node_deploy_script_guards_old_writer_before_startup or gpu_node_deploy_script_treats_only_active_old_writer_states_as_blocking'
+```
+
+Result:
+
+```text
+FAILED tests/scripts/test_deploy_script.py::test_gpu_node_deploy_script_targets_server2_native_linux_runtime
+FAILED tests/scripts/test_deploy_script.py::test_gpu_node_deploy_script_guards_old_writer_before_startup
+FAILED tests/scripts/test_deploy_script.py::test_gpu_node_deploy_script_treats_only_active_old_writer_states_as_blocking
+```
+
+## GREEN
+
+Command:
+
+```bash
+cd /Users/goon/polymarket-server2-cuda-sdd
+uv run pytest -q tests/scripts/test_deploy_script.py -k 'gpu_node_deploy_script_targets_server2_native_linux_runtime or gpu_node_deploy_script_guards_old_writer_before_startup or gpu_node_deploy_script_treats_only_active_old_writer_states_as_blocking'
+bash -n scripts/deploy_gpu_node.sh
+```
+
+Result:
+
+```text
+3 passed, 50 deselected in 0.08s
+```
+
+## Notes
+
+- The guard now checks container state with `docker inspect -f '{{.State.Status}}' ... 2>/dev/null || true`.
+- Active states `running`, `restarting`, `paused`, and `created` block the deploy.
+- Missing, empty, and `exited` states are allowed, and SSH or unexpected statuses fail closed.
