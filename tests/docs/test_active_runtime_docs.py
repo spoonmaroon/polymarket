@@ -120,6 +120,8 @@ def test_spoon_docs_include_read_only_cockpit_tui() -> None:
 
     assert "polymarket-cockpit-tui" in text
     assert "--engine-api-url" in text
+    assert "fresh server2 deploy" in text
+    assert "fresh THEPC deploy" not in text
 
 
 def test_spoon_docs_describe_spoon_duckdb_viewer_authority() -> None:

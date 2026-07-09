@@ -288,16 +288,16 @@ not place orders, deploy containers, rebuild images, write collector state,
 restart services, or access auth secrets.
 
 Cached probability outputs are display-only. The deployed normalizer sidecar
-does not pass `--enable-probabilities`, so live runtime on THEPC remains
-pre-probability unless an operator explicitly starts a separate opt-in run. The
-FastAPI probability endpoint also stays disabled unless
+does not pass `--enable-probabilities`, so the live Spoon CPU lane remains
+pre-probability while server2 owns CUDA probability outputs. The FastAPI
+probability endpoint also stays disabled unless
 `POLYMARKET_ENABLE_RUNTIME_PROBABILITIES=1` is set. Even when display is
 enabled, CPU probability computation from the API remains disabled unless
 `POLYMARKET_ALLOW_RUNTIME_PROBABILITY_COMPUTE=1` is also set.
 
 Live data changes should appear through the runtime API polling path. TUI code,
-layout, or parser changes require a fresh THEPC deploy and reopening the
-desktop shortcut so the new binary is loaded.
+layout, or parser changes require a fresh server2 deploy so the active API/GPU
+runtime serves the new binary.
 
 Each displayed BTC/ETH 5m row is one binary market window. The CLOB books remain
 separate Up and Down token books internally, and the selected Book panel renders
