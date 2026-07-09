@@ -74,8 +74,14 @@ def test_gpu_node_runtime_keeper_installer_is_native_linux_without_wsl() -> None
     assert '--required-service "api"' in script
     assert '--required-service "gpu-probability-worker"' in script
     assert '--loop-interval-seconds 30' in script
+    assert "loginctl enable-linger" in script
+    assert '$USER' in script
+    assert "command -v loginctl" in script
     assert "polymarket-runtime-keeper.service" in script
     assert "systemctl --user enable --now polymarket-runtime-keeper.service" in script
+    assert "nohup \"$LOOP_SCRIPT\"" in script
+    assert ">> \"$DATA_DIR/logs/runtime-keeper.log\"" in script
+    assert "echo \"$!\" > \"$DATA_DIR/live/runtime-keeper.pid\"" in script
     assert "wsl.exe" not in script
     assert "powershell.exe" not in script
     assert "Register-ScheduledTask" not in script
