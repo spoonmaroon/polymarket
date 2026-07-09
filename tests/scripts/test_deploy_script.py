@@ -698,30 +698,32 @@ def test_gpu_node_deploy_script_targets_server2_native_linux_runtime() -> None:
     assert 'GPU_NODE_BIN_DIR="${GPU_NODE_BIN_DIR:-/home/enoch/bin}"' in script
     assert 'GPU_NODE_DEPLOY_ROLE="${GPU_NODE_DEPLOY_ROLE:-server2-gpu-api}"' in script
     assert 'GPU_NODE_REMOTE_BUILD_SAVE_TARS="${GPU_NODE_REMOTE_BUILD_SAVE_TARS:-0}"' in script
-    assert 'GPU_NODE_BRANCH="${GPU_NODE_BRANCH:-main}"' in script
     assert 'GPU_NODE_OLD_WRITER_HOST="${GPU_NODE_OLD_WRITER_HOST:-spoon@100.100.109.27}"' in script
-    assert "server2 native Linux will fetch the selected GitHub branch and build images locally" in script
+    assert "server2 native Linux will fetch main and build images locally" in script
     assert "wsl.exe" not in script
     assert "powershell.exe" not in script
     assert 'git clone "$GPU_NODE_GIT_REMOTE" "$GPU_NODE_REPO"' in script
-    assert 'git fetch --quiet origin "$GPU_NODE_BRANCH"' in script
-    assert 'REMOTE_BRANCH_SHA="$(git -C "$ROOT" rev-parse "origin/$GPU_NODE_BRANCH^{commit}")"' in script
-    assert 'origin/main' not in script
-    assert 'if [ "$GPU_NODE_BRANCH" != "main" ]; then' not in script
+    assert 'git fetch --quiet origin main' in script
+    assert 'LOCAL_MAIN_SHA="$(git -C "$ROOT" rev-parse origin/main^{commit})"' in script
+    assert 'origin/main is $LOCAL_MAIN_SHA but deploy ref is $FULL_SHA' in script
+    assert 'GPU_NODE_BRANCH' not in script
     assert 'set_env POLYMARKET_DATA_DIR "$GPU_NODE_DATA_DIR" deploy/collector/.env' in script
     assert 'set_env POLYMARKET_CUDA_PROBABILITY_IMAGE "$CUDA_PROBABILITY_IMAGE" deploy/collector/.env' in script
     assert "./scripts/install_gpu_node_spoon_artifact_sync.sh" in script
     assert "./scripts/install_gpu_node_runtime_keeper.sh" in script
     assert 'ssh "$GPU_NODE_OLD_WRITER_HOST"' in script
     assert 'polymarket-rust-collector-gpu-probability-worker-1' in script
+    assert 'polymarket-rust-collector-api-1' in script
     assert "docker info >/dev/null" in script
     assert (
-        "docker inspect -f '{{.State.Status}}' "
-        "polymarket-rust-collector-gpu-probability-worker-1 2>/dev/null || printf absent"
-        in script
-    )
-    assert 'OLD_WRITER_STATUS' in script
+        'for container in polymarket-rust-collector-gpu-probability-worker-1 '
+        'polymarket-rust-collector-api-1; do'
+    ) in script
+    assert '  status=\\"\\$(docker inspect -f \'{{.State.Status}}\' \\"\\$container\\" 2>/dev/null || printf absent)\\"' in script
+    assert '  case \\"\\$status\\" in' in script
+    assert 'OLD_RUNTIME_STATUS' in script
     assert 'running|restarting|paused|created' in script
+    assert 'absent|exited|dead|removing' in script
     assert 'exited' in script
     assert 'GPU_NODE_SKIP_OLD_WRITER_CHECK' not in script
     assert "stop collector normalizer outcome-refresh" in script
@@ -734,11 +736,13 @@ def test_gpu_node_deploy_script_guards_old_writer_before_startup() -> None:
     script = (ROOT / "scripts" / "deploy_gpu_node.sh").read_text(encoding="utf-8")
 
     guard_index = script.index('ssh "$GPU_NODE_OLD_WRITER_HOST"')
+    api_check_index = script.index('polymarket-rust-collector-api-1')
     install_index = script.index("./scripts/install_gpu_node_runtime_keeper.sh")
     startup_index = script.index("up -d --no-build api gpu-probability-worker")
 
     assert guard_index < install_index
     assert guard_index < startup_index
+    assert api_check_index > guard_index
     assert 'GPU_NODE_SKIP_OLD_WRITER_CHECK' not in script
     assert "polymarket-rust-collector-gpu-probability-worker-1" in script
 
@@ -746,11 +750,13 @@ def test_gpu_node_deploy_script_guards_old_writer_before_startup() -> None:
 def test_gpu_node_deploy_script_treats_only_active_old_writer_states_as_blocking() -> None:
     script = (ROOT / "scripts" / "deploy_gpu_node.sh").read_text(encoding="utf-8")
 
-    assert 'case "$OLD_WRITER_STATUS" in' in script
+    assert '  case \\"\\$status\\" in' in script
     assert 'running|restarting|paused|created)' in script
-    assert 'old GPU probability writer is still active' in script
-    assert 'exited|"")' in script
-    assert 'unexpected state: $OLD_WRITER_STATUS' in script
+    assert 'absent|exited|dead|removing)' in script
+    assert 'exit 3' in script
+    assert 'exit 4' in script
+    assert 'old Polymarket GPU/API runtime is still active' in script
+    assert 'unable to verify old Polymarket GPU/API runtime state' in script
 
 
 def test_gpu_node_deploy_script_refuses_dirty_or_unreachable_remote() -> None:

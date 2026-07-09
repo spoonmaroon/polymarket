@@ -247,3 +247,41 @@ Result:
 - Removed the later role-only dispatch and kept the startup path in the single supported role flow.
 - Kept old-writer guard and runtime-keeper startup order intact once role is validated.
 - Quoted the final smoke command `cd` path as `cd "$GPU_NODE_REPO"`.
+
+## Task 3 Final Review Fix: Main-Only Deploy Ref and Dual-Container Old Runtime Guard
+
+## RED
+
+I updated the assertions first so the current script went red on the two review findings:
+
+```bash
+cd /Users/goon/polymarket-server2-cuda-sdd
+uv run --with pytest pytest -q tests/scripts/test_deploy_script.py -k 'gpu_node_deploy_script_targets_server2_native_linux_runtime or gpu_node_deploy_script_guards_old_writer_before_startup or gpu_node_deploy_script_treats_only_active_old_writer_states_as_blocking'
+```
+
+Result before the script fix:
+
+```text
+3 failed, 52 deselected
+```
+
+## GREEN
+
+```bash
+cd /Users/goon/polymarket-server2-cuda-sdd
+uv run --with pytest pytest -q tests/scripts/test_deploy_script.py -k 'gpu_node_deploy_script_targets_server2_native_linux_runtime or gpu_node_deploy_script_guards_old_writer_before_startup or gpu_node_deploy_script_treats_only_active_old_writer_states_as_blocking'
+bash -n scripts/deploy_gpu_node.sh
+```
+
+Result:
+
+```text
+3 passed, 52 deselected
+0
+```
+
+## Notes
+
+- Removed `GPU_NODE_BRANCH` routing and forced the deploy check to compare the deploy ref against `origin/main`.
+- Changed the old-host guard to probe Docker fail-closed and reject either `polymarket-rust-collector-gpu-probability-worker-1` or `polymarket-rust-collector-api-1` when active.
+- Allowed only `absent`, `exited`, `dead`, and `removing` for the old host container state check.
