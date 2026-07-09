@@ -8,7 +8,7 @@ LOOP_SCRIPT="$BIN_DIR/polymarket-runtime-keeper-loop.sh"
 SERVICE_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 SERVICE_PATH="$SERVICE_DIR/polymarket-runtime-keeper.service"
 
-mkdir -p "$BIN_DIR" "$DATA_DIR/live" "$SERVICE_DIR"
+mkdir -p "$BIN_DIR" "$DATA_DIR/live" "$DATA_DIR/logs" "$SERVICE_DIR"
 
 cd "$REPO"
 python3 -m pip install --user --break-system-packages -e "$REPO"
@@ -52,12 +52,19 @@ RestartSec=15
 WantedBy=default.target
 EOF
 
+if command -v loginctl >/dev/null 2>&1; then
+  if ! loginctl enable-linger "$USER"; then
+    echo "Warning: unable to enable linger for user $USER" >&2
+  fi
+fi
+
 if command -v systemctl >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1; then
   systemctl --user daemon-reload
   systemctl --user enable --now polymarket-runtime-keeper.service
 else
-  echo "systemd user service unavailable; start $LOOP_SCRIPT manually or enable linger for this user" >&2
-  exit 1
+  echo "systemd user service unavailable; starting $LOOP_SCRIPT via nohup" >&2
+  nohup "$LOOP_SCRIPT" >> "$DATA_DIR/logs/runtime-keeper.log" 2>&1 &
+  echo "$!" > "$DATA_DIR/live/runtime-keeper.pid"
 fi
 
 echo "Installed $LOOP_SCRIPT"
