@@ -58,3 +58,24 @@ def test_mac_tunnel_runner_targets_current_thepc_wsl_ip() -> None:
     assert "hostname -I" in script
     assert "127.0.0.1:8000:${wsl_ip}:8000" in script
     assert "127.0.0.1:8000:127.0.0.1:8000" not in script
+
+
+def test_gpu_node_runtime_keeper_installer_is_native_linux_without_wsl() -> None:
+    script = (REPO / "scripts" / "install_gpu_node_runtime_keeper.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'REPO="${POLYMARKET_REPO:-/home/enoch/polymarket}"' in script
+    assert 'DATA_DIR="${POLYMARKET_DATA_DIR:-/home/enoch/polymarket-data}"' in script
+    assert 'BIN_DIR="${POLYMARKET_BIN_DIR:-/home/enoch/bin}"' in script
+    assert 'exec "$ENGINE_BIN" runtime-keeper' in script
+    assert '--compose-file "$REPO/deploy/collector/docker-compose.yml"' in script
+    assert '--compose-file "$REPO/deploy/collector/docker-compose.thepc-gpu-api.yml"' in script
+    assert '--required-service "api"' in script
+    assert '--required-service "gpu-probability-worker"' in script
+    assert '--loop-interval-seconds 30' in script
+    assert "polymarket-runtime-keeper.service" in script
+    assert "systemctl --user enable --now polymarket-runtime-keeper.service" in script
+    assert "wsl.exe" not in script
+    assert "powershell.exe" not in script
+    assert "Register-ScheduledTask" not in script
