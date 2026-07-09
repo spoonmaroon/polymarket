@@ -137,7 +137,7 @@ if [ -d "$GPU_NODE_REPO/.git" ]; then
     echo "remote repo has staged changes; clean the index before deploying to server2" >&2
     exit 1
   fi
-  if [ -n "$(git -C "$GPU_NODE_REPO" ls-files --others --exclude-standard)" ]; then
+  if [ -n "\$(git -C "\$GPU_NODE_REPO" ls-files --others --exclude-standard)" ]; then
     echo "remote repo has untracked files; clean them before deploying to server2" >&2
     exit 1
   fi
@@ -166,7 +166,7 @@ set_env POLYMARKET_GPU_WORKER_MEM_LIMIT "$GPU_NODE_GPU_WORKER_MEM_LIMIT" deploy/
 set_env POLYMARKET_ENABLE_LIVE_PRIOR_FRAGMENTS "$GPU_NODE_ENABLE_LIVE_PRIOR_FRAGMENTS" deploy/collector/.env
 set_env POLYMARKET_API_PORT "$GPU_NODE_API_PORT" deploy/collector/.env
 
-if OLD_RUNTIME_STATUS="$(
+if OLD_RUNTIME_STATUS="\$(
   ssh "$GPU_NODE_OLD_WRITER_HOST" bash -lc "set -euo pipefail
 docker info >/dev/null
 for container in polymarket-rust-collector-gpu-probability-worker-1 polymarket-rust-collector-api-1; do
@@ -187,10 +187,10 @@ done"
 )"; then
   :
 else
-  if [ -n "$OLD_RUNTIME_STATUS" ]; then
-    echo "old Polymarket GPU/API runtime is still active on $GPU_NODE_OLD_WRITER_HOST ($OLD_RUNTIME_STATUS)" >&2
+  if [ -n "\$OLD_RUNTIME_STATUS" ]; then
+    echo "old Polymarket GPU/API runtime is still active on \$GPU_NODE_OLD_WRITER_HOST (\$OLD_RUNTIME_STATUS)" >&2
   else
-    echo "unable to verify old Polymarket GPU/API runtime state on $GPU_NODE_OLD_WRITER_HOST" >&2
+    echo "unable to verify old Polymarket GPU/API runtime state on \$GPU_NODE_OLD_WRITER_HOST" >&2
   fi
   exit 1
 fi

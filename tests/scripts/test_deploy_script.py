@@ -721,7 +721,8 @@ def test_gpu_node_deploy_script_targets_server2_native_linux_runtime() -> None:
     ) in script
     assert '  status=\\"\\$(docker inspect -f \'{{.State.Status}}\' \\"\\$container\\" 2>/dev/null || printf absent)\\"' in script
     assert '  case \\"\\$status\\" in' in script
-    assert 'OLD_RUNTIME_STATUS' in script
+    assert 'if OLD_RUNTIME_STATUS="\\$(' in script
+    assert 'if [ -n "\\$OLD_RUNTIME_STATUS" ]; then' in script
     assert 'running|restarting|paused|created' in script
     assert 'absent|exited|dead|removing' in script
     assert 'exited' in script
@@ -780,7 +781,7 @@ def test_gpu_node_deploy_script_refuses_dirty_or_unreachable_remote() -> None:
     assert 'git ls-remote "$GPU_NODE_GIT_REMOTE" HEAD' in script
     assert 'git -C "$GPU_NODE_REPO" diff --quiet' in script
     assert 'git -C "$GPU_NODE_REPO" diff --cached --quiet' in script
-    assert 'git -C "$GPU_NODE_REPO" ls-files --others --exclude-standard' in script
+    assert '\\$(git -C "\\$GPU_NODE_REPO" ls-files --others --exclude-standard)' in script
     assert "remote repo is unreachable" in script
     assert "remote repo has unstaged changes" in script
     assert "remote repo has staged changes" in script
