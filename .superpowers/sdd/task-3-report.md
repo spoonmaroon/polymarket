@@ -208,3 +208,42 @@ Result:
 - The old-writer guard now runs before `install_gpu_node_runtime_keeper.sh` and before `up -d --no-build api gpu-probability-worker`.
 - The remote probe first checks `docker info` and then falls back to `absent` only when `docker inspect` cannot find the container.
 - `POLYMARKET_API_BASE_URL` now defaults to `http://127.0.0.1:8000` in the keeper installer and is forwarded from `deploy_gpu_node.sh` as `http://127.0.0.1:$GPU_NODE_API_PORT`.
+
+## Task 3 Final Review Fix: Validate `GPU_NODE_DEPLOY_ROLE` Before Build/Install/Startup and Quote Smoke `cd` Path
+
+## RED
+
+Initial assertions for this finding were added and then fixed with the script change below.
+
+```bash
+cd /Users/goon/polymarket-server2-cuda-sdd
+.venv/bin/pytest tests/scripts/test_deploy_script.py -k 'gpu_node_deploy_script or validates_role_before_remote_mutations or quotes_smoke_repo_path_for_ssh'
+```
+
+Result before fix:
+
+```text
+8 tests selected, with the new role-order and smoke-quote assertions failing (role gate observed after helper calls; `cd $GPU_NODE_REPO` unquoted in final smoke check).
+```
+
+## GREEN
+
+```bash
+cd /Users/goon/polymarket-server2-cuda-sdd
+.venv/bin/pytest tests/scripts/test_deploy_script.py -k 'gpu_node_deploy_script or validates_role_before_remote_mutations or quotes_smoke_repo_path_for_ssh'
+bash -n scripts/deploy_gpu_node.sh
+```
+
+Result:
+
+```text
+8 passed, 47 deselected
+0
+```
+
+## Notes
+
+- Moved `GPU_NODE_DEPLOY_ROLE` case validation to the top of the remote block before any repo mutation/build/install/startup path.
+- Removed the later role-only dispatch and kept the startup path in the single supported role flow.
+- Kept old-writer guard and runtime-keeper startup order intact once role is validated.
+- Quoted the final smoke command `cd` path as `cd "$GPU_NODE_REPO"`.
