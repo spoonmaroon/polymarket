@@ -711,7 +711,7 @@ def test_gpu_node_deploy_script_targets_server2_native_linux_runtime() -> None:
     assert 'set_env POLYMARKET_CUDA_PROBABILITY_IMAGE "$CUDA_PROBABILITY_IMAGE" deploy/collector/.env' in script
     assert "./scripts/install_gpu_node_spoon_artifact_sync.sh" in script
     assert "./scripts/install_gpu_node_runtime_keeper.sh" in script
-    assert 'ssh "$GPU_NODE_OLD_WRITER_HOST"' in script
+    assert 'ssh "$GPU_NODE_OLD_WRITER_HOST" \'bash -s\' <<\'OLD_WRITER_EOF\'' in script
     assert 'polymarket-rust-collector-gpu-probability-worker-1' in script
     assert 'polymarket-rust-collector-api-1' in script
     assert "docker info >/dev/null" in script
@@ -736,7 +736,7 @@ def test_gpu_node_deploy_script_targets_server2_native_linux_runtime() -> None:
 def test_gpu_node_deploy_script_guards_old_writer_before_startup() -> None:
     script = (ROOT / "scripts" / "deploy_gpu_node.sh").read_text(encoding="utf-8")
 
-    guard_index = script.index('ssh "$GPU_NODE_OLD_WRITER_HOST"')
+    guard_index = script.index('ssh "$GPU_NODE_OLD_WRITER_HOST" \'bash -s\'')
     remote_deploy_index = script.index('ssh "$GPU_NODE_HOST" "bash -s"')
     api_check_index = script.index('polymarket-rust-collector-api-1')
     sync_index = script.index("./scripts/install_gpu_node_spoon_artifact_sync.sh")

@@ -65,7 +65,7 @@ shell_quote() {
 }
 
 if OLD_RUNTIME_STATUS="$(
-  ssh "$GPU_NODE_OLD_WRITER_HOST" bash -lc '
+  ssh "$GPU_NODE_OLD_WRITER_HOST" 'bash -s' <<'OLD_WRITER_EOF'
 set -euo pipefail
 docker info >/dev/null
 for container in polymarket-rust-collector-gpu-probability-worker-1 polymarket-rust-collector-api-1; do
@@ -83,7 +83,7 @@ for container in polymarket-rust-collector-gpu-probability-worker-1 polymarket-r
       ;;
   esac
 done
-'
+OLD_WRITER_EOF
 )"; then
   :
 else
