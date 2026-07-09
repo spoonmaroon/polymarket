@@ -35,17 +35,21 @@ Host {alias}
   StrictHostKeyChecking accept-new
 """
 lines = text.splitlines()
-out = []
-skip = False
-for line in lines:
-    if line.strip().lower() == f"host {alias}".lower():
-        skip = True
+block_lines = block.splitlines()
+out = lines + block_lines
+needle = f"host {alias}".lower()
+for index, line in enumerate(lines):
+    if line.strip().lower() != needle:
         continue
-    if skip and (line.startswith("Host ") or line.startswith("Match ")):
-        skip = False
-    if not skip:
-        out.append(line)
-path.write_text("\n".join(out).rstrip() + block + "\n", encoding="utf-8")
+    end = index + 1
+    while end < len(lines):
+        next_line = lines[end]
+        if next_line and not next_line[0].isspace():
+            break
+        end += 1
+    out = lines[:index] + block_lines + lines[end:]
+    break
+path.write_text("\n".join(out).rstrip() + "\n", encoding="utf-8")
 PY
 
 cat > "$SYNC_SCRIPT" <<'SH'
