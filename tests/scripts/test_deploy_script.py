@@ -1482,3 +1482,22 @@ def test_deploy_script_rejects_old_normalize_rust_events_normalizer() -> None:
     assert "ps -eo args" not in script
     assert "&& outcome_refresh_running \\" in script
     assert "&& outcome_status_fresh \\" in script
+
+
+def test_prepare_server2_cuda_host_is_dry_run_first_and_requires_destroy_confirmation() -> None:
+    script = (ROOT / "scripts" / "prepare_server2_cuda_host.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'MODE="${1:---dry-run}"' in script
+    assert 'if [ "$MODE" != "--execute" ]; then' in script
+    assert 'CONFIRM_DESTROY_WIN11_VM="${CONFIRM_DESTROY_WIN11_VM:-}"' in script
+    assert "destroy-win11-gaming" in script
+    assert 'virsh dumpxml win11-gaming > "$BACKUP_DIR/win11-gaming.xml"' in script
+    assert "virsh undefine win11-gaming --nvram --remove-all-storage" in script
+    assert 'mv /etc/modprobe.d/vfio-passthrough.conf "$BACKUP_DIR/vfio-passthrough.conf.backup"' in script
+    assert "update-initramfs -u" in script
+    assert "ubuntu-drivers install" in script
+    assert "nvidia-container-toolkit" in script
+    assert "NEEDS_REBOOT=1" in script
+    assert "reboot" not in script
