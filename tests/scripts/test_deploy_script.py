@@ -794,6 +794,33 @@ def test_gpu_node_deploy_script_rejects_unsupported_role() -> None:
     assert 'exit 2' in script
 
 
+def test_gpu_node_deploy_script_validates_role_before_remote_mutations() -> None:
+    script = (ROOT / "scripts" / "deploy_gpu_node.sh").read_text(encoding="utf-8")
+
+    gate_index = script.index('case "$GPU_NODE_DEPLOY_ROLE" in')
+    clone_index = script.index('git clone "$GPU_NODE_GIT_REMOTE" "$GPU_NODE_REPO"')
+    build_index = script.index(
+        'TARGET_PLATFORM="$TARGET_PLATFORM" POLYMARKET_BUILD_SAVE_TARS="$GPU_NODE_REMOTE_BUILD_SAVE_TARS" '
+    )
+    sync_index = script.index("./scripts/install_gpu_node_spoon_artifact_sync.sh")
+    startup_index = script.index("up -d --no-build api gpu-probability-worker")
+
+    assert gate_index < clone_index
+    assert gate_index < build_index
+    assert gate_index < sync_index
+    assert gate_index < startup_index
+
+
+def test_gpu_node_deploy_script_quotes_smoke_repo_path_for_ssh() -> None:
+    script = (ROOT / "scripts" / "deploy_gpu_node.sh").read_text(encoding="utf-8")
+
+    assert (
+        'ssh "$GPU_NODE_HOST" "cd \\"$GPU_NODE_REPO\\" && docker compose '
+        '--env-file deploy/collector/.env -f deploy/collector/docker-compose.yml '
+        '-f deploy/collector/docker-compose.thepc-gpu-api.yml ps"'
+    ) in script
+
+
 def test_spoon_collector_watchdog_restarts_unhealthy_collector_only() -> None:
     script = (ROOT / "scripts" / "install_spoon_collector_watchdog.sh").read_text(
         encoding="utf-8"
