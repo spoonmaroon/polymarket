@@ -22,6 +22,7 @@ GPU_NODE_GPU_WORKER_MEM_LIMIT="${GPU_NODE_GPU_WORKER_MEM_LIMIT:-1536m}"
 GPU_NODE_API_PORT="${GPU_NODE_API_PORT:-8000}"
 GPU_NODE_REMOTE_BUILD_SAVE_TARS="${GPU_NODE_REMOTE_BUILD_SAVE_TARS:-0}"
 GPU_NODE_OLD_WRITER_HOST="${GPU_NODE_OLD_WRITER_HOST:-spoon@100.100.109.27}"
+GPU_NODE_BRANCH="${GPU_NODE_BRANCH:-main}"
 
 if ! git -C "$ROOT" diff --quiet; then
   echo "working tree has unstaged changes; commit or stash before deploying to server2" >&2
@@ -45,10 +46,10 @@ if [ "$HEAD_SHA" != "$FULL_SHA" ]; then
   exit 1
 fi
 
-git -C "$ROOT" fetch --quiet origin main
-LOCAL_MAIN_SHA="$(git -C "$ROOT" rev-parse origin/main^{commit})"
-if [ "$LOCAL_MAIN_SHA" != "$FULL_SHA" ]; then
-  echo "origin/main is $LOCAL_MAIN_SHA but deploy ref is $FULL_SHA; push main before deploying" >&2
+git -C "$ROOT" fetch --quiet origin "$GPU_NODE_BRANCH"
+LOCAL_BRANCH_SHA="$(git -C "$ROOT" rev-parse "origin/$GPU_NODE_BRANCH^{commit}")"
+if [ "$LOCAL_BRANCH_SHA" != "$FULL_SHA" ]; then
+  echo "origin/$GPU_NODE_BRANCH is $LOCAL_BRANCH_SHA but deploy ref is $FULL_SHA; push $GPU_NODE_BRANCH before deploying" >&2
   exit 1
 fi
 
@@ -146,7 +147,7 @@ fi
 
 cd "$GPU_NODE_REPO"
 git remote set-url origin "$GPU_NODE_GIT_REMOTE" 2>/dev/null || git remote add origin "$GPU_NODE_GIT_REMOTE"
-git fetch --quiet origin main
+git fetch --quiet origin "$GPU_NODE_BRANCH"
 git checkout --quiet "$FULL_SHA"
 
 cp deploy/collector/.env.example deploy/collector/.env
@@ -212,8 +213,4 @@ docker compose --env-file deploy/collector/.env \
 EOF
 
 ssh "$GPU_NODE_HOST" "curl -fsS http://127.0.0.1:$GPU_NODE_API_PORT/health >/dev/null"
-if ! ssh "$GPU_NODE_HOST" "cd \"$GPU_NODE_REPO\" && docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml -f deploy/collector/docker-compose.thepc-gpu-api.yml ps --services --filter \"status=running\" | grep -q '^gpu-probability-worker$'" >/dev/null; then
-  echo "gpu-probability-worker did not remain running after startup" >&2
-  ssh "$GPU_NODE_HOST" "cd \"$GPU_NODE_REPO\" && docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml -f deploy/collector/docker-compose.thepc-gpu-api.yml ps"
-  exit 1
-fi
+ssh "$GPU_NODE_HOST" "cd \"$GPU_NODE_REPO\" && docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml -f deploy/collector/docker-compose.thepc-gpu-api.yml ps"

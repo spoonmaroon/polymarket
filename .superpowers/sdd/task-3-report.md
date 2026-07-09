@@ -324,3 +324,42 @@ Result:
 - Moved the old-runtime guard to run before `build_images_pc.sh`, `install_gpu_node_spoon_artifact_sync.sh`, and `install_gpu_node_runtime_keeper.sh`.
 - Added/updated assertion in `tests/scripts/test_deploy_script.py` so `OLD_WRITER` guard ordering is validated against helper install and startup paths.
 - Added a final worker-running smoke assertion in `deploy_gpu_node.sh` that fails deploy if `gpu-probability-worker` is not in a running service state after startup.
+
+## Task 3 Latest Review Fix: Restore Branch Support and Brief Smoke Shape
+
+## RED
+
+Command:
+
+```bash
+cd /Users/goon/polymarket-server2-cuda-sdd
+.venv/bin/pytest tests/scripts/test_deploy_script.py -k 'gpu_node_deploy_script_targets_server2_native_linux_runtime or gpu_node_deploy_script_smoke_checks_gpu_probability_worker_running' -q
+```
+
+Result:
+
+```text
+FAILED tests/scripts/test_deploy_script.py::test_gpu_node_deploy_script_targets_server2_native_linux_runtime
+FAILED tests/scripts/test_deploy_script.py::test_gpu_node_deploy_script_smoke_checks_gpu_probability_worker_running
+```
+
+## GREEN
+
+Commands:
+
+```bash
+cd /Users/goon/polymarket-server2-cuda-sdd
+.venv/bin/pytest tests/scripts/test_deploy_script.py -k 'gpu_node_deploy_script' -q
+bash -n scripts/deploy_gpu_node.sh
+```
+
+Result:
+
+```text
+9 passed, 47 deselected in 0.01s
+```
+
+## Notes
+
+- Restored `GPU_NODE_BRANCH` with default `main`, branch-aware local and remote fetches, and deploy-ref validation against `origin/$GPU_NODE_BRANCH`.
+- Removed the immediate `gpu-probability-worker` running-state grep so the script ends with the brief's final `health` plus `docker compose ps` smoke shape.

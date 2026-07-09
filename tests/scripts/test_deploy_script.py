@@ -703,10 +703,10 @@ def test_gpu_node_deploy_script_targets_server2_native_linux_runtime() -> None:
     assert "wsl.exe" not in script
     assert "powershell.exe" not in script
     assert 'git clone "$GPU_NODE_GIT_REMOTE" "$GPU_NODE_REPO"' in script
-    assert 'git fetch --quiet origin main' in script
-    assert 'LOCAL_MAIN_SHA="$(git -C "$ROOT" rev-parse origin/main^{commit})"' in script
-    assert 'origin/main is $LOCAL_MAIN_SHA but deploy ref is $FULL_SHA' in script
-    assert 'GPU_NODE_BRANCH' not in script
+    assert 'GPU_NODE_BRANCH="${GPU_NODE_BRANCH:-main}"' in script
+    assert 'git fetch --quiet origin "$GPU_NODE_BRANCH"' in script
+    assert 'LOCAL_BRANCH_SHA="$(git -C "$ROOT" rev-parse "origin/$GPU_NODE_BRANCH^{commit}")"' in script
+    assert 'origin/$GPU_NODE_BRANCH is $LOCAL_BRANCH_SHA but deploy ref is $FULL_SHA' in script
     assert 'set_env POLYMARKET_DATA_DIR "$GPU_NODE_DATA_DIR" deploy/collector/.env' in script
     assert 'set_env POLYMARKET_CUDA_PROBABILITY_IMAGE "$CUDA_PROBABILITY_IMAGE" deploy/collector/.env' in script
     assert "./scripts/install_gpu_node_spoon_artifact_sync.sh" in script
@@ -838,16 +838,17 @@ def test_gpu_node_deploy_script_smoke_checks_gpu_probability_worker_running() ->
         'ssh "$GPU_NODE_HOST" "curl -fsS http://127.0.0.1:$GPU_NODE_API_PORT/health >/dev/null"'
     )
     worker_smoke_index = script.index(
-        'if ! ssh "$GPU_NODE_HOST" "cd \\\"$GPU_NODE_REPO\\\" && docker compose '
+        'ssh "$GPU_NODE_HOST" "cd \\\"$GPU_NODE_REPO\\\" && docker compose '
         '--env-file deploy/collector/.env -f deploy/collector/docker-compose.yml '
-        '-f deploy/collector/docker-compose.thepc-gpu-api.yml ps'
+        '-f deploy/collector/docker-compose.thepc-gpu-api.yml ps"'
     )
 
     assert worker_smoke_index > smoke_start_index
-    assert "gpu-probability-worker did not remain running after startup" in script
-    assert "ps --services --filter" in script
-    assert "status=running" in script
-    assert "grep -q '^gpu-probability-worker$'" in script
+    assert 'if ! ssh "$GPU_NODE_HOST"' not in script
+    assert "gpu-probability-worker did not remain running after startup" not in script
+    assert "ps --services --filter" not in script
+    assert "status=running" not in script
+    assert "grep -q '^gpu-probability-worker$'" not in script
 
 def test_spoon_collector_watchdog_restarts_unhealthy_collector_only() -> None:
     script = (ROOT / "scripts" / "install_spoon_collector_watchdog.sh").read_text(
