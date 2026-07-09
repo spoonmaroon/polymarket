@@ -712,6 +712,45 @@ def test_gpu_node_deploy_script_targets_server2_native_linux_runtime() -> None:
     assert "-f deploy/collector/docker-compose.thepc-gpu-api.yml" in script
 
 
+def test_gpu_node_deploy_script_refuses_dirty_or_unreachable_remote() -> None:
+    script = (ROOT / "scripts" / "deploy_gpu_node.sh").read_text(encoding="utf-8")
+
+    assert 'git ls-remote "$GPU_NODE_GIT_REMOTE" HEAD' in script
+    assert 'git -C "$GPU_NODE_REPO" diff --quiet' in script
+    assert 'git -C "$GPU_NODE_REPO" diff --cached --quiet' in script
+    assert 'git -C "$GPU_NODE_REPO" ls-files --others --exclude-standard' in script
+    assert "remote repo is unreachable" in script
+    assert "remote repo has unstaged changes" in script
+    assert "remote repo has staged changes" in script
+    assert "remote repo has untracked files" in script
+
+
+def test_gpu_node_deploy_script_forwards_env_to_helper_scripts() -> None:
+    script = (ROOT / "scripts" / "deploy_gpu_node.sh").read_text(encoding="utf-8")
+
+    assert (
+        'TARGET_PLATFORM="$TARGET_PLATFORM" POLYMARKET_BUILD_SAVE_TARS="$GPU_NODE_REMOTE_BUILD_SAVE_TARS" '
+        'POLYMARKET_DEPLOY_REF="$FULL_SHA" ./scripts/build_images_pc.sh'
+    ) in script
+    assert (
+        'POLYMARKET_DATA_DIR="$GPU_NODE_DATA_DIR" POLYMARKET_BIN_DIR="$GPU_NODE_BIN_DIR" '
+        './scripts/install_gpu_node_spoon_artifact_sync.sh'
+    ) in script
+    assert (
+        'POLYMARKET_REPO="$GPU_NODE_REPO" POLYMARKET_DATA_DIR="$GPU_NODE_DATA_DIR" '
+        'POLYMARKET_BIN_DIR="$GPU_NODE_BIN_DIR" ./scripts/install_gpu_node_runtime_keeper.sh'
+    ) in script
+
+
+def test_gpu_node_deploy_script_rejects_unsupported_role() -> None:
+    script = (ROOT / "scripts" / "deploy_gpu_node.sh").read_text(encoding="utf-8")
+
+    assert 'case "$GPU_NODE_DEPLOY_ROLE" in' in script
+    assert 'server2-gpu-api)' in script
+    assert 'unsupported GPU_NODE_DEPLOY_ROLE' in script
+    assert 'exit 2' in script
+
+
 def test_spoon_collector_watchdog_restarts_unhealthy_collector_only() -> None:
     script = (ROOT / "scripts" / "install_spoon_collector_watchdog.sh").read_text(
         encoding="utf-8"
