@@ -737,12 +737,16 @@ def test_gpu_node_deploy_script_guards_old_writer_before_startup() -> None:
 
     guard_index = script.index('ssh "$GPU_NODE_OLD_WRITER_HOST"')
     api_check_index = script.index('polymarket-rust-collector-api-1')
+    sync_index = script.index("./scripts/install_gpu_node_spoon_artifact_sync.sh")
     install_index = script.index("./scripts/install_gpu_node_runtime_keeper.sh")
     startup_index = script.index("up -d --no-build api gpu-probability-worker")
 
+    assert guard_index < sync_index
     assert guard_index < install_index
     assert guard_index < startup_index
     assert api_check_index > guard_index
+    assert sync_index > guard_index
+    assert install_index > sync_index
     assert 'GPU_NODE_SKIP_OLD_WRITER_CHECK' not in script
     assert "polymarket-rust-collector-gpu-probability-worker-1" in script
 
@@ -826,6 +830,24 @@ def test_gpu_node_deploy_script_quotes_smoke_repo_path_for_ssh() -> None:
         '-f deploy/collector/docker-compose.thepc-gpu-api.yml ps"'
     ) in script
 
+
+def test_gpu_node_deploy_script_smoke_checks_gpu_probability_worker_running() -> None:
+    script = (ROOT / "scripts" / "deploy_gpu_node.sh").read_text(encoding="utf-8")
+
+    smoke_start_index = script.index(
+        'ssh "$GPU_NODE_HOST" "curl -fsS http://127.0.0.1:$GPU_NODE_API_PORT/health >/dev/null"'
+    )
+    worker_smoke_index = script.index(
+        'if ! ssh "$GPU_NODE_HOST" "cd \\\"$GPU_NODE_REPO\\\" && docker compose '
+        '--env-file deploy/collector/.env -f deploy/collector/docker-compose.yml '
+        '-f deploy/collector/docker-compose.thepc-gpu-api.yml ps'
+    )
+
+    assert worker_smoke_index > smoke_start_index
+    assert "gpu-probability-worker did not remain running after startup" in script
+    assert "ps --services --filter" in script
+    assert "status=running" in script
+    assert "grep -q '^gpu-probability-worker$'" in script
 
 def test_spoon_collector_watchdog_restarts_unhealthy_collector_only() -> None:
     script = (ROOT / "scripts" / "install_spoon_collector_watchdog.sh").read_text(

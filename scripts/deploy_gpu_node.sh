@@ -165,10 +165,6 @@ set_env POLYMARKET_GPU_WORKER_MEM_LIMIT "$GPU_NODE_GPU_WORKER_MEM_LIMIT" deploy/
 set_env POLYMARKET_ENABLE_LIVE_PRIOR_FRAGMENTS "$GPU_NODE_ENABLE_LIVE_PRIOR_FRAGMENTS" deploy/collector/.env
 set_env POLYMARKET_API_PORT "$GPU_NODE_API_PORT" deploy/collector/.env
 
-TARGET_PLATFORM="$TARGET_PLATFORM" POLYMARKET_BUILD_SAVE_TARS="$GPU_NODE_REMOTE_BUILD_SAVE_TARS" POLYMARKET_DEPLOY_REF="$FULL_SHA" ./scripts/build_images_pc.sh
-
-POLYMARKET_DATA_DIR="$GPU_NODE_DATA_DIR" POLYMARKET_BIN_DIR="$GPU_NODE_BIN_DIR" ./scripts/install_gpu_node_spoon_artifact_sync.sh
-
 if OLD_RUNTIME_STATUS="$(
   ssh "$GPU_NODE_OLD_WRITER_HOST" bash -lc "set -euo pipefail
 docker info >/dev/null
@@ -197,6 +193,10 @@ else
   fi
   exit 1
 fi
+TARGET_PLATFORM="$TARGET_PLATFORM" POLYMARKET_BUILD_SAVE_TARS="$GPU_NODE_REMOTE_BUILD_SAVE_TARS" POLYMARKET_DEPLOY_REF="$FULL_SHA" ./scripts/build_images_pc.sh
+
+POLYMARKET_DATA_DIR="$GPU_NODE_DATA_DIR" POLYMARKET_BIN_DIR="$GPU_NODE_BIN_DIR" ./scripts/install_gpu_node_spoon_artifact_sync.sh
+
 
 POLYMARKET_REPO="$GPU_NODE_REPO" POLYMARKET_DATA_DIR="$GPU_NODE_DATA_DIR" POLYMARKET_BIN_DIR="$GPU_NODE_BIN_DIR" POLYMARKET_API_BASE_URL="http://127.0.0.1:$GPU_NODE_API_PORT" ./scripts/install_gpu_node_runtime_keeper.sh
 
@@ -212,4 +212,8 @@ docker compose --env-file deploy/collector/.env \
 EOF
 
 ssh "$GPU_NODE_HOST" "curl -fsS http://127.0.0.1:$GPU_NODE_API_PORT/health >/dev/null"
-ssh "$GPU_NODE_HOST" "cd \"$GPU_NODE_REPO\" && docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml -f deploy/collector/docker-compose.thepc-gpu-api.yml ps"
+if ! ssh "$GPU_NODE_HOST" "cd \"$GPU_NODE_REPO\" && docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml -f deploy/collector/docker-compose.thepc-gpu-api.yml ps --services --filter \"status=running\" | grep -q '^gpu-probability-worker$'" >/dev/null; then
+  echo "gpu-probability-worker did not remain running after startup" >&2
+  ssh "$GPU_NODE_HOST" "cd \"$GPU_NODE_REPO\" && docker compose --env-file deploy/collector/.env -f deploy/collector/docker-compose.yml -f deploy/collector/docker-compose.thepc-gpu-api.yml ps"
+  exit 1
+fi

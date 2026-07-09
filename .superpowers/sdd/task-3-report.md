@@ -285,3 +285,42 @@ Result:
 - Removed `GPU_NODE_BRANCH` routing and forced the deploy check to compare the deploy ref against `origin/main`.
 - Changed the old-host guard to probe Docker fail-closed and reject either `polymarket-rust-collector-gpu-probability-worker-1` or `polymarket-rust-collector-api-1` when active.
 - Allowed only `absent`, `exited`, `dead`, and `removing` for the old host container state check.
+
+## Task 3 Final Sequencing Fix: Old Writer Guard Before Helper Installs
+
+## RED
+
+I first encoded the expected sequencing failure explicitly in tests: old-writer guard text must come before both helper installs and startup. With the previous ordering, this test failed.
+
+```bash
+cd /Users/goon/polymarket-server2-cuda-sdd
+uv run -q pytest tests/scripts/test_deploy_script.py -k "gpu_node_deploy_script_guards_old_writer_before_startup"
+```
+
+Result:
+
+```text
+FAILED tests/scripts/test_deploy_script.py::test_gpu_node_deploy_script_guards_old_writer_before_startup
+E       assert 7576 < 7497
+```
+
+## GREEN
+
+```bash
+cd /Users/goon/polymarket-server2-cuda-sdd
+uv run -q pytest tests/scripts/test_deploy_script.py -k "gpu_node_deploy_script"
+bash -n scripts/deploy_gpu_node.sh
+```
+
+Result:
+
+```text
+9 passed, 47 deselected
+0
+```
+
+## Notes
+
+- Moved the old-runtime guard to run before `build_images_pc.sh`, `install_gpu_node_spoon_artifact_sync.sh`, and `install_gpu_node_runtime_keeper.sh`.
+- Added/updated assertion in `tests/scripts/test_deploy_script.py` so `OLD_WRITER` guard ordering is validated against helper install and startup paths.
+- Added a final worker-running smoke assertion in `deploy_gpu_node.sh` that fails deploy if `gpu-probability-worker` is not in a running service state after startup.
