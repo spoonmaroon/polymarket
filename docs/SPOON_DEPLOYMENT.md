@@ -440,11 +440,11 @@ ssh spoon 'python3 /home/spoon/polymarket/scripts/check_collector_status.py --st
 
 After spoon is fresh, keep the Mac collector stopped. The Mac can still run the read-only monitor against copied files, but it should not write to the same logical data stream while spoon is the active collector.
 
-## CPU Authority / THEPC GPU Active-Active Split
+## CPU Authority / server2 GPU Active-Active Split
 
 The active-active layout keeps one writer per artifact. Spoon is the CPU
 authority for collector, normalizer, DuckDB-derived hot inputs, generator
-fragments, outcomes, and volatility. THEPC is the GPU/API authority for CUDA
+fragments, outcomes, and volatility. server2 is the GPU/API authority for CUDA
 probability outputs, probability events, and the browser/TUI API surface. This
 is active-active because both hosts run useful services at the same time; it is
 not multi-writer.
@@ -453,18 +453,18 @@ Spoon CPU authority is the default deploy role. `scripts/deploy.sh` uses
 `POLYMARKET_DEPLOY_ROLE=spoon-cpu-authority` unless an operator explicitly sets
 `POLYMARKET_DEPLOY_ROLE=full`.
 
-THEPC GPU/API authority is the default PC deploy role. `scripts/deploy_pc.sh`
-uses `PC_DEPLOY_ROLE=thepc-gpu-api`, starts only `api` and
-`gpu-probability-worker`, stops THEPC `collector`, `normalizer`, and
-`outcome-refresh`, and installs the artifact sync loop that pulls Spoon-owned
-live artifacts.
+server2 GPU/API authority is the active GPU deploy role.
+`scripts/deploy_gpu_node.sh` uses `GPU_NODE_DEPLOY_ROLE=server2-gpu-api`,
+starts only `api` and `gpu-probability-worker`, verifies the old main desktop
+PC GPU/API containers are not active, and installs the artifact sync loop that
+pulls Spoon-owned live artifacts.
 The sync loop should be automatic through the user service
-`polymarket-spoon-artifact-sync.service` when user systemd is available in WSL.
+`polymarket-spoon-artifact-sync.service` when user systemd is available.
 If user systemd is unavailable, the installer falls back to a `nohup` loop,
-writes its PID to `/home/ender/polymarket-data/live/artifact-sync.pid`, and logs
-to `/home/ender/polymarket-data/logs/artifact-sync.log`.
+writes its PID to `/home/enoch/polymarket-data/live/artifact-sync.pid`, and logs
+to `/home/enoch/polymarket-data/logs/artifact-sync.log`.
 
-THEPC probability CPU control is a soft CPU target, not a hard Docker CPU cap.
+server2 probability CPU control is a soft CPU target, not a hard Docker CPU cap.
 The default is `POLYMARKET_PROBABILITY_CPU_TARGET_PERCENT=15.0` with
 `POLYMARKET_PROBABILITY_CPU_SOFT_MAX_PERCENT=20.0`. The worker measures
 per-cycle process CPU and adapts its next total path budget between
@@ -479,17 +479,13 @@ truth for ownership and mirrors:
 - Spoon-owned inputs: `status.json`, `normalized_health.json`,
   `probability_inputs.json`, `probability_fragments.json`, `outcomes.json`, and
   `volatility.json`.
-- THEPC-owned outputs: `probabilities.json`, `probability-events.jsonl`, and
-  `cluster_status.thepc.json`.
+- server2-owned outputs: `probabilities.json`, `probability-events.jsonl`, and
+  `cluster_status.server2.json`.
 - Mirror freshness target: `5` seconds.
 
-When `scripts/deploy_pc.sh` runs in `PC_DEPLOY_MODE=image-tar`, skip-build
-deploys require SHA-tagged image artifacts under `dist/docker`, including
-`polymarket-rust-collector-<sha>.tar`, `polymarket-normalizer-<sha>.tar`,
-`polymarket-cuda-probability-<sha>.tar`, and
-`polymarket-cockpit-tui-<sha>`. In the default `remote-build` mode, the script
-has THEPC WSL fetch GitHub `main` at the exact pushed SHA and builds those
-images inside WSL. Local image copying is only for `PC_DEPLOY_MODE=image-tar`.
+`scripts/deploy_gpu_node.sh` has server2 fetch GitHub `main` at the exact
+pushed SHA and builds the runtime images locally on native Linux. Do not use
+local-only commits for this lane.
 
 Use the deploy defaults or compose overrides to keep each host in its lane:
 
@@ -497,15 +493,15 @@ Use the deploy defaults or compose overrides to keep each host in its lane:
 # Default Spoon CPU authority deploy.
 POLYMARKET_DEPLOY_ROLE=spoon-cpu-authority ./scripts/deploy.sh
 
-# Default THEPC GPU/API authority deploy.
-PC_DEPLOY_ROLE=thepc-gpu-api ./scripts/deploy_pc.sh
+# Active server2 GPU/API authority deploy.
+GPU_NODE_DEPLOY_ROLE=server2-gpu-api ./scripts/deploy_gpu_node.sh
 
 # Spoon CPU authority: no local GPU probability worker or API.
 docker compose --env-file deploy/collector/.env \
   -f deploy/collector/docker-compose.yml \
   -f deploy/collector/docker-compose.spoon-cpu-authority.yml up -d
 
-# THEPC GPU/API authority: no local collector, normalizer, or outcome sidecar.
+# server2 GPU/API authority: no local collector, normalizer, or outcome sidecar.
 docker compose --env-file deploy/collector/.env \
   -f deploy/collector/docker-compose.yml \
   -f deploy/collector/docker-compose.thepc-gpu-api.yml up -d
@@ -522,14 +518,14 @@ Run with `--execute` only from the declared source node. Do not run two
 normalizers, two collectors, or two probability writers against the same
 canonical path. That single-writer rule is the split-brain guard.
 
-### Live Path And GPU Worker Checks
+### server2 Live Path And GPU Worker Checks
 
-Run these checks inside THEPC Ubuntu WSL. Docker Desktop's Windows UI can miss
-or mislabel the containers; WSL `docker compose` is the source of truth for
-this lane.
+Run these checks on server2 native Linux. Portainer should show the same
+containers, but `docker compose` on server2 is the source of truth for this
+lane.
 
 ```bash
-cd /home/ender/polymarket
+cd /home/enoch/polymarket
 docker compose --env-file deploy/collector/.env \
   -f deploy/collector/docker-compose.yml \
   -f deploy/collector/docker-compose.thepc-gpu-api.yml ps
@@ -560,27 +556,27 @@ offload.blocked_inputs names stale assets and reasons
 GPU utilization can be low while offload is blocked
 ```
 
-Check artifact sync and freshness from THEPC WSL:
+Check artifact sync and freshness from server2:
 
 ```bash
 systemctl --user is-active polymarket-spoon-artifact-sync.service
 systemctl --user status polymarket-spoon-artifact-sync.service --no-pager
 journalctl --user -u polymarket-spoon-artifact-sync.service -n 80 --no-pager
 for file in status.json normalized_health.json probability_inputs.json probability_fragments.json outcomes.json volatility.json; do
-  stat -c '%n %y' "/home/ender/polymarket-data/live/$file"
+  stat -c '%n %y' "/home/enoch/polymarket-data/live/$file"
 done
 ```
 
 If user systemd is unavailable, use the fallback loop checks:
 
 ```bash
-cat /home/ender/polymarket-data/live/artifact-sync.pid
-tail -80 /home/ender/polymarket-data/logs/artifact-sync.log
+cat /home/enoch/polymarket-data/live/artifact-sync.pid
+tail -80 /home/enoch/polymarket-data/logs/artifact-sync.log
 ```
 
 The artifact sync copies Spoon-owned `status.json`, `normalized_health.json`,
 `probability_inputs.json`, `probability_fragments.json`, `outcomes.json`, and
-`volatility.json` into `/home/ender/polymarket-data/live`. Treat stale file
+`volatility.json` into `/home/enoch/polymarket-data/live`. Treat stale file
 mtimes or stale API age fields as input freshness failures before debugging CUDA
 itself.
 

@@ -186,12 +186,15 @@ def test_runtime_keeper_runbook_documents_startup_recovery() -> None:
 def test_active_active_cpu_authority_runbook_documents_split() -> None:
     text = (ROOT / "docs" / "SPOON_DEPLOYMENT.md").read_text(encoding="utf-8")
 
-    assert "CPU Authority / THEPC GPU Active-Active Split" in text
+    assert "CPU Authority / server2 GPU Active-Active Split" in text
     assert "deploy/cluster/cluster.local.example.json" in text
     assert "docker-compose.spoon-cpu-authority.yml" in text
     assert "docker-compose.thepc-gpu-api.yml" in text
     assert "polymarket-engine sync-cluster-artifacts" in text
     assert "probability_fragments.json" in text
+    assert "server2-owned outputs" in text
+    assert "THEPC-owned outputs" not in text
+    assert "THEPC is the GPU/API authority" not in text
     assert "single-writer" in text
 
 
@@ -202,7 +205,8 @@ def test_docs_describe_default_soft_cpu_split() -> None:
     )
 
     assert "Spoon CPU authority is the default deploy role" in deployment
-    assert "THEPC GPU/API authority is the default PC deploy role" in deployment
+    assert "server2 GPU/API authority is the active GPU deploy role" in deployment
+    assert "THEPC GPU/API authority is the default PC deploy role" not in deployment
     assert "soft CPU target" in deployment
     assert "POLYMARKET_PROBABILITY_CPU_TARGET_PERCENT=15.0" in deployment
     assert "POLYMARKET_PROBABILITY_CPU_SOFT_MAX_PERCENT=20.0" in deployment
