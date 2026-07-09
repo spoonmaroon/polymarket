@@ -160,11 +160,14 @@ set_env POLYMARKET_API_PORT "$GPU_NODE_API_PORT" deploy/collector/.env
 TARGET_PLATFORM="$TARGET_PLATFORM" POLYMARKET_BUILD_SAVE_TARS="$GPU_NODE_REMOTE_BUILD_SAVE_TARS" POLYMARKET_DEPLOY_REF="$FULL_SHA" ./scripts/build_images_pc.sh
 
 POLYMARKET_DATA_DIR="$GPU_NODE_DATA_DIR" POLYMARKET_BIN_DIR="$GPU_NODE_BIN_DIR" ./scripts/install_gpu_node_spoon_artifact_sync.sh
-POLYMARKET_REPO="$GPU_NODE_REPO" POLYMARKET_DATA_DIR="$GPU_NODE_DATA_DIR" POLYMARKET_BIN_DIR="$GPU_NODE_BIN_DIR" ./scripts/install_gpu_node_runtime_keeper.sh
 
 case "$GPU_NODE_DEPLOY_ROLE" in
   server2-gpu-api)
-    if ! OLD_WRITER_STATUS="$(ssh "$GPU_NODE_OLD_WRITER_HOST" "docker inspect -f '{{.State.Status}}' polymarket-rust-collector-gpu-probability-worker-1 2>/dev/null || true")"; then
+    if OLD_WRITER_STATUS="$(
+      ssh "$GPU_NODE_OLD_WRITER_HOST" bash -lc "set -euo pipefail; docker info >/dev/null; docker inspect -f '{{.State.Status}}' polymarket-rust-collector-gpu-probability-worker-1 2>/dev/null || printf absent"
+    )"; then
+      :
+    else
       echo "unable to verify old GPU probability writer state on $GPU_NODE_OLD_WRITER_HOST" >&2
       exit 1
     fi
@@ -181,6 +184,8 @@ case "$GPU_NODE_DEPLOY_ROLE" in
         exit 1
         ;;
     esac
+
+    POLYMARKET_REPO="$GPU_NODE_REPO" POLYMARKET_DATA_DIR="$GPU_NODE_DATA_DIR" POLYMARKET_BIN_DIR="$GPU_NODE_BIN_DIR" POLYMARKET_API_BASE_URL="http://127.0.0.1:$GPU_NODE_API_PORT" ./scripts/install_gpu_node_runtime_keeper.sh
 
     docker compose --env-file deploy/collector/.env \
       -f deploy/collector/docker-compose.yml \

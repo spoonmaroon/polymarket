@@ -71,9 +71,11 @@ def test_gpu_node_runtime_keeper_installer_is_native_linux_without_wsl() -> None
     assert 'REPO="${POLYMARKET_REPO:-/home/enoch/polymarket}"' in script
     assert 'DATA_DIR="${POLYMARKET_DATA_DIR:-/home/enoch/polymarket-data}"' in script
     assert 'BIN_DIR="${POLYMARKET_BIN_DIR:-/home/enoch/bin}"' in script
+    assert 'POLYMARKET_API_BASE_URL="${POLYMARKET_API_BASE_URL:-http://127.0.0.1:8000}"' in script
     assert 'exec "\\$ENGINE_BIN" runtime-keeper' in script
     assert '--compose-file "$REPO/deploy/collector/docker-compose.yml"' in script
     assert '--compose-file "$REPO/deploy/collector/docker-compose.thepc-gpu-api.yml"' in script
+    assert '--api-base-url "$POLYMARKET_API_BASE_URL"' in script
     assert '--required-service "api"' in script
     assert '--required-service "gpu-probability-worker"' in script
     assert '--loop-interval-seconds 30' in script

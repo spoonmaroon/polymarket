@@ -4,6 +4,7 @@ set -euo pipefail
 REPO="${POLYMARKET_REPO:-/home/enoch/polymarket}"
 DATA_DIR="${POLYMARKET_DATA_DIR:-/home/enoch/polymarket-data}"
 BIN_DIR="${POLYMARKET_BIN_DIR:-/home/enoch/bin}"
+POLYMARKET_API_BASE_URL="${POLYMARKET_API_BASE_URL:-http://127.0.0.1:8000}"
 LOOP_SCRIPT="$BIN_DIR/polymarket-runtime-keeper-loop.sh"
 SERVICE_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 SERVICE_PATH="$SERVICE_DIR/polymarket-runtime-keeper.service"
@@ -25,7 +26,7 @@ fi
 exec "\$ENGINE_BIN" runtime-keeper \
   --repo "$REPO" \
   --data-dir "$DATA_DIR" \
-  --api-base-url "http://127.0.0.1:8000" \
+  --api-base-url "$POLYMARKET_API_BASE_URL" \
   --compose-file "$REPO/deploy/collector/docker-compose.yml" \
   --compose-file "$REPO/deploy/collector/docker-compose.thepc-gpu-api.yml" \
   --required-service "api" \
