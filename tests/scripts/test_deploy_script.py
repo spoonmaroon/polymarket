@@ -558,21 +558,42 @@ def test_thepc_spoon_artifact_sync_installer_is_role_safe() -> None:
         encoding="utf-8"
     )
 
-    assert (
-        "status.json normalized_health.json probability_inputs.json "
-        "probability_fragments.json outcomes.json volatility.json"
-    ) in script
+    assert "install_gpu_node_spoon_artifact_sync.sh" in script
+    assert 'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"' in script
+    assert 'export POLYMARKET_DATA_DIR="${POLYMARKET_DATA_DIR:-$HOME/polymarket-data}"' in script
+    assert 'export POLYMARKET_BIN_DIR="${POLYMARKET_BIN_DIR:-$HOME/bin}"' in script
+    assert 'exec "$SCRIPT_DIR/install_gpu_node_spoon_artifact_sync.sh"' in script
+
+
+def test_gpu_node_spoon_artifact_sync_installer_is_native_linux_and_role_safe() -> None:
+    script = (ROOT / "scripts" / "install_gpu_node_spoon_artifact_sync.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'DATA_DIR="${POLYMARKET_DATA_DIR:-$HOME/polymarket-data}"' in script
+    assert 'BIN_DIR="${POLYMARKET_BIN_DIR:-$HOME/bin}"' in script
     assert 'SPOON_ALIAS="${POLYMARKET_SPOON_SSH_ALIAS:-spoon}"' in script
-    assert '"$SPOON_ALIAS"' in script
-    assert "Host {alias}" in script
-    assert 'SPOON_HOSTNAME="${SPOON_HOSTNAME:-100.126.126.1}"' in script
-    assert "HostName {hostname}" in script
-    assert 'SPOON_USER="${SPOON_USER:-spoon}"' in script
-    assert "User {user}" in script
+    assert 'src="$SPOON_ALIAS:/home/spoon/polymarket-data/live"' in script
+    assert "status.json normalized_health.json probability_inputs.json probability_fragments.json outcomes.json volatility.json" in script
+    assert "probabilities.json" not in script
+    assert "probability-events.jsonl" not in script
+    assert "cluster_status.thepc.json" not in script
+    assert "cluster_status.server2.json" not in script
     assert "polymarket-spoon-artifact-sync.service" in script
     assert "systemctl --user enable --now polymarket-spoon-artifact-sync.service" in script
     assert "nohup bash -lc" in script
-    assert "artifact sync skipped" in script
+    assert "wsl.exe" not in script
+    assert "powershell.exe" not in script
+
+
+def test_thepc_artifact_sync_installer_delegates_to_generic_gpu_node_installer() -> None:
+    script = (ROOT / "scripts" / "install_thepc_spoon_artifact_sync.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "install_gpu_node_spoon_artifact_sync.sh" in script
+    assert 'export POLYMARKET_DATA_DIR="${POLYMARKET_DATA_DIR:-$HOME/polymarket-data}"' in script
+    assert 'exec "$SCRIPT_DIR/install_gpu_node_spoon_artifact_sync.sh"' in script
 
 
 def test_spoon_collector_watchdog_restarts_unhealthy_collector_only() -> None:
