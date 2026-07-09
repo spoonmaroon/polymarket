@@ -698,18 +698,39 @@ def test_gpu_node_deploy_script_targets_server2_native_linux_runtime() -> None:
     assert 'GPU_NODE_BIN_DIR="${GPU_NODE_BIN_DIR:-/home/enoch/bin}"' in script
     assert 'GPU_NODE_DEPLOY_ROLE="${GPU_NODE_DEPLOY_ROLE:-server2-gpu-api}"' in script
     assert 'GPU_NODE_REMOTE_BUILD_SAVE_TARS="${GPU_NODE_REMOTE_BUILD_SAVE_TARS:-0}"' in script
-    assert "server2 native Linux will fetch GitHub main and build images locally" in script
+    assert 'GPU_NODE_BRANCH="${GPU_NODE_BRANCH:-main}"' in script
+    assert 'GPU_NODE_OLD_WRITER_HOST="${GPU_NODE_OLD_WRITER_HOST:-spoon@100.100.109.27}"' in script
+    assert "server2 native Linux will fetch the selected GitHub branch and build images locally" in script
     assert "wsl.exe" not in script
     assert "powershell.exe" not in script
     assert 'git clone "$GPU_NODE_GIT_REMOTE" "$GPU_NODE_REPO"' in script
+    assert 'git fetch --quiet origin "$GPU_NODE_BRANCH"' in script
+    assert 'REMOTE_BRANCH_SHA="$(git -C "$ROOT" rev-parse "origin/$GPU_NODE_BRANCH^{commit}")"' in script
+    assert 'origin/main' not in script
+    assert 'if [ "$GPU_NODE_BRANCH" != "main" ]; then' not in script
     assert 'set_env POLYMARKET_DATA_DIR "$GPU_NODE_DATA_DIR" deploy/collector/.env' in script
     assert 'set_env POLYMARKET_CUDA_PROBABILITY_IMAGE "$CUDA_PROBABILITY_IMAGE" deploy/collector/.env' in script
     assert "./scripts/install_gpu_node_spoon_artifact_sync.sh" in script
     assert "./scripts/install_gpu_node_runtime_keeper.sh" in script
+    assert 'ssh "$GPU_NODE_OLD_WRITER_HOST"' in script
+    assert 'polymarket-rust-collector-gpu-probability-worker-1' in script
+    assert 'GPU_NODE_SKIP_OLD_WRITER_CHECK' in script
+    assert 'docker inspect polymarket-rust-collector-gpu-probability-worker-1' in script
     assert "stop collector normalizer outcome-refresh" in script
     assert "up -d --no-build api gpu-probability-worker" in script
     assert "docker compose --env-file deploy/collector/.env" in script
     assert "-f deploy/collector/docker-compose.thepc-gpu-api.yml" in script
+
+
+def test_gpu_node_deploy_script_guards_old_writer_before_startup() -> None:
+    script = (ROOT / "scripts" / "deploy_gpu_node.sh").read_text(encoding="utf-8")
+
+    guard_index = script.index('ssh "$GPU_NODE_OLD_WRITER_HOST"')
+    startup_index = script.index("up -d --no-build api gpu-probability-worker")
+
+    assert guard_index < startup_index
+    assert "GPU_NODE_SKIP_OLD_WRITER_CHECK" in script
+    assert "polymarket-rust-collector-gpu-probability-worker-1" in script
 
 
 def test_gpu_node_deploy_script_refuses_dirty_or_unreachable_remote() -> None:

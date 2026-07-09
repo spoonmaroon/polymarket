@@ -22,6 +22,7 @@ GPU_NODE_GPU_WORKER_MEM_LIMIT="${GPU_NODE_GPU_WORKER_MEM_LIMIT:-1536m}"
 GPU_NODE_API_PORT="${GPU_NODE_API_PORT:-8000}"
 GPU_NODE_REMOTE_BUILD_SAVE_TARS="${GPU_NODE_REMOTE_BUILD_SAVE_TARS:-0}"
 GPU_NODE_BRANCH="${GPU_NODE_BRANCH:-main}"
+GPU_NODE_OLD_WRITER_HOST="${GPU_NODE_OLD_WRITER_HOST:-spoon@100.100.109.27}"
 
 if ! git -C "$ROOT" diff --quiet; then
   echo "working tree has unstaged changes; commit or stash before deploying to server2" >&2
@@ -45,15 +46,10 @@ if [ "$HEAD_SHA" != "$FULL_SHA" ]; then
   exit 1
 fi
 
-if [ "$GPU_NODE_BRANCH" != "main" ]; then
-  echo "server2 deploy is main-only; set GPU_NODE_BRANCH=main" >&2
-  exit 1
-fi
-
-git -C "$ROOT" fetch --quiet origin main
-LOCAL_MAIN_SHA="$(git -C "$ROOT" rev-parse origin/main^{commit})"
-if [ "$LOCAL_MAIN_SHA" != "$FULL_SHA" ]; then
-  echo "origin/main is $LOCAL_MAIN_SHA but deploy ref is $FULL_SHA; push main before deploying" >&2
+git -C "$ROOT" fetch --quiet origin "$GPU_NODE_BRANCH"
+REMOTE_BRANCH_SHA="$(git -C "$ROOT" rev-parse "origin/$GPU_NODE_BRANCH^{commit}")"
+if [ "$REMOTE_BRANCH_SHA" != "$FULL_SHA" ]; then
+  echo "origin/$GPU_NODE_BRANCH is $REMOTE_BRANCH_SHA but deploy ref is $FULL_SHA; push $GPU_NODE_BRANCH before deploying" >&2
   exit 1
 fi
 
@@ -62,7 +58,7 @@ COLLECTOR_IMAGE="polymarket-rust-collector:${SHORT_SHA}"
 NORMALIZER_IMAGE="polymarket-normalizer:${SHORT_SHA}"
 CUDA_PROBABILITY_IMAGE="polymarket-cuda-probability:${SHORT_SHA}"
 
-echo "server2 native Linux will fetch GitHub main and build images locally"
+echo "server2 native Linux will fetch the selected GitHub branch and build images locally"
 
 shell_quote() {
   printf "%q" "$1"
@@ -90,6 +86,7 @@ GPU_NODE_ENABLE_LIVE_PRIOR_FRAGMENTS=$(shell_quote "$GPU_NODE_ENABLE_LIVE_PRIOR_
 GPU_NODE_GPU_WORKER_MEM_LIMIT=$(shell_quote "$GPU_NODE_GPU_WORKER_MEM_LIMIT")
 GPU_NODE_API_PORT=$(shell_quote "$GPU_NODE_API_PORT")
 GPU_NODE_REMOTE_BUILD_SAVE_TARS=$(shell_quote "$GPU_NODE_REMOTE_BUILD_SAVE_TARS")
+GPU_NODE_OLD_WRITER_HOST=$(shell_quote "$GPU_NODE_OLD_WRITER_HOST")
 
 set_env() {
   key="\$1"
@@ -167,6 +164,18 @@ POLYMARKET_REPO="$GPU_NODE_REPO" POLYMARKET_DATA_DIR="$GPU_NODE_DATA_DIR" POLYMA
 
 case "$GPU_NODE_DEPLOY_ROLE" in
   server2-gpu-api)
+    if [ "${GPU_NODE_SKIP_OLD_WRITER_CHECK:-0}" != "1" ]; then
+      if ! OLD_WRITER_STATE="$(ssh "$GPU_NODE_OLD_WRITER_HOST" 'if docker inspect polymarket-rust-collector-gpu-probability-worker-1 >/dev/null 2>&1; then printf present; else rc=$?; if [ "$rc" -eq 1 ]; then printf absent; else exit "$rc"; fi; fi')"; then
+        echo "unable to verify old GPU probability writer is stopped on $GPU_NODE_OLD_WRITER_HOST" >&2
+        exit 1
+      fi
+
+      if [ "$OLD_WRITER_STATE" = "present" ]; then
+        echo "old GPU probability writer is still present on $GPU_NODE_OLD_WRITER_HOST" >&2
+        exit 1
+      fi
+    fi
+
     docker compose --env-file deploy/collector/.env \
       -f deploy/collector/docker-compose.yml \
       -f deploy/collector/docker-compose.thepc-gpu-api.yml \
