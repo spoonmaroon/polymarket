@@ -220,10 +220,11 @@ uv run polymarket-engine write-normalized-health \
   --out /home/spoon/polymarket-data/live/normalized_health.json
 ```
 
-## THEPC Outcome Backfill
+## Legacy THEPC Outcome Backfill
 
-Run historical outcome repair explicitly on THEPC, outside the 0.1s normalizer
-loop:
+This is legacy rollback/recovery guidance for the old THEPC WSL lane. Do not
+run it during normal server2 operation. Run historical outcome repair on THEPC
+only when explicitly recovering that legacy host, outside the normalizer loop:
 
 ```bash
 cd /home/ender/polymarket
@@ -338,7 +339,7 @@ uv run uvicorn polymarket_engine.app:app --host 127.0.0.1 --port 8000
 cargo run --manifest-path rust/Cargo.toml -p polymarket-cockpit-tui -- --engine-api-url http://127.0.0.1:8000 --poll-interval-ms 1000
 ```
 
-THEPC over Tailscale, using a configurable URL:
+Legacy THEPC over Tailscale, using a configurable URL. Do not use this while server2 is the active API/GPU runtime host:
 
 ```bash
 cargo run --manifest-path rust/Cargo.toml -p polymarket-cockpit-tui -- --engine-api-url http://100.72.104.49:8000 --poll-interval-ms 1000
@@ -589,15 +590,16 @@ is old, debug Spoon generation or the Spoon-to-server2 sync loop. Faster
 Coinbase/Binance micro-vol can be added as a separate diagnostic, but it must
 not replace `polymarket_rtds_chainlink` as the `sigma_tau` input.
 
-## Runtime keeper
+## Legacy THEPC Runtime keeper
 
-THEPC can run the repo-owned runtime keeper after Windows logon. The keeper runs
-inside WSL, starts the Compose services, starts configured optional containers
-such as the existing GPU probability worker container, verifies the API/UI/live
-probability endpoints, and writes
+This is legacy rollback/recovery guidance for the old THEPC WSL lane. Do not install or run it while server2 owns CUDA probabilities. THEPC can run the
+repo-owned runtime keeper after Windows logon. The keeper runs inside WSL,
+starts the Compose services, starts configured optional containers such as the
+existing GPU probability worker container, verifies the API/UI/live probability
+endpoints, and writes
 `/home/ender/polymarket-data/live/runtime_keeper.json`.
 
-Install on THEPC from WSL:
+Install on THEPC from WSL only for explicit legacy rollback:
 
 ```bash
 cd /home/ender/polymarket

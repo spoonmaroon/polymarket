@@ -137,6 +137,10 @@ def test_spoon_docs_describe_spoon_duckdb_viewer_authority() -> None:
 def test_spoon_docs_mark_thepc_deploy_as_cuda_runtime_path() -> None:
     text = (ROOT / "docs" / "SPOON_DEPLOYMENT.md").read_text(encoding="utf-8")
 
+    assert "Legacy THEPC Outcome Backfill" in text
+    assert "legacy rollback/recovery guidance for the old THEPC WSL lane" in text
+    assert "Legacy THEPC over Tailscale" in text
+    assert "Do not use this while server2 is the active API/GPU runtime host" in text
     assert "./scripts/deploy_pc.sh" in text
     assert "legacy CUDA runtime deployment path only" in text
     assert "the only supported CUDA runtime deployment path" not in text
@@ -181,7 +185,8 @@ def test_spoon_docs_pin_safe_hot_replay_gate_command() -> None:
 def test_runtime_keeper_runbook_documents_startup_recovery() -> None:
     text = (ROOT / "docs" / "SPOON_DEPLOYMENT.md").read_text(encoding="utf-8")
 
-    assert "Runtime keeper" in text
+    assert "Legacy THEPC Runtime keeper" in text
+    assert "Do not install or run it while server2 owns CUDA probabilities" in text
     assert "polymarket-engine runtime-keeper" in text
     assert "scripts/install_thepc_runtime_keeper.sh" in text
     assert "scripts/check_mac_polymarket_tunnel.sh" in text
