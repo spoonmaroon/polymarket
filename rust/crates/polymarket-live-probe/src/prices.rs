@@ -186,6 +186,23 @@ struct ChainlinkWebSocketTelemetry {
     connected_stream_count: usize,
 }
 
+struct ChainlinkDirectConnectionGuard {
+    telemetry: Arc<RwLock<ChainlinkWebSocketTelemetry>>,
+}
+
+impl ChainlinkDirectConnectionGuard {
+    fn new(telemetry: Arc<RwLock<ChainlinkWebSocketTelemetry>>) -> Self {
+        record_chainlink_direct_connected(&telemetry, true);
+        Self { telemetry }
+    }
+}
+
+impl Drop for ChainlinkDirectConnectionGuard {
+    fn drop(&mut self) {
+        record_chainlink_direct_connected(&self.telemetry, false);
+    }
+}
+
 pub struct ChainlinkStreamManager {
     symbols: Vec<String>,
     tasks: Vec<JoinHandle<Result<()>>>,
@@ -469,7 +486,7 @@ async fn run_chainlink_symbol_direct_stream(
         .ok_or_else(|| anyhow!("missing Chainlink symbol for RTDS stream"))?;
     let (ws_stream, _) = connect_async(POLYMARKET_RTDS_WS_URL).await?;
     let (mut write, mut read) = ws_stream.split();
-    record_chainlink_direct_connected(&telemetry, true);
+    let _connection_guard = ChainlinkDirectConnectionGuard::new(telemetry.clone());
     send_chainlink_direct_subscription(&mut write, &symbol).await?;
     let mut heartbeat = interval(Duration::from_secs(10));
     heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -491,14 +508,12 @@ async fn run_chainlink_symbol_direct_stream(
             }
             message_result = read.next() => {
                 let Some(message_result) = message_result else {
-                    record_chainlink_direct_connected(&telemetry, false);
                     record_chainlink_stream_error(&telemetry);
                     return Err(anyhow!("Chainlink RTDS stream ended for {symbol}"));
                 };
                 match message_result {
                     Ok(message) => message,
                     Err(error) => {
-                        record_chainlink_direct_connected(&telemetry, false);
                         record_chainlink_stream_error(&telemetry);
                         return Err(error.into());
                     }
@@ -611,7 +626,9 @@ where
 {
     write
         .send(Message::Text(
-            chainlink_direct_subscription_frame(symbol).to_string().into(),
+            chainlink_direct_subscription_frame(symbol)
+                .to_string()
+                .into(),
         ))
         .await?;
     Ok(())
@@ -627,9 +644,7 @@ fn websocket_control_response(message: &Message) -> Option<Message> {
 
 fn chainlink_rtds_messages_from_ws_message(message: Message) -> Result<Vec<RtdsMessage>> {
     match message {
-        Message::Text(text) if text.as_str() == "PONG" || text.trim().is_empty() => {
-            Ok(Vec::new())
-        }
+        Message::Text(text) if text.as_str() == "PONG" || text.trim().is_empty() => Ok(Vec::new()),
         Message::Text(text) => Ok(parse_messages(text.as_str().as_bytes())?),
         Message::Binary(bytes) => Ok(parse_messages(bytes.as_ref())?),
         Message::Ping(_) | Message::Pong(_) => Ok(Vec::new()),
@@ -648,8 +663,8 @@ fn chainlink_symbol_price_subscriptions(symbols: &[String]) -> Vec<Subscription>
 }
 
 fn chainlink_connection_state_label(expected_streams: usize, connected_streams: usize) -> String {
-    if expected_streams > 0 && expected_streams == connected_streams {
-        return format!("Connected {{ streams: {connected_streams} }}");
+    if expected_streams > 0 && connected_streams >= expected_streams {
+        return format!("Connected {{ streams: {expected_streams} }}");
     }
     format!(
         "Partial {{ connected_streams: {connected_streams}, expected_streams: {expected_streams} }}"
@@ -771,7 +786,11 @@ fn is_chainlink_subscription_snapshot(message: &RtdsMessage, requested_symbol: &
     };
     symbol.contains('/')
         && symbol.eq_ignore_ascii_case(requested_symbol)
-        && message.payload.get("data").and_then(Value::as_array).is_some()
+        && message
+            .payload
+            .get("data")
+            .and_then(Value::as_array)
+            .is_some()
 }
 
 fn chainlink_snapshot_tick_from_payload(
@@ -889,10 +908,9 @@ mod tests {
 
     #[test]
     fn chainlink_all_prices_subscription_includes_empty_filters() {
-        let request =
-            polymarket_client_sdk_v2::rtds::SubscriptionRequest::subscribe(vec![
-                chainlink_all_prices_subscription(),
-            ]);
+        let request = polymarket_client_sdk_v2::rtds::SubscriptionRequest::subscribe(vec![
+            chainlink_all_prices_subscription(),
+        ]);
 
         let json = serde_json::to_value(request).unwrap();
 
@@ -911,10 +929,16 @@ mod tests {
 
         assert_eq!(json["subscriptions"][0]["topic"], "crypto_prices_chainlink");
         assert_eq!(json["subscriptions"][0]["type"], "*");
-        assert_eq!(json["subscriptions"][0]["filters"], r#"{"symbol":"btc/usd"}"#);
+        assert_eq!(
+            json["subscriptions"][0]["filters"],
+            r#"{"symbol":"btc/usd"}"#
+        );
         assert_eq!(json["subscriptions"][1]["topic"], "crypto_prices_chainlink");
         assert_eq!(json["subscriptions"][1]["type"], "*");
-        assert_eq!(json["subscriptions"][1]["filters"], r#"{"symbol":"eth/usd"}"#);
+        assert_eq!(
+            json["subscriptions"][1]["filters"],
+            r#"{"symbol":"eth/usd"}"#
+        );
     }
 
     #[test]
@@ -922,9 +946,15 @@ mod tests {
         let frame = chainlink_direct_subscription_frame("btc/usd");
 
         assert_eq!(frame["action"], "subscribe");
-        assert_eq!(frame["subscriptions"][0]["topic"], "crypto_prices_chainlink");
+        assert_eq!(
+            frame["subscriptions"][0]["topic"],
+            "crypto_prices_chainlink"
+        );
         assert_eq!(frame["subscriptions"][0]["type"], "*");
-        assert_eq!(frame["subscriptions"][0]["filters"], r#"{"symbol":"btc/usd"}"#);
+        assert_eq!(
+            frame["subscriptions"][0]["filters"],
+            r#"{"symbol":"btc/usd"}"#
+        );
     }
 
     #[test]
@@ -1315,6 +1345,31 @@ mod tests {
         assert_eq!(snapshot.connected_stream_count, 1);
         assert_eq!(snapshot.reconnect_count, 1);
         assert_eq!(snapshot.stream_error_count, 0);
+    }
+
+    #[test]
+    fn dropped_chainlink_connection_guard_balances_active_stream_count() {
+        let telemetry = Arc::new(RwLock::new(ChainlinkWebSocketTelemetry::default()));
+
+        {
+            let _guard = ChainlinkDirectConnectionGuard::new(telemetry.clone());
+
+            let snapshot = telemetry.read().unwrap();
+            assert_eq!(snapshot.connected_stream_count, 1);
+            assert_eq!(snapshot.reconnect_count, 0);
+        }
+
+        let snapshot = telemetry.read().unwrap();
+        assert_eq!(snapshot.connected_stream_count, 0);
+        assert_eq!(snapshot.reconnect_count, 1);
+    }
+
+    #[test]
+    fn chainlink_connection_state_tolerates_overcounted_active_streams() {
+        assert_eq!(
+            chainlink_connection_state_label(2, 3),
+            "Connected { streams: 2 }"
+        );
     }
 
     #[test]
